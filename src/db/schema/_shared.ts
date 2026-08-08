@@ -40,6 +40,7 @@ export const creditTxTypeEnum = pgEnum("credit_tx_type", [
   "refund", // 退款（正，任务失败退还）
   "adjustment", // 人工调整（可正可负）
 ])
+export type CreditTxType = (typeof creditTxTypeEnum.enumValues)[number]
 
 /** AI 模型 API 格式（手册 §4.3，沿用旧项目 grs/jimeng） */
 export const apiFormatEnum = pgEnum("api_format", ["grs", "jimeng"])
