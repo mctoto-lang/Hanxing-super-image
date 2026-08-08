@@ -1,0 +1,94 @@
+import type { ModuleName, EnterpriseRole } from "@/db/schema"
+import type { UserContext } from "@/lib/auth/session"
+
+/**
+ * 角色/权限校验工具（手册 §5.1、§10.2）
+ *
+ * 四层鉴权维度（每个请求依次校验）：
+ *   平台身份 isSuperAdmin → 企业归属 enterpriseId → 企业角色 enterpriseRole
+ *   → 权限组 groupId（allowedModels/allowedPages/maxConcurrent）
+ */
+
+/** 是否平台超管 */
+export function isSuperAdmin(ctx: UserContext | null): boolean {
+  return !!ctx?.user.isSuperAdmin
+}
+
+/** 是否企业管理员（owner 或 admin） */
+export function isEnterpriseAdmin(ctx: UserContext | null): boolean {
+  if (!ctx) return false
+  return ctx.user.enterpriseRole === "owner" || ctx.user.enterpriseRole === "admin"
+}
+
+/** 是否企业主 */
+export function isEnterpriseOwner(ctx: UserContext | null): boolean {
+  return ctx?.user.enterpriseRole === "owner"
+}
+
+/** 角色中文显示名（用于 nav-user 展示） */
+export function roleLabel(role: EnterpriseRole | undefined): string {
+  switch (role) {
+    case "owner":
+      return "企业主"
+    case "admin":
+      return "企业管理员"
+    case "member":
+      return "成员"
+    default:
+      return "超管"
+  }
+}
+
+/**
+ * 校验页面访问（手册 §5.1 模块访问校验链）。
+ *
+ * 返回 null 表示放行；否则返回拒绝原因（供 middleware 或页面提示）。
+ */
+export function checkModuleAccess(
+  ctx: UserContext | null,
+  target: ModuleName,
+): string | null {
+  if (!ctx) return "未登录"
+  if (ctx.user.isSuperAdmin) return null // 超管放行
+  if (!ctx.enterprise) return "当前用户无有效企业"
+  if (!ctx.canAccess(target)) {
+    return `无权访问该模块（${target}）`
+  }
+  return null
+}
+
+/**
+ * 校验模型访问：模型 id 必须在权限组 allowedModels 内
+ * （allowedModels 为空时默认放行企业全部已开通模型，手册 D21）。
+ */
+export function checkModelAccess(
+  ctx: UserContext,
+  modelId: string,
+  enterpriseModelIds: string[],
+): string | null {
+  if (ctx.user.isSuperAdmin) return null
+  if (!enterpriseModelIds.includes(modelId)) {
+    return "该模型未在企业已开通模型范围内"
+  }
+  if (ctx.group && ctx.group.allowedModels.length > 0) {
+    if (!ctx.group.allowedModels.includes(modelId)) {
+      return "当前权限组无权使用该模型"
+    }
+  }
+  return null
+}
+
+/**
+ * 取三层并发上限的最小值（手册 §10.5）：
+ *   enterprise.maxConcurrent ≥ group.maxConcurrent ≥ model.maxConcurrent
+ */
+export function effectiveConcurrentLimit(opts: {
+  enterprise: number
+  group?: number | null
+  model: number
+}): number {
+  const limits = [opts.enterprise, opts.group ?? Infinity, opts.model].filter(
+    (n): n is number => typeof n === "number" && n > 0,
+  )
+  return limits.length ? Math.min(...limits) : 1
+}

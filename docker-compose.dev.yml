@@ -1,0 +1,38 @@
+# 开发期基础设施（仅 PostgreSQL + Redis）
+# 用法：docker compose -f docker-compose.dev.yml up -d
+# 生产编排见 docker-compose.yml（M7 阶段补全 app 服务）
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: hanxing-pg-dev
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hanxing}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_in_prod}
+      POSTGRES_DB: ${POSTGRES_DB:-hanxing_super}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-hanxing}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: hanxing-redis-dev
+    command: redis-server --save 60 1 --loglevel warning
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pg_data:
+  redis_data:

@@ -19,7 +19,9 @@ export const metadata: Metadata = {
   description: "企业级 AI 图片工作台",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({
+  children,
+}: React.PropsWithChildren) {
   return (
     <html
       lang="zh-CN"
