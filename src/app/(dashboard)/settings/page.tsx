@@ -1,0 +1,77 @@
+import { requireUserContext } from "@/lib/auth/session"
+import { db } from "@/db/client"
+import { users } from "@/db/schema"
+import { eq } from "drizzle-orm"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { ProfileForm } from "@/components/settings/profile-form"
+import { PasswordForm } from "@/components/settings/password-form"
+
+export const dynamic = "force-dynamic"
+
+export default async function SettingsPage() {
+  const ctx = await requireUserContext()
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(eq(users.id, ctx.user.id))
+    .limit(1)
+
+  return (
+    <div className="mx-auto max-w-2xl space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold">个人设置</h1>
+        <p className="text-sm text-muted-foreground">个人资料与密码</p>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">个人资料</CardTitle>
+          <CardDescription>昵称、邮箱、账号信息</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-1 text-sm">
+            <div>
+              用户名（登录账号，不可改）：{" "}
+              <span className="font-mono">{user?.username}</span>
+            </div>
+            <div>
+              归属企业：{" "}
+              <strong>{ctx.enterprise?.name ?? "无（超管）"}</strong>
+            </div>
+            <div>
+              角色：
+              {ctx.user.isSuperAdmin
+                ? "超级管理员"
+                : ctx.user.enterpriseRole === "owner"
+                  ? "企业主"
+                  : ctx.user.enterpriseRole === "admin"
+                    ? "企业管理员"
+                    : "成员"}
+              {ctx.group?.name ? ` · 权限组：${ctx.group.name}` : ""}
+            </div>
+          </div>
+          <ProfileForm
+            initialName={user?.name ?? ""}
+            initialEmail={user?.email ?? ""}
+          />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">修改密码</CardTitle>
+          <CardDescription>至少 6 字符</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <PasswordForm />
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
