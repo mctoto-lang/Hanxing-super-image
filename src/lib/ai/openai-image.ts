@@ -33,8 +33,6 @@ export interface OpenAiImageTask {
   /** 本次需要生成的图片序号（部分失败重试仅补失败张）；缺省 = 全部 */
   indexes?: number[]
   referenceImages?: string[] | null
-  /** 归属企业：随请求头 X-Enterprise-Id 透传给中转/网关，供其按 key 规范预转存 */
-  enterpriseId?: string
 }
 
 /** 图片槽位回调（由队列消费者注入 Redis 实现：企业 + 模型并发限制） */
@@ -167,9 +165,6 @@ export async function callOpenAiImageApi(opts: {
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${apiKey}`,
-            ...(task.enterpriseId
-              ? { "X-Enterprise-Id": task.enterpriseId }
-              : {}),
           },
           body: JSON.stringify(requestBody),
           signal: controller.signal,

@@ -672,7 +672,6 @@ async function processOneTask(
       imageCount: taskRow.imageCount,
       indexes: task.pendingIndexes,
       referenceImages: task.referenceImages,
-      enterpriseId: task.enterpriseId,
       signal: taskAbort.signal,
       downloadAndUpload: async (url, _idx) => {
         await ensureTaskAlive()
