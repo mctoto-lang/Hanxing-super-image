@@ -26,30 +26,24 @@ import { toast } from "sonner"
 import {
   saveStorageSettingAction,
   saveQueueSettingAction,
-  saveImageRetentionSettingAction,
   type StorageSetting,
   type QueueSetting,
-  type ImageRetentionSetting,
 } from "@/server/actions/platform-system"
+import { IMAGE_RETENTION } from "@/lib/storage/config"
 
 interface SystemSettingsProps {
   initialStorage: StorageSetting
   initialQueue: QueueSetting
-  initialRetention: ImageRetentionSetting
 }
 
 export function SystemSettings({
   initialStorage,
   initialQueue,
-  initialRetention,
 }: SystemSettingsProps) {
   const [storage, setStorage] = useState<StorageSetting>(initialStorage)
   const [queue, setQueue] = useState<QueueSetting>(initialQueue)
-  const [retention, setRetention] =
-    useState<ImageRetentionSetting>(initialRetention)
   const [savingStorage, setSavingStorage] = useState(false)
   const [savingQueue, setSavingQueue] = useState(false)
-  const [savingRetention, setSavingRetention] = useState(false)
 
   const handleSaveStorage = async () => {
     setSavingStorage(true)
@@ -72,7 +66,7 @@ export function SystemSettings({
     try {
       const res = await saveQueueSettingAction(queue)
       if (res.ok) {
-        toast.success("队列设置已保存")
+        toast.success("队列参数已保存")
       } else {
         toast.error(res.error ?? "保存失败")
       }
@@ -80,22 +74,6 @@ export function SystemSettings({
       toast.error("保存失败")
     } finally {
       setSavingQueue(false)
-    }
-  }
-
-  const handleSaveRetention = async () => {
-    setSavingRetention(true)
-    try {
-      const res = await saveImageRetentionSettingAction(retention)
-      if (res.ok) {
-        toast.success("保留天数已保存")
-      } else {
-        toast.error(res.error ?? "保存失败")
-      }
-    } catch {
-      toast.error("保存失败")
-    } finally {
-      setSavingRetention(false)
     }
   }
 
@@ -351,62 +329,41 @@ export function SystemSettings({
         </CardContent>
       </Card>
 
-      {/* 图片保留天数 */}
+      {/* 图片保留策略（固定值，不可配置） */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <Clock className="size-4" />
-            图片保留天数
+            图片保留策略
           </CardTitle>
           <CardDescription>
-            超过保留期的图片对象会被定时清理；前端仍保留「图片已过期」占位提示。0 = 不过期。
-            请与腾讯云 COS 生命周期规则（ref/、gen/ 前缀）保持一致。
+            保留策略为固定值，由腾讯云 COS 生命周期规则执行删除；前端对已删除
+            的图片显示「图片已过期」占位。
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="ref-retain">参考图保留（天）</Label>
-              <Input
-                id="ref-retain"
-                type="number"
-                min={0}
-                value={retention.referenceRetainDays}
-                onChange={(e) =>
-                  setRetention((prev) => ({
-                    ...prev,
-                    referenceRetainDays: Number(e.target.value) || 0,
-                  }))
-                }
-              />
+        <CardContent className="space-y-2 text-sm">
+          <div className="grid gap-2 md:grid-cols-3">
+            <div className="rounded-lg border bg-muted/40 p-3">
+              <p className="text-muted-foreground">参考图（ref/）</p>
+              <p className="text-lg font-semibold">
+                {IMAGE_RETENTION.referenceRetainDays} 天
+              </p>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="gen-retain">生成图保留（天）</Label>
-              <Input
-                id="gen-retain"
-                type="number"
-                min={0}
-                value={retention.generateRetainDays}
-                onChange={(e) =>
-                  setRetention((prev) => ({
-                    ...prev,
-                    generateRetainDays: Number(e.target.value) || 0,
-                  }))
-                }
-              />
+            <div className="rounded-lg border bg-muted/40 p-3">
+              <p className="text-muted-foreground">生成图（gen/，含缩略图）</p>
+              <p className="text-lg font-semibold">
+                {IMAGE_RETENTION.generateRetainDays} 天
+              </p>
+            </div>
+            <div className="rounded-lg border bg-muted/40 p-3">
+              <p className="text-muted-foreground">配置图（config/）</p>
+              <p className="text-lg font-semibold">永不过期</p>
             </div>
           </div>
-
-          <div className="flex justify-end">
-            <Button onClick={handleSaveRetention} disabled={savingRetention}>
-              {savingRetention ? (
-                <MorphingInfinity className="mr-2 size-4" />
-              ) : (
-                <Save className="mr-2 size-4" />
-              )}
-              {savingRetention ? "保存中..." : "保存保留天数"}
-            </Button>
-          </div>
+          <p className="text-xs text-muted-foreground">
+            调整保留期需同步修改代码常量 IMAGE_RETENTION 与 COS 生命周期规则，
+            见 docs/storage-lifecycle.md。
+          </p>
         </CardContent>
       </Card>
 

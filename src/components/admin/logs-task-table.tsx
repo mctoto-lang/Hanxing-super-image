@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/dialog"
 import { toast } from "sonner"
 import { toImageSrc } from "@/lib/utils"
+import { SmartImage } from "@/components/ui/smart-image"
 import {
   getTaskDetailAction,
   deleteTaskLogAction,
@@ -244,8 +245,7 @@ export function LogsTaskTable({ tasks }: { tasks: TaskLogRow[] }) {
                         key={idx}
                         className="aspect-square overflow-hidden rounded-lg bg-muted"
                       >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
+                        <SmartImage
                           src={toImageSrc(img)}
                           alt=""
                           className="h-full w-full object-cover"

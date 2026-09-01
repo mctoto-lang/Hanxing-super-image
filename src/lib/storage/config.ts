@@ -248,10 +248,14 @@ export function contentTypeFromExt(ext: string): string {
 }
 
 /**
- * 图片保留天数配置（system_setting key=image_retention）。
+ * 图片保留策略（固定值，不可配置）。
  *
- * 与腾讯云 COS 生命周期规则保持一致：COS 负责删对象，应用 cleanup cron
- * 负责按此天数清理 DB 中的死链接。0 表示该类不过期（不清理）。
+ * 对象删除主路径：腾讯云 COS 生命周期规则（按 ref/、gen/ 前缀自动删除）。
+ * 应用 cleanup cron 按此常量做备份清理（本地模式主路径，COS 模式兜底），
+ * 二者任一生效即可、幂等无害。config 类（logo/图标/模板图）永不过期。
+ *
+ * ⚠️ 修改保留期必须两处同步：本常量 + COS 控制台生命周期规则
+ * （见 docs/storage-lifecycle.md）。
  */
 export interface ImageRetentionConfig {
   /** 参考图保留天数（generationTasks.referenceImages） */
@@ -260,38 +264,9 @@ export interface ImageRetentionConfig {
   generateRetainDays: number
 }
 
-const DEFAULT_RETENTION: ImageRetentionConfig = {
+export const IMAGE_RETENTION: ImageRetentionConfig = {
   referenceRetainDays: 30,
   generateRetainDays: 30,
-}
-
-function numOrDefault(v: unknown, fallback: number): number {
-  const n = Number(v)
-  return Number.isFinite(n) && n >= 0 ? n : fallback
-}
-
-export async function loadImageRetentionConfig(): Promise<ImageRetentionConfig> {
-  const [row] = await db
-    .select()
-    .from(systemSettings)
-    .where(
-      and(
-        eq(systemSettings.key, "image_retention"),
-        isNull(systemSettings.enterpriseId),
-      ),
-    )
-    .limit(1)
-  const v = (row?.value ?? {}) as Partial<ImageRetentionConfig> & SystemSettingValue
-  return {
-    referenceRetainDays: numOrDefault(
-      v.referenceRetainDays,
-      DEFAULT_RETENTION.referenceRetainDays,
-    ),
-    generateRetainDays: numOrDefault(
-      v.generateRetainDays,
-      DEFAULT_RETENTION.generateRetainDays,
-    ),
-  }
 }
 
 /** 从可访问 URL 反解对象 key（URL 的 path 部分，去前导斜杠并 decode） */

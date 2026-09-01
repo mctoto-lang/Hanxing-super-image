@@ -5,7 +5,7 @@ import { generationTasks, conversations } from "@/db/schema"
 import { env } from "@/lib/env"
 import { safeEqual } from "@/lib/crypto"
 import { getStorage } from "@/lib/storage"
-import { loadImageRetentionConfig } from "@/lib/storage/config"
+import { IMAGE_RETENTION } from "@/lib/storage/config"
 
 /**
  * 过期图片清理（手册 §10.5，配合双桶 + category）
@@ -41,7 +41,7 @@ export async function POST(request: Request) {
     return new NextResponse("unauthorized", { status: 401 })
   }
 
-  const retention = await loadImageRetentionConfig()
+  const retention = IMAGE_RETENTION
   const storage = await getStorage()
 
   let scannedTasks = 0

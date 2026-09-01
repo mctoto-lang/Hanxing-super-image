@@ -4,12 +4,7 @@ import { and, desc, eq, isNull } from "drizzle-orm"
 import { db } from "@/db/client"
 import { systemSettings, type SystemSettingValue } from "@/db/schema"
 import { requireSuperAdmin } from "@/lib/auth/session"
-import {
-  loadStorageConfig,
-  loadImageRetentionConfig,
-  type StorageConfig,
-  type ImageRetentionConfig,
-} from "@/lib/storage/config"
+import { loadStorageConfig, type StorageConfig } from "@/lib/storage/config"
 import { revalidatePath } from "next/cache"
 
 /**
@@ -131,29 +126,6 @@ export async function saveQueueSettingAction(
     "queue",
     input as unknown as SystemSettingValue,
     "队列参数（轮询间隔/并发上限/超时）",
-  )
-  revalidatePath("/platform/system")
-  return { ok: true }
-}
-
-/** 图片保留天数设置（与 src/lib/storage/config.ts 的 ImageRetentionConfig 一致） */
-export type ImageRetentionSetting = ImageRetentionConfig
-
-/** 获取图片保留天数设置（0=不过期） */
-export async function getImageRetentionSettingAction(): Promise<ImageRetentionSetting> {
-  await requireSuperAdmin()
-  return loadImageRetentionConfig()
-}
-
-/** 保存图片保留天数设置 */
-export async function saveImageRetentionSettingAction(
-  input: ImageRetentionSetting,
-): Promise<{ ok: boolean; error?: string }> {
-  await requireSuperAdmin()
-  await upsertPlatformSetting(
-    "image_retention",
-    input as unknown as SystemSettingValue,
-    "图片保留天数（参考图/生成图，0=不过期）",
   )
   revalidatePath("/platform/system")
   return { ok: true }

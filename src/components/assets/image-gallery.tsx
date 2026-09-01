@@ -5,7 +5,9 @@ import { Heart, Trash2, Download } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
+import { SmartImage } from "@/components/ui/smart-image"
 import { getStorageProxyUrl } from "@/lib/storage/proxy"
+import { toImageSrc } from "@/lib/utils"
 import { toast } from "sonner"
 import { pinTaskAction, unpinTaskAction, deleteTaskAction } from "@/server/actions/assets"
 import { useRouter } from "next/navigation"
@@ -138,9 +140,10 @@ export function ImageGallery({
                   key={`${item.taskId}-${imgIdx}`}
                   className="group relative overflow-hidden rounded-lg border bg-card"
                 >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={getStorageProxyUrl(url)}
+                  {/* COS 直连（toImageSrc 带缩略参数），不经应用服务器中转；
+                      过期对象由 SmartImage 显示占位 */}
+                  <SmartImage
+                    src={toImageSrc(url, { width: 480 })}
                     alt={item.prompt.slice(0, 50)}
                     className="aspect-square w-full object-cover transition-transform group-hover:scale-105"
                     loading="lazy"

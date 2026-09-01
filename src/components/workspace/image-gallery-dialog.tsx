@@ -29,6 +29,7 @@ import {
 import { MorphingInfinity } from "@/components/ui/morphing-infinity"
 import { Spinner } from "@/components/workspace/spinner"
 import { cn, toImageSrc } from "@/lib/utils"
+import { SmartImage } from "@/components/ui/smart-image"
 import { toast } from "sonner"
 import { uploadReferenceImages } from "@/lib/workspace/upload"
 import {
@@ -371,9 +372,8 @@ export function ImageGalleryDialog({
                             : "border-transparent hover:border-primary/50",
                       )}
                     >
-                      {/* 远程动态图片，经存储代理加载；沿用 <img> */}
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
+                      {/* 远程动态图片：SmartImage 带过期占位 */}
+                      <SmartImage
                         src={toImageSrc(image.imageUrl, {
                           width: 360,
                           height: 360,
