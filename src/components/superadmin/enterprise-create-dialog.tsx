@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { useFormState } from "react-dom"
+import { useActionState } from "react"
 import { Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -24,14 +24,15 @@ const MODULE_OPTIONS = [
   { value: "create", label: "创作" },
   { value: "assets", label: "资产管理" },
   { value: "workspace", label: "批量生图" },
-  { value: "product", label: "商品主图" },
+  { value: "product", label: "商品图片" },
+  { value: "mockup", label: "样机渲染" },
 ] as const
 
 export function EnterpriseCreateDialog() {
   const [open, setOpen] = React.useState(false)
   const router = useRouter()
 
-  const [state, formAction, pending] = useFormState(
+  const [state, formAction, pending] = useActionState(
     async (_prev: unknown, formData: FormData) => {
       const modules = MODULE_OPTIONS.filter((o) =>
         formData.get(`mod_${o.value}`) === "on",
@@ -72,7 +73,7 @@ export function EnterpriseCreateDialog() {
         <DialogHeader>
           <DialogTitle>创建企业</DialogTitle>
           <DialogDescription>
-            创建企业并预置默认权限组。可选同时创建首位企业主（owner）。
+            创建企业并预置默认权限组。可选同时创建首位企业管理员（owner）。
           </DialogDescription>
         </DialogHeader>
         <form action={formAction} className="space-y-4">
@@ -123,7 +124,7 @@ export function EnterpriseCreateDialog() {
                   key={o.value}
                   className="flex items-center gap-2 text-sm"
                 >
-                  <Checkbox name={`mod_${o.value}`} defaultChecked={o.value === "create" || o.value === "assets"} />
+                  <Checkbox name={`mod_${o.value}`} defaultChecked={o.value === "create" || o.value === "assets" || o.value === "mockup"} />
                   {o.label}
                 </label>
               ))}
@@ -131,7 +132,7 @@ export function EnterpriseCreateDialog() {
           </div>
           <div className="rounded-md border p-3">
             <div className="mb-2 text-sm font-medium">
-              首位企业主（可选）
+              首位企业管理员（可选）
             </div>
             <div className="grid grid-cols-3 gap-2">
               <Input name="owner_username" placeholder="用户名" />

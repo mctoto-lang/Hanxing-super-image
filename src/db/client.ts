@@ -15,7 +15,8 @@ const globalForDb = globalThis as unknown as {
 
 function createDb() {
   const client = postgres(env.DATABASE_URL, {
-    max: 10,
+    // 池上限经 DB_POOL_MAX 可调（默认 10）：多 worker 副本时每进程按需调大
+    max: env.DB_POOL_MAX,
     prepare: false, // drizzle-orm/postgres-js 在事务场景下推荐关闭
   })
   return drizzle({ client, schema })

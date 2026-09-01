@@ -23,6 +23,6 @@ export interface SidebarUser {
   name: string
   username: string
   avatar?: string | null
-  roleLabel: string // 角色中文（企业主/管理员/成员/超管）
+  roleLabel: string // 角色中文（企业管理员/管理员/成员/超管）
   groupName?: string | null
 }

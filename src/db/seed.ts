@@ -7,25 +7,27 @@
  *   3. 该企业的默认权限组（isDefault=true）。
  *
  * 用法：pnpm db:seed
+ *
+ * 注意：loadEnvFile 必须早于任何会触发 env.ts 校验的 import（@/db/client、@/lib/env
+ * 等）。静态 import 会被 JS 引擎提升到 loadEnvFile 之前执行，导致 env 校验时 .env 尚未
+ * 加载，因此所有依赖一律改用动态 import（与 scripts/worker.ts 一致）。
  */
 
-// 加载 .env（tsx 不像 Next.js 那样自动加载）
+// 先加载本地 .env（tsx 不像 Next.js 那样自动加载）；必须早于下方动态 import
 try {
   process.loadEnvFile()
 } catch {
   // .env 不存在时忽略（CI/生产用真实环境变量）
 }
-import { and, eq } from "drizzle-orm"
-import { db } from "@/db/client"
-import {
-  enterprises,
-  permissionGroups,
-  users,
-} from "@/db/schema"
-import { hashPassword } from "@/lib/crypto"
-import { env } from "@/lib/env"
 
-async function seed() {
+void (async () => {
+  // 动态 import：确保上面 loadEnvFile 在 env.ts 校验之前完成
+  const { and, eq } = await import("drizzle-orm")
+  const { db } = await import("@/db/client")
+  const { enterprises, permissionGroups, users } = await import("@/db/schema")
+  const { hashPassword } = await import("@/lib/crypto")
+  const { env } = await import("@/lib/env")
+
   console.log("🌱 开始种子数据初始化...")
 
   // 1. 超管
@@ -70,7 +72,7 @@ async function seed() {
       .values({
         name: "默认企业",
         slug: "default",
-        enabledModules: ["create", "assets", "settings"],
+        enabledModules: ["create", "assets", "mockup", "settings"],
         creditsBalance: 1000, // 初始赠送 1000 积分，便于开发测试
         maxConcurrent: 5,
       })
@@ -110,7 +112,10 @@ async function seed() {
 
   console.log("🎉 种子数据初始化完成")
   process.exit(0)
-}
+})().catch((err) => {
+  console.error("❌ 种子数据初始化失败：", err)
+  process.exit(1)
+})
 
 function generateRandomPassword(length = 16): string {
   const chars =
@@ -123,8 +128,3 @@ function generateRandomPassword(length = 16): string {
   }
   return pwd
 }
-
-seed().catch((err) => {
-  console.error("❌ 种子数据初始化失败：", err)
-  process.exit(1)
-})

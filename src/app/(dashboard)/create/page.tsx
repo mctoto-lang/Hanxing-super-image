@@ -1,42 +1,75 @@
+import { Suspense } from "react"
 import { requireUserContext } from "@/lib/auth/session"
 import { listAvailableModelsAction } from "@/server/actions/create"
-import { CreateWorkspace } from "@/components/create/create-workspace"
-import { HistoryList } from "@/components/create/history-list"
 import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@/components/ui/resizable"
+  listConversationsAction,
+  listConversationTasksAction,
+} from "@/server/actions/conversations"
+import { CreateApp } from "@/components/create/create-app"
+import { type TaskDetail } from "@/components/create/task-detail-card"
+import type { CreateModel } from "@/components/create/types"
 
 export const dynamic = "force-dynamic"
 
-export default async function CreatePage() {
+export default async function CreatePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ c?: string }>
+}) {
   const ctx = await requireUserContext()
-  const models = await listAvailableModelsAction()
-  const creditsBalance = ctx.enterprise?.creditsBalance ?? 0
+  const [models, conversations, sp] = await Promise.all([
+    listAvailableModelsAction(),
+    listConversationsAction(),
+    searchParams,
+  ])
+
+  // 预取当前选中会话的任务（仅当 URL c 指向一个真实存在的会话时）
+  let conversationTasks: TaskDetail[] = []
+  if (sp.c && conversations.some((x) => x.id === sp.c)) {
+    const rows = await listConversationTasksAction(sp.c)
+    conversationTasks = rows.map((r) => ({
+      id: r.id,
+      modelId: r.modelId,
+      prompt: r.prompt,
+      status: r.status,
+      imageSize: r.imageSize,
+      imageCount: r.imageCount,
+      resultImages: (r.resultImages as string[] | null) ?? null,
+      referenceImages: (r.referenceImages as string[] | null) ?? null,
+      errorMessage: r.errorMessage,
+      creditsCharged: r.creditsCharged,
+      createdAt: r.createdAt,
+      completedAt: r.completedAt,
+      modelDisplayName: r.modelDisplayName,
+      modelIconUrl: r.modelIconUrl,
+    }))
+  }
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] flex-col">
-      <div className="border-b px-4 py-3">
-        <h1 className="text-xl font-bold">创作</h1>
-        <p className="text-sm text-muted-foreground">
-          统一 AI 创作页（合并自由创作与项目创作，单一积分计费）
-        </p>
-      </div>
-
-      <ResizablePanelGroup orientation="horizontal" className="flex-1">
-        <ResizablePanel defaultSize={65} minSize={40}>
-          <div className="h-full overflow-auto p-4">
-            <div className="mx-auto max-w-3xl">
-              <CreateWorkspace models={models} creditsBalance={creditsBalance} />
-            </div>
+    // 绝对定位贴满 header 以下的工作区（相对 SidebarInset 的 relative）：
+    // 高度天然确定，不参与外层 min-h-svh 的内容回撑，从根源消除页面级滚动条
+    <div className="absolute inset-x-0 top-16 bottom-0">
+      <Suspense
+        fallback={
+          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+            加载中…
           </div>
-        </ResizablePanel>
-        <ResizableHandle withHandle />
-        <ResizablePanel defaultSize={35} minSize={20}>
-          <HistoryList />
-        </ResizablePanel>
-      </ResizablePanelGroup>
+        }
+      >
+        <CreateApp
+          models={models as CreateModel[]}
+          conversations={conversations.map((c) => ({
+            id: c.id,
+            title: c.title,
+            lastImageThumb: c.lastImageThumb,
+            pinnedAt: c.pinnedAt,
+            updatedAt: c.updatedAt,
+          }))}
+          conversationTasks={conversationTasks}
+          userCredits={ctx.user.creditsBalance}
+          enterpriseCredits={ctx.enterprise?.creditsBalance ?? 0}
+        />
+      </Suspense>
     </div>
   )
 }

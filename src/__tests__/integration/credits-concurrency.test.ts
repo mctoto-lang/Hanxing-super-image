@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest"
-import { and, eq, sql } from "drizzle-orm"
+import { eq } from "drizzle-orm"
 import { randomUUID } from "node:crypto"
 import { db } from "@/db/client"
 import {
@@ -10,6 +10,8 @@ import {
 } from "@/db/schema"
 import {
   deductCredits,
+  deductUserCredits,
+  allocateCreditsToUser,
   CreditsInsufficientError,
 } from "@/server/services/credits-service"
 
@@ -101,7 +103,7 @@ describe("积分并发扣减（手册 §10.6 红线）", () => {
   it("★ 并发扣减 100 个 × 10 积分，余额精确为 0，无超扣", async () => {
     const CONCURRENT = 100
     const PER = 10
-    const TOTAL = CONCURRENT * PER // 1000
+    // 期望总扣减 = CONCURRENT * PER = 1000（余额精确为 0，无超扣）
 
     // 同时发起 100 个扣减请求
     const results = await Promise.allSettled(
@@ -179,5 +181,127 @@ describe("积分并发扣减（手册 §10.6 红线）", () => {
       .where(eq(enterprises.id, testEnterpriseId))
     expect(final!.balance).toBe(0)
     expect(final!.balance).toBeGreaterThanOrEqual(0) // 不可为负
+  })
+})
+
+/**
+ * 需求 3：成员个人配额并发扣减（新计费红线）
+ *
+ * 生图改为扣个人配额（deductUserCredits），同样必须用 PG 行锁保证不超扣。
+ * 这里复用上面的测试企业 + 用户；beforeEach 已重置企业池为 1000。
+ */
+describe("成员个人配额并发扣减（需求 3 新红线）", () => {
+  beforeEach(async () => {
+    // 每个用例前：企业池 1000，成员个人配额 1000
+    await db
+      .update(users)
+      .set({ creditsBalance: 1000 })
+      .where(eq(users.id, testUserId))
+    await db
+      .delete(creditTransactions)
+      .where(eq(creditTransactions.enterpriseId, testEnterpriseId))
+  })
+
+  it("allocateCreditsToUser 从企业池下发到个人配额（事务一致）", async () => {
+    // 企业池 1000 → 分配 300 → 企业池 700、个人配额 1000+300=1300
+    const { balanceAfter, userBalanceAfter } = await allocateCreditsToUser({
+      enterpriseId: testEnterpriseId,
+      operatorUserId: testUserId,
+      targetUserId: testUserId,
+      amount: 300,
+    })
+    expect(balanceAfter).toBe(700)
+    expect(userBalanceAfter).toBe(1300)
+
+    const [ent] = await db
+      .select({ balance: enterprises.creditsBalance })
+      .from(enterprises)
+      .where(eq(enterprises.id, testEnterpriseId))
+    const [usr] = await db
+      .select({ balance: users.creditsBalance })
+      .from(users)
+      .where(eq(users.id, testUserId))
+    expect(ent!.balance).toBe(700)
+    expect(usr!.balance).toBe(1300)
+  })
+
+  it("allocateCreditsToUser 企业池不足时拒绝，个人配额不变", async () => {
+    // 企业池只有 1000，分配 2000 应失败
+    await expect(
+      allocateCreditsToUser({
+        enterpriseId: testEnterpriseId,
+        operatorUserId: testUserId,
+        targetUserId: testUserId,
+        amount: 2000,
+      }),
+    ).rejects.toThrow()
+
+    // 个人配额仍为 1000
+    const [usr] = await db
+      .select({ balance: users.creditsBalance })
+      .from(users)
+      .where(eq(users.id, testUserId))
+    expect(usr!.balance).toBe(1000)
+  })
+
+  it("★ 并发扣个人配额 100 × 10，余额精确为 0，无超扣", async () => {
+    const CONCURRENT = 100
+    const PER = 10
+
+    const results = await Promise.allSettled(
+      Array.from({ length: CONCURRENT }, () =>
+        deductUserCredits({
+          enterpriseId: testEnterpriseId,
+          amount: PER,
+          userId: testUserId,
+        }),
+      ),
+    )
+
+    const fulfilled = results.filter((r) => r.status === "fulfilled")
+    const rejected = results.filter((r) => r.status === "rejected")
+    expect(fulfilled).toHaveLength(CONCURRENT)
+    expect(rejected).toHaveLength(0)
+
+    const [final] = await db
+      .select({ balance: users.creditsBalance })
+      .from(users)
+      .where(eq(users.id, testUserId))
+    expect(final!.balance).toBe(0)
+    expect(final!.balance).toBeGreaterThanOrEqual(0)
+  })
+
+  it("★ 个人配额不足时，多余并发请求被拒绝，绝不超扣", async () => {
+    const CONCURRENT = 150
+    const PER = 10
+
+    const results = await Promise.allSettled(
+      Array.from({ length: CONCURRENT }, () =>
+        deductUserCredits({
+          enterpriseId: testEnterpriseId,
+          amount: PER,
+          userId: testUserId,
+        }).catch((err) => {
+          if (err instanceof CreditsInsufficientError) throw err
+          throw err
+        }),
+      ),
+    )
+
+    const fulfilled = results.filter((r) => r.status === "fulfilled")
+    const rejected = results.filter(
+      (r) =>
+        r.status === "rejected" &&
+        r.reason instanceof CreditsInsufficientError,
+    )
+    expect(fulfilled).toHaveLength(100)
+    expect(rejected).toHaveLength(50)
+
+    const [final] = await db
+      .select({ balance: users.creditsBalance })
+      .from(users)
+      .where(eq(users.id, testUserId))
+    expect(final!.balance).toBe(0)
+    expect(final!.balance).toBeGreaterThanOrEqual(0)
   })
 })

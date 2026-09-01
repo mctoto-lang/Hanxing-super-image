@@ -16,6 +16,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import {
+  TablePagination,
+  parsePageParam,
+} from "@/components/shared/table-pagination"
 
 export const dynamic = "force-dynamic"
 
@@ -24,6 +28,9 @@ const TYPE_LABELS: Record<string, string> = {
   consumption: "消费",
   refund: "退款",
   adjustment: "调整",
+  allocation: "分配下发",
+  allocation_deduct: "个人消费",
+  allocation_refund: "个人退还",
 }
 
 const TYPE_VARIANTS: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
@@ -31,28 +38,72 @@ const TYPE_VARIANTS: Record<string, "default" | "secondary" | "destructive" | "o
   consumption: "secondary",
   refund: "outline",
   adjustment: "outline",
+  allocation: "secondary",
+  allocation_deduct: "secondary",
+  allocation_refund: "outline",
 }
 
-export default async function AdminCreditsPage() {
+export default async function AdminCreditsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>
+}) {
   const ctx = await requireEnterpriseContext()
-  const transactions = await listTransactionsAction({ limit: 100 })
+  const page = parsePageParam(await searchParams)
+  const { items: transactions, total, pageSize: actionPageSize } =
+    await listTransactionsAction({ page, pageSize: 20 })
+
+  // 统计：当前页 allocation_deduct 已消费累计（负数取绝对值作参考）
+  const consumedByUsers = transactions
+    .filter((t) => t.type === "allocation_deduct")
+    .reduce((sum, t) => sum + Math.abs(t.amount), 0)
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4">
+    <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold">积分流水</h1>
         <p className="text-sm text-muted-foreground">
-          {ctx.enterprise?.name} · 当前余额{" "}
-          <strong className="tabular-nums">
-            {ctx.enterprise?.creditsBalance.toLocaleString("zh-CN")}
-          </strong>
+          {ctx.enterprise?.name} · 企业积分池与分配流水（需求 3：池→个人配额两级）
         </p>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              企业积分池余额
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="text-2xl font-bold tabular-nums">
+            {ctx.enterprise?.creditsBalance.toLocaleString("zh-CN")}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              我的个人配额
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="text-2xl font-bold tabular-nums">
+            {ctx.user.creditsBalance.toLocaleString("zh-CN")}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">
+              成员累计消费（当前页）
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="text-2xl font-bold tabular-nums">
+            {consumedByUsers.toLocaleString("zh-CN")}
+          </CardContent>
+        </Card>
       </div>
 
       <Card>
         <CardHeader>
           <CardTitle className="text-base">流水记录</CardTitle>
-          <CardDescription>最近 100 条（D8：企业共享积分池）</CardDescription>
+          <CardDescription>共 {total} 条（D8：企业共享积分池）</CardDescription>
         </CardHeader>
         <CardContent>
           <Table>
@@ -105,6 +156,12 @@ export default async function AdminCreditsPage() {
             </TableBody>
           </Table>
         </CardContent>
+        <TablePagination
+          page={page}
+          pageSize={actionPageSize}
+          total={total}
+          basePath="/admin/credits"
+        />
       </Card>
     </div>
   )

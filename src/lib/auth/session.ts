@@ -29,10 +29,12 @@ export interface UserContext {
     | "id"
     | "username"
     | "name"
+    | "image"
     | "isSuperAdmin"
     | "enterpriseId"
     | "enterpriseRole"
     | "groupId"
+    | "creditsBalance"
   >
   enterprise: Enterprise | null // 超管为 null
   group: PermissionGroup | null // 超管或未分配组时为 null
@@ -92,10 +94,12 @@ export const getCurrentUserContext = cache(async (): Promise<UserContext | null>
       id: user.id,
       username: user.username,
       name: user.name,
+      image: user.image,
       isSuperAdmin: user.isSuperAdmin,
       enterpriseId: user.enterpriseId,
       enterpriseRole: user.enterpriseRole,
       groupId: user.groupId,
+      creditsBalance: user.creditsBalance,
     },
     enterprise,
     group,
@@ -110,7 +114,7 @@ export const getCurrentUserContext = cache(async (): Promise<UserContext | null>
  *     └ 是 → 权限组 allowedPages 是否含目标页？ → 否：403
  *             └ 是 → 放行
  *
- * 超管放行所有模块；权限组 allowedPages 为空时默认放行企业全部已开通模块。
+ * 超管无企业归属，不进入业务页（创作/资产/批量/商品），仅保留个人设置。
  */
 export function computeAccessibleModules(
   isSuperAdmin: boolean,
@@ -118,8 +122,8 @@ export function computeAccessibleModules(
   groupAllowedPages: ModuleName[],
 ): ModuleName[] {
   if (isSuperAdmin) {
-    // 超管：返回全部已知模块（平台管理专用，不走企业模块逻辑）
-    return ["create", "assets", "workspace", "product", "settings"]
+    // 超管：仅个人设置（平台管理入口走二级导航，不走业务模块）
+    return ["settings"]
   }
   if (groupAllowedPages.length === 0) {
     return enterpriseModules

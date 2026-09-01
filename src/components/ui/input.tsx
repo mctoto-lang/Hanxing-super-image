@@ -1,11 +1,18 @@
 import * as React from "react"
-import { Input as InputPrimitive } from "@base-ui/react/input"
 
 import { cn } from "@/lib/utils"
 
+/**
+ * 原生 `<input>` 封装（shadcn/ui 标准实现）。
+ *
+ * 之前基于 @base-ui/react/input（实为 Field.Control），
+ * 在未包裹 <Field.Root> 且使用 defaultValue 时会触发
+ * "uncontrolled FieldControl default value" 警告。
+ * 项目内 Input 仅用标准 HTML 属性，故改用原生 input。
+ */
 function Input({ className, type, ...props }: React.ComponentProps<"input">) {
   return (
-    <InputPrimitive
+    <input
       type={type}
       data-slot="input"
       className={cn(

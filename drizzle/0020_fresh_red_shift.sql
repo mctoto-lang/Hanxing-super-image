@@ -1,0 +1,1 @@
+ALTER TABLE "product_direction" ADD COLUMN "is_hidden" boolean DEFAULT false NOT NULL;

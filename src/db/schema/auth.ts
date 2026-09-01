@@ -20,6 +20,7 @@ import { enterprises, permissionGroups } from "./enterprise"
  * 一个用户名只属一家企业，不可跨企业（去掉 memberships 多对多表）。
  * 用户名（username）全局唯一 = 登录账号；昵称（name）可重复。
  * 超管 isSuperAdmin=true 且 enterpriseId 为 NULL。
+ * creditsBalance：成员个人积分配额（企业管理员从企业池分配下发；生图扣个人配额）。
  */
 export const users = pgTable(
   "user",
@@ -40,6 +41,11 @@ export const users = pgTable(
     groupId: uuid("group_id").references(() => permissionGroups.id, {
       onDelete: "set null",
     }),
+    creditsBalance: integer("credits_balance").default(0).notNull(), // 个人配额
+    /** AI 对话未结算零头（单位：厘 = 0.01 积分；累计满 100 厘扣 1 积分入账本） */
+    chatUnbilledCenticredits: integer("chat_unbilled_centicredits")
+      .default(0)
+      .notNull(),
     status: userStatusEnum("status").default("active").notNull(),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })

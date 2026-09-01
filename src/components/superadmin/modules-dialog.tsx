@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { useFormState } from "react-dom"
+import { useActionState } from "react"
 import { Settings2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -21,9 +21,12 @@ import type { ModuleName } from "@/db/schema"
 
 const MODULE_OPTIONS: { value: ModuleName; label: string }[] = [
   { value: "create", label: "创作" },
+  { value: "chat", label: "AI 对话" },
   { value: "assets", label: "资产管理" },
   { value: "workspace", label: "批量生图" },
-  { value: "product", label: "商品主图" },
+  { value: "product", label: "商品图片" },
+  { value: "weartry", label: "穿戴图片" },
+  { value: "mockup", label: "样机渲染" },
   { value: "settings", label: "个人设置" },
 ]
 
@@ -39,7 +42,7 @@ export function ModulesDialog({
   const [open, setOpen] = React.useState(false)
   const router = useRouter()
 
-  const [state, formAction, pending] = useFormState(
+  const [state, formAction, pending] = useActionState(
     async (_prev: unknown, formData: FormData) => {
       const modules = MODULE_OPTIONS.filter(
         (o) => formData.get(`mod_${o.value}`) === "on",

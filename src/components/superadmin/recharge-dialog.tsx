@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { useFormState } from "react-dom"
+import { useActionState } from "react"
 import { Coins } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -30,7 +30,7 @@ export function RechargeDialog({
   const [open, setOpen] = React.useState(false)
   const router = useRouter()
 
-  const [state, formAction, pending] = useFormState(
+  const [state, formAction, pending] = useActionState(
     async (_prev: unknown, formData: FormData) => {
       const res = await rechargeCreditsAction({
         enterpriseId,

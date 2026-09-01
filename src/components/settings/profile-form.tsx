@@ -4,8 +4,8 @@ import { useActionState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { MorphingInfinity } from "@/components/ui/morphing-infinity"
 import { toast } from "sonner"
-import { Loader2 } from "lucide-react"
 import { updateProfileAction } from "@/server/actions/settings"
 
 export function ProfileForm({
@@ -39,7 +39,7 @@ export function ProfileForm({
         <Input id="email" name="email" type="email" defaultValue={initialEmail} />
       </div>
       <Button type="submit" disabled={pending} className="w-fit">
-        {pending ? <Loader2 className="size-4 animate-spin" /> : null}
+        {pending ? <MorphingInfinity className="size-4" /> : null}
         保存
       </Button>
     </form>

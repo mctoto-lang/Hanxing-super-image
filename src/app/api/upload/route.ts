@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server"
 import { auth } from "@/lib/auth/config"
 import { requireUserContext, getCurrentEnterpriseScope } from "@/lib/auth/session"
-import { saveFromBuffer } from "@/lib/storage/local"
+import { getStorage } from "@/lib/storage"
+import { safeImageExt } from "@/lib/storage/ext"
 
 /**
  * 文件上传端点（参考图，手册 §3）
@@ -37,8 +38,9 @@ export async function POST(request: Request) {
   }
 
   const buffer = Buffer.from(await file.arrayBuffer())
-  const ext = file.name.split(".").pop()?.toLowerCase() ?? "png"
-  const url = await saveFromBuffer(buffer, enterpriseId, ext, "image")
+  const ext = safeImageExt(file.name)
+  const storage = await getStorage()
+  const url = await storage.saveFromBuffer(buffer, enterpriseId, ext, "reference")
 
   return NextResponse.json({ url })
 }

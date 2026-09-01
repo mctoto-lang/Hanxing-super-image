@@ -20,18 +20,18 @@ export function isEnterpriseAdmin(ctx: UserContext | null): boolean {
   return ctx.user.enterpriseRole === "owner" || ctx.user.enterpriseRole === "admin"
 }
 
-/** 是否企业主 */
+/** 是否企业管理员（owner，企业最高管理员） */
 export function isEnterpriseOwner(ctx: UserContext | null): boolean {
   return ctx?.user.enterpriseRole === "owner"
 }
 
-/** 角色中文显示名（用于 nav-user 展示） */
+/** 角色中文显示名（全项目唯一文案来源：owner=企业管理员、admin=管理员） */
 export function roleLabel(role: EnterpriseRole | undefined): string {
   switch (role) {
     case "owner":
-      return "企业主"
-    case "admin":
       return "企业管理员"
+    case "admin":
+      return "管理员"
     case "member":
       return "成员"
     default:
@@ -60,16 +60,16 @@ export function checkModuleAccess(
 /**
  * 校验模型访问：模型 id 必须在权限组 allowedModels 内
  * （allowedModels 为空时默认放行企业全部已开通模型，手册 D21）。
+ *
+ * 注意：企业可见性（平台白名单 / 企业私有归属）由调用方查询模型行后
+ * 显式校验，本函数不再接收企业模型集合参数（历史签名传入 [modelId]
+ * 自证，属于无效空转）。
  */
 export function checkModelAccess(
   ctx: UserContext,
   modelId: string,
-  enterpriseModelIds: string[],
 ): string | null {
   if (ctx.user.isSuperAdmin) return null
-  if (!enterpriseModelIds.includes(modelId)) {
-    return "该模型未在企业已开通模型范围内"
-  }
   if (ctx.group && ctx.group.allowedModels.length > 0) {
     if (!ctx.group.allowedModels.includes(modelId)) {
       return "当前权限组无权使用该模型"
@@ -81,6 +81,11 @@ export function checkModelAccess(
 /**
  * 取三层并发上限的最小值（手册 §10.5）：
  *   enterprise.maxConcurrent ≥ group.maxConcurrent ≥ model.maxConcurrent
+ *
+ * ⚠️ 当前仅用于前端提示（submitTaskAction 返回的并发上限展示）；消费端
+ * Redis 槽位（task-queue.ts acquireImageSlot）只强制 enterprise + model 两层，
+ * group.maxConcurrent 暂未在队列侧执行。扩容它需扩展 ACQUIRE_SLOT_LUA 的
+ * key 集合与 processor 的 slots 构造。
  */
 export function effectiveConcurrentLimit(opts: {
   enterprise: number

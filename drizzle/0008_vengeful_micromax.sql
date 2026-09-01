@@ -1,0 +1,1 @@
+ALTER TABLE "enterprise" ALTER COLUMN "enabled_modules" SET DEFAULT '["create","assets","mockup","settings"]'::jsonb;

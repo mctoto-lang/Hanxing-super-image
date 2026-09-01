@@ -5,5 +5,6 @@ export default function AdminLayout({
 }: {
   children: React.ReactNode
 }) {
-  return <DashboardShell>{children}</DashboardShell>
+  // 企业管理页面：侧边栏/顶栏固定，仅右侧内容区内部滚动
+  return <DashboardShell contentScroll="inner">{children}</DashboardShell>
 }

@@ -18,7 +18,7 @@ export default async function AssetsPage() {
   ])
 
   return (
-    <div className="mx-auto max-w-7xl space-y-4">
+    <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold">资产管理</h1>
         <p className="text-sm text-muted-foreground">
@@ -37,7 +37,7 @@ export default async function AssetsPage() {
               taskId: a.id,
               prompt: a.prompt,
               images: (a.resultImages as string[] | null) ?? [],
-              modelDisplayName: a.modelDisplayName ?? "",
+              modelDisplayName: a.modelDisplayName ?? "样机渲染",
               source: a.source,
               createdAt: a.createdAt,
             }))}
@@ -51,7 +51,7 @@ export default async function AssetsPage() {
               pinnedId: p.id,
               prompt: p.prompt ?? "",
               images: (p.resultImages as string[] | null) ?? [],
-              modelDisplayName: p.modelDisplayName ?? "",
+              modelDisplayName: p.modelDisplayName ?? "样机渲染",
               source: "create",
               createdAt: p.createdAt,
             }))}

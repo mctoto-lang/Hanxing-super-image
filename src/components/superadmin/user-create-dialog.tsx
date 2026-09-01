@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { useFormState } from "react-dom"
+import { useActionState } from "react"
 import { Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -35,7 +35,7 @@ export function UserCreateDialog({
   const [enterpriseId, setEnterpriseId] = React.useState("")
   const router = useRouter()
 
-  const [state, formAction, pending] = useFormState(
+  const [state, formAction, pending] = useActionState(
     async (_prev: unknown, formData: FormData) => {
       const res = await createUserAndAssignAction({
         username: String(formData.get("username") ?? ""),
@@ -108,7 +108,11 @@ export function UserCreateDialog({
                 onValueChange={(v) => setEnterpriseId(v ?? "")}
               >
                 <SelectTrigger className="w-full">
-                  <SelectValue placeholder="选择企业" />
+                  <SelectValue placeholder="选择企业">
+                    {enterpriseId
+                      ? (enterprises.find((e) => e.id === enterpriseId)?.name ?? "选择企业")
+                      : "选择企业"}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {enterprises.map((e) => (
@@ -121,14 +125,22 @@ export function UserCreateDialog({
             </div>
             <div className="grid gap-2">
               <Label htmlFor="role">角色</Label>
-              <Select name="role" defaultValue="member">
+              <Select
+                name="role"
+                defaultValue="member"
+                items={[
+                  { value: "member", label: "成员" },
+                  { value: "admin", label: "管理员" },
+                  { value: "owner", label: "企业管理员" },
+                ]}
+              >
                 <SelectTrigger className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="member">成员</SelectItem>
                   <SelectItem value="admin">管理员</SelectItem>
-                  <SelectItem value="owner">企业主</SelectItem>
+                  <SelectItem value="owner">企业管理员</SelectItem>
                 </SelectContent>
               </Select>
             </div>

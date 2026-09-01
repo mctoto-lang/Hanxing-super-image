@@ -1,6 +1,6 @@
 "use server"
 
-import { and, eq } from "drizzle-orm"
+import { and, eq, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import { permissionGroups, users } from "@/db/schema"
 import {
@@ -17,26 +17,47 @@ import { revalidatePath } from "next/cache"
  * 企业管理员（owner/admin）可 CRUD 本企业的权限组。
  */
 
-/** 列出本企业的权限组 */
-export async function listGroupsAction() {
+/** 列表分页参数（管理端列表统一约定：page 从 1 开始） */
+export interface ListPageParams {
+  page?: number
+  pageSize?: number
+}
+
+/** 列出本企业的权限组（分页） */
+export async function listGroupsAction(opts: ListPageParams = {}) {
   const ctx = await requireEnterpriseAdmin()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
-  return await db
-    .select({
-      id: permissionGroups.id,
-      name: permissionGroups.name,
-      description: permissionGroups.description,
-      allowedModels: permissionGroups.allowedModels,
-      allowedPages: permissionGroups.allowedPages,
-      maxConcurrent: permissionGroups.maxConcurrent,
-      priority: permissionGroups.priority,
-      isDefault: permissionGroups.isDefault,
-      memberCount: db.$count(users, eq(users.groupId, permissionGroups.id)),
-      createdAt: permissionGroups.createdAt,
-    })
-    .from(permissionGroups)
-    .where(eq(permissionGroups.enterpriseId, enterpriseId))
-    .orderBy(permissionGroups.createdAt)
+  const page = Math.max(1, Math.floor(opts.page ?? 1))
+  const pageSize = Math.min(50, Math.max(1, Math.floor(opts.pageSize ?? 20)))
+  const offset = (page - 1) * pageSize
+
+  const where = eq(permissionGroups.enterpriseId, enterpriseId)
+  const [items, [{ total }]] = await Promise.all([
+    db
+      .select({
+        id: permissionGroups.id,
+        name: permissionGroups.name,
+        description: permissionGroups.description,
+        allowedModels: permissionGroups.allowedModels,
+        allowedPages: permissionGroups.allowedPages,
+        maxConcurrent: permissionGroups.maxConcurrent,
+        priority: permissionGroups.priority,
+        isDefault: permissionGroups.isDefault,
+        memberCount: db.$count(users, eq(users.groupId, permissionGroups.id)),
+        createdAt: permissionGroups.createdAt,
+      })
+      .from(permissionGroups)
+      .where(where)
+      .orderBy(permissionGroups.createdAt)
+      .limit(pageSize)
+      .offset(offset),
+    db
+      .select({ total: sql<number>`count(*)::int` })
+      .from(permissionGroups)
+      .where(where),
+  ])
+
+  return { items, total, page, pageSize }
 }
 
 /** 创建权限组 */

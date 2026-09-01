@@ -1,0 +1,146 @@
+# ══════════ 生产编排（app + PostgreSQL + Redis）══════════
+# 用法：
+#   1. 复制 .env.example → .env 并修改密钥
+#   2. docker compose up -d --build
+#   3. 首次启动后执行迁移：docker compose run --rm migrate
+#   4. 种子超管：docker compose run --rm app node -e "require('./drizzle/seed.js')"
+#
+# 开发期基础设施见 docker-compose.dev.yml
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hanxing-app
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-瀚星 Super Image}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-hanxing}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hanxing_super}
+      REDIS_URL: redis://redis:6379
+      AUTH_SECRET: ${AUTH_SECRET}
+      AUTH_TRUST_HOST: ${AUTH_TRUST_HOST:-true}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      SUPERADMIN_USERNAME: ${SUPERADMIN_USERNAME:-superadmin}
+      SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:-}
+      COS_SECRET_ID: ${COS_SECRET_ID:-}
+      COS_SECRET_KEY: ${COS_SECRET_KEY:-}
+      COS_BUCKET: ${COS_BUCKET:-}
+      COS_REGION: ${COS_REGION:-}
+      COS_BASE_URL: ${COS_BASE_URL:-}
+      COS_IMAGE_PREFIX: ${COS_IMAGE_PREFIX:-image/}
+      CRON_SECRET: ${CRON_SECRET}
+      QUEUE_POLL_INTERVAL_MS: ${QUEUE_POLL_INTERVAL_MS:-2000}
+      WORKER_TASK_CONCURRENCY: ${WORKER_TASK_CONCURRENCY:-8}
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    container_name: hanxing-migrate
+    restart: "no"
+    command: ["npx", "drizzle-kit", "migrate"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-hanxing}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hanxing_super}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - migrate
+
+  worker:
+    # 队列消费者进程：周期性消费 Redis 里的生图任务，与 Web 进程解耦
+    # （AI 生图是长耗时 IO 密集任务，独立进程避免拖累用户请求响应）。
+    # 复用 builder 阶段镜像（含完整 node_modules + 源码），与 migrate 一致。
+    #
+    # 水平扩容：WORKER_REPLICAS=N docker compose up -d（或 docker compose up -d --scale worker=N）。
+    # 不能设 container_name——固定容器名与多副本互斥。跨副本总并发由 Redis
+    # 企业/模型槽位协调，ZREM 原子出队防重复消费，无需额外协调组件。
+    # 总 PG 连接数 = N × DB_POOL_MAX + web 10，需同步调 POSTGRES_MAX_CONNECTIONS。
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    restart: unless-stopped
+    command: ["npx", "tsx", "scripts/worker.ts"]
+    deploy:
+      replicas: ${WORKER_REPLICAS:-1}
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-hanxing}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hanxing_super}
+      REDIS_URL: redis://redis:6379
+      AUTH_SECRET: ${AUTH_SECRET}
+      AUTH_TRUST_HOST: ${AUTH_TRUST_HOST:-true}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      COS_SECRET_ID: ${COS_SECRET_ID:-}
+      COS_SECRET_KEY: ${COS_SECRET_KEY:-}
+      COS_BUCKET: ${COS_BUCKET:-}
+      COS_REGION: ${COS_REGION:-}
+      COS_BASE_URL: ${COS_BASE_URL:-}
+      COS_IMAGE_PREFIX: ${COS_IMAGE_PREFIX:-image/}
+      CRON_SECRET: ${CRON_SECRET}
+      QUEUE_POLL_INTERVAL_MS: ${QUEUE_POLL_INTERVAL_MS:-2000}
+      WORKER_TASK_CONCURRENCY: ${WORKER_TASK_CONCURRENCY:-8}
+      # 转存下载并发上限（防入方向带宽打满导致 30s 下载超时雪崩；按实测带宽调整）
+      TRANSFER_CONCURRENCY: ${TRANSFER_CONCURRENCY:-16}
+      # worker 进程专属：DB 池随单进程任务并发放大（web 进程保持默认 10）
+      DB_POOL_MAX: ${WORKER_DB_POOL_MAX:-30}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: hanxing-pg
+    restart: unless-stopped
+    # max_connections 按部署规模调整：≥ worker副本数×DB_POOL_MAX + web(10) + 余量
+    command: postgres -c max_connections=${POSTGRES_MAX_CONNECTIONS:-200}
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hanxing}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_in_prod}
+      POSTGRES_DB: ${POSTGRES_DB:-hanxing_super}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-hanxing}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: hanxing-redis
+    restart: unless-stopped
+    # 任务队列（ZSET/Hash/并发计数）存于 Redis，不能被 LRU 静默驱逐——
+    # 默认 noeviction；内存告警时调 REDIS_MAXMEMORY 而不是改回淘汰策略。
+    # 默认 512mb：深积压（万级任务）时 hash 元数据会超 256mb
+    command: >
+      redis-server --save 60 1 --loglevel warning
+      --maxmemory ${REDIS_MAXMEMORY:-512mb}
+      --maxmemory-policy ${REDIS_MAXMEMORY_POLICY:-noeviction}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pg_data:
+  redis_data:
+  uploads:

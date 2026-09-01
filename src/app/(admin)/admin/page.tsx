@@ -1,6 +1,7 @@
 import Link from "next/link"
-import { Users, Shield, Coins } from "lucide-react"
+import { Users, Shield, Coins, Cpu, ScrollText, MessageSquare } from "lucide-react"
 import { requireEnterpriseAdmin } from "@/lib/auth/session"
+import { roleLabel } from "@/lib/auth/permissions"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
 export const dynamic = "force-dynamic"
@@ -8,11 +9,11 @@ export const dynamic = "force-dynamic"
 export default async function AdminPage() {
   const ctx = await requireEnterpriseAdmin()
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">企业管理</h1>
         <p className="text-sm text-muted-foreground">
-          {ctx.enterprise?.name} · {ctx.user.enterpriseRole === "owner" ? "企业主" : "管理员"}
+          {ctx.enterprise?.name} · {roleLabel(ctx.user.enterpriseRole)}
         </p>
       </div>
 
@@ -26,6 +27,30 @@ export default async function AdminPage() {
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">
               增删成员、改角色、分配权限组（D19）
+            </CardContent>
+          </Card>
+        </Link>
+        <Link href="/admin/models">
+          <Card className="cursor-pointer transition-colors hover:border-primary">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Cpu className="size-4" /> 模型配置
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground">
+              模型 CRUD、API Key 加密、可见性/计费
+            </CardContent>
+          </Card>
+        </Link>
+        <Link href="/admin/chat-models">
+          <Card className="cursor-pointer transition-colors hover:border-primary">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <MessageSquare className="size-4" /> 对话模型
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground">
+              OpenAI 兼容对话模型 CRUD（提示词模板用）
             </CardContent>
           </Card>
         </Link>
@@ -50,6 +75,18 @@ export default async function AdminPage() {
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">
               企业积分余额与流水审计
+            </CardContent>
+          </Card>
+        </Link>
+        <Link href="/admin/logs">
+          <Card className="cursor-pointer transition-colors hover:border-primary">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <ScrollText className="size-4" /> 操作日志
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground">
+              生图任务日志与登录审计
             </CardContent>
           </Card>
         </Link>

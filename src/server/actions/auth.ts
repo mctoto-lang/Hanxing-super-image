@@ -26,8 +26,13 @@ export async function loginAction(input: LoginInput) {
   const h = await headers()
   const ip = getClientIp(h)
 
-  // 登录限流
-  const limited = await loginRateLimiter.isLimited(ip)
+  // 双维度限流：IP（防单机爆破）+ 用户名（x-forwarded-for 可被客户端伪造
+  // 轮换 IP 键绕过纯 IP 限流；同一账号无论来自哪个"IP"，失败计数共用）
+  const ipKey = `ip:${ip}`
+  const userKey = `u:${username.toLowerCase()}`
+  const limited =
+    (await loginRateLimiter.isLimited(ipKey)) ||
+    (await loginRateLimiter.isLimited(userKey))
   if (limited) {
     return {
       ok: false,
@@ -43,11 +48,15 @@ export async function loginAction(input: LoginInput) {
     })
     // 成功：记录审计、重置限流计数
     await writeLoginLog({ username, ip, userAgent: h.get("user-agent") ?? "", success: true })
-    await loginRateLimiter.reset(ip)
+    await loginRateLimiter.reset(ipKey)
+    await loginRateLimiter.reset(userKey)
     return { ok: true, error: null }
   } catch (err) {
-    // 失败：累计限流计数 + 审计
-    await loginRateLimiter.increment(ip)
+    // 仅凭证类失败计入限流；基础设施异常（如 DB 闪断）不计，避免误锁真实用户
+    if (err instanceof AuthError) {
+      await loginRateLimiter.increment(ipKey)
+      await loginRateLimiter.increment(userKey)
+    }
     const reason = err instanceof AuthError ? err.type : "unknown"
     await writeLoginLog({
       username,

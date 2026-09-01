@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+.gitignore
+*.md
+.env*
+docker-compose*.yml
+Dockerfile
+.dockerignore
+coverage
+uploads
+backups
+*.sqlite
+*.db
+drizzle/meta
+.pnpm-store

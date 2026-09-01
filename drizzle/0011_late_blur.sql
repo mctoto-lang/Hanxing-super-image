@@ -1,0 +1,1 @@
+ALTER TABLE "model" ADD COLUMN "supports_smart_size" boolean DEFAULT false NOT NULL;

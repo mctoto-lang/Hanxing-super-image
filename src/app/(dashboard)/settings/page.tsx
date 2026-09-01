@@ -1,4 +1,5 @@
 import { requireUserContext } from "@/lib/auth/session"
+import { roleLabel } from "@/lib/auth/permissions"
 import { db } from "@/db/client"
 import { users } from "@/db/schema"
 import { eq } from "drizzle-orm"
@@ -10,6 +11,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { ProfileForm } from "@/components/settings/profile-form"
+import { AvatarForm } from "@/components/settings/avatar-form"
 import { PasswordForm } from "@/components/settings/password-form"
 
 export const dynamic = "force-dynamic"
@@ -23,18 +25,22 @@ export default async function SettingsPage() {
     .limit(1)
 
   return (
-    <div className="mx-auto max-w-2xl space-y-6">
+    <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">个人设置</h1>
-        <p className="text-sm text-muted-foreground">个人资料与密码</p>
+        <p className="text-sm text-muted-foreground">头像、个人资料与密码</p>
       </div>
 
       <Card>
         <CardHeader>
           <CardTitle className="text-base">个人资料</CardTitle>
-          <CardDescription>昵称、邮箱、账号信息</CardDescription>
+          <CardDescription>头像、昵称、邮箱、账号信息</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          <AvatarForm
+            initialImage={user?.image ?? null}
+            fallbackText={user?.name || user?.username || "?"}
+          />
           <div className="grid gap-1 text-sm">
             <div>
               用户名（登录账号，不可改）：{" "}
@@ -48,11 +54,7 @@ export default async function SettingsPage() {
               角色：
               {ctx.user.isSuperAdmin
                 ? "超级管理员"
-                : ctx.user.enterpriseRole === "owner"
-                  ? "企业主"
-                  : ctx.user.enterpriseRole === "admin"
-                    ? "企业管理员"
-                    : "成员"}
+                : roleLabel(ctx.user.enterpriseRole)}
               {ctx.group?.name ? ` · 权限组：${ctx.group.name}` : ""}
             </div>
           </div>

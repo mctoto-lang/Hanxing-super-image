@@ -2,6 +2,9 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+/* AI 对话 markdown 渲染（react-markdown + rehype-highlight） */
+@plugin "@tailwindcss/typography";
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
@@ -10,6 +13,8 @@
   --font-sans: var(--font-sans);
   --font-mono: var(--font-geist-mono);
   --font-heading: var(--font-sans);
+  /* 营销首页 Hero 大标题衬线字体（marketing/landing-page.tsx） */
+  --font-instrument-serif: var(--font-hero-serif), Georgia, serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -46,6 +51,8 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+  /* 营销页脚卡片顶部大圆角（marketing/footer-section.tsx 的 rounded-t-6xl） */
+  --radius-6xl: calc(var(--radius) * 3.2);
 }
 
 :root {
@@ -126,5 +133,552 @@
   }
   html {
     @apply font-sans;
+  }
+}
+
+/* 模型勋章文字 shimmer 流光（渐变基于 currentColor，保留各色身份）
+   注：色标用 rgba() 而非 oklch()——lightningcss 在 gradient 内解析 4 参 oklch 会 panic */
+@keyframes badge-shimmer {
+  to {
+    background-position: -200% center;
+  }
+}
+.badge-shimmer {
+  background-image: linear-gradient(
+    110deg,
+    currentColor 30%,
+    rgba(255, 255, 255, 0.92) 50%,
+    currentColor 70%
+  );
+  background-size: 200% auto;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: badge-shimmer 2.4s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .badge-shimmer {
+    animation: none;
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
+/* AI 帮写按钮「书写中」图标：笔尖左右摆动模拟书写 */
+@keyframes pen-write {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  20% {
+    transform: rotate(-14deg);
+  }
+  45% {
+    transform: rotate(9deg);
+  }
+  70% {
+    transform: rotate(-8deg);
+  }
+}
+.animate-pen-write {
+  animation: pen-write 0.9s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-pen-write {
+    animation: none;
+  }
+}
+
+/* ===== 图像生成加载动画（ui/image-generation.tsx）=====
+   按原版固定配色：深色画布（zinc-900）+ 白色柔光斑游走（ig-morph 驱动
+   双层柔边 radial 遮罩）+ 呼吸（ig-breathe）+ 白色高光扫过（ig-shine）。
+   不使用主题变量——浅色主题下 primary 近黑会让光斑发黑，生成中占位
+   统一为原版深色画布样式 */
+@keyframes ig-morph {
+  0% {
+    -webkit-mask-size: 52% 46%, 40% 40%;
+    mask-size: 52% 46%, 40% 40%;
+    -webkit-mask-position: 16% 20%, 30% 32%;
+    mask-position: 16% 20%, 30% 32%;
+  }
+  25% {
+    -webkit-mask-size: 46% 58%, 44% 38%;
+    mask-size: 46% 58%, 44% 38%;
+    -webkit-mask-position: 84% 16%, 66% 30%;
+    mask-position: 84% 16%, 66% 30%;
+  }
+  50% {
+    -webkit-mask-size: 60% 44%, 38% 46%;
+    mask-size: 60% 44%, 38% 46%;
+    -webkit-mask-position: 82% 84%, 62% 68%;
+    mask-position: 82% 84%, 62% 68%;
+  }
+  75% {
+    -webkit-mask-size: 48% 54%, 46% 40%;
+    mask-size: 48% 54%, 46% 40%;
+    -webkit-mask-position: 14% 82%, 34% 66%;
+    mask-position: 14% 82%, 34% 66%;
+  }
+  100% {
+    -webkit-mask-size: 52% 46%, 40% 40%;
+    mask-size: 52% 46%, 40% 40%;
+    -webkit-mask-position: 16% 20%, 30% 32%;
+    mask-position: 16% 20%, 30% 32%;
+  }
+}
+
+@keyframes ig-breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes ig-shine {
+  0%,
+  18% {
+    background-position: 100% 0;
+  }
+  82%,
+  100% {
+    background-position: 0% 0;
+  }
+}
+
+/* 微光带扫过：动 mask-position（带状遮罩右→左匀速扫过）。
+   行程两端（250% / -150%）带子均完全在画布外（带宽 60% 时完全离场
+   需 ≥250% / ≤-150%），循环跳变发生在画布外 → 无缝无限循环；
+   无停顿段 + linear 匀速 → 持续流动感，揭示的是「点阵」而非光雾 */
+@keyframes ig-sweep {
+  0% {
+    -webkit-mask-position: 250% 0;
+    mask-position: 250% 0;
+  }
+  100% {
+    -webkit-mask-position: -150% 0;
+    mask-position: -150% 0;
+  }
+}
+
+.igWrap {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 画布：固定深色（原版），点阵在其上被点亮闪烁 */
+.igCanvas {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1; /* 组件 style 按 ratio prop 覆盖 */
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: #18181b;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  isolation: isolate;
+}
+
+/* 基础点阵层：全画布暗白点（网格 12px，所有亮点层必须与此网格对齐） */
+.igDots {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(
+    rgba(255, 255, 255, 0.14) 1px,
+    transparent 1px
+  );
+  background-size: 12px 12px;
+}
+
+/* 亮斑层：与 .igDots 同网格的「亮点阵」作底，双层柔边 radial 遮罩裁出
+   两个亮区，ig-morph 驱动遮罩游走 → 亮区经过的点被点亮（点阵闪烁，
+   而非光雾漂浮）；ig-breathe 驱动整体明暗呼吸 */
+.igGlow {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(
+    rgba(255, 255, 255, 0.95) 1px,
+    transparent 1px
+  );
+  background-size: 12px 12px;
+  -webkit-mask-image:
+    radial-gradient(#000 0 26%, transparent 72%),
+    radial-gradient(#000 0 22%, transparent 68%);
+  mask-image:
+    radial-gradient(#000 0 26%, transparent 72%),
+    radial-gradient(#000 0 22%, transparent 68%);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: 52% 46%, 40% 40%;
+  mask-size: 52% 46%, 40% 40%;
+  -webkit-mask-position: 16% 20%, 30% 32%;
+  mask-position: 16% 20%, 30% 32%;
+  animation:
+    ig-morph 9s ease-in-out infinite,
+    ig-breathe 3.2s ease-in-out infinite;
+}
+
+/* 微光带层：亮点阵（中等亮度）+ 斜向柔边带状遮罩，ig-sweep 驱动遮罩
+   右→左扫过 → 一条斜带内的点短暂变亮，而非白色光带叠在画布上 */
+.igCanvas::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(
+    rgba(255, 255, 255, 0.6) 1px,
+    transparent 1px
+  );
+  background-size: 12px 12px;
+  -webkit-mask-image: linear-gradient(
+    105deg,
+    transparent 30%,
+    #000 50%,
+    transparent 70%
+  );
+  mask-image: linear-gradient(
+    105deg,
+    transparent 30%,
+    #000 50%,
+    transparent 70%
+  );
+  -webkit-mask-size: 60% 100%;
+  mask-size: 60% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  animation: ig-sweep 3.6s linear infinite;
+}
+
+/* 分辨率角标（右下，深色毛玻璃 + 白字） */
+.igRes {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  z-index: 1;
+  padding: 2px 6px;
+  border-radius: calc(var(--radius-sm) - 1px);
+  background: rgba(0, 0, 0, 0.45);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 10px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 底部 meta（label + 提示词；生图格子嵌入时 showMeta=false 不渲染） */
+.igMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.igLabel {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.igPrompt {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--foreground);
+  opacity: 0.8;
+  word-break: break-word;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .igGlow,
+  .igCanvas::after {
+    animation: none;
+  }
+}
+
+/* 隐藏滚动条（保留滚动能力）；此前多处引用该类名但从未定义 */
+@utility scrollbar-hide {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* ===== 营销首页入场动画（marketing/landing-page.tsx、marketing/starfield-section.tsx）=====
+   阶梯式淡入上滑，-1 ~ -4 对应不同延迟 */
+@keyframes fadeSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-slide-in-1 {
+  animation: fadeSlideIn 0.7s ease-out 0.05s both;
+}
+.animate-fade-slide-in-2 {
+  animation: fadeSlideIn 0.7s ease-out 0.2s both;
+}
+.animate-fade-slide-in-3 {
+  animation: fadeSlideIn 0.7s ease-out 0.35s both;
+}
+.animate-fade-slide-in-4 {
+  animation: fadeSlideIn 0.7s ease-out 0.5s both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-slide-in-1,
+  .animate-fade-slide-in-2,
+  .animate-fade-slide-in-3,
+  .animate-fade-slide-in-4 {
+    animation: none;
+  }
+}
+
+/* ===== 订阅套餐流光描边（marketing/pricing-section.tsx）=====
+   光点沿卡片边框矩形路径（offset-path rect）匀速绕圈，
+   替代模板中 framer-motion 的 offsetDistance 补间 */
+@keyframes borderTrail {
+  from {
+    offset-distance: 0%;
+  }
+  to {
+    offset-distance: 100%;
+  }
+}
+
+.animate-border-trail {
+  animation: borderTrail 5s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-border-trail {
+    animation: none;
+    opacity: 0;
+  }
+}
+
+/* ===== 用户评价跑马灯（marketing/testimonials-section.tsx）=====
+   双行反向无缝滚动：外层并排放 N 份相同拷贝，每份各自位移自身宽度
+   （-100% - gap），循环点前后画面完全一致即无缝；第二行用
+   animation-direction: reverse 实现反向 */
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(calc(-100% - var(--gap)));
+  }
+}
+
+.animate-marquee {
+  animation: marquee var(--duration, 40s) linear infinite;
+}
+
+.animate-marquee-reverse {
+  animation: marquee var(--duration, 40s) linear infinite reverse;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-marquee,
+  .animate-marquee-reverse {
+    animation: none;
+  }
+}
+
+/* ===== 营销页脚入场动画（marketing/footer-section.tsx）=====
+   等效模板 motion/react 的 whileInView：footer 进入视口（IntersectionObserver
+   加 footer-in-view）后，各区块由「模糊 + 上移 + 透明」过渡到清晰，
+   transitionDelay 依次错开形成阶梯渐入 */
+.footer-reveal {
+  opacity: 0;
+  transform: translateY(-8px);
+  filter: blur(4px);
+  transition:
+    opacity 0.8s ease,
+    transform 0.8s ease,
+    filter 0.8s ease;
+}
+
+.footer-in-view .footer-reveal {
+  opacity: 1;
+  transform: translateY(0);
+  filter: blur(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .footer-reveal {
+    opacity: 1;
+    transform: none;
+    filter: none;
+    transition: none;
+  }
+}
+
+/* ===== 思考过程动画（ui/thinking-reasoning.tsx：chat 思考流）=====
+   结构：header（纯文字标签 shimmer 思考中 / 完成摘要 + chevron，无悬停
+   效果）→ collapsible（grid-template-rows 1fr→0fr 高度动画）→ 视口
+   （height/mask 由组件 inline 注入：内容超过 MAX_H=180px 封顶、translateY
+   上滑露最新行，完成后展开为可滚动 + 上下 FADE=16px 渐隐）。行距 20px、
+   行间 gap 4px 均参与实测高度，几何常量在组件内，改版需两侧同步 */
+@keyframes tr-block-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes tr-sentence-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes tr-shine {
+  0%,
+  18% {
+    background-position: 100% 0;
+  }
+  82%,
+  100% {
+    background-position: 0% 0;
+  }
+}
+
+.trr-root {
+  width: 100%;
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+  color: var(--muted-foreground);
+  animation: tr-block-in 0.3s ease both;
+}
+
+/* 纯文字标签 + 折叠箭头：无内边距/圆角/悬停效果，点击切换折叠 */
+.trr-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: default;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.trr-clickable {
+  cursor: pointer;
+}
+
+.trr-label {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.trr-verb {
+  font-weight: 500;
+  color: var(--foreground);
+}
+
+.trr-chevron {
+  opacity: 0.7;
+  transition: transform 0.2s ease;
+}
+
+.trr-header[aria-expanded="true"] .trr-chevron {
+  transform: rotate(180deg);
+}
+
+/* 「思考中…」流光：渐变裁切文字 + 高光往返扫过 */
+.trr-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--muted-foreground) 0%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: tr-shine 2.4s linear infinite;
+}
+
+/* 折叠容器：grid-template-rows 高度动画（0fr 折叠，内容 min-height:0 放行） */
+.trr-collapsible {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition:
+    grid-template-rows 0.3s ease,
+    opacity 0.25s ease;
+}
+
+.trr-collapsed {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+
+.trr-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.trr-viewport {
+  position: relative;
+  overflow: hidden;
+  margin-top: 0.25rem;
+}
+
+/* 完成后展开：切换为可滚动，mask 交由 inline style 按滚动位置控制 */
+.trr-scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.trr-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  transition: transform 0.45s ease;
+}
+
+.trr-sentence {
+  margin: 0;
+  overflow-wrap: break-word;
+  animation: tr-sentence-in 0.35s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trr-root,
+  .trr-sentence {
+    animation: none;
+  }
+
+  .trr-shimmer {
+    animation: none;
+    background-image: none;
+    color: var(--muted-foreground);
+  }
+
+  .trr-collapsible,
+  .trr-chevron,
+  .trr-stream {
+    transition: none;
   }
 }

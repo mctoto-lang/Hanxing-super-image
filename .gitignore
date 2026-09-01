@@ -43,8 +43,9 @@ next-env.d.ts
 # 项目特定（手册 §8/§10.5）
 /uploads
 /backups
-/drizzle/meta/*.json
-/drizzle/meta/*.snapshot
+
+# ZCode 本地会话数据
+/.zcode
 
 # 本地数据
 *.sqlite

@@ -22,7 +22,10 @@ import {
  * - 平台超管创建；
  * - 独立积分池（creditsBalance，企业全员共享，D8）；
  * - 模块开关（enabledModules，超管配置，D22）；
- * - 企业级并发上限（maxConcurrent）。
+ * - 企业级并发上限（maxConcurrent）；
+ * - allowCustomModels：是否允许企业自建私有模型（超管开关）；
+ * - visiblePresetModels：该企业可见的平台预置模型 id 白名单（空 = 全部预置可见）；
+ * - visiblePresetChatModels：同上，作用于对话模型（chat_api_config 平台预置）。
  */
 export const enterprises = pgTable("enterprise", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -33,9 +36,20 @@ export const enterprises = pgTable("enterprise", {
   creditsBalance: integer("credits_balance").default(0).notNull(),
   enabledModules: jsonb("enabled_modules")
     .$type<ModuleName[]>()
-    .default(["create", "assets", "settings"])
+    .default(["create", "chat", "assets", "mockup", "settings"])
     .notNull(),
   maxConcurrent: integer("max_concurrent").default(5).notNull(),
+  allowCustomModels: boolean("allow_custom_models")
+    .default(true)
+    .notNull(), // 超管开关：是否允许企业自建私有模型
+  visiblePresetModels: jsonb("visible_preset_models")
+    .$type<string[]>()
+    .default([])
+    .notNull(), // 平台预置模型 id 白名单（空 = 全部预置可见）
+  visiblePresetChatModels: jsonb("visible_preset_chat_models")
+    .$type<string[]>()
+    .default([])
+    .notNull(), // 平台预置对话模型 id 白名单（空 = 全部预置可见）
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),

@@ -22,7 +22,7 @@ export interface GalleryItem {
 const SOURCE_LABELS: Record<string, string> = {
   create: "创作",
   workspace: "工作台",
-  product: "商品主图",
+  product: "商品图片",
 }
 
 function groupByDate(items: GalleryItem[]): Map<string, GalleryItem[]> {
@@ -85,11 +85,11 @@ export function ImageGallery({
     }
   }
 
-  function handleDownload(url: string, idx: number) {
+  function handleDownload(url: string, idx: number, stamp: number) {
     // 通过代理 URL 下载（防 SSRF）
     const a = document.createElement("a")
     a.href = getStorageProxyUrl(url)
-    a.download = `hanxing-${Date.now()}-${idx}.png`
+    a.download = `hanxing-${stamp}-${idx}.png`
     a.target = "_blank"
     a.click()
   }
@@ -142,7 +142,7 @@ export function ImageGallery({
                         size="icon"
                         variant="secondary"
                         className="size-7"
-                        onClick={() => handleDownload(url, imgIdx)}
+                        onClick={() => handleDownload(url, imgIdx, Date.now())}
                         title="下载"
                       >
                         <Download className="size-3.5" />

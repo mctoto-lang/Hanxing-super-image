@@ -1,0 +1,1 @@
+ALTER TABLE "product_direction" ADD COLUMN IF NOT EXISTS "is_hero" boolean DEFAULT false NOT NULL;

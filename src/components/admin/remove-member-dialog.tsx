@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { useFormState } from "react-dom"
+import { useActionState } from "react"
 import { Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -26,7 +26,7 @@ export function RemoveMemberDialog({
   const [open, setOpen] = React.useState(false)
   const router = useRouter()
 
-  const [, formAction, pending] = useFormState(
+  const [, formAction, pending] = useActionState(
     async (_prev: unknown) => {
       const res = await removeMemberAction(userId)
       if (res.ok) {

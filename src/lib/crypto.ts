@@ -2,6 +2,7 @@ import {
   createCipheriv,
   createDecipheriv,
   randomBytes,
+  timingSafeEqual,
   type CipherGCMTypes,
 } from "node:crypto"
 import { env } from "@/lib/env"
@@ -63,4 +64,21 @@ export async function verifyPassword(
 ): Promise<boolean> {
   const bcrypt = await import("bcryptjs")
   return bcrypt.compare(plain, hash)
+}
+
+/**
+ * 常量时间比较两个字符串，防止时序攻击（如逐字节猜出 Bearer token）。
+ *
+ * 长度不同时先做一次等长哈希比较以保持恒定耗时，再返回 false。
+ * 适用于校验 CRON_SECRET 等 secret。
+ */
+export function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, "utf8")
+  const bufB = Buffer.from(b, "utf8")
+  if (bufA.length !== bufB.length) {
+    // 长度不等也要做一次比较以避免长度泄露（仍返回 false）
+    if (bufA.length > 0) timingSafeEqual(bufA, bufA)
+    return false
+  }
+  return timingSafeEqual(bufA, bufB)
 }

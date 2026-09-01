@@ -22,6 +22,8 @@ const envSchema = z.object({
     .string()
     .min(1, "DATABASE_URL 不能为空")
     .startsWith("postgresql://", "DATABASE_URL 必须是 postgresql:// 连接串"),
+  // 单进程 PG 连接池上限（worker 高并发场景在 compose 中按副本调大）
+  DB_POOL_MAX: z.coerce.number().int().min(1).max(200).default(10),
 
   // Redis
   REDIS_URL: z
@@ -58,9 +60,19 @@ const envSchema = z.object({
   COS_BASE_URL: z.string().optional(),
   COS_IMAGE_PREFIX: z.string().default("image/"),
 
+  // 样机渲染外部服务（可选；仅开发兜底，生产以超管按企业配置为准）
+  MOCKUP_API_BASE_URL: z.string().optional(),
+  MOCKUP_API_KEY: z.string().optional(),
+  MOCKUP_COST_PER_RENDER: z.coerce.number().int().min(1).optional(),
+
   // 队列
-  CRON_SECRET: z.string().optional(),
+  CRON_SECRET: z.string().min(1, "CRON_SECRET 不能为空"),
   QUEUE_POLL_INTERVAL_MS: z.coerce.number().default(2000),
+  // 单 worker 进程内并行处理的任务数上限（企业/模型 Redis 槽位仍是跨进程总闸门）
+  WORKER_TASK_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(8),
+  // 转存下载并发上限：防止高并发波次打满服务器入方向带宽导致 30s 下载超时雪崩。
+  // 经验值 ≈ 入方向带宽 Mbps × 2 ÷ 平均图片 MB（12M 带宽、2MB 图 ≈ 16）
+  TRANSFER_CONCURRENCY: z.coerce.number().int().min(4).max(128).default(16),
 })
 
 export type Env = z.infer<typeof envSchema>
@@ -82,6 +94,10 @@ function loadEnv(): Env {
     if (process.env.NODE_ENV === "production") {
       throw new Error("环境变量校验失败，拒绝启动")
     }
+    console.warn(
+      "⚠️ 开发环境将以未校验的 process.env 继续运行：缺失字段为 undefined，" +
+        "依赖它们的功能（如 CRON_SECRET 定时任务鉴权）会显式失败，请补齐 .env",
+    )
   }
 
   // 开发期允许部分缺失（用宽松默认值继续），但仍返回解析结果

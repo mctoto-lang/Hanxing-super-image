@@ -1,0 +1,216 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1786151673652,
+      "tag": "0000_busy_slipstream",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1786152085253,
+      "tag": "0001_square_red_ghost",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786152385190,
+      "tag": "0002_deep_mimic",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786178576256,
+      "tag": "0003_flaky_invisible_woman",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786180642411,
+      "tag": "0004_reflective_jasper_sitwell",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786188757146,
+      "tag": "0005_product_module_full",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786206540166,
+      "tag": "0006_fat_mad_thinker",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1786254344705,
+      "tag": "0007_integrity_constraints",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1786340825002,
+      "tag": "0008_vengeful_micromax",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1786441478076,
+      "tag": "0009_complex_vance_astro",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1786593591977,
+      "tag": "0010_model_display_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1786597790388,
+      "tag": "0011_late_blur",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1787104768015,
+      "tag": "0012_sleepy_ultragirl",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1787125497043,
+      "tag": "0013_careless_klaw",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1787313206908,
+      "tag": "0014_shiny_speed",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1787313430440,
+      "tag": "0015_flippant_stepford_cuckoos",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1787562483064,
+      "tag": "0016_product_v2_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1787562551025,
+      "tag": "0017_drop_legacy_product_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1787638738703,
+      "tag": "0018_abnormal_slayback",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1787663542881,
+      "tag": "0019_smart_ser_duncan",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1787748594265,
+      "tag": "0020_fresh_red_shift",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1787797892494,
+      "tag": "0021_lush_green_goblin",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1787807799154,
+      "tag": "0022_glorious_chameleon",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1787817317807,
+      "tag": "0023_direction_single_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1787818881844,
+      "tag": "0024_drop_duplicate_pinyin_directions",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1787821078861,
+      "tag": "0025_curate_direction_pools",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1787909023548,
+      "tag": "0026_banner",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1788160496500,
+      "tag": "0027_fair_xorn",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1788163516829,
+      "tag": "0028_sparkling_rattler",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1788235507056,
+      "tag": "0029_true_peter_quill",
+      "breakpoints": true
+    }
+  ]
+}

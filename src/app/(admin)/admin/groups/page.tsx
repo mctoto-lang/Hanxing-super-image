@@ -17,15 +17,24 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { GroupCreateDialog } from "@/components/admin/group-create-dialog"
+import {
+  TablePagination,
+  parsePageParam,
+} from "@/components/shared/table-pagination"
 
 export const dynamic = "force-dynamic"
 
-export default async function AdminGroupsPage() {
+export default async function AdminGroupsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>
+}) {
   const ctx = await requireEnterpriseAdmin()
-  const groups = await listGroupsAction()
+  const page = parsePageParam(await searchParams)
+  const { items: groups, total, pageSize } = await listGroupsAction({ page, pageSize: 20 })
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">权限组</h1>
@@ -56,6 +65,16 @@ export default async function AdminGroupsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
+              {groups.length === 0 ? (
+                <TableRow>
+                  <TableCell
+                    colSpan={6}
+                    className="py-8 text-center text-muted-foreground"
+                  >
+                    暂无权限组
+                  </TableCell>
+                </TableRow>
+              ) : null}
               {groups.map((g) => (
                 <TableRow key={g.id}>
                   <TableCell className="font-medium">
@@ -102,6 +121,12 @@ export default async function AdminGroupsPage() {
             </TableBody>
           </Table>
         </CardContent>
+        <TablePagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          basePath="/admin/groups"
+        />
       </Card>
     </div>
   )

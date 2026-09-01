@@ -1,14 +1,13 @@
 import { requireEnterpriseAdmin } from "@/lib/auth/session"
+import { roleLabel } from "@/lib/auth/permissions"
 import { listMembersAction } from "@/server/actions/admin-users"
 import { listGroupsAction as listGroups } from "@/server/actions/admin-groups"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { Search } from "lucide-react"
 import {
   Table,
   TableBody,
@@ -17,27 +16,58 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import {
+  TablePagination,
+  parsePageParam,
+  parseQueryParam,
+} from "@/components/shared/table-pagination"
 import { MemberCreateDialog } from "@/components/admin/member-create-dialog"
-import { RoleChangeDialog } from "@/components/admin/role-change-dialog"
-import { GroupAssignDialog } from "@/components/admin/group-assign-dialog"
+import { MemberEditDialog } from "@/components/admin/member-edit-dialog"
 import { RemoveMemberDialog } from "@/components/admin/remove-member-dialog"
+import { AllocateCreditsDialog } from "@/components/admin/allocate-credits-dialog"
+import { CreditsAdjustDialog } from "@/components/admin/credits-adjust-dialog"
 
 export const dynamic = "force-dynamic"
 
-export default async function AdminUsersPage() {
+export default async function AdminUsersPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>
+}) {
   const ctx = await requireEnterpriseAdmin()
-  const [members, groups] = await Promise.all([listMembersAction(), listGroups()])
+  const sp = await searchParams
+  const page = parsePageParam(sp)
+  const q = parseQueryParam(sp, "q")
+
+  const [{ items: members, total }, { items: groups }] = await Promise.all([
+    listMembersAction({ page, pageSize: 20, q }),
+    listGroups({ pageSize: 50 }), // 权限组下拉全量取（分组本身有分页页面）
+  ])
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold">成员管理</h1>
           <p className="text-sm text-muted-foreground">
-            {ctx.enterprise?.name} · 共 {members.length} 名成员
+            {ctx.enterprise?.name} · 共 {total} 名成员
           </p>
         </div>
-        <MemberCreateDialog />
+        <div className="flex items-center gap-2">
+          <form action="/admin/users" className="flex items-center gap-2">
+            <Input
+              name="q"
+              defaultValue={q}
+              placeholder="搜索用户名 / 昵称 / 邮箱"
+              className="w-56"
+            />
+            <Button type="submit" variant="outline" size="sm">
+              <Search className="size-3.5" />
+              搜索
+            </Button>
+          </form>
+          <MemberCreateDialog />
+        </div>
       </div>
 
       <Card>
@@ -45,77 +75,128 @@ export default async function AdminUsersPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>用户名</TableHead>
-                <TableHead>昵称</TableHead>
+                <TableHead>成员</TableHead>
                 <TableHead>角色</TableHead>
                 <TableHead>权限组</TableHead>
+                <TableHead className="text-right">个人配额</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>最近登录</TableHead>
                 <TableHead className="text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {members.map((m) => (
-                <TableRow key={m.id}>
-                  <TableCell className="font-mono">{m.username}</TableCell>
-                  <TableCell>{m.name}</TableCell>
-                  <TableCell>
-                    <Badge
-                      variant={
-                        m.enterpriseRole === "owner"
-                          ? "default"
-                          : m.enterpriseRole === "admin"
-                            ? "secondary"
-                            : "outline"
-                      }
-                    >
-                      {m.enterpriseRole === "owner"
-                        ? "企业主"
-                        : m.enterpriseRole === "admin"
-                          ? "管理员"
-                          : "成员"}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>{m.groupName ?? "—"}</TableCell>
-                  <TableCell>
-                    <Badge
-                      variant={m.status === "active" ? "default" : "destructive"}
-                    >
-                      {m.status === "active" ? "正常" : "禁用"}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {m.lastLoginAt
-                      ? new Date(m.lastLoginAt).toLocaleString("zh-CN")
-                      : "—"}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {m.enterpriseRole !== "owner" ? (
-                      <div className="flex justify-end gap-1">
-                        <RoleChangeDialog
-                          userId={m.id}
-                          currentRole={m.enterpriseRole}
-                        />
-                        <GroupAssignDialog
-                          userId={m.id}
-                          username={m.username}
-                          currentGroupId={m.groupId}
-                          groups={groups}
-                        />
-                        <RemoveMemberDialog
-                          userId={m.id}
-                          username={m.username}
-                        />
-                      </div>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">企业主</span>
-                    )}
+              {members.length === 0 ? (
+                <TableRow>
+                  <TableCell
+                    colSpan={7}
+                    className="py-8 text-center text-muted-foreground"
+                  >
+                    {q ? `未找到与「${q}」匹配的成员` : "暂无成员"}
                   </TableCell>
                 </TableRow>
-              ))}
+              ) : (
+                members.map((m) => {
+                  const initials = (m.name || m.username).slice(0, 1).toUpperCase()
+                  return (
+                    <TableRow key={m.id}>
+                      <TableCell>
+                        <div className="flex items-center gap-2.5">
+                          <Avatar className="size-8">
+                            <AvatarImage
+                              src={m.image ?? undefined}
+                              alt={m.name ?? m.username}
+                            />
+                            <AvatarFallback className="text-xs">
+                              {initials}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div className="min-w-0">
+                            <div className="font-mono text-sm">{m.username}</div>
+                            <div className="truncate text-xs text-muted-foreground">
+                              {m.name}
+                            </div>
+                          </div>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant={
+                            m.enterpriseRole === "owner"
+                              ? "default"
+                              : m.enterpriseRole === "admin"
+                                ? "secondary"
+                                : "outline"
+                          }
+                        >
+                          {roleLabel(m.enterpriseRole)}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>{m.groupName ?? "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums font-medium">
+                        {m.creditsBalance.toLocaleString("zh-CN")}
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant={m.status === "active" ? "default" : "destructive"}
+                        >
+                          {m.status === "active" ? "正常" : "禁用"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {m.lastLoginAt
+                          ? new Date(m.lastLoginAt).toLocaleString("zh-CN")
+                          : "—"}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap justify-end gap-1">
+                          <MemberEditDialog
+                            member={{
+                              id: m.id,
+                              username: m.username,
+                              name: m.name,
+                              image: m.image,
+                              enterpriseRole: m.enterpriseRole,
+                              groupId: m.groupId,
+                            }}
+                            groups={groups.map((g) => ({ id: g.id, name: g.name }))}
+                          />
+                          <AllocateCreditsDialog
+                            targetUserId={m.id}
+                            targetUsername={m.username}
+                            targetName={m.name}
+                            currentBalance={m.creditsBalance}
+                            enterpriseBalance={
+                              ctx.enterprise?.creditsBalance ?? 0
+                            }
+                          />
+                          <CreditsAdjustDialog
+                            targetUserId={m.id}
+                            targetUsername={m.username}
+                            targetName={m.name}
+                            currentBalance={m.creditsBalance}
+                          />
+                          {m.enterpriseRole !== "owner" ? (
+                            <RemoveMemberDialog
+                              userId={m.id}
+                              username={m.username}
+                            />
+                          ) : null}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })
+              )}
             </TableBody>
           </Table>
         </CardContent>
+        <TablePagination
+          page={page}
+          pageSize={20}
+          total={total}
+          basePath="/admin/users"
+          query={{ q }}
+        />
       </Card>
     </div>
   )

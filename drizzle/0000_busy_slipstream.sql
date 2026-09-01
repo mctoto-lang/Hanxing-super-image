@@ -13,7 +13,7 @@ CREATE TABLE "enterprise" (
 	"logo_url" text,
 	"status" "enterprise_status" DEFAULT 'active' NOT NULL,
 	"credits_balance" integer DEFAULT 0 NOT NULL,
-	"enabled_modules" jsonb DEFAULT '["create","assets","settings"]'::jsonb NOT NULL,
+	"enabled_modules" jsonb DEFAULT '["create","chat","assets","mockup","settings"]'::jsonb NOT NULL,
 	"max_concurrent" integer DEFAULT 5 NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,

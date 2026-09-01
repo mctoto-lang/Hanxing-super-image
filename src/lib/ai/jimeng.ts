@@ -1,7 +1,7 @@
 /**
  * 即梦适配器（手册 §5.6，迁移旧项目 callJimengAPI）
  *
- * 即梦接口通常同步返回结果，逻辑较 GRS 简单。
+ * 即梦接口通常同步返回结果，逻辑较 OpenAI 适配器简单（单请求 n 张）。
  */
 import {
   buildJimengRequestBody,

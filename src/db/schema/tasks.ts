@@ -19,6 +19,7 @@ import {
 import { enterprises } from "./enterprise"
 import { users } from "./auth"
 import { models } from "./models"
+import { conversations } from "./conversations"
 
 /**
  * 生图任务（手册 §4.3）
@@ -36,9 +37,10 @@ export const generationTasks = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    modelId: uuid("model_id")
-      .notNull()
-      .references(() => models.id, { onDelete: "restrict" }),
+    /** 样机渲染任务无 AI 模型（走外部 psd-render-api），其余任务必填 */
+    modelId: uuid("model_id").references(() => models.id, {
+      onDelete: "restrict",
+    }),
     prompt: text("prompt").notNull(),
     imageSize: varchar("image_size", { length: 30 }),
     imageCount: integer("image_count").default(1).notNull(),
@@ -47,8 +49,17 @@ export const generationTasks = pgTable(
     source: taskSourceEnum("source").default("create").notNull(),
     priority: integer("priority").default(0).notNull(),
     creditsCharged: integer("credits_charged").default(0).notNull(),
+    /** 提交时的单张计费单价（部分失败按张退款用；旧行为 null → 回退模型现价） */
+    costPerImage: integer("cost_per_image"),
     resultImages: jsonb("result_images").$type<string[]>(),
+    /** 已成功生成的图片序号（与 resultImages 按位置一一对应；部分失败重试仅补缺失序号） */
+    succeededIndexes: jsonb("succeeded_indexes").$type<number[]>(),
     referenceImages: jsonb("reference_images").$type<string[]>(),
+    /** 所属创作会话（自由创作页 §6 重新设计）；旧数据为 null */
+    conversationId: uuid("conversation_id").references(
+      () => conversations.id,
+      { onDelete: "cascade" },
+    ),
     errorMessage: text("error_message"),
     retryCount: integer("retry_count").default(0).notNull(),
     retryErrors: jsonb("retry_errors").$type<string[]>(),
@@ -131,6 +142,10 @@ export const generationTasksRelations = relations(
     model: one(models, {
       fields: [generationTasks.modelId],
       references: [models.id],
+    }),
+    conversation: one(conversations, {
+      fields: [generationTasks.conversationId],
+      references: [conversations.id],
     }),
   }),
 )

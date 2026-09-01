@@ -41,3 +41,50 @@ export const loginRateLimiter = {
     return count ? Number(count) : 0
   },
 }
+
+/**
+ * AI 交互动作限流（用户级，手册 §10.5 同款 incr+expire 模式）
+ *
+ * 商品主图 V2 的 AI 帮写 / 智能匹配共享此额度（对话模型 token 成本防护）。
+ * 每用户每分钟 5 次，超限由调用方提示「操作过于频繁」。
+ */
+const AI_ACTION_WINDOW_SECONDS = 60
+const AI_ACTION_MAX_PER_WINDOW = 5
+
+const AI_ACTION_KEY = (enterpriseId: string, userId: string) =>
+  `hanxing:ent:${enterpriseId}:user:${userId}:ai:rate`
+
+export const aiActionRateLimiter = {
+  /** 累计一次并返回是否超限（true=已超限，应拒绝） */
+  async consume(enterpriseId: string, userId: string): Promise<boolean> {
+    const key = AI_ACTION_KEY(enterpriseId, userId)
+    const count = await redis.incr(key)
+    if (count === 1) {
+      await redis.expire(key, AI_ACTION_WINDOW_SECONDS)
+    }
+    return Number(count) > AI_ACTION_MAX_PER_WINDOW
+  },
+}
+
+/**
+ * AI 对话消息限流（用户级，独立于商品 AI 动作额度）
+ *
+ * 交互式对话节奏快于批量 AI 动作，独立窗口：每用户每分钟 20 条。
+ */
+const CHAT_WINDOW_SECONDS = 60
+const CHAT_MAX_PER_WINDOW = 20
+
+const CHAT_KEY = (enterpriseId: string, userId: string) =>
+  `hanxing:ent:${enterpriseId}:user:${userId}:chat:rate`
+
+export const chatRateLimiter = {
+  /** 累计一次并返回是否超限（true=已超限，应拒绝） */
+  async consume(enterpriseId: string, userId: string): Promise<boolean> {
+    const key = CHAT_KEY(enterpriseId, userId)
+    const count = await redis.incr(key)
+    if (count === 1) {
+      await redis.expire(key, CHAT_WINDOW_SECONDS)
+    }
+    return Number(count) > CHAT_MAX_PER_WINDOW
+  },
+}

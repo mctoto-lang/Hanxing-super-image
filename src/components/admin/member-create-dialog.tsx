@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { useFormState } from "react-dom"
+import { useActionState } from "react"
 import { Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -29,7 +29,7 @@ export function MemberCreateDialog() {
   const [open, setOpen] = React.useState(false)
   const router = useRouter()
 
-  const [state, formAction, pending] = useFormState(
+  const [state, formAction, pending] = useActionState(
     async (_prev: unknown, formData: FormData) => {
       const res = await createMemberAction({
         username: String(formData.get("username") ?? ""),
@@ -80,7 +80,14 @@ export function MemberCreateDialog() {
           </div>
           <div className="grid gap-2">
             <Label>角色</Label>
-            <Select name="role" defaultValue="member">
+            <Select
+              name="role"
+              defaultValue="member"
+              items={[
+                { value: "member", label: "成员" },
+                { value: "admin", label: "管理员" },
+              ]}
+            >
               <SelectTrigger className="w-full">
                 <SelectValue />
               </SelectTrigger>

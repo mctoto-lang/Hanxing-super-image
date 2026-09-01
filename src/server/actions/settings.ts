@@ -44,6 +44,30 @@ export async function updateProfileAction(input: {
   return { ok: true, error: null }
 }
 
+/**
+ * 更新自己的头像（imageUrl 为 null 即移除头像）。
+ * 图片本体由 /api/upload/avatar 上传，此处只落 users.image。
+ */
+export async function updateMyAvatarAction(input: { imageUrl: string | null }) {
+  const ctx = await requireUserContext()
+  if (
+    input.imageUrl !== null &&
+    (typeof input.imageUrl !== "string" ||
+      input.imageUrl.length > 500 ||
+      !/^(https?:\/\/|\/)/.test(input.imageUrl))
+  ) {
+    return { ok: false, error: "头像地址不合法" }
+  }
+
+  await db
+    .update(users)
+    .set({ image: input.imageUrl, updatedAt: new Date() })
+    .where(eq(users.id, ctx.user.id))
+
+  revalidatePath("/settings")
+  return { ok: true, error: null }
+}
+
 export async function changePasswordAction(input: {
   currentPassword: string
   newPassword: string

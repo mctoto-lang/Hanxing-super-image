@@ -1,33 +1,29 @@
 /**
- * 图片模型请求体构造（手册 §5.6，从旧项目 image-model-config.ts 原样迁移）
+ * 图片模型请求体构造（纯函数库，零副作用，零外部依赖）
  *
- * 纯函数库，零副作用，零外部依赖 —— 迁移价值最高。
- * 调整：类型名 camelCase 匹配新 schema（grsModelFamily 而非 grs_model_family），
- * 但运行时仍兼容 snake_case（来自 DB 的 extraConfig）。
+ * 接口格式：openai（OpenAI 标准生图 /v1/images/generations）| jimeng（即梦）。
+ * GRS 格式已下线。
  */
 
-export type ImageApiFormat = "grs" | "jimeng"
-export type GrsModelFamily = "gpt" | "gemini"
+export type ImageApiFormat = "openai" | "jimeng"
 
-export const DEFAULT_IMAGE_API_FORMAT: ImageApiFormat = "grs"
+export const DEFAULT_IMAGE_API_FORMAT: ImageApiFormat = "openai"
+/** 即梦参考图字段缺省名 */
 export const DEFAULT_REFERENCE_IMAGE_FIELD = "images"
+/** OpenAI 生图参考图字段缺省名（参考图以 URL 链接数组传入 image 字段） */
+export const DEFAULT_OPENAI_REFERENCE_IMAGE_FIELD = "image"
+/** imageSize 兜底（历史任务缺尺寸时，避免请求体缺字段） */
+export const DEFAULT_IMAGE_SIZE = "1024x1024"
 
 export interface ImageModelConfigInput {
   apiFormat?: unknown
   extraConfig?: unknown
 }
 
-export interface GrsExtraConfig {
-  grsModelFamily?: GrsModelFamily
-  replyType?: "json" | "async"
-  imageSizeGrs?: "1K" | "2K" | "4K"
-}
-
-interface BuildGrsRequestInput {
+interface BuildOpenAiRequestInput {
   model: string
   prompt: string
   imageSize: string
-  extraConfig: GrsExtraConfig
   referenceImages: string[]
   referenceImageField?: string
 }
@@ -47,31 +43,10 @@ interface GenerationCapabilities {
   extraConfig?: unknown
   supportsReferenceImage?: unknown
   maxReferenceImages?: unknown
-  supportedSizes?: unknown
+  sizePresets?: unknown
 }
 
-const FORMATS = new Set<ImageApiFormat>(["grs", "jimeng"])
-
-/**
- * 兼容 snake_case（DB extraConfig）与 camelCase（TS 强类型）的字段读取。
- * 旧项目 DB 存 grs_model_family，新 schema 也用 snake_case（jsonb）。
- */
-function getExtraConfig(
-  raw: unknown,
-  key: "grsModelFamily" | "replyType" | "imageSizeGrs",
-): unknown {
-  if (!raw || typeof raw !== "object") return undefined
-  const obj = raw as Record<string, unknown>
-  const camelMap: Record<typeof key, string[]> = {
-    grsModelFamily: ["grsModelFamily", "grs_model_family"],
-    replyType: ["replyType", "reply_type"],
-    imageSizeGrs: ["imageSizeGrs", "image_size_grs"],
-  }
-  for (const k of camelMap[key]) {
-    if (obj[k] !== undefined) return obj[k]
-  }
-  return undefined
-}
+const FORMATS = new Set<ImageApiFormat>(["openai", "jimeng"])
 
 function parseExtraConfig(value: unknown): Record<string, unknown> {
   if (value === undefined || value === null || value === "") return {}
@@ -92,14 +67,6 @@ function parseExtraConfig(value: unknown): Record<string, unknown> {
   throw new Error("extraConfig 必须是有效的 JSON 对象")
 }
 
-const GRS_FIELDS = new Set([
-  "grs_model_family",
-  "reply_type",
-  "image_size_grs",
-  "grsModelFamily",
-  "replyType",
-  "imageSizeGrs",
-])
 const JIMENG_FIELDS = new Set([
   "jimeng_resolution",
   "jimeng_n",
@@ -125,6 +92,9 @@ export function assertSupportedImageApiFormat(value: unknown): ImageApiFormat {
 }
 
 function parseSupportedSizes(value: unknown): Set<string> {
+  // sizePresets 为 [{label,width,height,enabled?}, ...]；解析出所有启用项的 "${w}x${h}"。
+  // enabled === false 的项不计入白名单（被关闭的比例无法提交）。
+  // 兼容历史可能传入的 JSON 字符串。
   let parsed = value
   if (typeof value === "string") {
     try {
@@ -133,15 +103,16 @@ function parseSupportedSizes(value: unknown): Set<string> {
       return new Set()
     }
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return new Set()
-  }
-  const ratios = (parsed as { ratios?: unknown }).ratios
-  if (!Array.isArray(ratios)) return new Set()
+  if (!Array.isArray(parsed)) return new Set()
   return new Set(
-    ratios.flatMap((item) => {
+    parsed.flatMap((item) => {
       if (!item || typeof item !== "object") return []
-      const { width, height } = item as { width?: unknown; height?: unknown }
+      const { width, height, enabled } = item as {
+        width?: unknown
+        height?: unknown
+        enabled?: unknown
+      }
+      if (enabled === false) return []
       return Number(width) > 0 && Number(height) > 0
         ? [`${Number(width)}x${Number(height)}`]
         : []
@@ -171,9 +142,10 @@ export function validateGenerationCapabilities(
   if (images.length > maxCount) {
     throw new Error(`当前模型最多支持 ${maxCount} 张参考图`)
   }
-  const sizes = parseSupportedSizes(model.supportedSizes)
+  const sizes = parseSupportedSizes(model.sizePresets)
   const size = typeof imageSize === "string" ? imageSize.trim() : ""
-  if (sizes.size > 0 && !sizes.has(size)) {
+  // 智能(auto) 由模型决定尺寸，跳过白名单校验
+  if (size !== "auto" && sizes.size > 0 && !sizes.has(size)) {
     throw new Error(`当前模型不支持尺寸 ${size}`)
   }
   return images
@@ -182,34 +154,13 @@ export function validateGenerationCapabilities(
 export function validateImageModelConfig(input: ImageModelConfigInput): void {
   const format = input.apiFormat
   if (!FORMATS.has(format as ImageApiFormat)) {
-    throw new Error("图片模型仅支持 grs 和 jimeng 接口格式")
+    throw new Error("图片模型仅支持 openai 和 jimeng 接口格式")
   }
   const config = parseExtraConfig(input.extraConfig)
 
-  if (format === "grs") {
-    rejectUnsupportedFields(config, GRS_FIELDS)
-    const family = getExtraConfig(config, "grsModelFamily")
-    if (family !== "gpt" && family !== "gemini") {
-      throw new Error("请选择有效的 GRS 模型族：gpt 或 gemini")
-    }
-    const replyType = getExtraConfig(config, "replyType")
-    if (
-      replyType !== undefined &&
-      replyType !== "json" &&
-      replyType !== "async"
-    ) {
-      throw new Error("replyType 仅支持 json 或 async")
-    }
-    const imageSizeGrs = getExtraConfig(config, "imageSizeGrs")
-    if (
-      imageSizeGrs !== undefined &&
-      !["1K", "2K", "4K"].includes(String(imageSizeGrs))
-    ) {
-      throw new Error("imageSizeGrs 仅支持 1K、2K 或 4K")
-    }
-    if (family === "gpt" && imageSizeGrs !== undefined) {
-      throw new Error("GPT 模型族不支持 imageSizeGrs")
-    }
+  // openai：标准格式无额外配置项（尺寸固定走 size 字段）
+  if (format === "openai") {
+    rejectUnsupportedFields(config, new Set())
     return
   }
 
@@ -231,8 +182,9 @@ export function validateImageModelConfig(input: ImageModelConfigInput): void {
   }
 }
 
-/** 把 "1024x1024" 归约成 "1:1"（gcd） */
+/** 把 "1024x1024" 归约成 "1:1"（gcd）；"auto" 原样返回（由模型决定） */
 export function sizeToRatio(size: string): string {
+  if (size === "auto") return "auto"
   const match = size.match(/^(\d+)x(\d+)$/i)
   if (!match) return "1:1"
   const width = Number(match[1])
@@ -243,26 +195,25 @@ export function sizeToRatio(size: string): string {
   return `${width / divisor}:${height / divisor}`
 }
 
-export function buildGrsRequestBody(
-  input: BuildGrsRequestInput,
+/**
+ * OpenAI 标准生图请求体：POST {base}/v1/images/generations
+ *
+ * - 尺寸固定走 size 字段（"1024x1536"；智能比例传 "auto"）
+ * - 参考图以 URL 链接数组传入 image 字段（字段名可由 referenceImageField 覆盖）
+ */
+export function buildOpenAiRequestBody(
+  input: BuildOpenAiRequestInput,
 ): Record<string, unknown> {
-  const family = input.extraConfig.grsModelFamily ?? "gpt"
+  const size = input.imageSize?.trim() || DEFAULT_IMAGE_SIZE
   const body: Record<string, unknown> = {
     model: input.model,
     prompt: input.prompt,
-    replyType: input.extraConfig.replyType ?? "json",
-  }
-  if (family === "gpt") {
-    body.size = input.imageSize
-  } else {
-    body.aspectRatio = sizeToRatio(input.imageSize)
-  }
-  if (family === "gemini" && input.extraConfig.imageSizeGrs) {
-    body.imageSize = input.extraConfig.imageSizeGrs
+    size,
   }
   if (input.referenceImages.length > 0) {
     const field =
-      input.referenceImageField?.trim() || DEFAULT_REFERENCE_IMAGE_FIELD
+      input.referenceImageField?.trim() ||
+      DEFAULT_OPENAI_REFERENCE_IMAGE_FIELD
     body[field] = input.referenceImages
   }
   return body
@@ -286,30 +237,35 @@ export function buildJimengRequestBody(
   return body
 }
 
-/** 从模型能力 + 用户输入构造 GRS 请求体（便捷封装） */
-export function buildGrsRequestFromCapabilities(opts: {
-  model: GenerationCapabilities & {
-    apiEndpoint?: string
-    name: string
-    referenceImageField?: string
-  }
-  prompt: string
-  imageSize: string
-  referenceImages: string[]
-}): Record<string, unknown> {
-  validateImageModelConfig(opts.model)
-  const images = validateGenerationCapabilities(
-    opts.model,
-    opts.referenceImages,
-    opts.imageSize,
-  )
-  const extraConfig = (opts.model.extraConfig ?? {}) as GrsExtraConfig
-  return buildGrsRequestBody({
-    model: opts.model.name,
-    prompt: opts.prompt,
-    imageSize: opts.imageSize,
-    extraConfig,
-    referenceImages: images,
-    referenceImageField: opts.model.referenceImageField,
+// ═══════════════ 生图结果共享类型（供适配器与队列消费者使用） ═══════════════
+
+/** 单张图片生成结果（index 对应任务内图片序号；url/error 二选一） */
+export interface ImageGenResult {
+  index: number
+  url?: string
+  error?: string
+}
+
+/**
+ * 合并历史成功图片与本轮结果（重试补张时保留已成功图片）。
+ * 返回按序号升序排列的成功序号 + 一一对应的 URL 列表。
+ */
+export function mergeImageResults(
+  prevIndexes: number[],
+  prevUrls: string[],
+  results: ImageGenResult[],
+): { succeededIndexes: number[]; resultImages: string[] } {
+  const map = new Map<number, string>()
+  prevIndexes.forEach((idx, i) => {
+    const url = prevUrls[i]
+    if (url) map.set(idx, url)
   })
+  for (const r of results) {
+    if (r.url) map.set(r.index, r.url)
+  }
+  const succeededIndexes = [...map.keys()].sort((a, b) => a - b)
+  return {
+    succeededIndexes,
+    resultImages: succeededIndexes.map((i) => map.get(i)!),
+  }
 }
