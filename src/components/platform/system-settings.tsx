@@ -29,7 +29,7 @@ import {
   type StorageSetting,
   type QueueSetting,
 } from "@/server/actions/platform-system"
-import { IMAGE_RETENTION } from "@/lib/storage/config"
+import { IMAGE_RETENTION } from "@/lib/storage/retention"
 
 interface SystemSettingsProps {
   initialStorage: StorageSetting

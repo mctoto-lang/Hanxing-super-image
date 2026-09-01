@@ -248,26 +248,10 @@ export function contentTypeFromExt(ext: string): string {
 }
 
 /**
- * 图片保留策略（固定值，不可配置）。
- *
- * 对象删除主路径：腾讯云 COS 生命周期规则（按 ref/、gen/ 前缀自动删除）。
- * 应用 cleanup cron 按此常量做备份清理（本地模式主路径，COS 模式兜底），
- * 二者任一生效即可、幂等无害。config 类（logo/图标/模板图）永不过期。
- *
- * ⚠️ 修改保留期必须两处同步：本常量 + COS 控制台生命周期规则
- * （见 docs/storage-lifecycle.md）。
+ * 图片保留策略：常量定义在 ./retention（客户端可导入的叶子模块），
+ * 此处 re-export 保持服务端统一从 config 导入的习惯。
  */
-export interface ImageRetentionConfig {
-  /** 参考图保留天数（generationTasks.referenceImages） */
-  referenceRetainDays: number
-  /** 生成图保留天数（resultImages + conversations.lastImageThumb） */
-  generateRetainDays: number
-}
-
-export const IMAGE_RETENTION: ImageRetentionConfig = {
-  referenceRetainDays: 30,
-  generateRetainDays: 30,
-}
+export { IMAGE_RETENTION, type ImageRetentionConfig } from "./retention"
 
 /** 从可访问 URL 反解对象 key（URL 的 path 部分，去前导斜杠并 decode） */
 export function keyFromUrl(url: string): string {
