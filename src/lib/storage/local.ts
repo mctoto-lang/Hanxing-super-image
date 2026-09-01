@@ -138,6 +138,17 @@ async function downloadBuffered(url: URL): Promise<Buffer> {
   }
 }
 
+/** URL 是否已是本服务托管的对象（同源 + /uploads/ + key 含本企业段） */
+function isOwnLocalObjectUrl(url: URL, enterpriseId: string): boolean {
+  try {
+    if (url.host !== new URL(env.NEXT_PUBLIC_APP_URL).host) return false
+  } catch {
+    return false
+  }
+  if (!url.pathname.startsWith("/uploads/")) return false
+  return decodeURIComponent(url.pathname).split("/").includes(enterpriseId)
+}
+
 export async function saveFromUrl(
   sourceUrl: string,
   enterpriseId: string,
@@ -150,6 +161,10 @@ export async function saveFromUrl(
     targetUrl = new URL(sourceUrl)
   } catch {
     throw new Error(`下载失败: 无效 URL`)
+  }
+  // 已是本服务 /uploads 对象（key 含本企业段）：直接复用，不重复落盘
+  if (isOwnLocalObjectUrl(targetUrl, enterpriseId)) {
+    return sourceUrl
   }
   // 平台配置读取失败时回退为空（仅基础白名单生效），不阻断下载流程
   let extraHosts: string[] = []

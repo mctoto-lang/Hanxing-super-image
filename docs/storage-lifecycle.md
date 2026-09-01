@@ -78,10 +78,23 @@ export const IMAGE_RETENTION: ImageRetentionConfig = {
 - **兜底**：`POST /api/cron/cleanup-images`（宿主机 cron 触发，`CRON_SECRET` 鉴权）按 `IMAGE_RETENTION` 删除本地存储对象 / COS 对象（幂等，与生命周期规则重叠无害），建议每日一次；
 - 两者均**只删对象、不删数据库中的 URL**：历史记录保留，前端 `SmartImage` 在对象 404 时显示「图片已过期」占位图标。
 
-## 图片中转服务器约定
+## 图片中转服务器契约
 
-中转服务器直接向 COS 上传时：
+生图链路：应用 →（生图 API + `X-Enterprise-Id` 头）→ 中转 →（上游 API）→ 中转拉取上游临时图片 → **预转存到本桶** → 返回 COS 链接给应用。
 
-1. 沿用上文 key 规范（前缀 + 企业 ID + 年月 + UUID），否则生命周期规则与租户校验失效；
-2. 若中转服务器与 COS 同地域（腾讯云内网），使用内网域名 `<bucket>.cos.<region>.tencentcos.cn` 上传（免流量费、不占公网带宽）——应用侧对应开关为存储设置中的「内网上传」（`cosForceInternalEndpoint`）；
-3. 中转返回给应用的图片链接使用公网规范域名 `<bucket>.cos.<region>.myqcloud.com`（应用的可信下载白名单与 `toImageSrc` 直连均识别该域名），或将中转域名加入存储设置的「额外可信下载域名」。
+**请求契约**（应用 → 中转，与普通 OpenAI/即梦请求一致，另加一个头）：
+
+- `Authorization: Bearer <模型密钥>`（原样透传）
+- `X-Enterprise-Id: <企业ID>`（应用在生图请求中自动附带，中转按它构造 key）
+
+**上传契约**（中转 → COS）：
+
+1. key 规范：`gen/<X-Enterprise-Id>/<yyyy>/<mm>/<uuid>.<ext>`（前缀 + 企业 ID + 年月 + UUID，与上文桶内规范一致）——生命周期规则与租户校验都依赖它；
+2. 与 COS 同地域时使用内网域名 `<bucket>.cos.<region>.tencentcos.cn` 上传（免流量费、不占 200M 公网带宽）；
+3. 应用侧存储设置中的「内网上传」开关（`cosForceInternalEndpoint`）只影响应用自身的上传，中转需自行使用内网域名。
+
+**返回契约**（中转 → 应用）：
+
+- 返回 canonical 公网规范域名 URL：`https://<bucket>.cos.<region>.myqcloud.com/<key>`；
+- 应用识别「本桶域名 + key 含本企业 ID 段」后**直接复用该 URL，不再下载重传**（每张图省 2× 应用带宽）；
+- 若中转返回的 URL 不符合规范（如无企业段），应用自动退回「下载→重传」路径，结果仍正确，只是多一次转存。

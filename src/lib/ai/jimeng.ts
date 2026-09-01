@@ -25,6 +25,8 @@ export interface JimengTask {
   imageSize: string
   imageCount: number
   referenceImages?: string[] | null
+  /** 归属企业：随请求头 X-Enterprise-Id 透传给中转/网关，供其按 key 规范预转存 */
+  enterpriseId?: string
 }
 
 export type DownloadAndUploadFn = (
@@ -85,6 +87,7 @@ export async function callJimengApi(opts: {
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
+      ...(task.enterpriseId ? { "X-Enterprise-Id": task.enterpriseId } : {}),
     },
     body: JSON.stringify(requestBody),
     signal: controller.signal,

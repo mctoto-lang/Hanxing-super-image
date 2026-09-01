@@ -44,11 +44,13 @@ export async function callImageApi(opts: {
   /** 本次需要生成的图片序号（部分失败重试仅补失败张）；缺省 = 全部 */
   indexes?: number[]
   referenceImages?: string[] | null
+  /** 归属企业：随 X-Enterprise-Id 头透传给中转/网关（供其按 key 规范预转存） */
+  enterpriseId?: string
   downloadAndUpload: DownloadAndUploadFn
   signal?: AbortSignal
   slots?: ImageApiSlotCallbacks
 }): Promise<ImageGenResult[]> {
-  const { model, prompt, imageCount, indexes, referenceImages, downloadAndUpload, signal, slots } = opts
+  const { model, prompt, imageCount, indexes, referenceImages, enterpriseId, downloadAndUpload, signal, slots } = opts
   // 尺寸兜底：历史任务/异常入队可能缺尺寸，避免请求体缺 size 字段
   const imageSize = opts.imageSize?.trim() || DEFAULT_IMAGE_SIZE
 
@@ -71,7 +73,7 @@ export async function callImageApi(opts: {
         apiTimeout: model.apiTimeout,
         referenceImageField: model.referenceImageField ?? undefined,
       },
-      task: { prompt, imageSize, imageCount, indexes, referenceImages },
+      task: { prompt, imageSize, imageCount, indexes, referenceImages, enterpriseId },
       apiKey,
       downloadAndUpload,
       signal,
@@ -92,7 +94,7 @@ export async function callImageApi(opts: {
       apiTimeout: model.apiTimeout,
       referenceImageField: model.referenceImageField ?? undefined,
     },
-    task: { prompt, imageSize, imageCount: jimengIndexes.length, referenceImages },
+    task: { prompt, imageSize, imageCount: jimengIndexes.length, referenceImages, enterpriseId },
     extraConfig: {
       jimengResolution: (extraConfig.jimengResolution ??
         extraConfig.jimeng_resolution) as "1k" | "2k" | "4k" | undefined,

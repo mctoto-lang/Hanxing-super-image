@@ -93,6 +93,34 @@ function isAllowedDownloadHost(
 }
 
 /**
+ * URL 是否已是本桶对象（图片中转服务器预转存场景）：
+ * canonical 桶域名（或配置的 cosBaseUrl 域名）+ key 含本企业 ID 段。
+ * 命中则直接复用原 URL，跳过「下载→重传」双跳。
+ * 导出供单测直接验证判定边界。
+ */
+export function isOwnCosObjectUrl(
+  url: URL,
+  cfg: StorageConfig,
+  enterpriseId: string,
+): boolean {
+  if (url.protocol !== "https:") return false
+  const hosts = new Set<string>()
+  if (cfg.cosBucket && cfg.cosRegion) {
+    hosts.add(`${cfg.cosBucket}.cos.${cfg.cosRegion}.myqcloud.com`)
+  }
+  if (cfg.cosBaseUrl) {
+    try {
+      hosts.add(new URL(cfg.cosBaseUrl).hostname)
+    } catch {
+      // ignore
+    }
+  }
+  if (!hosts.has(url.hostname)) return false
+  // key 规范 <prefix><enterpriseId>/yyyy/mm/<uuid>.<ext>：企业段保证租户归属
+  return decodeURIComponent(url.pathname).split("/").includes(enterpriseId)
+}
+
+/**
  * 信号量内完成下载（fetch + 流式读取 + 体积上限），拼成 Buffer 返回。
  * 排队等待不计入下载超时；上传（saveFromBuffer）在信号量外执行。
  */
@@ -171,6 +199,11 @@ export function createCosAdapter(cfg: StorageConfig): CosAdapter {
         targetUrl = new URL(sourceUrl)
       } catch {
         throw new Error("下载失败: 无效 URL")
+      }
+      // 中转服务器预转存：上游返回的已是本桶对象（key 含本企业段），直接
+      // 复用，省去每张图 2×（下载+上传）应用带宽与转存延迟
+      if (isOwnCosObjectUrl(targetUrl, cfg, enterpriseId)) {
+        return sourceUrl
       }
       if (!isAllowedDownloadHost(targetUrl, cfg, trustedHostHints)) {
         console.warn(
