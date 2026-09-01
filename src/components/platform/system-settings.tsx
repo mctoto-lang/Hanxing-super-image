@@ -242,18 +242,19 @@ export function SystemSettings({
                 </div>
               </div>
 
-              {/* 内网上传（仅腾讯云同地域服务器可达） */}
+              {/* 内网上传/拉取（仅腾讯云同地域服务器可达） */}
               <div className="flex items-start justify-between gap-4 rounded-lg border p-4">
                 <div className="space-y-1">
-                  <Label htmlFor="cos-internal">服务器上传走内网域名</Label>
+                  <Label htmlFor="cos-internal">服务器与 COS 间流量走内网域名</Label>
                   <p className="text-xs text-muted-foreground">
                     仅当应用服务器部署在腾讯云且与 COS 桶同地域时开启（如轻量/CVM
-                    广州 + 桶在广州）。上传改走
+                    广州 + 桶在广州）。上传与服务端拉取（图片代理、转存下载）改走
                     <code className="mx-1 rounded bg-muted px-1">
                       cos.&lt;region&gt;.tencentcos.cn
                     </code>
-                    内网域名：免流量费、不占公网出带宽。开启前先在服务器上执行
-                    nslookup 验证内网连通，公网环境开启会导致上传全部失败。图片展示与浏览器直传不受影响。
+                    内网域名：免流量费、不占公网出带宽，并避免 COS 公网下行流量费。
+                    开启前先在服务器上执行 nslookup 验证内网连通，公网环境开启会导致
+                    上传/代理拉取失败。图片展示与浏览器直传不受影响。
                   </p>
                 </div>
                 <Switch

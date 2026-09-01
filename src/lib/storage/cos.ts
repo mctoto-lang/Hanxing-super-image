@@ -12,6 +12,7 @@ import {
   keyFromUrl,
   matchesAllowedHost,
   sameSiteAsHost,
+  toInternalCosFetchUrl,
   DEFAULT_DOWNLOAD_HOST_SUFFIXES,
 } from "./config"
 
@@ -215,7 +216,8 @@ export function createCosAdapter(cfg: StorageConfig): CosAdapter {
       }
 
       const ext = extFromUrl(sourceUrl)
-      const buffer = await downloadBuffered(targetUrl)
+      // 本桶公网域名 + 内网开关开启 → 下载改走内网域名（同地域免费）
+      const buffer = await downloadBuffered(toInternalCosFetchUrl(targetUrl, cfg))
       return this.saveFromBuffer(buffer, enterpriseId, ext, category)
     },
 

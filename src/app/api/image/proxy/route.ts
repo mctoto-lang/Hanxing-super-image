@@ -3,6 +3,7 @@ import { env } from "@/lib/env"
 import { auth } from "@/lib/auth/config"
 import {
   loadStorageConfig,
+  toInternalCosFetchUrl,
   type StorageConfig,
 } from "@/lib/storage/config"
 
@@ -132,7 +133,10 @@ export async function GET(request: Request) {
   }
 
   try {
-    const resp = await fetch(targetUrl, {
+    // 本桶公网域名 + 内网开关开启 → 服务端改走内网域名拉取（同地域免费，
+    // 避免 COS 公网下行流量费）；返回给前端的 URL 不变
+    const fetchUrl = toInternalCosFetchUrl(targetUrl, cfg)
+    const resp = await fetch(fetchUrl, {
       // 防止后端服务挂起；透传期间 timeout 信号中止会掐断响应流
       signal: AbortSignal.timeout(15_000),
     })

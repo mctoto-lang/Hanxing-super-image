@@ -39,9 +39,10 @@ export interface StorageConfig {
   configPrefix: string
   generatePrefix: string
   /**
-   * 上传强制走 COS 内网域名（<bucket>.cos.<region>.tencentcos.cn）。
-   * 仅当应用服务器部署在腾讯云且与桶同地域时开启：内网上传免流量费、
-   * 不占公网出带宽。展示/预签名 URL 仍用公网域名，不受此开关影响。
+   * 服务器与 COS 之间的流量走内网域名（<bucket>.cos.<region>.tencentcos.cn）：
+   * 上传（saveFromBuffer）与服务端拉取（saveFromUrl 下载、图片代理）都会改写。
+   * 仅当应用服务器部署在腾讯云且与桶同地域时开启：内网流量免费、不占公网
+   * 出带宽，也避免 COS 公网下行流量费。展示/预签名 URL 仍用公网域名，不受影响。
    */
   cosForceInternalEndpoint: boolean
   /** 本地降级目录前缀 */
@@ -226,6 +227,31 @@ export function sameSiteAsHost(host: string, hintHost: string): boolean {
   if (!host || !hintHost) return false
   if (host === hintHost) return true
   return registrableDomain(host) === registrableDomain(hintHost)
+}
+
+/**
+ * 服务端拉取的内网域名改写：命中本桶 canonical 公网域名且开启内网开关
+ * （cosForceInternalEndpoint）时，把 host 改写为腾讯云内网域名
+ * <bucket>.cos.<region>.tencentcos.cn——应用与桶同地域时内网流量免费，
+ * 避免 COS 公网下行流量费（约 0.5 元/GB）。
+ *
+ * 仅改写服务端 fetch 目标（图片代理透传、saveFromUrl 下载）；返回给
+ * 浏览器的 URL 保持公网域名（用户无法访问内网域名）。其它 host（含
+ * cosBaseUrl 自定义域名、外部 myqcloud.com 桶）原样返回。
+ */
+export function toInternalCosFetchUrl(url: URL, cfg: StorageConfig): URL {
+  if (!cfg.cosForceInternalEndpoint || !cfg.cosBucket || !cfg.cosRegion) {
+    return url
+  }
+  const publicHost = `${cfg.cosBucket}.cos.${cfg.cosRegion}.myqcloud.com`
+  if (url.hostname !== publicHost) return url
+  try {
+    const rewritten = new URL(url.toString())
+    rewritten.hostname = `${cfg.cosBucket}.cos.${cfg.cosRegion}.tencentcos.cn`
+    return rewritten
+  } catch {
+    return url
+  }
 }
 
 /** 扩展名 → Content-Type */

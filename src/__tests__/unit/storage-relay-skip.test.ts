@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from "vitest"
 import { createCosAdapter, isOwnCosObjectUrl } from "@/lib/storage/cos"
-import type { StorageConfig } from "@/lib/storage/config"
+import {
+  toInternalCosFetchUrl,
+  type StorageConfig,
+} from "@/lib/storage/config"
 
 /**
  * 中转服务器预转存跳过单测：
@@ -94,5 +97,35 @@ describe("本地适配器同源跳过", () => {
     const { saveFromUrl } = await import("@/lib/storage/local")
     const url = `https://app.example.com/uploads/${ENT}/image/2026/09/u.png`
     await expect(saveFromUrl(url, ENT)).resolves.toBe(url)
+  })
+})
+
+describe("toInternalCosFetchUrl 内网拉取改写", () => {
+  const ownUrl = new URL(`https://${BUCKET_HOST}/gen/${ENT}/2026/09/u.png`)
+
+  it("开关开启 + 本桶公网域名 → 改写为 tencentcos.cn 内网域名", () => {
+    const rewritten = toInternalCosFetchUrl(ownUrl, {
+      ...cfg,
+      cosForceInternalEndpoint: true,
+    })
+    expect(rewritten.hostname).toBe("hanxing-test.cos.ap-guangzhou.tencentcos.cn")
+    // 路径与查询参数保持不变
+    expect(rewritten.pathname).toBe(ownUrl.pathname)
+    expect(rewritten.protocol).toBe("https:")
+  })
+
+  it("开关关闭 / 其它 host（cosBaseUrl、外部桶）→ 原样返回", () => {
+    expect(toInternalCosFetchUrl(ownUrl, cfg).href).toBe(ownUrl.href)
+    const cdnUrl = new URL("https://img.example.com/gen/x.png")
+    expect(
+      toInternalCosFetchUrl(cdnUrl, { ...cfg, cosForceInternalEndpoint: true }).href,
+    ).toBe(cdnUrl.href)
+    const otherBucket = new URL(
+      "https://other-1250000000.cos.ap-guangzhou.myqcloud.com/gen/x.png",
+    )
+    expect(
+      toInternalCosFetchUrl(otherBucket, { ...cfg, cosForceInternalEndpoint: true })
+        .href,
+    ).toBe(otherBucket.href)
   })
 })

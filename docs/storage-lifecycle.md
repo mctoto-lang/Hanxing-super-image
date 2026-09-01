@@ -21,9 +21,10 @@
 ```
 
 - 中转服务器运行 sub2api（协议转换网关），**不做图片转存**；图片转存由应用侧完成；
-- 应用服务器与 COS 桶同地域：在超管「系统设置 → 存储」打开**内网上传**开关
-  （`cosForceInternalEndpoint`），上传走 `<bucket>.cos.<region>.tencentcos.cn`
-  内网域名——免费且不占 12M 公网出带宽；下载上游图片为公网入方向，同样不计带宽；
+- 应用服务器与 COS 桶同地域：在超管「系统设置 → 存储」打开**内网域名**开关
+  （`cosForceInternalEndpoint`），**上传与服务端拉取**（图片代理、转存下载）都走
+  `<bucket>.cos.<region>.tencentcos.cn` 内网域名——免费、不占 12M 公网出带宽，
+  并避免 COS 公网下行流量费（约 0.5 元/GB）；下载上游图片为公网入方向，同样不计带宽；
 - 图片**展示**走 COS 直连（`toImageSrc`，可带 imageMogr2 缩略参数）；
 - 图片**下载**经 `/api/image/proxy` 同源代理（使浏览器 `download` 属性生效），为低频操作。
 
