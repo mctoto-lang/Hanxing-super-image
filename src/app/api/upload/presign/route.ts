@@ -67,6 +67,7 @@ export async function POST(request: Request) {
       ext,
       "reference",
       contentType,
+      size,
     )
     return NextResponse.json({
       mode: "cos" as const,

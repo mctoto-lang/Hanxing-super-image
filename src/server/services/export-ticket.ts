@@ -16,6 +16,8 @@ const EXPORT_TICKET_TTL_SECONDS = 120
 
 export interface ExportTicket {
   enterpriseId: string
+  /** 绑定创建人：消费端校验 session 一致，防止票据在有效期内被他人使用 */
+  userId: string
   taskId: string
   cardIds?: string[]
   format: string

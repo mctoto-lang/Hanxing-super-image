@@ -91,7 +91,7 @@ export default async function AdminCreditsPage({
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
-              成员累计消费（当前页）
+              本页成员消费合计
             </CardTitle>
           </CardHeader>
           <CardContent className="text-2xl font-bold tabular-nums">

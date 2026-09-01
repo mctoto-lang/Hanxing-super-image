@@ -78,7 +78,7 @@ export async function callJimengApi(opts: {
   const controller = new AbortController()
   const timeoutMs = (model.apiTimeout || 120) * 1000
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
-  if (signal) signal.addEventListener("abort", () => controller.abort())
+  if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true })
 
   const response = await fetch(endpoint, {
     method: "POST",

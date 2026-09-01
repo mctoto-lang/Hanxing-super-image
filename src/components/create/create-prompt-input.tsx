@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { AtSign, Sparkle, X } from "lucide-react"
 import {
@@ -31,54 +31,11 @@ import { uploadImage } from "@/lib/upload/upload-image"
 import { resolveSizePresets } from "@/lib/image-sizes"
 import { SmartImage } from "@/components/ui/smart-image"
 import type { CreateModel } from "@/components/create/types"
+import { loadInputDraft, useInputDraft } from "@/components/create/use-input-draft"
+import { useTaskPolling } from "@/components/create/use-task-polling"
 
 /** 单张参考图大小上限 */
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
-
-/**
- * 输入栏草稿本地缓存（浏览器 localStorage）。
- *
- * 组件在切换会话、输入栏收起/展开、新对话↔会话切换时都会重挂载，
- * 本地 state 全部归零；草稿落盘后挂载时恢复，输入内容与模型/尺寸/数量
- * 选择跨重挂载（含刷新页面）保留。null 字段 = 从未存储过。
- */
-const INPUT_DRAFT_STORAGE_KEY = "create:input-draft"
-
-interface InputDraft {
-  modelId: string | null
-  imageSize: string | null
-  imageCount: number | null
-  referenceImages: string[] | null
-  text: string
-}
-
-const EMPTY_DRAFT: InputDraft = {
-  modelId: null,
-  imageSize: null,
-  imageCount: null,
-  referenceImages: null,
-  text: "",
-}
-
-function loadInputDraft(): InputDraft {
-  if (typeof window === "undefined") return EMPTY_DRAFT
-  try {
-    const raw = localStorage.getItem(INPUT_DRAFT_STORAGE_KEY)
-    if (!raw) return EMPTY_DRAFT
-    return { ...EMPTY_DRAFT, ...JSON.parse(raw) }
-  } catch {
-    return EMPTY_DRAFT
-  }
-}
-
-function saveInputDraft(draft: InputDraft) {
-  if (typeof window === "undefined") return
-  try {
-    localStorage.setItem(INPUT_DRAFT_STORAGE_KEY, JSON.stringify(draft))
-  } catch {
-    // 存储满/隐私模式静默失败
-  }
-}
 
 /**
  * 生图输入框（自由创作页 §6 v2）
@@ -92,6 +49,7 @@ function saveInputDraft(draft: InputDraft) {
  * - 外层 colorful border-beam 光效（悬停/聚焦/生成中激活）
  * - 输入草稿本地缓存（create:input-draft）：文本/模型/尺寸/数量/参考图
  *   跨重挂载（切换会话、收起展开）与刷新保留；提交成功清空文本
+ *   （持久化逻辑见 use-input-draft.ts）
  *
  * onSubmit → submitTaskAction({ ..., conversationId })
  * 未传 conversationId 时自动建会话，通过 onConversationCreated 回调通知。
@@ -147,34 +105,8 @@ export function CreatePromptInput({
     nonce: string | number
   } | null>(null)
 
-  // —— 草稿持久化 ——
-  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const draftPatchRef = useRef<Partial<InputDraft>>({})
-
-  // 防抖合并写入：多个触发点（配置 state / 文本 onChange / prefill）的
-  // patch 先累积，400ms 后与已存草稿 read-merge-write，互不覆盖
-  const scheduleDraftSave = useCallback((patch: Partial<InputDraft>) => {
-    draftPatchRef.current = { ...draftPatchRef.current, ...patch }
-    if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
-    draftTimerRef.current = setTimeout(() => {
-      saveInputDraft({ ...loadInputDraft(), ...draftPatchRef.current })
-      draftPatchRef.current = {}
-    }, 400)
-  }, [])
-
-  // 立即落盘：先合并 pending patch 再叠加显式 patch（提交成功清空文本用）
-  const flushDraftSave = useCallback((patch: Partial<InputDraft> = {}) => {
-    if (draftTimerRef.current) {
-      clearTimeout(draftTimerRef.current)
-      draftTimerRef.current = null
-    }
-    saveInputDraft({
-      ...loadInputDraft(),
-      ...draftPatchRef.current,
-      ...patch,
-    })
-    draftPatchRef.current = {}
-  }, [])
+  // —— 草稿持久化（防抖合并写入 / 卸载落盘，见 use-input-draft.ts）——
+  const { scheduleDraftSave, flushDraftSave } = useInputDraft()
 
   // 挂载后恢复草稿（不用 lazy useState 初始化：modelId/imageSize 影响首帧
   // 文本，lazy 读 localStorage 会造成 SSR 水合不一致；ref 守卫保证只跑一次，
@@ -217,19 +149,6 @@ export function CreatePromptInput({
     }
     scheduleDraftSave({ modelId, imageSize, imageCount, referenceImages })
   }, [modelId, imageSize, imageCount, referenceImages, scheduleDraftSave])
-
-  // 卸载/页面卸载前落盘 pending 补丁：上滑收起卸载组件、或浏览器刷新/关闭时，
-  // 防抖窗口内尚未写入的最后操作（如删参考图后立刻刷新）会丢失，重新打开时
-  // 表现为已删除内容“复活”。React 的卸载 cleanup 不会在浏览器 unload 时执行，
-  // 需额外监听 pagehide。StrictMode 假卸载无 pending 补丁，落盘幂等无害。
-  useEffect(() => {
-    const onPageHide = () => flushDraftSave()
-    window.addEventListener("pagehide", onPageHide)
-    return () => {
-      window.removeEventListener("pagehide", onPageHide)
-      flushDraftSave()
-    }
-  }, [flushDraftSave])
 
   // 预填应用（使用提示词 / 重新编辑）。textarea 用 key+defaultValue 重挂载写入
   // 初始文本（对组件重挂载鲁棒），这里只负责参考图回填；同步预填内容到草稿，
@@ -435,64 +354,27 @@ export function CreatePromptInput({
       ],
   )
 
-  // 提交后轮询任务结果（有次数上限；会话过期立即停止，不再无限轮询）
-  useEffect(() => {
-    if (!activeTaskId) return
-    let stopped = false
-    let attempts = 0
-    // 3s × 400 = 20 分钟：覆盖最慢任务（taskTimeout 默认 300s + 自动重试排队）
-    const MAX_ATTEMPTS = 400
-
-    const stopPolling = (message: string) => {
+  // 提交后轮询任务结果（有次数上限；会话过期立即停止，见 use-task-polling.ts）
+  useTaskPolling({
+    taskId: activeTaskId,
+    onCompleted: () => {
+      toast.success("生成完成")
+      setStatus("ready")
+      setActiveTaskId(null)
+      router.refresh()
+    },
+    onFailed: (errorMessage) => {
+      toast.error(errorMessage?.slice(0, 80) ?? "生成失败")
+      setStatus("ready")
+      setActiveTaskId(null)
+      router.refresh()
+    },
+    onStopped: (message) => {
       toast.error(message)
       setStatus("ready")
       setActiveTaskId(null)
-    }
-
-    const poll = async () => {
-      attempts++
-      if (attempts > MAX_ATTEMPTS) {
-        stopPolling("任务状态查询超时，请稍后刷新页面查看结果")
-        return
-      }
-      try {
-        const resp = await fetch(`/api/tasks/${activeTaskId}/result`)
-        // 中间件把未登录请求重定向到 /login 时，fetch 跟随后返回 200 HTML
-        const contentType = resp.headers.get("content-type") ?? ""
-        if (contentType.includes("text/html")) {
-          stopPolling("登录状态已过期，请重新登录")
-          return
-        }
-        if (!resp.ok) return
-        const data = (await resp.json()) as {
-          status: string
-          errorMessage?: string | null
-        }
-        if (stopped) return
-
-        if (data.status === "completed") {
-          toast.success("生成完成")
-          setStatus("ready")
-          setActiveTaskId(null)
-          router.refresh()
-        } else if (data.status === "failed") {
-          toast.error(data.errorMessage?.slice(0, 80) ?? "生成失败")
-          setStatus("ready")
-          setActiveTaskId(null)
-          router.refresh()
-        }
-      } catch {
-        // 网络抖动忽略，由次数上限兜底
-      }
-    }
-
-    void poll()
-    const timer = setInterval(poll, 3000)
-    return () => {
-      stopped = true
-      clearInterval(timer)
-    }
-  }, [activeTaskId, router])
+    },
+  })
 
   if (!hasModels) {
     return (

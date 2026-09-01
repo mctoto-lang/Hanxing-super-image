@@ -36,6 +36,8 @@ export interface CosAdapter extends StorageAdapter {
     ext: string,
     category: ImageCategory,
     contentType: string,
+    /** 申报字节数：参与签名后 COS 强制 PUT 体积精确等于该值（可选，向后兼容） */
+    size?: number,
   ): Promise<{ presignedUrl: string; finalUrl: string; key: string }>
 }
 
@@ -203,13 +205,15 @@ export function createCosAdapter(cfg: StorageConfig): CosAdapter {
       return n
     },
 
-    async presignPut(enterpriseId, ext, category, contentType) {
+    async presignPut(enterpriseId, ext, category, contentType, size) {
       const target = resolveCosTarget(cfg, category)
       if (!target.bucket) throw new Error("COS 预签名失败：未配置对应桶名")
       const filename = `${randomUUID()}.${ext}`
       const key = buildKey(target.prefix, enterpriseId, filename)
       // getObjectUrl 在 Sign:true 时返回带签名的 URL（同步返回字符串）。
-      // 签名绑定了 Content-Type，浏览器 PUT 时必须带相同的 Content-Type 头。
+      // 签名绑定了 Content-Type 与申报的 Content-Length：浏览器对 File body
+      // 自动携带匹配的 Content-Length；绕过本端点直传的客户端必须精确匹配
+      // 申报体积，否则签名校验失败——预签名端点的体积上限由建议变为强制。
       const presignedUrl = cos.getObjectUrl({
         Method: "PUT",
         Bucket: target.bucket,
@@ -217,7 +221,10 @@ export function createCosAdapter(cfg: StorageConfig): CosAdapter {
         Key: key,
         Sign: true,
         Expires: PRESIGN_EXPIRES,
-        Headers: { "Content-Type": contentType },
+        Headers: {
+          "Content-Type": contentType,
+          ...(size && size > 0 ? { "Content-Length": String(size) } : {}),
+        },
       })
       return {
         presignedUrl,

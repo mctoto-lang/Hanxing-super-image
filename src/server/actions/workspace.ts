@@ -2419,6 +2419,7 @@ export async function createExportTicketAction(
   if (!task) return { ok: false, error: "任务不存在" }
   const token = await saveExportTicket({
     enterpriseId: scope.enterpriseId,
+    userId: ctx.user.id,
     taskId,
     cardIds: input.cardIds,
     format: input.format,

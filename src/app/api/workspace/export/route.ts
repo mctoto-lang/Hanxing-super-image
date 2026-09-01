@@ -3,6 +3,7 @@ import { and, desc, eq, inArray } from "drizzle-orm"
 import { zip } from "fflate"
 import { db } from "@/db/client"
 import { cardImages, promptCards, workspaceTasks } from "@/db/schema"
+import { auth } from "@/lib/auth/config"
 import { getExportTicket } from "@/server/services/export-ticket"
 import {
   resolveCardDisplayImage,
@@ -13,8 +14,10 @@ import {
  * 工作台导出下载（手册 M5，1:1 对齐旧项目 /api/workspace/export-ticket 消费端）
  *
  * 消费 createExportTicketAction 生成的票据 → 拉取任务下选中图片 → 打包 ZIP 返回。
- * 票据 2 分钟过期，一次性消费。票据逻辑从 services/export-ticket 导入——
- * route handler 不依赖 "use server" actions 模块（避免拖入 auth 依赖链）。
+ * 票据 2 分钟过期，一次性消费，且绑定创建人（session 校验一致）。
+ * 票据逻辑从 services/export-ticket 导入——route handler 不依赖 "use server"
+ * actions 模块（避免拖入 auth/next-auth 整条依赖链；auth 本身在此直接使用，
+ * 集成测试对 "@/lib/auth/config" 做 mock）。
  */
 
 export async function GET(request: Request) {
@@ -38,6 +41,12 @@ async function exportZip(request: Request): Promise<NextResponse> {
 
   const t = await getExportTicket(ticket)
   if (!t) {
+    return new NextResponse("ticket expired or invalid", { status: 410 })
+  }
+
+  // 票据绑定创建人：仅本人可消费（proxy 已挡未登录，这里再校验身份一致）
+  const session = await auth()
+  if (!session?.user?.id || session.user.id !== t.userId) {
     return new NextResponse("ticket expired or invalid", { status: 410 })
   }
 

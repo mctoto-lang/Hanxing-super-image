@@ -99,7 +99,7 @@ void (async () => {
         enterpriseRole: "owner",
         groupId: group?.id,
       })
-      console.log(`✓ 创建 owner 用户 (密码: Owner@test2026)`)
+      console.log(`✓ 创建 owner 用户 (密码: Owner@Test2026)`)
     } else {
       console.log(`✓ owner 用户已存在`)
     }
@@ -133,7 +133,7 @@ void (async () => {
 
     console.log("\n🎉 M2 测试数据就绪：")
     console.log("   - 超管: superadmin / Super@Hanxing2026")
-    console.log("   - 企业主: owner / Owner@test2026")
+    console.log("   - 企业主: owner / Owner@Test2026")
     console.log("   - 成员: designer / Designer@2026")
     process.exit(0)
   }

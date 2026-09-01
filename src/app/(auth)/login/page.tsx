@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 
 import { LoginForm } from "@/components/login-form"
 import { getCurrentUserContext } from "@/lib/auth/session"
+import { postLoginPath } from "@/lib/auth/post-login"
 
 /**
  * 登录页
@@ -12,7 +13,7 @@ import { getCurrentUserContext } from "@/lib/auth/session"
 export default async function LoginPage() {
   const ctx = await getCurrentUserContext()
   if (ctx) {
-    redirect(ctx.user.isSuperAdmin ? "/platform" : "/create")
+    redirect(postLoginPath(ctx.user.isSuperAdmin))
   }
 
   return (

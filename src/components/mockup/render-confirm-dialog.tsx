@@ -53,7 +53,7 @@ export function RenderConfirmDialog({
           </DialogDescription>
         </DialogHeader>
         {insufficient ? (
-          <p className="text-sm text-destructive">
+          <p role="alert" className="text-sm text-destructive">
             个人配额不足（需要 {cost}，当前 {creditsBalance}），请先联系管理员分配配额
           </p>
         ) : null}

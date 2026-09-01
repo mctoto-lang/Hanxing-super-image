@@ -68,5 +68,6 @@ export async function listMyTasksAction(opts?: {
 
   return await query
     .orderBy(desc(generationTasks.createdAt))
-    .limit(opts?.limit ?? 50)
+    // 上限钳制：limit 由客户端传入，防止 limit: 1000000 拖垮查询
+    .limit(Math.min(Math.max(opts?.limit ?? 50, 1), 200))
 }

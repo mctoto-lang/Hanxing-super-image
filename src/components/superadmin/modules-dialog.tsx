@@ -90,7 +90,7 @@ export function ModulesDialog({
             ))}
           </div>
           {state?.error ? (
-            <p className="text-sm text-destructive">{state.error}</p>
+            <p role="alert" className="text-sm text-destructive">{state.error}</p>
           ) : null}
           <DialogFooter>
             <Button type="submit" disabled={pending}>

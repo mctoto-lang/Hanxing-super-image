@@ -30,9 +30,6 @@ function entConcurrentKey(entId: string) {
 function modelConcurrentKey(modelId: string) {
   return `hanxing:model:${modelId}:concurrent`
 }
-function entRateKey(entId: string) {
-  return `hanxing:ent:${entId}:rate:generate`
-}
 
 /**
  * 原子获取一个图片槽位（企业 + 模型 + 权限组三条件，Lua 保证多 worker 安全）。
@@ -360,14 +357,6 @@ export async function getTaskStatus(
 ): Promise<Record<string, string> | null> {
   const data = await redis.hgetall(entTaskKey(enterpriseId, taskId))
   return data && Object.keys(data).length > 0 ? data : null
-}
-
-/** 生图速率计数（用于限流，§10.5） */
-export async function incrGenerateRate(enterpriseId: string): Promise<number> {
-  const key = entRateKey(enterpriseId)
-  const n = await redis.incr(key)
-  if (n === 1) await redis.expire(key, 60) // 每分钟窗口
-  return n
 }
 
 export { env }

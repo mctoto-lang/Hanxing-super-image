@@ -31,7 +31,7 @@ export function LoginForm({
       })
       if (res.ok) {
         toast.success("登录成功")
-        router.push("/create")
+        router.push(res.redirectTo ?? "/create")
         router.refresh()
         return null
       }
@@ -91,7 +91,7 @@ export function LoginForm({
                 {isPending ? "登录中..." : "登录"}
               </Button>
               {state?.error ? (
-                <p className="text-center text-sm text-destructive">
+                <p role="alert" className="text-center text-sm text-destructive">
                   {state.error}
                 </p>
               ) : null}

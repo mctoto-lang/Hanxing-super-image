@@ -43,7 +43,7 @@ export function RemoveMemberDialog({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={<Button variant="ghost" size="sm" className="text-destructive"><Trash2 className="size-3.5" /></Button>} />
+      <DialogTrigger render={<Button variant="ghost" size="sm" className="text-destructive" aria-label={`删除成员 ${username}`}><Trash2 className="size-3.5" /></Button>} />
       <DialogContent className="sm:max-w-[360px]">
         <DialogHeader>
           <DialogTitle>删除成员</DialogTitle>

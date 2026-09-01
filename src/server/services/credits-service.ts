@@ -9,6 +9,9 @@ import {
 
 type CreditTxType = (typeof creditTxTypeEnum.enumValues)[number]
 
+/** 事务句柄类型（供调用方将多个积分变动并入同一事务） */
+export type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
+
 /**
  * 积分服务（手册 §4.2、§10.6 测试铁律）
  *
@@ -342,15 +345,18 @@ export async function deductUserCredits(
 
 /**
  * 退还积分到成员个人配额（需求 3：任务失败退还到个人配额）
+ *
+ * 可传入 tx 将退还并入调用方事务（如 refundFailedTask 的「认领+退款」
+ * 原子提交）；不传则自开事务。
  */
 export async function refundUserCredits(
-  input: BaseTxInput & { amount: number },
+  input: BaseTxInput & { amount: number; tx?: DbTx },
 ): Promise<{ balanceAfter: number }> {
-  const { enterpriseId, amount, userId, taskId, remark } = input
+  const { enterpriseId, amount, userId, taskId, remark, tx: externalTx } = input
   if (amount <= 0) throw new Error("退还金额必须为正数")
   if (!userId) throw new Error("退还个人配额必须提供 userId")
 
-  return await db.transaction(async (tx) => {
+  const run = async (tx: DbTx): Promise<{ balanceAfter: number }> => {
     const [updated] = await tx
       .update(users)
       .set({
@@ -373,7 +379,10 @@ export async function refundUserCredits(
     })
 
     return { balanceAfter: updated.balance }
-  })
+  }
+
+  if (externalTx) return run(externalTx)
+  return db.transaction(run)
 }
 
 /**

@@ -1,6 +1,6 @@
 "use client"
 
-import { useActionState } from "react"
+import { useActionState, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -9,6 +9,9 @@ import { toast } from "sonner"
 import { changePasswordAction } from "@/server/actions/settings"
 
 export function PasswordForm() {
+  // 指向本表单的引用：设置页同时渲染 ProfileForm 等多个表单，
+  // document.querySelector("form[action]") 可能选中其它表单
+  const formRef = useRef<HTMLFormElement>(null)
   const [, formAction, pending] = useActionState(
     async (_prev: unknown, formData: FormData) => {
       const res = await changePasswordAction({
@@ -18,9 +21,7 @@ export function PasswordForm() {
       })
       if (res.ok) {
         toast.success("密码已更新")
-        // 重置表单
-        const form = document.querySelector("form[action]") as HTMLFormElement | null
-        form?.reset()
+        formRef.current?.reset()
       } else {
         toast.error(res.error ?? "更新失败")
       }
@@ -30,7 +31,7 @@ export function PasswordForm() {
   )
 
   return (
-    <form action={formAction} className="grid gap-4">
+    <form ref={formRef} action={formAction} className="grid gap-4">
       <div className="grid gap-2">
         <Label htmlFor="currentPassword">当前密码</Label>
         <Input

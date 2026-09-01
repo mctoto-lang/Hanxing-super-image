@@ -4,6 +4,7 @@ import * as React from "react"
 import { Heart, Trash2, Download } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import { getStorageProxyUrl } from "@/lib/storage/proxy"
 import { toast } from "sonner"
 import { pinTaskAction, unpinTaskAction, deleteTaskAction } from "@/server/actions/assets"
@@ -47,6 +48,8 @@ export function ImageGallery({
 }) {
   const router = useRouter()
   const groups = groupByDate(items)
+  const [deleteTarget, setDeleteTarget] = React.useState<string | null>(null)
+  const [deleting, setDeleting] = React.useState(false)
 
   if (items.length === 0) {
     return (
@@ -71,31 +74,58 @@ export function ImageGallery({
     if (res.ok) {
       toast.success("已取消收藏")
       router.refresh()
+    } else {
+      toast.error(res.error ?? "取消收藏失败")
     }
   }
 
   async function handleDelete(taskId: string) {
-    if (!confirm("确认删除？该图片将从画廊移除（任务记录保留审计）")) return
-    const res = await deleteTaskAction(taskId)
-    if (res.ok) {
-      toast.success("已删除")
-      router.refresh()
-    } else {
-      toast.error(res.error ?? "删除失败")
+    setDeleting(true)
+    try {
+      const res = await deleteTaskAction(taskId)
+      if (res.ok) {
+        toast.success("已删除")
+        router.refresh()
+      } else {
+        toast.error(res.error ?? "删除失败")
+      }
+    } finally {
+      setDeleting(false)
+      setDeleteTarget(null)
     }
+  }
+
+  /** 从 URL 取真实图片扩展名（下载文件名不再固定 .png） */
+  function extFromImageUrl(url: string): string {
+    const m = url.match(/\.(jpe?g|png|webp|gif)(?:\?|#|$)/i)
+    return m ? m[1]!.toLowerCase().replace("jpeg", "jpg") : "png"
   }
 
   function handleDownload(url: string, idx: number, stamp: number) {
     // 通过代理 URL 下载（防 SSRF）
     const a = document.createElement("a")
     a.href = getStorageProxyUrl(url)
-    a.download = `hanxing-${stamp}-${idx}.png`
+    a.download = `hanxing-${stamp}-${idx}.${extFromImageUrl(url)}`
     a.target = "_blank"
     a.click()
   }
 
   return (
     <div className="space-y-6">
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(o) => {
+          if (!o) setDeleteTarget(null)
+        }}
+        title="删除图片"
+        description="确认删除？该图片将从画廊移除（任务记录保留审计）"
+        confirmText="确认删除"
+        destructive
+        pending={deleting}
+        onConfirm={() => {
+          if (deleteTarget) void handleDelete(deleteTarget)
+        }}
+      />
       {[...groups.entries()].map(([date, dayItems]) => (
         <div key={date} className="space-y-2">
           <div className="sticky top-0 z-10 bg-background/80 py-1 text-sm font-medium text-muted-foreground backdrop-blur">
@@ -123,7 +153,7 @@ export function ImageGallery({
                           variant="secondary"
                           className="size-7"
                           onClick={() => handleUnpin(item.pinnedId!)}
-                          title="取消收藏"
+                          aria-label="取消收藏"
                         >
                           <Heart className="size-3.5 fill-current" />
                         </Button>
@@ -133,7 +163,7 @@ export function ImageGallery({
                           variant="secondary"
                           className="size-7"
                           onClick={() => handlePin(item.taskId)}
-                          title="收藏"
+                          aria-label="收藏"
                         >
                           <Heart className="size-3.5" />
                         </Button>
@@ -143,7 +173,7 @@ export function ImageGallery({
                         variant="secondary"
                         className="size-7"
                         onClick={() => handleDownload(url, imgIdx, Date.now())}
-                        title="下载"
+                        aria-label="下载图片"
                       >
                         <Download className="size-3.5" />
                       </Button>
@@ -152,8 +182,8 @@ export function ImageGallery({
                           size="icon"
                           variant="secondary"
                           className="size-7 text-destructive"
-                          onClick={() => handleDelete(item.taskId)}
-                          title="删除"
+                          onClick={() => setDeleteTarget(item.taskId)}
+                          aria-label="删除图片"
                         >
                           <Trash2 className="size-3.5" />
                         </Button>

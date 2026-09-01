@@ -403,51 +403,58 @@ export async function retryTaskAction(taskId: string) {
  * 幂等保护：孤儿回收与消费端失败路径可能并发触发退款，这里用
  * creditsCharged 条件更新做「认领」——仅当值仍等于读取值时才执行退款，
  * 并发另一方认领失败直接返回，杜绝双倍退款（凭空增发积分）。
+ *
+ * 原子性：认领与退款在同一事务内提交。此前两步分离提交存在「认领成功、
+ * 退款写入失败」的窗口，退款会永久丢失；现在任一步失败整体回滚，重试时
+ * creditsCharged 仍是原值，可再次认领退款。
  */
 export async function refundFailedTask(
   taskId: string,
 ): Promise<void> {
-  const [task] = await db
-    .select()
-    .from(generationTasks)
-    .where(eq(generationTasks.id, taskId))
-    .limit(1)
-  if (!task || task.creditsCharged <= 0) return
+  await db.transaction(async (tx) => {
+    const [task] = await tx
+      .select()
+      .from(generationTasks)
+      .where(eq(generationTasks.id, taskId))
+      .limit(1)
+    if (!task || task.creditsCharged <= 0) return
 
-  let refund = task.creditsCharged
-  let remaining = 0
-  if (task.costPerImage != null) {
-    const succeededCount = task.succeededIndexes?.length ?? 0
-    remaining = Math.min(
-      task.creditsCharged,
-      succeededCount * task.costPerImage,
-    )
-    refund = task.creditsCharged - remaining
-  }
+    let refund = task.creditsCharged
+    let remaining = 0
+    if (task.costPerImage != null) {
+      const succeededCount = task.succeededIndexes?.length ?? 0
+      remaining = Math.min(
+        task.creditsCharged,
+        succeededCount * task.costPerImage,
+      )
+      refund = task.creditsCharged - remaining
+    }
 
-  // 认领：将 creditsCharged 原子地置为 remaining（仅当未被并发方改动）
-  const claimed = await db
-    .update(generationTasks)
-    .set({ creditsCharged: remaining })
-    .where(
-      and(
-        eq(generationTasks.id, taskId),
-        eq(generationTasks.creditsCharged, task.creditsCharged),
-      ),
-    )
-    .returning({ id: generationTasks.id })
-  if (claimed.length === 0) return // 已被并发调用方处理
+    // 认领：将 creditsCharged 原子地置为 remaining（仅当未被并发方改动）
+    const claimed = await tx
+      .update(generationTasks)
+      .set({ creditsCharged: remaining })
+      .where(
+        and(
+          eq(generationTasks.id, taskId),
+          eq(generationTasks.creditsCharged, task.creditsCharged),
+        ),
+      )
+      .returning({ id: generationTasks.id })
+    if (claimed.length === 0) return // 已被并发调用方处理
 
-  if (refund > 0) {
-    const failedCount = task.costPerImage != null
-      ? Math.floor(refund / task.costPerImage)
-      : task.imageCount
-    await refundUserCredits({
-      enterpriseId: task.enterpriseId,
-      amount: refund,
-      userId: task.userId,
-      taskId: task.id,
-      remark: `任务失败退还（${failedCount} 张）`,
-    })
-  }
+    if (refund > 0) {
+      const failedCount = task.costPerImage != null
+        ? Math.floor(refund / task.costPerImage)
+        : task.imageCount
+      await refundUserCredits({
+        enterpriseId: task.enterpriseId,
+        amount: refund,
+        userId: task.userId,
+        taskId: task.id,
+        remark: `任务失败退还（${failedCount} 张）`,
+        tx,
+      })
+    }
+  })
 }

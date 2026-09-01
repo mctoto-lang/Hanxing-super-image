@@ -5,6 +5,12 @@
  * 渲染任务（提交/查询/取消）、模板缩略图。按企业配置实例化（各企业对接
  * 各自实例），错误信封统一为 { error, message }。
  */
+import {
+  DEFAULT_DOWNLOAD_HOST_SUFFIXES,
+  loadStorageConfig,
+  matchesAllowedHost,
+  sameSiteAsHost,
+} from "@/lib/storage/config"
 
 export interface MockupApiConfig {
   /** 服务地址（无尾斜杠；与 MockupEnterpriseConfig 字段名对齐） */
@@ -429,9 +435,54 @@ export async function cancelRenderJob(
   })
 }
 
+/** 渲染结果下载体积上限（与存储层 downloadBuffered 一致，防异常响应耗尽内存） */
+const MAX_RESULT_BYTES = 50 * 1024 * 1024
+
+/**
+ * 校验绝对结果 URL 是否可信（防被攻陷/恶意的渲染服务当 SSRF 代理）：
+ * 仅 https + 以下任一：COS 桶域名 / 常见云存储后缀 / 平台额外可信域名
+ * （allowedDownloadHosts）/ 渲染服务自身同站域名。
+ * 相对路径结果（拼 cfg.apiBaseUrl）不经本校验——apiBaseUrl 是企业管理员
+ * 显式配置的服务地址，允许部署为内网 http。
+ */
+async function isAllowedResultHost(
+  url: URL,
+  cfg: MockupApiConfig,
+): Promise<boolean> {
+  if (url.protocol !== "https:") return false
+  let cosHost: string | null = null
+  let extraHosts: string[] = []
+  try {
+    const scfg = await loadStorageConfig()
+    if (scfg.cosBaseUrl) {
+      try {
+        cosHost = new URL(scfg.cosBaseUrl).hostname
+      } catch {
+        // ignore
+      }
+    }
+    extraHosts = scfg.allowedDownloadHosts ?? []
+  } catch {
+    // 存储配置读取失败时仅保留基础白名单
+  }
+  if (cosHost && url.hostname === cosHost) return true
+  if (DEFAULT_DOWNLOAD_HOST_SUFFIXES.some((s) => url.hostname.endsWith(s))) {
+    return true
+  }
+  if (matchesAllowedHost(url.hostname, extraHosts)) return true
+  try {
+    if (sameSiteAsHost(url.hostname, new URL(cfg.apiBaseUrl).hostname)) {
+      return true
+    }
+  } catch {
+    // apiBaseUrl 非法时不放行同站
+  }
+  return false
+}
+
 /**
  * 下载渲染结果字节：
- * - resultUrl 为绝对 https（COS 预签名）→ 直接下载；
+ * - resultUrl 为绝对 https（COS 预签名）→ 直接下载（域名须在可信白名单内）；
  * - 为相对路径（渲染服务本地存储模式）→ 拼 baseUrl 并带
  *   Authorization: Bearer <resultToken>（外部服务随 resultUrl 一并下发）。
  */
@@ -450,6 +501,22 @@ export async function fetchResultBytes(
     ? {}
     : { Authorization: `Bearer ${job.resultToken ?? cfg.apiKey}` }
 
+  if (isAbsolute) {
+    let target: URL
+    try {
+      target = new URL(url)
+    } catch {
+      throw new MockupApiError("任务结果地址非法", "RESULT_URL_INVALID", 400)
+    }
+    if (!(await isAllowedResultHost(target, cfg))) {
+      throw new MockupApiError(
+        `渲染结果域名 ${target.hostname} 不在可信白名单内`,
+        "RESULT_DOWNLOAD_FORBIDDEN",
+        400,
+      )
+    }
+  }
+
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS)
   try {
@@ -461,7 +528,40 @@ export async function fetchResultBytes(
         res.status,
       )
     }
-    return Buffer.from(await res.arrayBuffer())
+    // 流式读取并限制体积（与存储层 downloadBuffered 一致）
+    const reader = res.body?.getReader()
+    if (!reader) {
+      const buf = Buffer.from(await res.arrayBuffer())
+      if (buf.byteLength > MAX_RESULT_BYTES) {
+        throw new MockupApiError(
+          "渲染结果下载失败：超过最大体积限制",
+          "RESULT_DOWNLOAD_FAILED",
+          502,
+        )
+      }
+      return buf
+    }
+    const chunks: Buffer[] = []
+    let total = 0
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value!.byteLength
+      if (total > MAX_RESULT_BYTES) {
+        try {
+          await reader.cancel()
+        } catch {
+          // ignore
+        }
+        throw new MockupApiError(
+          "渲染结果下载失败：超过最大体积限制",
+          "RESULT_DOWNLOAD_FAILED",
+          502,
+        )
+      }
+      chunks.push(Buffer.from(value!))
+    }
+    return Buffer.concat(chunks)
   } finally {
     clearTimeout(timer)
   }

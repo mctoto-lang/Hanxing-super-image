@@ -82,10 +82,8 @@ export function checkModelAccess(
  * 取三层并发上限的最小值（手册 §10.5）：
  *   enterprise.maxConcurrent ≥ group.maxConcurrent ≥ model.maxConcurrent
  *
- * ⚠️ 当前仅用于前端提示（submitTaskAction 返回的并发上限展示）；消费端
- * Redis 槽位（task-queue.ts acquireImageSlot）只强制 enterprise + model 两层，
- * group.maxConcurrent 暂未在队列侧执行。扩容它需扩展 ACQUIRE_SLOT_LUA 的
- * key 集合与 processor 的 slots 构造。
+ * 消费端 Redis 槽位（task-queue.ts acquireImageSlot 的 ACQUIRE_SLOT_LUA）
+ * 已按企业 + 模型 + 权限组三层强制执行；本函数用于前端并发上限提示。
  */
 export function effectiveConcurrentLimit(opts: {
   enterprise: number

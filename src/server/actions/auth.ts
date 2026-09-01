@@ -1,10 +1,14 @@
 "use server"
 
 import { AuthError } from "next-auth"
+import { eq } from "drizzle-orm"
 import { signIn, signOut } from "@/lib/auth/config"
+import { db } from "@/db/client"
+import { users } from "@/db/schema"
 import { loginSchema, type LoginInput } from "@/server/schemas/auth"
 import { loginRateLimiter } from "@/lib/rate-limit"
 import { writeLoginLog } from "@/lib/audit"
+import { postLoginPath } from "@/lib/auth/post-login"
 import { headers } from "next/headers"
 
 /**
@@ -46,11 +50,22 @@ export async function loginAction(input: LoginInput) {
       password,
       redirect: false,
     })
-    // 成功：记录审计、重置限流计数
+    // 成功：记录审计、重置限流计数；按角色返回落地页（超管 → /platform）
     await writeLoginLog({ username, ip, userAgent: h.get("user-agent") ?? "", success: true })
     await loginRateLimiter.reset(ipKey)
     await loginRateLimiter.reset(userKey)
-    return { ok: true, error: null }
+    let redirectTo = postLoginPath(false)
+    try {
+      const [u] = await db
+        .select({ isSuperAdmin: users.isSuperAdmin })
+        .from(users)
+        .where(eq(users.username, username))
+        .limit(1)
+      redirectTo = postLoginPath(u?.isSuperAdmin ?? false)
+    } catch {
+      // 查询失败按普通用户跳转，不影响登录本身
+    }
+    return { ok: true, error: null, redirectTo }
   } catch (err) {
     // 仅凭证类失败计入限流；基础设施异常（如 DB 闪断）不计，避免误锁真实用户
     if (err instanceof AuthError) {
