@@ -38,6 +38,10 @@ services:
       CRON_SECRET: ${CRON_SECRET}
       QUEUE_POLL_INTERVAL_MS: ${QUEUE_POLL_INTERVAL_MS:-2000}
       WORKER_TASK_CONCURRENCY: ${WORKER_TASK_CONCURRENCY:-8}
+      # app 进程内 after() 后台任务（样机素材中转等）也走存储层下载信号量
+      TRANSFER_CONCURRENCY: ${TRANSFER_CONCURRENCY:-16}
+      # /uploads 收紧宽限期（未配置 = 一直宽限，仅日志计数；设为已过去日期立即强制）
+      UPLOADS_UNSIGNED_GRACE_END: ${UPLOADS_UNSIGNED_GRACE_END:-}
     volumes:
       - uploads:/app/uploads
     depends_on:
@@ -56,6 +60,14 @@ services:
     command: ["npx", "drizzle-kit", "migrate"]
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-hanxing}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hanxing_super}
+      # seed（docker compose run --rm migrate npx tsx src/db/seed.ts）也要
+      # 读超管账号；密钥让 env.ts 校验安静通过（dev 模式缺失仅 warn）
+      SUPERADMIN_USERNAME: ${SUPERADMIN_USERNAME:-superadmin}
+      SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:-}
+      AUTH_SECRET: ${AUTH_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      CRON_SECRET: ${CRON_SECRET}
+      REDIS_URL: redis://redis:6379
     depends_on:
       postgres:
         condition: service_healthy
@@ -97,6 +109,8 @@ services:
       WORKER_TASK_CONCURRENCY: ${WORKER_TASK_CONCURRENCY:-8}
       # 转存下载并发上限（防入方向带宽打满导致 30s 下载超时雪崩；按实测带宽调整）
       TRANSFER_CONCURRENCY: ${TRANSFER_CONCURRENCY:-16}
+      # 订阅周期发放扫描间隔（worker.ts 直读 process.env，缺省 60s）
+      SUBSCRIPTION_POLL_INTERVAL_MS: ${SUBSCRIPTION_POLL_INTERVAL_MS:-60000}
       # worker 进程专属：DB 池随单进程任务并发放大（web 进程保持默认 10）
       DB_POOL_MAX: ${WORKER_DB_POOL_MAX:-30}
     depends_on:
