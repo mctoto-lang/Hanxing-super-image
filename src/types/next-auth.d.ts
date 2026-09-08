@@ -30,6 +30,8 @@ declare module "next-auth" {
 
 declare module "next-auth/jwt" {
   interface JWT {
+    /** 上次 DB 复核时刻（ms），jwt 回调按间隔周期复核角色/状态 */
+    chkAt?: number
     username?: string
     isSuperAdmin?: boolean
     enterpriseId?: string | null
