@@ -24,6 +24,7 @@ import { loadMockupConfig } from "@/lib/mockup/settings"
 import { parseMockupInfo } from "@/lib/mockup/task-info"
 import { refundFailedTask } from "@/server/services/credits-service"
 import { getStorage } from "@/lib/storage"
+import { signUploadToken } from "@/lib/storage/upload-token"
 import { env } from "@/lib/env"
 
 /**
@@ -185,12 +186,16 @@ async function uploadExternalAsset(
   }
 
   // 从本项目存储拉取字节（URL 形态：绝对 https，本地存储或 COS）；
-  // 带超时防止无限阻塞串行提交链
+  // 带超时防止无限阻塞串行提交链。本站 /uploads URL 附短时效令牌
+  // （服务端 fetch 无会话 cookie，/uploads 已收紧为会话或令牌）
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 60_000)
   let res: Response
   try {
-    res = await fetch(imageUrl, { cache: "no-store", signal: controller.signal })
+    res = await fetch(signUploadToken(imageUrl), {
+      cache: "no-store",
+      signal: controller.signal,
+    })
   } catch {
     throw new Error("设计稿读取超时或失败")
   } finally {

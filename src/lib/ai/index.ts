@@ -5,6 +5,7 @@
  * 调用方（队列消费者）注入 downloadAndUpload 回调（storage 抽象）。
  */
 import { decrypt } from "@/lib/crypto"
+import { signUploadToken } from "@/lib/storage/upload-token"
 import {
   assertSupportedImageApiFormat,
   validateImageModelConfig,
@@ -63,6 +64,13 @@ export async function callImageApi(opts: {
   const apiKey = decrypt(model.apiKeyEncrypted)
   const extraConfig = (model.extraConfig ?? {}) as Record<string, unknown>
 
+  // 参考图 URL 会原样进入上游请求体、由上游服务器直接拉取（无会话
+  // cookie）。本地存储模式的 /uploads 已收紧为「会话或令牌」，这里在
+  // 出站前统一附短时效令牌；COS / 外域 URL 原样（signUploadToken 内过滤）
+  const referenceImagesForUpstream = (referenceImages ?? []).map((u) =>
+    signUploadToken(u),
+  )
+
   if (model.apiFormat === "openai") {
     return await callOpenAiImageApi({
       model: {
@@ -71,7 +79,7 @@ export async function callImageApi(opts: {
         apiTimeout: model.apiTimeout,
         referenceImageField: model.referenceImageField ?? undefined,
       },
-      task: { prompt, imageSize, imageCount, indexes, referenceImages },
+      task: { prompt, imageSize, imageCount, indexes, referenceImages: referenceImagesForUpstream },
       apiKey,
       downloadAndUpload,
       signal,
@@ -92,7 +100,7 @@ export async function callImageApi(opts: {
       apiTimeout: model.apiTimeout,
       referenceImageField: model.referenceImageField ?? undefined,
     },
-    task: { prompt, imageSize, imageCount: jimengIndexes.length, referenceImages },
+    task: { prompt, imageSize, imageCount: jimengIndexes.length, referenceImages: referenceImagesForUpstream },
     extraConfig: {
       jimengResolution: (extraConfig.jimengResolution ??
         extraConfig.jimeng_resolution) as "1k" | "2k" | "4k" | undefined,

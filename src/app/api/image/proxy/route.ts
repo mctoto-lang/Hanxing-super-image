@@ -6,6 +6,7 @@ import {
   toInternalCosFetchUrl,
   type StorageConfig,
 } from "@/lib/storage/config"
+import { signUploadToken } from "@/lib/storage/upload-token"
 
 /**
  * 图片代理（手册 §10.7 防 SSRF）
@@ -133,9 +134,12 @@ export async function GET(request: Request) {
   }
 
   try {
-    // 本桶公网域名 + 内网开关开启 → 服务端改走内网域名拉取（同地域免费，
-    // 避免 COS 公网下行流量费）；返回给前端的 URL 不变
-    const fetchUrl = toInternalCosFetchUrl(targetUrl, cfg)
+    // 本站 /uploads URL 附短时效令牌（服务端回源 fetch 无会话 cookie）；
+    // 先签名再做 COS 内网域名改写（改写后已非本站 URL，签名无效）
+    const fetchUrl = toInternalCosFetchUrl(
+      new URL(signUploadToken(targetUrl.toString())),
+      cfg,
+    )
     const resp = await fetch(fetchUrl, {
       // 防止后端服务挂起；透传期间 timeout 信号中止会掐断响应流
       signal: AbortSignal.timeout(15_000),

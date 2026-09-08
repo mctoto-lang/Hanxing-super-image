@@ -10,6 +10,7 @@ import {
   sanitizeFilenamePart,
 } from "@/lib/workspace/helpers"
 import { isPlatformStorageUrl } from "@/lib/storage/reference-url"
+import { signUploadToken } from "@/lib/storage/upload-token"
 
 /**
  * 工作台导出下载（手册 M5，1:1 对齐旧项目 /api/workspace/export-ticket 消费端）
@@ -146,7 +147,8 @@ async function exportZip(request: Request): Promise<NextResponse> {
     fetchTasks.push(
       (async () => {
         try {
-          const resp = await fetch(img.imageUrl!, {
+          // 本站 /uploads URL 附短时效令牌（服务端 fetch 无会话 cookie）
+          const resp = await fetch(signUploadToken(img.imageUrl!), {
             signal: AbortSignal.timeout(30_000),
           })
           if (!resp.ok) return null
