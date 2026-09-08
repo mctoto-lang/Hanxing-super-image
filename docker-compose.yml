@@ -1,13 +1,19 @@
-# ══════════ 生产编排（app + PostgreSQL + Redis）══════════
-# 用法：
-#   1. 复制 .env.example → .env 并修改密钥
-#   2. docker compose up -d --build
-#   3. 首次启动后执行迁移：docker compose run --rm migrate
-#   4. 种子超管：docker compose run --rm migrate npx tsx src/db/seed.ts
-#      （seed 需要完整源码 + devDependencies，用 builder 阶段的 migrate
-#       服务跑；app 是 standalone runner 镜像，没有 pnpm/src）
+# ══════════ 生产编排（app + worker + migrate；PG/Redis 用外部实例）══════════
+# 部署形态：1Panel 自托管——数据库与缓存复用 1Panel 已部署的容器实例，
+# 本 compose 只包含无状态应用服务，升级重建（up -d --build）不触碰任何数据。
 #
-# 开发期基础设施见 docker-compose.dev.yml
+# 连通方式：应用容器加入 1Panel 的 docker 网络（默认 1panel-network，
+# 可用 .env 的 PANEL_NETWORK 覆盖），连接串直接用 1Panel 容器名做 host——
+# PG/Redis 无需对宿主机暴露端口。
+#
+# 用法：
+#   1. cp .env.example .env 并修改：
+#      - DATABASE_URL（注意末尾要带 /库名）、REDIS_URL、密钥四项
+#   2. docker compose up -d --build
+#   3. 首次/升级执行迁移：docker compose run --rm migrate
+#   4. 首次种子超管：docker compose run --rm migrate npx tsx src/db/seed.ts
+#
+# 本地开发基础设施（自带 PG/Redis）见 docker-compose.dev.yml
 
 services:
   app:
@@ -22,8 +28,8 @@ services:
       NODE_ENV: production
       NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-瀚星 Super Image}
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-hanxing}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hanxing_super}
-      REDIS_URL: redis://redis:6379
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
       AUTH_SECRET: ${AUTH_SECRET}
       AUTH_TRUST_HOST: ${AUTH_TRUST_HOST:-true}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
@@ -44,11 +50,9 @@ services:
       UPLOADS_UNSIGNED_GRACE_END: ${UPLOADS_UNSIGNED_GRACE_END:-}
     volumes:
       - uploads:/app/uploads
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    networks:
+      - default
+      - panel
 
   migrate:
     build:
@@ -59,7 +63,7 @@ services:
     restart: "no"
     command: ["npx", "drizzle-kit", "migrate"]
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-hanxing}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hanxing_super}
+      DATABASE_URL: ${DATABASE_URL}
       # seed（docker compose run --rm migrate npx tsx src/db/seed.ts）也要
       # 读超管账号；密钥让 env.ts 校验安静通过（dev 模式缺失仅 warn）
       SUPERADMIN_USERNAME: ${SUPERADMIN_USERNAME:-superadmin}
@@ -67,10 +71,10 @@ services:
       AUTH_SECRET: ${AUTH_SECRET}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       CRON_SECRET: ${CRON_SECRET}
-      REDIS_URL: redis://redis:6379
-    depends_on:
-      postgres:
-        condition: service_healthy
+      REDIS_URL: ${REDIS_URL}
+    networks:
+      - default
+      - panel
     profiles:
       - migrate
 
@@ -82,7 +86,8 @@ services:
     # 水平扩容：WORKER_REPLICAS=N docker compose up -d（或 docker compose up -d --scale worker=N）。
     # 不能设 container_name——固定容器名与多副本互斥。跨副本总并发由 Redis
     # 企业/模型槽位协调，ZREM 原子出队防重复消费，无需额外协调组件。
-    # 总 PG 连接数 = N × DB_POOL_MAX + web 10，需同步调 POSTGRES_MAX_CONNECTIONS。
+    # 总 PG 连接数 = N × DB_POOL_MAX + web 10，超出时在 1Panel 侧调大
+    # PostgreSQL 的 max_connections。
     build:
       context: .
       dockerfile: Dockerfile
@@ -93,8 +98,8 @@ services:
       replicas: ${WORKER_REPLICAS:-1}
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgresql://${POSTGRES_USER:-hanxing}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hanxing_super}
-      REDIS_URL: redis://redis:6379
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
       AUTH_SECRET: ${AUTH_SECRET}
       AUTH_TRUST_HOST: ${AUTH_TRUST_HOST:-true}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
@@ -113,50 +118,17 @@ services:
       SUBSCRIPTION_POLL_INTERVAL_MS: ${SUBSCRIPTION_POLL_INTERVAL_MS:-60000}
       # worker 进程专属：DB 池随单进程任务并发放大（web 进程保持默认 10）
       DB_POOL_MAX: ${WORKER_DB_POOL_MAX:-30}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    networks:
+      - default
+      - panel
 
-  postgres:
-    image: postgres:16-alpine
-    container_name: hanxing-pg
-    restart: unless-stopped
-    # max_connections 按部署规模调整：≥ worker副本数×DB_POOL_MAX + web(10) + 余量
-    command: postgres -c max_connections=${POSTGRES_MAX_CONNECTIONS:-200}
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-hanxing}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_in_prod}
-      POSTGRES_DB: ${POSTGRES_DB:-hanxing_super}
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-hanxing}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    container_name: hanxing-redis
-    restart: unless-stopped
-    # 任务队列（ZSET/Hash/并发计数）存于 Redis，不能被 LRU 静默驱逐——
-    # 默认 noeviction；内存告警时调 REDIS_MAXMEMORY 而不是改回淘汰策略。
-    # 默认 512mb：深积压（万级任务）时 hash 元数据会超 256mb
-    command: >
-      redis-server --save 60 1 --loglevel warning
-      --maxmemory ${REDIS_MAXMEMORY:-512mb}
-      --maxmemory-policy ${REDIS_MAXMEMORY_POLICY:-noeviction}
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
+networks:
+  # 1Panel 应用默认网络：应用容器经它用容器名直连 1Panel 的 PG/Redis。
+  # 名称不对时用 docker inspect <pg容器名> --format '{{json .NetworkSettings.Networks}}' 查实际网络，
+  # 并在 .env 里设 PANEL_NETWORK 覆盖。
+  panel:
+    name: ${PANEL_NETWORK:-1panel-network}
+    external: true
 
 volumes:
-  pg_data:
-  redis_data:
   uploads:
