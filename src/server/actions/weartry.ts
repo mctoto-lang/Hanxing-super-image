@@ -13,7 +13,7 @@ import {
   getCurrentEnterpriseScope,
   type UserContext,
 } from "@/lib/auth/session"
-import { checkModelAccess } from "@/lib/auth/permissions"
+import { checkModelAccess, checkModuleAccess } from "@/lib/auth/permissions"
 import { deductUserCredits, refundFailedTask, refundUserCredits } from "@/server/services/credits-service"
 import { enqueue } from "@/lib/queue/task-queue"
 import { validateReferenceImageUrls } from "@/lib/storage/reference-url"
@@ -72,7 +72,9 @@ import { revalidatePath } from "next/cache"
 export async function listWeartryDirectionsAction(): Promise<
   ProductDirectionRow[]
 > {
-  await requireUserContext()
+  const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "weartry")
+  if (denied) return []
   const rows = await db
     .select({
       id: productDirections.id,
@@ -109,7 +111,9 @@ export async function listWeartryDirectionsAction(): Promise<
 
 /** 预置场景下拉（超管配置；promptTemplate 裁剪不下发，组装在服务端） */
 export async function listWeartryScenesAction(): Promise<WeartrySceneRow[]> {
-  await requireUserContext()
+  const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "weartry")
+  if (denied) return []
   const rows = await listActiveWeartryScenes()
   return rows.map((s) => ({
     id: s.key,
@@ -130,6 +134,8 @@ export async function addWeartryFigureAction(input: {
   source: "ai" | "upload"
 }): Promise<{ ok: boolean; error: string | null }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "weartry")
+  if (denied) return { ok: false, error: denied }
   if (!ctx.enterprise) return { ok: false, error: "无企业归属" }
   const scope = getCurrentEnterpriseScope(ctx)
   if (!input.imageUrl || !/^https?:\/\//.test(input.imageUrl)) {
@@ -159,6 +165,8 @@ export async function addWeartryFigureAction(input: {
 /** 本人模特库（倒序，最近优先；上限 60 条足够覆盖日常选用） */
 export async function listWeartryFiguresAction(): Promise<WeartryFigureRow[]> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "weartry")
+  if (denied) return []
   const rows = await db
     .select({
       id: weartryFigures.id,
@@ -183,6 +191,8 @@ export async function deleteWeartryFigureAction(
   id: string,
 ): Promise<{ ok: boolean; error: string | null }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "weartry")
+  if (denied) return { ok: false, error: denied }
   const deleted = await db
     .delete(weartryFigures)
     .where(
@@ -199,6 +209,8 @@ export async function deleteWeartryFigureAction(
 /** 模型列表（必须穿戴页可见且支持参考图） */
 export async function listWeartryModelsAction(): Promise<WeartryModelRow[]> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "weartry")
+  if (denied) return []
   if (!ctx.enterprise) return []
   const scope = getCurrentEnterpriseScope(ctx)
   const rows = await db
@@ -252,6 +264,8 @@ export async function aiAssistOutfitAction(input: {
   degraded?: AiDegradeReason
 }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "weartry")
+  if (denied) return { ok: false, error: denied }
   if (!ctx.enterprise) return { ok: false, error: "无企业归属" }
   const scope = getCurrentEnterpriseScope(ctx)
 
@@ -493,6 +507,8 @@ export async function generateWeartryOutfitAction(
   input: GenerateOutfitInput,
 ): Promise<GenerateWeartryResult> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "weartry")
+  if (denied) return { ok: false, error: denied }
   if (!ctx.enterprise) return { ok: false, error: "无企业归属，无法生图" }
 
   const parsed = generateOutfitSchema.safeParse(input)
@@ -571,6 +587,8 @@ export async function generateWeartryModelImageAction(
   input: GenerateModelImageInput,
 ): Promise<GenerateWeartryResult> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "weartry")
+  if (denied) return { ok: false, error: denied }
   if (!ctx.enterprise) return { ok: false, error: "无企业归属，无法生图" }
 
   const parsed = generateModelImageSchema.safeParse(input)
@@ -615,6 +633,8 @@ export async function generateWeartryTryonAction(
   input: GenerateTryonInput,
 ): Promise<GenerateWeartryResult> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "weartry")
+  if (denied) return { ok: false, error: denied }
   if (!ctx.enterprise) return { ok: false, error: "无企业归属，无法生图" }
 
   const parsed = generateTryonSchema.safeParse(input)
@@ -684,6 +704,8 @@ export async function generateWeartryColorAction(
   input: GenerateColorChangeInput,
 ): Promise<GenerateWeartryResult> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "weartry")
+  if (denied) return { ok: false, error: denied }
   if (!ctx.enterprise) return { ok: false, error: "无企业归属，无法生图" }
 
   const parsed = generateColorChangeSchema.safeParse(input)
@@ -784,6 +806,8 @@ export async function listWeartryBatchesAction(opts?: {
   mode?: string
 }): Promise<WeartryBatchRow[]> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "weartry")
+  if (denied) return []
   const scope = getCurrentEnterpriseScope(ctx)
   const where = [
     eq(generationTasks.enterpriseId, scope.enterpriseId),
@@ -863,6 +887,8 @@ export async function getWeartryBatchStatusAction(
   batchTag: string,
 ): Promise<WeartryBatchTaskRow[]> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "weartry")
+  if (denied) return []
   const scope = getCurrentEnterpriseScope(ctx)
   const rows = await db
     .select({
@@ -895,6 +921,8 @@ export async function retryWeartryTaskAction(
   taskId: string,
 ): Promise<{ ok: boolean; error: string | null }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "weartry")
+  if (denied) return { ok: false, error: denied }
   const scope = getCurrentEnterpriseScope(ctx)
   const [task] = await db
     .select()

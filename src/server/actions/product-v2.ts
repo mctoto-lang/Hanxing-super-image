@@ -13,7 +13,7 @@ import {
   getCurrentEnterpriseScope,
   type UserContext,
 } from "@/lib/auth/session"
-import { checkModelAccess } from "@/lib/auth/permissions"
+import { checkModelAccess, checkModuleAccess } from "@/lib/auth/permissions"
 import { deductUserCredits, refundFailedTask, refundUserCredits } from "@/server/services/credits-service"
 import { enqueue } from "@/lib/queue/task-queue"
 import { validateReferenceImageUrls } from "@/lib/storage/reference-url"
@@ -76,7 +76,9 @@ const AI_BATCH_TIMEOUT_MS = 90_000
 export async function listProductDirectionsAction(
   scope: "suite" | "detail" | "refine",
 ): Promise<ProductDirectionRow[]> {
-  await requireUserContext()
+  const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "product")
+  if (denied) return []
   const rows = await db
     .select({
       id: productDirections.id,
@@ -114,7 +116,9 @@ export async function listProductDirectionsAction(
 export async function listPlatformSizeSpecsAction(opts?: {
   platformKey?: string
 }): Promise<PlatformSizeSpecRow[]> {
-  await requireUserContext()
+  const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "product")
+  if (denied) return []
   const rows = await db
     .select({
       id: platformSizeSpecs.id,
@@ -138,7 +142,9 @@ export async function listPlatformSizeSpecsAction(opts?: {
 export async function listProductPlatformsAction(): Promise<
   { key: string; label: string }[]
 > {
-  await requireUserContext()
+  const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "product")
+  if (denied) return []
   const rows = await listActivePlatforms()
   return rows.map((p) => ({ key: p.key, label: p.label }))
 }
@@ -147,7 +153,9 @@ export async function listProductPlatformsAction(): Promise<
 export async function listProductLanguagesAction(): Promise<
   { key: string; label: string }[]
 > {
-  await requireUserContext()
+  const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "product")
+  if (denied) return []
   const rows = await listActiveLanguages()
   return rows.map((l) => ({ key: l.key, label: l.label }))
 }
@@ -155,6 +163,8 @@ export async function listProductLanguagesAction(): Promise<
 /** 模型列表（V2：必须支持参考图） */
 export async function listProductV2ModelsAction(): Promise<ProductModelRow[]> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "product")
+  if (denied) return []
   if (!ctx.enterprise) return []
   const scope = getCurrentEnterpriseScope(ctx)
   const rows = await db
@@ -211,6 +221,8 @@ export async function aiAssistSellingPointsAction(input: {
   degraded?: AiDegradeReason
 }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "product")
+  if (denied) return { ok: false, error: denied }
   if (!ctx.enterprise) return { ok: false, error: "无企业归属" }
   const scope = getCurrentEnterpriseScope(ctx)
 
@@ -273,6 +285,8 @@ export async function smartMatchStructureAction(input: {
   degraded?: AiDegradeReason
 }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "product")
+  if (denied) return { ok: false, error: denied }
   if (!ctx.enterprise) return { ok: false, error: "无企业归属" }
   const scope = getCurrentEnterpriseScope(ctx)
 
@@ -503,6 +517,8 @@ export async function generateSuiteCardPromptsAction(
   degraded?: AiDegradeReason
 }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "product")
+  if (denied) return { ok: false, error: denied }
   if (!ctx.enterprise) return { ok: false, error: "无企业归属" }
   const scope = getCurrentEnterpriseScope(ctx)
 
@@ -535,6 +551,8 @@ export async function regenerateSuiteCardPromptAction(
   degraded?: AiDegradeReason
 }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "product")
+  if (denied) return { ok: false, error: denied }
   if (!ctx.enterprise) return { ok: false, error: "无企业归属" }
   const scope = getCurrentEnterpriseScope(ctx)
 
@@ -571,6 +589,8 @@ export async function generateProductV2Action(
   totalCost?: number
 }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "product")
+  if (denied) return { ok: false, error: denied }
   if (!ctx.enterprise) return { ok: false, error: "无企业归属，无法生图" }
   const scope = getCurrentEnterpriseScope(ctx)
 
@@ -968,6 +988,8 @@ export async function listProductBatchesAction(opts?: {
   mode?: string
 }): Promise<ProductBatchRow[]> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "product")
+  if (denied) return []
   const scope = getCurrentEnterpriseScope(ctx)
   const where = [
     eq(generationTasks.enterpriseId, scope.enterpriseId),
@@ -1045,6 +1067,8 @@ export async function getProductBatchStatusAction(
   batchTag: string,
 ): Promise<ProductBatchTaskRow[]> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "product")
+  if (denied) return []
   const scope = getCurrentEnterpriseScope(ctx)
   const rows = await db
     .select({
@@ -1077,6 +1101,8 @@ export async function retryProductV2TaskAction(
   taskId: string,
 ): Promise<{ ok: boolean; error: string | null }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "product")
+  if (denied) return { ok: false, error: denied }
   const scope = getCurrentEnterpriseScope(ctx)
   const [task] = await db
     .select()

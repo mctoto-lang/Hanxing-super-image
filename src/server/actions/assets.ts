@@ -7,6 +7,7 @@ import {
   models,
   pinnedTasks,
 } from "@/db/schema"
+import { checkModuleAccess } from "@/lib/auth/permissions"
 import {
   requireUserContext,
   getCurrentEnterpriseScope,
@@ -27,6 +28,8 @@ export async function listAssetsAction(opts?: {
   onlyPinned?: boolean
 }) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "assets")
+  if (denied) return []
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
   const { limit = 60, offset = 0, onlyPinned = false } = opts ?? {}
 
@@ -65,6 +68,8 @@ export async function listAssetsAction(opts?: {
 /** 列出当前用户的收藏任务 */
 export async function listPinnedTasksAction() {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "assets")
+  if (denied) return []
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
   return await db
     .select({
@@ -97,6 +102,8 @@ export async function pinTaskAction(input: {
   note?: string
 }) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "assets")
+  if (denied) return { ok: false, error: denied }
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
 
   // 任务必须属于本企业
@@ -131,6 +138,8 @@ export async function pinTaskAction(input: {
 /** 取消收藏 */
 export async function unpinTaskAction(pinnedId: string) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "assets")
+  if (denied) return { ok: false, error: denied }
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
   await db
     .delete(pinnedTasks)

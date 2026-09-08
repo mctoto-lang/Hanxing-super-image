@@ -11,7 +11,11 @@ import {
   requireUserContext,
   getCurrentEnterpriseScope,
 } from "@/lib/auth/session"
-import { checkModelAccess, effectiveConcurrentLimit } from "@/lib/auth/permissions"
+import {
+  checkModelAccess,
+  checkModuleAccess,
+  effectiveConcurrentLimit,
+} from "@/lib/auth/permissions"
 import { deductUserCredits, refundFailedTask } from "@/server/services/credits-service"
 import { enqueue } from "@/lib/queue/task-queue"
 import { validateReferenceImageUrls } from "@/lib/storage/reference-url"
@@ -30,6 +34,8 @@ import { revalidatePath } from "next/cache"
 /** 查询用户可用的模型（受权限组限制） */
 export async function listAvailableModelsAction() {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "create")
+  if (denied) return []
   if (!ctx.enterprise) return []
 
   const scope = getCurrentEnterpriseScope(ctx)
@@ -89,6 +95,8 @@ export async function submitTaskAction(input: {
   conversationId?: string
 }) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "create")
+  if (denied) return { ok: false, error: denied }
   if (!ctx.enterprise) {
     return { ok: false, error: "无企业归属，无法生图" }
   }
@@ -280,6 +288,8 @@ export async function submitTaskAction(input: {
 /** 重试失败任务（首次失败已退款，重试按未成功张数重新扣费） */
 export async function retryTaskAction(taskId: string) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "create")
+  if (denied) return { ok: false, error: denied }
   const scope = getCurrentEnterpriseScope(ctx)
 
   const [task] = await db
