@@ -5,8 +5,8 @@ RUN corepack enable && corepack prepare pnpm@11.20.0 --activate
 
 WORKDIR /app
 
-# 仅复制 manifest（含 workspace 文件——pnpm 11 依赖它读取
-# onlyBuiltDependencies 许可，缺它 sharp 等原生依赖构建会被跳过），利用 Docker 层缓存
+# 仅复制 manifest（含 workspace 文件——pnpm 11 依赖它读取 allowBuilds 构建
+# 许可，缺它 sharp/esbuild 等原生依赖构建会被跳过），利用 Docker 层缓存
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 

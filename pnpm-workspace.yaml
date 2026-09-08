@@ -1,5 +1,8 @@
 # pnpm 11 构建许可：以下原生/带安装脚本的依赖允许执行构建
-onlyBuiltDependencies:
-  - esbuild
-  - sharp
-  - unrs-resolver
+# 注意：pnpm 11.20 起用 allowBuilds 映射（name → bool）；旧的 onlyBuiltDependencies
+# 列表对部分包（如 esbuild 多版本实例）不再生效，会以 ERR_PNPM_IGNORED_BUILDS 中断
+# docker build。可用 `pnpm approve-builds <包名>` 让 pnpm 自动写入本节。
+allowBuilds:
+  esbuild: true
+  sharp: true
+  unrs-resolver: true
