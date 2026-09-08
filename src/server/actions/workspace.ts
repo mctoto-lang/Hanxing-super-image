@@ -20,7 +20,7 @@ import {
   getCurrentEnterpriseScope,
   type UserContext,
 } from "@/lib/auth/session"
-import { checkModelAccess, isEnterpriseAdmin } from "@/lib/auth/permissions"
+import { checkModelAccess, checkModuleAccess, isEnterpriseAdmin } from "@/lib/auth/permissions"
 import {
   deepenPrompt,
   extractNumberedPromptReplacements,
@@ -35,6 +35,25 @@ import { deductUserCredits, refundFailedTask, refundUserCredits } from "@/server
 import { saveExportTicket } from "@/server/services/export-ticket"
 import { enqueue, enqueueMany } from "@/lib/queue/task-queue"
 import { validateReferenceImageUrls } from "@/lib/storage/reference-url"
+import {
+  wsIdSchema,
+  wsCardIdsSchema,
+  createWorkspaceTaskSchema,
+  updateTaskTitleSchema,
+  addCardSchema,
+  updateCardSchema,
+  cardPromptTemplateSchema,
+  templateOnlySchema,
+  batchReplacePromptsSchema,
+  extractNumberedPromptsSchema,
+  generateCardImageSchema,
+  batchGenerateImageSchema,
+  updateCardReferenceImagesSchema,
+  addUploadedCardImageSchema,
+  batchAttachUrlsSchema,
+  createTemplateSchema,
+  updateTemplateSchema,
+} from "@/server/schemas/workspace"
 import { revalidatePath } from "next/cache"
 import {
   getGenerationPrompt,
@@ -204,6 +223,8 @@ export async function listWorkspaceTasksAction(opts?: {
   pageSize: number
 }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { tasks: [], total: 0, page: 1, pageSize: 20 }
   const scope = getCurrentEnterpriseScope(ctx)
   const page = Math.max(1, opts?.page ?? 1)
   const pageSize = Math.max(1, Math.min(100, opts?.pageSize ?? 20))
@@ -365,6 +386,10 @@ export async function createWorkspaceTaskAction(input: {
   cardCount?: number
 }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied }
+  const parsed = createWorkspaceTaskSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   if (!ctx.enterprise) return { ok: false, error: "无企业归属" }
   const scope = getCurrentEnterpriseScope(ctx)
   const mode = input.mode ?? "smart"
@@ -577,6 +602,8 @@ export async function createWorkspaceTaskAction(input: {
 /** 获取单个任务详情（含 templateName） */
 export async function getTaskAction(taskId: string) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return null
   const scope = getCurrentEnterpriseScope(ctx)
   const [task] = await db
     .select({
@@ -616,6 +643,8 @@ export async function getTaskStatusAction(taskId: string): Promise<{
   errorMessage: string | null
 } | null> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return null
   const task = await fetchOwnedTask(ctx, taskId)
   if (!task) return null
   return {
@@ -632,6 +661,11 @@ export async function updateTaskAction(
   input: { title: string },
 ) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied }
+  if (!wsIdSchema.safeParse(taskId).success) return { ok: false, error: "参数错误（id 非法）" }
+  const parsed = updateTaskTitleSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   const task = await fetchOwnedTask(ctx, taskId)
   if (!task) return { ok: false, error: "任务不存在" }
   await db
@@ -645,6 +679,9 @@ export async function updateTaskAction(
 /** 删除任务（级联清理） */
 export async function deleteTaskAction(taskId: string) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied }
+  if (!wsIdSchema.safeParse(taskId).success) return { ok: false, error: "参数错误（id 非法）" }
   const scope = getCurrentEnterpriseScope(ctx)
   const task = await fetchOwnedTask(ctx, taskId)
   if (!task) return { ok: false, error: "任务不存在" }
@@ -736,6 +773,9 @@ export async function deleteTaskAction(taskId: string) {
 /** 置顶任务（INSERT OR IGNORE） */
 export async function pinTaskAction(taskId: string) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied }
+  if (!wsIdSchema.safeParse(taskId).success) return { ok: false, error: "参数错误（id 非法）" }
   const scope = getCurrentEnterpriseScope(ctx)
   const task = await fetchOwnedTask(ctx, taskId)
   if (!task) return { ok: false, error: "任务不存在" }
@@ -760,6 +800,9 @@ export async function pinTaskAction(taskId: string) {
 /** 取消置顶 */
 export async function unpinTaskAction(taskId: string) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied }
+  if (!wsIdSchema.safeParse(taskId).success) return { ok: false, error: "参数错误（id 非法）" }
   const scope = getCurrentEnterpriseScope(ctx)
   await db
     .delete(workspacePinnedTasks)
@@ -777,6 +820,8 @@ export async function unpinTaskAction(taskId: string) {
 /** 列出置顶任务 ID 数组 */
 export async function listPinnedTaskIdsAction(): Promise<string[]> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return []
   const scope = getCurrentEnterpriseScope(ctx)
   const rows = await db
     .select({ taskId: workspacePinnedTasks.taskId })
@@ -807,6 +852,8 @@ export async function getTaskCardImagesAction(
   // serverTime 取在查询之前：查询执行期间落库的行下一轮 since 一定能覆盖到
   const serverTime = new Date()
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { cards: {}, serverTime: new Date().toISOString() }
   const scope = getCurrentEnterpriseScope(ctx)
   const task = await fetchOwnedTask(ctx, taskId)
   if (!task) return { cards: {} }
@@ -965,6 +1012,8 @@ export async function getTaskCardsAction(
   opts?: { pageSize?: number },
 ): Promise<{ cards: PromptCardRow[]; total: number }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { cards: [], total: 0 }
   const scope = getCurrentEnterpriseScope(ctx)
   const task = await fetchOwnedTask(ctx, taskId)
   if (!task) return { cards: [], total: 0 }
@@ -1008,6 +1057,11 @@ export async function addCardAction(
   input: { prompt: string },
 ) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied }
+  if (!wsIdSchema.safeParse(taskId).success) return { ok: false, error: "参数错误（id 非法）" }
+  const parsed = addCardSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   const scope = getCurrentEnterpriseScope(ctx)
   const task = await fetchOwnedTask(ctx, taskId)
   if (!task) return { ok: false, error: "任务不存在" }
@@ -1045,6 +1099,11 @@ export async function updateCardAction(
   input: { prompt?: string; displayLanguage?: "zh" | "en" },
 ) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied }
+  if (!wsIdSchema.safeParse(cardId).success) return { ok: false, error: "参数错误（id 非法）" }
+  const parsed = updateCardSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   const owned = await fetchOwnedCard(ctx, cardId)
   if (!owned) return { ok: false, error: "卡片不存在" }
   await db
@@ -1066,6 +1125,9 @@ export async function updateCardAction(
 /** 删除卡片 */
 export async function deleteCardAction(cardId: string) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied }
+  if (!wsIdSchema.safeParse(cardId).success) return { ok: false, error: "参数错误（id 非法）" }
   const scope = getCurrentEnterpriseScope(ctx)
   const owned = await fetchOwnedCard(ctx, cardId)
   if (!owned) return { ok: false, error: "卡片不存在" }
@@ -1086,6 +1148,9 @@ export async function deleteCardAction(cardId: string) {
 /** 批量删除卡片 */
 export async function batchDeleteCardsAction(cardIds: string[]) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, deletedIds: [], deletedCount: 0 }
+  if (!wsCardIdsSchema.safeParse(cardIds).success) return { ok: false, deletedIds: [], deletedCount: 0 }
   const scope = getCurrentEnterpriseScope(ctx)
   const validIds: string[] = []
   const taskIds = new Set<string>()
@@ -1117,6 +1182,11 @@ export async function deepenCardPromptAction(
   input: { prompt: string; templateId: string },
 ): Promise<{ ok: boolean; error: string | null; newPrompt?: string }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied }
+  if (!wsIdSchema.safeParse(cardId).success) return { ok: false, error: "参数错误（id 非法）" }
+  const parsed = cardPromptTemplateSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   const scope = getCurrentEnterpriseScope(ctx)
   const owned = await fetchOwnedCard(ctx, cardId)
   if (!owned) return { ok: false, error: "卡片不存在" }
@@ -1161,6 +1231,11 @@ export async function regenerateCardPromptAction(
   input: { prompt: string; templateId: string },
 ): Promise<{ ok: boolean; error: string | null; newPrompt?: string }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied }
+  if (!wsIdSchema.safeParse(cardId).success) return { ok: false, error: "参数错误（id 非法）" }
+  const parsed = cardPromptTemplateSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   const scope = getCurrentEnterpriseScope(ctx)
   const owned = await fetchOwnedCard(ctx, cardId)
   if (!owned) return { ok: false, error: "卡片不存在" }
@@ -1208,6 +1283,11 @@ export async function translateCardPromptAction(
   input: { templateId: string },
 ): Promise<{ ok: boolean; error: string | null; translatedPrompt?: string }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied }
+  if (!wsIdSchema.safeParse(cardId).success) return { ok: false, error: "参数错误（id 非法）" }
+  const parsed = templateOnlySchema.safeParse(input)
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   const scope = getCurrentEnterpriseScope(ctx)
   const owned = await fetchOwnedCard(ctx, cardId)
   if (!owned) return { ok: false, error: "卡片不存在" }
@@ -1425,6 +1505,11 @@ export async function generateCardImageAction(
   generationTaskId?: string
 }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied }
+  if (!wsIdSchema.safeParse(cardId).success) return { ok: false, error: "参数错误（id 非法）" }
+  const parsed = generateCardImageSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   const scope = getCurrentEnterpriseScope(ctx)
   const owned = await fetchOwnedCard(ctx, cardId)
   if (!owned) return { ok: false, error: "卡片不存在" }
@@ -1464,6 +1549,8 @@ export async function getCardImagesAction(
   cardId: string,
 ): Promise<{ images: CardImageRow[]; referenceImages: string[] }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { images: [], referenceImages: [] }
   const scope = getCurrentEnterpriseScope(ctx)
   const owned = await fetchOwnedCard(ctx, cardId)
   if (!owned) return { images: [], referenceImages: [] }
@@ -1491,6 +1578,9 @@ export async function getCardImagesAction(
 /** 选定图片（同卡其他取消选中） */
 export async function selectCardImageAction(imageId: string) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied }
+  if (!wsIdSchema.safeParse(imageId).success) return { ok: false, error: "参数错误（id 非法）" }
   const scope = getCurrentEnterpriseScope(ctx)
   const [img] = await db
     .select()
@@ -1535,6 +1625,11 @@ export async function updateCardReferenceImagesAction(
   input: { apiId: string; referenceImages: string[] },
 ) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied }
+  if (!wsIdSchema.safeParse(cardId).success) return { ok: false, error: "参数错误（id 非法）" }
+  const parsed = updateCardReferenceImagesSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   const owned = await fetchOwnedCard(ctx, cardId)
   if (!owned) return { ok: false, error: "卡片不存在" }
   const [model] = await db
@@ -1571,6 +1666,11 @@ export async function addUploadedCardImageAction(
   input: { imageUrl: string },
 ) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied }
+  if (!wsIdSchema.safeParse(cardId).success) return { ok: false, error: "参数错误（id 非法）" }
+  const parsed = addUploadedCardImageSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   const scope = getCurrentEnterpriseScope(ctx)
   const owned = await fetchOwnedCard(ctx, cardId)
   if (!owned) return { ok: false, error: "卡片不存在" }
@@ -1625,6 +1725,11 @@ export async function batchGenerateImageAction(
   errors: Array<{ cardId: string; error: string }>
 }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, submitted: 0, tasks: [], errors: [] }
+  if (!wsCardIdsSchema.safeParse(cardIds).success) return { ok: false, submitted: 0, tasks: [], errors: [] }
+  const parsed = batchGenerateImageSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, submitted: 0, tasks: [], errors: [] }
   const scope = getCurrentEnterpriseScope(ctx)
   const enterpriseId = scope.enterpriseId
   const tasks: Array<{
@@ -1863,6 +1968,11 @@ export async function batchDeepenAction(
   input: { templateId: string },
 ) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, submitted: [], cardIds: [], errors: [] }
+  if (!wsCardIdsSchema.safeParse(cardIds).success) return { ok: false, submitted: [], cardIds: [], errors: [] }
+  const parsed = templateOnlySchema.safeParse(input)
+  if (!parsed.success) return { ok: false, submitted: [], cardIds: [], errors: [] }
   const scope = getCurrentEnterpriseScope(ctx)
   const submitted: string[] = []
   const errors: Array<{ cardId: string; error: string }> = []
@@ -1918,6 +2028,11 @@ export async function batchRegeneratePromptAction(
   input: { templateId: string },
 ) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, submitted: [], cardIds: [], errors: [] }
+  if (!wsCardIdsSchema.safeParse(cardIds).success) return { ok: false, submitted: [], cardIds: [], errors: [] }
+  const parsed = templateOnlySchema.safeParse(input)
+  if (!parsed.success) return { ok: false, submitted: [], cardIds: [], errors: [] }
   const scope = getCurrentEnterpriseScope(ctx)
   const submitted: string[] = []
   const errors: Array<{ cardId: string; error: string }> = []
@@ -1973,6 +2088,11 @@ export async function batchTranslatePromptAction(
   input: { templateId: string },
 ) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, submitted: [], cardIds: [], skippedCardIds: [], errors: [] }
+  if (!wsCardIdsSchema.safeParse(cardIds).success) return { ok: false, submitted: [], cardIds: [], skippedCardIds: [], errors: [] }
+  const parsed = templateOnlySchema.safeParse(input)
+  if (!parsed.success) return { ok: false, submitted: [], cardIds: [], skippedCardIds: [], errors: [] }
   const scope = getCurrentEnterpriseScope(ctx)
   const submitted: string[] = []
   const skippedCardIds: string[] = []
@@ -2048,6 +2168,11 @@ export async function batchReplacePromptsAction(
   cardCount: number
 }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, updatedCount: 0, createdCount: 0, conflictCount: 0, cardCount: 0 }
+  if (!wsIdSchema.safeParse(taskId).success) return { ok: false, updatedCount: 0, createdCount: 0, conflictCount: 0, cardCount: 0 }
+  const parsed = batchReplacePromptsSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, updatedCount: 0, createdCount: 0, conflictCount: 0, cardCount: 0 }
   const scope = getCurrentEnterpriseScope(ctx)
   const task = await fetchOwnedTask(ctx, taskId)
   if (!task) {
@@ -2134,6 +2259,11 @@ export async function batchAttachUploadedImagesAction(
   imagesByCard: Record<string, CardImageRow[]>
 }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, updatedCardIds: [], imagesByCard: {} }
+  if (!wsCardIdsSchema.safeParse(cardIds).success) return { ok: false, updatedCardIds: [], imagesByCard: {} }
+  const parsed = batchAttachUrlsSchema.safeParse(imageUrls)
+  if (!parsed.success) return { ok: false, updatedCardIds: [], imagesByCard: {} }
   const scope = getCurrentEnterpriseScope(ctx)
   const urls = normalizeReferenceImages(imageUrls)
   // 归属校验同 addUploadedCardImageAction：批量绑定前校验全部 URL，
@@ -2207,6 +2337,11 @@ export async function extractNumberedPromptsAction(
   items: Array<{ cardIndex: number; prompt: string }>
 }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied, items: [] }
+  if (!wsIdSchema.safeParse(taskId).success) return { ok: false, error: "参数错误（id 非法）", items: [] }
+  const parsed = extractNumberedPromptsSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误", items: [] }
   const scope = getCurrentEnterpriseScope(ctx)
   const task = await fetchOwnedTask(ctx, taskId)
   if (!task) return { ok: false, error: "任务不存在", items: [] }
@@ -2245,6 +2380,8 @@ export async function listTemplatesAction(opts: {
   type: TemplateType
 }): Promise<TemplateRow[]> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return []
   const scope = getCurrentEnterpriseScope(ctx)
   const rows = await db
     .select({
@@ -2283,6 +2420,8 @@ export async function listTemplatesAction(opts: {
 /** 列出可用对话模型（平台预置 + 本企业，均需 active） */
 export async function listChatApisAction(): Promise<ChatApiOption[]> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return []
   const scope = getCurrentEnterpriseScope(ctx)
   const rows = await db
     .select({
@@ -2320,6 +2459,10 @@ export async function createTemplateAction(input: {
   visibility: "private" | "public"
 }): Promise<{ ok: boolean; error: string | null; template?: TemplateRow }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied }
+  const parsed = createTemplateSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   const scope = getCurrentEnterpriseScope(ctx)
   const [tpl] = await db
     .insert(promptTemplates)
@@ -2369,6 +2512,11 @@ export async function updateTemplateAction(
   },
 ): Promise<{ ok: boolean; error: string | null }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied }
+  if (!wsIdSchema.safeParse(templateId).success) return { ok: false, error: "参数错误（id 非法）" }
+  const parsed = updateTemplateSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   const scope = getCurrentEnterpriseScope(ctx)
   const [existing] = await db
     .select()
@@ -2410,6 +2558,9 @@ export async function deleteTemplateAction(
   templateId: string,
 ): Promise<{ ok: boolean; error: string | null }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied }
+  if (!wsIdSchema.safeParse(templateId).success) return { ok: false, error: "参数错误（id 非法）" }
   const scope = getCurrentEnterpriseScope(ctx)
   const [existing] = await db
     .select()
@@ -2443,6 +2594,8 @@ export async function createExportTicketAction(
   input: { format: string; cardIds?: string[] },
 ): Promise<{ ok: boolean; error: string | null; downloadUrl?: string }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { ok: false, error: denied }
   const scope = getCurrentEnterpriseScope(ctx)
   const task = await fetchOwnedTask(ctx, taskId)
   if (!task) return { ok: false, error: "任务不存在" }
@@ -2465,6 +2618,8 @@ export async function createExportTicketAction(
 /** 列出本企业可见的对话模型（完整字段，旧接口保留兼容） */
 export async function listChatApiConfigsAction() {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return []
   const scope = getCurrentEnterpriseScope(ctx)
   return await db
     .select({
@@ -2487,6 +2642,8 @@ export async function listPromptTemplatesAction(opts?: {
   type?: TemplateType
 }) {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return []
   const scope = getCurrentEnterpriseScope(ctx)
   const type = opts?.type ?? "fission"
   return await db
@@ -2523,6 +2680,8 @@ export async function listWorkspaceModelsAction(): Promise<
   }>
 > {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return []
   if (!ctx.enterprise) return []
   const scope = getCurrentEnterpriseScope(ctx)
   const rows = await db
@@ -2567,6 +2726,8 @@ export async function getQueueStatusAction(): Promise<{
   processing: number
 }> {
   const ctx = await requireUserContext()
+  const denied = checkModuleAccess(ctx, "workspace")
+  if (denied) return { queued: 0, processing: 0 }
   if (!ctx.enterprise) return { queued: 0, processing: 0 }
   const scope = getCurrentEnterpriseScope(ctx)
   const rows = await db
