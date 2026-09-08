@@ -2,7 +2,7 @@
 
 import { useActionState } from "react"
 import { useRouter } from "next/navigation"
-import { cn } from "@/lib/utils"
+import { cn, toImageSrc } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -10,13 +10,17 @@ import { Label } from "@/components/ui/label"
 import { toast } from "sonner"
 import { loginAction } from "@/server/actions/auth"
 
+/** 登录页右侧品牌视觉图（COS config/ 前缀，不过期；上传：scripts/upload-config-asset.ts） */
+const BRAND_IMAGE_URL =
+  "https://super-hanxin-image-ceshi-1317363725.cos.ap-guangzhou.myqcloud.com/config/_platform/2026/09/74dd2769-2237-4722-a909-71e19a9d9dbc.png"
+
 /**
  * 登录表单（基于 login-04 模板改造，手册 §7.2）
  *
  * - 邮箱 → 用户名；
  * - 社交登录按钮保留样式，点击提示"暂未开放"；
  * - "Sign up" 提示"内部系统，联系管理员开通"；
- * - 右侧品牌区沿用瀚星品牌色（黑夜模式）。
+ * - 右侧品牌区为 COS 品牌视觉图，容器保留渐变兜底（图片加载失败不空白）。
  */
 export function LoginForm({
   className,
@@ -43,7 +47,7 @@ export function LoginForm({
 
   return (
     <div className={cn("flex flex-col gap-6", className)} {...props}>
-      <Card className="overflow-hidden">
+      <Card className="gap-0 overflow-hidden py-0">
         <CardContent className="grid p-0 md:grid-cols-2">
           <form action={formAction} className="p-6 md:p-8">
             <div className="flex flex-col gap-6">
@@ -133,15 +137,12 @@ export function LoginForm({
             </div>
           </form>
           <div className="relative hidden bg-gradient-to-br from-primary/20 via-background to-background md:block">
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-8 text-center">
-              <div className="flex size-16 items-center justify-center rounded-2xl bg-primary/10 text-2xl font-bold text-primary">
-                瀚
-              </div>
-              <h2 className="text-xl font-semibold">瀚星 Super Image</h2>
-              <p className="text-sm text-muted-foreground">
-                企业级 AI 图片工作台
-              </p>
-            </div>
+            <img
+              src={toImageSrc(BRAND_IMAGE_URL, { width: 800 })}
+              alt="瀚星 Super Image 品牌视觉"
+              className="absolute inset-0 h-full w-full object-cover"
+              draggable={false}
+            />
           </div>
         </CardContent>
       </Card>
