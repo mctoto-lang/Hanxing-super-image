@@ -1,8 +1,8 @@
 "use client"
 
 import { useState } from "react"
-import Image from "next/image"
 import { AlertTriangle, Download, RotateCcw } from "lucide-react"
+import { SmartImage } from "@/components/ui/smart-image"
 import { Button } from "@/components/ui/button"
 import { ImageGeneration } from "@/components/ui/image-generation"
 import { downloadImageFile, ImageViewer } from "@/components/ui/image-viewer"
@@ -90,12 +90,10 @@ export function BatchView({
                 }
               }}
             >
-              <Image
+              <SmartImage
                 src={toImageSrc(t.imageUrl)}
                 alt={label}
-                fill
-                className="object-cover"
-                unoptimized
+                className="h-full w-full object-cover"
               />
             </button>
           ) : t.status === "failed" ? (

@@ -159,11 +159,6 @@ export async function loadStorageConfig(): Promise<StorageConfig> {
   }
 }
 
-/** category 是否会过期（参考图/生成图/缩略图随 COS 生命周期删除；配置图永不） */
-export function isExpirable(category: ImageCategory): boolean {
-  return category !== "config"
-}
-
 /** 解析 category → COS 桶 + BaseUrl + key 前缀（单桶，仅前缀随 category 变） */
 export function resolveCosTarget(
   cfg: StorageConfig,
@@ -311,12 +306,6 @@ export function contentTypeFromExt(ext: string): string {
       return "application/octet-stream"
   }
 }
-
-/**
- * 图片保留策略：常量定义在 ./retention（客户端可导入的叶子模块），
- * 此处 re-export 保持服务端统一从 config 导入的习惯。
- */
-export { IMAGE_RETENTION, type ImageRetentionConfig } from "./retention"
 
 /** 从可访问 URL 反解对象 key（URL 的 path 部分，去前导斜杠并 decode） */
 export function keyFromUrl(url: string): string {

@@ -29,7 +29,6 @@ import {
   type StorageSetting,
   type QueueSetting,
 } from "@/server/actions/platform-system"
-import { IMAGE_RETENTION } from "@/lib/storage/retention"
 
 interface SystemSettingsProps {
   initialStorage: StorageSetting
@@ -330,40 +329,37 @@ export function SystemSettings({
         </CardContent>
       </Card>
 
-      {/* 图片保留策略（固定值，不可配置） */}
+      {/* 图片过期与清理（由腾讯云 COS 控制台管理） */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <Clock className="size-4" />
-            图片保留策略
+            图片过期与清理
           </CardTitle>
           <CardDescription>
-            保留策略为固定值，由腾讯云 COS 生命周期规则执行删除；前端对已删除
-            的图片显示「图片已过期」占位。
+            应用不主动删除任何图片；过期与清理由腾讯云 COS
+            控制台的生命周期规则管理，已过期的图片在前端显示「图片已过期」占位。
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-2 text-sm">
           <div className="grid gap-2 md:grid-cols-3">
             <div className="rounded-lg border bg-muted/40 p-3">
-              <p className="text-muted-foreground">参考图（ref/）</p>
-              <p className="text-lg font-semibold">
-                {IMAGE_RETENTION.referenceRetainDays} 天
-              </p>
+              <p className="text-muted-foreground">参考图（ref/，会过期）</p>
+              <p className="text-lg font-semibold">COS 规则配置</p>
             </div>
             <div className="rounded-lg border bg-muted/40 p-3">
-              <p className="text-muted-foreground">生成图（gen/，含缩略图）</p>
-              <p className="text-lg font-semibold">
-                {IMAGE_RETENTION.generateRetainDays} 天
-              </p>
+              <p className="text-muted-foreground">生成图（gen/，会过期）</p>
+              <p className="text-lg font-semibold">COS 规则配置</p>
             </div>
             <div className="rounded-lg border bg-muted/40 p-3">
               <p className="text-muted-foreground">配置图（config/）</p>
-              <p className="text-lg font-semibold">永不过期</p>
+              <p className="text-lg font-semibold">建议不过期</p>
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            调整保留期需同步修改代码常量 IMAGE_RETENTION 与 COS 生命周期规则，
-            见 docs/storage-lifecycle.md。
+            桶内按企业分文件夹：ref/&lt;企业ID&gt;/、gen/&lt;企业ID&gt;/、config/&lt;企业ID
+            或 _platform&gt;/。COS 控制台对 ref/、gen/ 前缀各配一条生命周期规则即可覆盖全部企业，详见
+            docs/storage-lifecycle.md。
           </p>
         </CardContent>
       </Card>

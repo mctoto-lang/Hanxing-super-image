@@ -13,6 +13,7 @@ import {
   User,
 } from "lucide-react"
 import { AgentReasoning, AgentStatusLine } from "@/components/chat/agent-reasoning"
+import { SmartImage } from "@/components/ui/smart-image"
 import {
   Tooltip,
   TooltipContent,
@@ -123,8 +124,7 @@ function MessageImages({ images }: { images: string[] }) {
             className="size-28 shrink-0 overflow-hidden rounded-xl border border-primary/30 transition-opacity hover:opacity-90"
             aria-label="查看图片"
           >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
+            <SmartImage
               src={toImageSrc(url, { width: 320 })}
               alt=""
               loading="lazy"

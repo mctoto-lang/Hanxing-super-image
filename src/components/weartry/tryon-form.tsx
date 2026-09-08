@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Check, Trash2, User, Wand2 } from "lucide-react"
-import Image from "next/image"
 import { toast } from "sonner"
+import { SmartImage } from "@/components/ui/smart-image"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -391,13 +391,10 @@ export function TryonForm({
             {figureResult?.imageUrl && (
               <div className="space-y-2 rounded-md border bg-muted/30 p-2">
                 <div className="relative aspect-[3/4] w-full overflow-hidden rounded-md">
-                  <Image
+                  <SmartImage
                     src={toImageSrc(figureResult.imageUrl)}
                     alt="模特形象"
-                    fill
-                    sizes="380px"
-                    className="object-cover"
-                    unoptimized
+                    className="h-full w-full object-cover"
                   />
                   {adoptedImage === figureResult.imageUrl && (
                     <span className="absolute top-1.5 right-1.5 flex items-center gap-1 rounded-full bg-primary px-2 py-0.5 text-[10px] text-primary-foreground">
@@ -468,13 +465,10 @@ export function TryonForm({
                             : "border-border hover:border-primary/50",
                         )}
                       >
-                        <Image
+                        <SmartImage
                           src={toImageSrc(f.imageUrl)}
                           alt="模特形象"
-                          fill
-                          sizes="120px"
-                          className="object-cover"
-                          unoptimized
+                          className="h-full w-full object-cover"
                         />
                         {active && (
                           <span className="absolute top-1 right-1 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground">

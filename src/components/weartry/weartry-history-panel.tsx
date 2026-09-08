@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import Image from "next/image"
+import { SmartImage } from "@/components/ui/smart-image"
 import {
   AlertTriangle,
   Glasses,
@@ -134,13 +134,10 @@ export function WeartryHistoryPanel({
               >
                 <div className="relative aspect-square w-full overflow-hidden bg-muted">
                   {cover?.imageUrl ? (
-                    <Image
+                    <SmartImage
                       src={toImageSrc(cover.imageUrl)}
                       alt={modeLabel(b.mode)}
-                      fill
-                      sizes="(min-width: 1280px) 20vw, (min-width: 1024px) 25vw, (min-width: 640px) 33vw, 50vw"
-                      className="object-cover"
-                      unoptimized
+                      className="h-full w-full object-cover"
                     />
                   ) : b.status === "processing" ? (
                     <div className="flex h-full w-full items-center justify-center">
