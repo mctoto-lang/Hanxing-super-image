@@ -1,6 +1,7 @@
 import { and, desc, eq, isNull } from "drizzle-orm"
 import { db } from "@/db/client"
 import { systemSettings, type SystemSettingValue } from "@/db/schema"
+import { decrypt, encrypt } from "@/lib/crypto"
 
 /**
  * 存储配置与图片分类（单桶 + 文件夹前缀，手册 §10.5）
@@ -79,6 +80,42 @@ interface LegacyStorageFields {
   generateBaseUrl?: string
 }
 
+/* ─── COS SecretKey 落库加密（AES-256-GCM，同 API Key 策略） ─── */
+
+/** 密文前缀标记：与历史明文可靠区分（COS SecretKey 本身可能是合法 base64） */
+const SECRET_ENC_PREFIX = "enc:v1:"
+
+/** 加密敏感凭证用于落库（空串原样，表示未配置） */
+export function encryptStorageSecret(plain: string): string {
+  if (!plain) return ""
+  return SECRET_ENC_PREFIX + encrypt(plain)
+}
+
+/**
+ * 解密落库凭证。历史明文（无前缀）原样返回，下次保存时自动升级为密文；
+ * 解密失败（如 ENCRYPTION_KEY 已轮换）返回空串并打日志——fail-closed，
+ * 让 COS 操作显式失败而不是拿着错误密钥打云 API。
+ */
+export function decryptStorageSecret(stored: string): string {
+  if (!stored) return ""
+  if (!stored.startsWith(SECRET_ENC_PREFIX)) return stored
+  try {
+    return decrypt(stored.slice(SECRET_ENC_PREFIX.length))
+  } catch (err) {
+    console.error(
+      "[storage] COS SecretKey 解密失败（ENCRYPTION_KEY 轮换后未重加密？）：",
+      err instanceof Error ? err.message : err,
+    )
+    return ""
+  }
+}
+
+/** 超管回显掩码：仅保留明文尾 4 位；保存时原样提交则视为「未修改」 */
+export function maskStorageSecret(plain: string): string {
+  if (!plain) return ""
+  return `••••••${plain.slice(-4)}`
+}
+
 /**
  * 读取平台级存储配置（system_setting key=storage，enterpriseId=NULL）。
  *
@@ -106,6 +143,8 @@ export async function loadStorageConfig(): Promise<StorageConfig> {
   return {
     ...DEFAULT_STORAGE,
     ...v,
+    // SecretKey 密文在读取出口统一解密（下游 getStorage/presign 拿到明文）
+    cosSecretKey: decryptStorageSecret(v.cosSecretKey ?? ""),
     // 向后兼容：历史单桶 / 双桶字段统一回退到 cosBucket / cosBaseUrl
     cosBucket: v.cosBucket || v.uploadBucket || v.generateBucket || "",
     cosBaseUrl: v.cosBaseUrl || v.uploadBaseUrl || v.generateBaseUrl || "",

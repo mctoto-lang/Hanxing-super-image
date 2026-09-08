@@ -4,7 +4,12 @@ import { and, desc, eq, isNull } from "drizzle-orm"
 import { db } from "@/db/client"
 import { systemSettings, type SystemSettingValue } from "@/db/schema"
 import { requireSuperAdmin } from "@/lib/auth/session"
-import { loadStorageConfig, type StorageConfig } from "@/lib/storage/config"
+import {
+  encryptStorageSecret,
+  loadStorageConfig,
+  maskStorageSecret,
+  type StorageConfig,
+} from "@/lib/storage/config"
 import { revalidatePath } from "next/cache"
 
 /**
@@ -85,10 +90,11 @@ export interface QueueSetting {
   taskTimeoutSec: number
 }
 
-/** 获取存储设置（读 system_setting，向后兼容旧单桶配置） */
+/** 获取存储设置（读 system_setting，向后兼容旧单桶配置；SecretKey 回显掩码） */
 export async function getStorageSettingAction(): Promise<StorageSetting> {
   await requireSuperAdmin()
-  return loadStorageConfig()
+  const cfg = await loadStorageConfig()
+  return { ...cfg, cosSecretKey: maskStorageSecret(cfg.cosSecretKey) }
 }
 
 /** 保存存储设置 */
@@ -96,9 +102,19 @@ export async function saveStorageSettingAction(
   input: StorageSetting,
 ): Promise<{ ok: boolean; error?: string }> {
   await requireSuperAdmin()
+  // SecretKey AES-256-GCM 加密落库（同 API Key 策略，DB 备份/只读账号不泄密）：
+  // - 表单未修改（原样提交掩码）→ 保留现值，顺带把历史明文升级为密文；
+  // - 提交新值 → 加密；提交空串 → 清空（切换回 local 存储时使用）
+  let secretKeyToStore: string
+  if (input.cosSecretKey.startsWith("••••••")) {
+    const current = await loadStorageConfig()
+    secretKeyToStore = encryptStorageSecret(current.cosSecretKey)
+  } else {
+    secretKeyToStore = encryptStorageSecret(input.cosSecretKey)
+  }
   await upsertPlatformSetting(
     "storage",
-    input as unknown as SystemSettingValue,
+    { ...input, cosSecretKey: secretKeyToStore } as unknown as SystemSettingValue,
     "存储后端配置（local/cos）",
   )
   revalidatePath("/platform/system")
