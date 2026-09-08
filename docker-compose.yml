@@ -95,7 +95,7 @@ services:
     restart: unless-stopped
     command: ["npx", "tsx", "scripts/worker.ts"]
     deploy:
-      replicas: ${WORKER_REPLICAS:-1}
+      replicas: ${WORKER_REPLICAS:-2}
     environment:
       NODE_ENV: production
       DATABASE_URL: ${DATABASE_URL}
