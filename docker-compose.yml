@@ -20,6 +20,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # 镜像源默认国内（DaoCloud / npmmirror），海外部署在 .env 覆盖为官方源
+        NODE_IMAGE: ${NODE_IMAGE:-docker.m.daocloud.io/library/node:22-alpine}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
     container_name: hanxing-app
     restart: unless-stopped
     ports:
@@ -59,6 +63,9 @@ services:
       context: .
       dockerfile: Dockerfile
       target: builder
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-docker.m.daocloud.io/library/node:22-alpine}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
     container_name: hanxing-migrate
     restart: "no"
     command: ["npx", "drizzle-kit", "migrate"]
@@ -92,6 +99,9 @@ services:
       context: .
       dockerfile: Dockerfile
       target: builder
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-docker.m.daocloud.io/library/node:22-alpine}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
     restart: unless-stopped
     command: ["npx", "tsx", "scripts/worker.ts"]
     deploy:

@@ -1,6 +1,18 @@
+# ─── 镜像源（国内默认，海外环境构建时覆盖）───
+# 基础镜像走 DaoCloud 的 Docker Hub 镜像；apk 走阿里云 Alpine 源；
+# corepack/pnpm 走 npmmirror（lockfile 完整性校验与源无关，不受影响）。
+# 覆盖示例：docker build --build-arg NODE_IMAGE=node:22-alpine \
+#   --build-arg NPM_REGISTRY=https://registry.npmjs.org .
+ARG NODE_IMAGE=docker.m.daocloud.io/library/node:22-alpine
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+
 # ─── Stage 1: deps ──────────────────────────────────────────────
-FROM node:22-alpine AS deps
+FROM ${NODE_IMAGE} AS deps
+ARG NPM_REGISTRY
+# Alpine 软件源换国内（仅 apk 下载加速）
+RUN sed -i 's#dl-cdn.alpinelinux.org#mirrors.aliyun.com#g' /etc/apk/repositories
 RUN apk add --no-cache libc6-compat
+ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY} COREPACK_NPM_REGISTRY=${NPM_REGISTRY}
 RUN corepack enable && corepack prepare pnpm@11.20.0 --activate
 
 WORKDIR /app
@@ -12,7 +24,9 @@ RUN pnpm install --frozen-lockfile
 
 
 # ─── Stage 2: builder ───────────────────────────────────────────
-FROM node:22-alpine AS builder
+FROM ${NODE_IMAGE} AS builder
+ARG NPM_REGISTRY
+ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY} COREPACK_NPM_REGISTRY=${NPM_REGISTRY}
 RUN corepack enable && corepack prepare pnpm@11.20.0 --activate
 
 WORKDIR /app
@@ -31,7 +45,7 @@ RUN pnpm build
 
 
 # ─── Stage 3: runner ────────────────────────────────────────────
-FROM node:22-alpine AS runner
+FROM ${NODE_IMAGE} AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production

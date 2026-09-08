@@ -1,9 +1,11 @@
 # 开发期基础设施（仅 PostgreSQL + Redis）
 # 用法：docker compose -f docker-compose.dev.yml up -d
 # 生产编排见 docker-compose.yml（M7 阶段补全 app 服务）
+# 镜像走 DaoCloud 国内镜像源（拉取加速）；需回官方源时去掉
+# docker.m.daocloud.io/library/ 前缀即可。
 services:
   postgres:
-    image: postgres:16-alpine
+    image: docker.m.daocloud.io/library/postgres:16-alpine
     container_name: hanxing-pg-dev
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-hanxing}
@@ -20,7 +22,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    image: docker.m.daocloud.io/library/redis:7-alpine
     container_name: hanxing-redis-dev
     command: redis-server --save 60 1 --loglevel warning
     ports:
