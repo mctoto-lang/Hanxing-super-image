@@ -3,7 +3,9 @@
 #   1. 复制 .env.example → .env 并修改密钥
 #   2. docker compose up -d --build
 #   3. 首次启动后执行迁移：docker compose run --rm migrate
-#   4. 种子超管：docker compose run --rm app pnpm db:seed
+#   4. 种子超管：docker compose run --rm migrate npx tsx src/db/seed.ts
+#      （seed 需要完整源码 + devDependencies，用 builder 阶段的 migrate
+#       服务跑；app 是 standalone runner 镜像，没有 pnpm/src）
 #
 # 开发期基础设施见 docker-compose.dev.yml
 

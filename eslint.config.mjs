@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Vendored 上游文件（文件头注明「勿局部修改，上游更新时整体重新 vendor」），
+    // 不按本仓库规则改造
+    "src/components/grok-ball/engine/grok-ball.js",
   ]),
   {
     rules: {
@@ -25,6 +28,13 @@ const eslintConfig = defineConfig([
       "@typescript-eslint/no-unused-vars": [
         "warn",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
+      // `declare namespace` 是模块类型增强的唯一写法（如 React 19 的
+      // declare module "react" { namespace JSX } 注册自定义元素），放行；
+      // 运行时 namespace（含编译产物的 IIFE 模拟）仍然禁止。
+      "@typescript-eslint/no-namespace": [
+        "error",
+        { allowDeclarations: true },
       ],
     },
   },

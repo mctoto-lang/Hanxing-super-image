@@ -1,5 +1,4 @@
-allowBuilds:
-  esbuild: set this to true or false
+# pnpm 11 构建许可：以下原生/带安装脚本的依赖允许执行构建
 onlyBuiltDependencies:
   - esbuild
   - sharp

@@ -5,8 +5,9 @@ RUN corepack enable && corepack prepare pnpm@11.20.0 --activate
 
 WORKDIR /app
 
-# 仅复制 manifest，利用 Docker 层缓存
-COPY package.json pnpm-lock.yaml* ./
+# 仅复制 manifest（含 workspace 文件——pnpm 11 依赖它读取
+# onlyBuiltDependencies 许可，缺它 sharp 等原生依赖构建会被跳过），利用 Docker 层缓存
+COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 
@@ -23,8 +24,9 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 
-# 生成 drizzle 迁移产物 + 构建 Next.js standalone
-RUN pnpm db:generate
+# 迁移产物由开发机 `pnpm db:generate` 生成并随代码提交（.dockerignore
+# 不排除 drizzle/meta），此处直接使用——镜像内绝不能再 generate（无
+# snapshot 会从零生成全新初始迁移，导致 migrate 服务执行漂移的迁移链）
 RUN pnpm build
 
 
@@ -46,7 +48,8 @@ COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
 
-# 复制 drizzle 迁移文件（启动时自动迁移）
+# 复制 drizzle 迁移文件（迁移由 migrate 服务执行：
+# docker compose run --rm migrate；runner 镜像无 drizzle-kit/源码）
 COPY --from=builder /app/drizzle ./drizzle
 
 # 创建上传目录并赋权

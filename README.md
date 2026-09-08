@@ -110,7 +110,7 @@ curl http://localhost:3000/api/health
 | `COS_BUCKET` | 否 | 同上 |
 | `COS_REGION` | 否 | 同上 |
 | `COS_BASE_URL` | 否 | 同上 |
-| `CRON_SECRET` | 否 | `/api/cron/*` 的 Bearer token |
+| `CRON_SECRET` | 是 | `/api/cron/*` 的 Bearer token（`env.ts` 启动强校验，缺失拒绝配置定时任务） |
 | `QUEUE_POLL_INTERVAL_MS` | 否 | 队列轮询间隔（默认 2000ms） |
 
 ## 项目结构

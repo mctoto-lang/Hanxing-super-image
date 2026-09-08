@@ -1,0 +1,69 @@
+# 最小 CI 门禁（手册 §10.6：类型/lint/测试每次推送强制执行）
+# - lint-typecheck：静态检查，无需外部服务
+# - test：起 PG + Redis 服务容器，先应用迁移再跑全量测试
+#   （集成测试直连真实 PG/Redis，含并发扣减/租户隔离/孤儿回收）
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  lint-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # 版本取 package.json 的 packageManager 字段
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hanxing
+          POSTGRES_PASSWORD: hanxing_ci
+          POSTGRES_DB: hanxing_super
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hanxing"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # 密钥为 CI 专用占位值（仅满足 env.ts 长度/非默认值校验），不保护任何真实环境
+      DATABASE_URL: postgresql://hanxing:hanxing_ci@localhost:5432/hanxing_super
+      REDIS_URL: redis://localhost:6379
+      AUTH_SECRET: ci-auth-secret-0123456789abcdef0123456789abcdef
+      ENCRYPTION_KEY: ci-encryption-key-0123456789abcdef012345
+      CRON_SECRET: ci-cron-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Apply migrations
+        run: pnpm db:migrate
+      - name: Run tests
+        run: pnpm test

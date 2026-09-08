@@ -32,6 +32,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# 模板必须入库：新克隆按 README「cp .env.example .env」初始化（真实 .env 永不入库）
+!.env.example
 
 # vercel
 .vercel

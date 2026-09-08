@@ -12,5 +12,6 @@ uploads
 backups
 *.sqlite
 *.db
-drizzle/meta
 .pnpm-store
+# 注意：不能排除 drizzle/meta——migrate 服务按 journal+snapshot 应用迁移，
+# 缺 snapshot 会让 drizzle-kit 状态分叉（builder 内也严禁再 db:generate）
