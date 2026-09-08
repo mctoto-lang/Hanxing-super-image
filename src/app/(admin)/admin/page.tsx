@@ -1,23 +1,27 @@
 import Link from "next/link"
-import { Users, Shield, Coins, Cpu, ScrollText, MessageSquare } from "lucide-react"
+import { Users, Shield, Coins, Cpu, ScrollText, MessageSquare, BarChart3 } from "lucide-react"
 import { requireEnterpriseAdmin } from "@/lib/auth/session"
-import { roleLabel } from "@/lib/auth/permissions"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
 export const dynamic = "force-dynamic"
 
 export default async function AdminPage() {
-  const ctx = await requireEnterpriseAdmin()
+  await requireEnterpriseAdmin()
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">企业管理</h1>
-        <p className="text-sm text-muted-foreground">
-          {ctx.enterprise?.name} · {roleLabel(ctx.user.enterpriseRole)}
-        </p>
-      </div>
-
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <Link href="/admin/stats">
+          <Card className="cursor-pointer transition-colors hover:border-primary">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <BarChart3 className="size-4" /> 数据看板
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground">
+              成员消耗趋势、模块占比与排行
+            </CardContent>
+          </Card>
+        </Link>
         <Link href="/admin/users">
           <Card className="cursor-pointer transition-colors hover:border-primary">
             <CardHeader>
@@ -34,7 +38,7 @@ export default async function AdminPage() {
           <Card className="cursor-pointer transition-colors hover:border-primary">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
-                <Cpu className="size-4" /> 模型配置
+                <Cpu className="size-4" /> 生图模型
               </CardTitle>
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground">

@@ -197,6 +197,7 @@ export const PRODUCT_PROMPT_SCENES = [
   "weartry.tryon", // 穿戴-模特穿戴生图
   "weartry.tryon_accessory", // 穿戴-AI万戴生图
   "weartry.color", // 穿戴-AI换色生图
+  "mockup.ai_background", // 样机-AI背景生成
 ] as const
 export type ProductPromptScene = (typeof PRODUCT_PROMPT_SCENES)[number]
 

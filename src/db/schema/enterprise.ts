@@ -62,7 +62,7 @@ export const enterprises = pgTable("enterprise", {
  * 权限组（手册 §4.1、D21）
  *
  * 绑定企业（enterpriseId 非空）；每企业可有多个组；
- * 组决定 allowedModels / allowedPages / maxConcurrent / priority。
+ * 组决定 allowedModels / allowedChatModels / allowedPages / maxConcurrent / priority。
  * 每企业至多一个 isDefault=true 的默认组（新建用户默认分配）。
  */
 export const permissionGroups = pgTable(
@@ -77,7 +77,11 @@ export const permissionGroups = pgTable(
     allowedModels: jsonb("allowed_models")
       .$type<string[]>()
       .default([])
-      .notNull(), // 模型 id 白名单（空 = 企业全部已开通模型）
+      .notNull(), // 生图模型 id 白名单（空 = 企业全部已开通模型）
+    allowedChatModels: jsonb("allowed_chat_models")
+      .$type<string[]>()
+      .default([])
+      .notNull(), // 对话模型 id 白名单（空 = 企业全部已开通对话模型）
     allowedPages: jsonb("allowed_pages")
       .$type<ModuleName[]>()
       .default([])

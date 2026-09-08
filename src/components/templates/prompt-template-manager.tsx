@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { LibraryBig, MoreVertical, Pencil, Plus, Trash2 } from "lucide-react"
+import { MoreVertical, Pencil, Plus, Trash2 } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -195,16 +195,6 @@ export function PromptTemplateManager() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold">
-          <LibraryBig className="h-6 w-6" />
-          提示词模板
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          管理批量生图使用的提示词模板（裂变 / 细化 / 重生成 / 提取 / 翻译）
-        </p>
-      </div>
-
       {loading && templates.length === 0 ? (
         <Spinner />
       ) : (
@@ -325,7 +315,9 @@ export function PromptTemplateManager() {
                 items={workspaceTemplateTypes}
               >
                 <SelectTrigger className="w-full">
-                  <SelectValue />
+                  <SelectValue>
+                    {workspaceTemplateTypes.find((i) => i.value === form.type)?.label ?? form.type}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {workspaceTemplateTypes.map((item) => (

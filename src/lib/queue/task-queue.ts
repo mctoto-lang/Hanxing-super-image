@@ -206,9 +206,13 @@ export async function dequeueNext(opts: {
 }): Promise<QueueTaskInput | null> {
   const { enterpriseId, enterpriseMaxConcurrent } = opts
 
-  // 检查企业图片并发是否已满（无槽位则本轮不再出队）
+  // 检查企业图片并发是否已满（无槽位则本轮不再出队）。
+  // maxConcurrent <= 0 与 Lua 槽位脚本、effectiveConcurrentLimit 语义一致：
+  // 视为不限制（若按 0 比较，0 >= 0 恒真 → 该企业任务永远不出队）
   const current = Number((await redis.get(entConcurrentKey(enterpriseId))) ?? 0)
-  if (current >= enterpriseMaxConcurrent) return null
+  if (enterpriseMaxConcurrent > 0 && current >= enterpriseMaxConcurrent) {
+    return null
+  }
 
   // ZSet 按分数倒序取第一个（最高优先级；同优先级因时间分量取反，
   // 最高分 = 最早提交 → FIFO）

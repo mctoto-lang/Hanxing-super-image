@@ -15,17 +15,19 @@ import { cn } from "@/lib/utils"
 const ROUTE_TITLES: { prefix: string; title: string }[] = [
   // 业务模块（dashboard）
   { prefix: "/create", title: "自由创作" },
+  { prefix: "/chat", title: "AI 对话" },
+  { prefix: "/weartry", title: "穿戴图片" },
   { prefix: "/assets", title: "资产管理" },
   { prefix: "/workspace", title: "批量生图" },
   { prefix: "/product", title: "商品图片" },
   { prefix: "/mockup", title: "样机渲染" },
-  { prefix: "/settings", title: "个人设置" },
   // 模板管理
   { prefix: "/templates", title: "提示词模板" },
   // 企业管理（admin）
   { prefix: "/admin", title: "企业管理" },
+  { prefix: "/admin/stats", title: "数据看板" },
   { prefix: "/admin/users", title: "成员管理" },
-  { prefix: "/admin/models", title: "模型配置" },
+  { prefix: "/admin/models", title: "生图模型" },
   { prefix: "/admin/chat-models", title: "对话模型" },
   { prefix: "/admin/groups", title: "权限组" },
   { prefix: "/admin/credits", title: "积分流水" },
@@ -33,10 +35,12 @@ const ROUTE_TITLES: { prefix: string; title: string }[] = [
   // 平台管理（superadmin）
   { prefix: "/platform", title: "数据看板" },
   { prefix: "/platform/enterprises", title: "企业管理" },
+  { prefix: "/platform/plans", title: "订阅套餐" },
   { prefix: "/platform/users", title: "平台用户" },
   { prefix: "/platform/models", title: "预置模型" },
   { prefix: "/platform/chat-models", title: "对话模型" },
   { prefix: "/platform/product-config", title: "商品图片配置" },
+  { prefix: "/platform/mockup-config", title: "样机提示词" },
   { prefix: "/platform/system", title: "系统设置" },
 ]
 

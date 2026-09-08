@@ -3,6 +3,7 @@ import {
   check,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -24,8 +25,15 @@ import { chatApiConfigs } from "./workspace"
  *   记录每条消息账单，余额扣减走 users.chatUnbilledCenticredits 累计器。
  */
 
-/** 思考强度档位（UI 统一四档，适配层按格式映射为各家参数） */
-export type ChatThinkingLevel = "off" | "low" | "medium" | "high"
+/** 思考强度档位（UI 统一七档，适配层按格式映射为各家参数；varchar(10) 可容纳 ultracode） */
+export type ChatThinkingLevel =
+  | "off"
+  | "low"
+  | "medium"
+  | "high"
+  | "extra"
+  | "max"
+  | "ultracode"
 
 /** 对话会话（左侧历史栏实体） */
 export const chatConversations = pgTable(
@@ -80,6 +88,8 @@ export const chatMessages = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     role: varchar("role", { length: 10 }).notNull(), // user | assistant
     content: text("content").default("").notNull(),
+    /** 用户消息附带的图片 URL 数组（多模态；纯图消息 content 可为空） */
+    images: jsonb("images").$type<string[]>().default([]).notNull(),
     /** 思考过程（reasoning 流，可能为空） */
     thinkingContent: text("thinking_content"),
     modelId: uuid("model_id").references(() => chatApiConfigs.id, {

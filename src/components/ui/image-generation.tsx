@@ -33,7 +33,7 @@ export function ImageGeneration({
       >
         <span className="igDots" aria-hidden />
         <span className="igGlow" aria-hidden />
-        <span className="igRes">{resolution}</span>
+        {resolution ? <span className="igRes">{resolution}</span> : null}
       </div>
       {showMeta ? (
         <div className="igMeta">

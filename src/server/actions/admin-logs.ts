@@ -1,10 +1,11 @@
 "use server"
 
-import { desc, eq, sql } from "drizzle-orm"
+import { and, desc, eq, gte, ilike, lt, or, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import {
   generationTasks,
   loginLogs,
+  taskSourceEnum,
   users,
   models,
   apiCallLogs,
@@ -13,6 +14,7 @@ import {
   requireEnterpriseAdmin,
   getCurrentEnterpriseScope,
 } from "@/lib/auth/session"
+import { parseDayRange } from "@/lib/admin/table-filters"
 import { revalidatePath } from "next/cache"
 
 /**
@@ -60,10 +62,17 @@ export interface TaskLogDetail extends TaskLogRow {
   }>
 }
 
-/** 列出生图任务日志（企业隔离） */
+/** 列出生图任务日志（企业隔离，可按用户 / 模块 / 日期筛选） */
 export async function listTaskLogsAction(params?: {
   page?: number
   pageSize?: number
+  /** 用户关键词（username / 昵称模糊） */
+  q?: string
+  /** 模块（generation_task.source 枚举） */
+  source?: string
+  /** 日期范围（YYYY-MM-DD，Asia/Shanghai 日界） */
+  from?: string
+  to?: string
 }): Promise<{ tasks: TaskLogRow[]; total: number }> {
   const ctx = await requireEnterpriseAdmin()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
@@ -71,6 +80,25 @@ export async function listTaskLogsAction(params?: {
   const page = Math.max(1, params?.page ?? 1)
   const pageSize = Math.min(50, params?.pageSize ?? 20)
   const offset = (page - 1) * pageSize
+
+  const conds = [eq(generationTasks.enterpriseId, enterpriseId)]
+  const q = params?.q?.trim()
+  if (q) {
+    const kw = `%${q}%`
+    conds.push(or(ilike(users.username, kw), ilike(users.name, kw))!)
+  }
+  if (params?.source) {
+    conds.push(
+      eq(
+        generationTasks.source,
+        params.source as (typeof taskSourceEnum.enumValues)[number],
+      ),
+    )
+  }
+  const { from, toEnd } = parseDayRange(params?.from, params?.to)
+  if (from) conds.push(gte(generationTasks.createdAt, from))
+  if (toEnd) conds.push(lt(generationTasks.createdAt, toEnd))
+  const where = and(...conds)
 
   const rows = await db
     .select({
@@ -93,7 +121,7 @@ export async function listTaskLogsAction(params?: {
     .from(generationTasks)
     .leftJoin(users, eq(users.id, generationTasks.userId))
     .leftJoin(models, eq(models.id, generationTasks.modelId))
-    .where(eq(generationTasks.enterpriseId, enterpriseId))
+    .where(where)
     .orderBy(desc(generationTasks.createdAt))
     .limit(pageSize)
     .offset(offset)
@@ -101,7 +129,8 @@ export async function listTaskLogsAction(params?: {
   const [{ count }] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(generationTasks)
-    .where(eq(generationTasks.enterpriseId, enterpriseId))
+    .leftJoin(users, eq(users.id, generationTasks.userId))
+    .where(where)
 
   return { tasks: rows, total: count }
 }

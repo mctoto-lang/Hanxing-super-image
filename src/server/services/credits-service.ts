@@ -1,8 +1,10 @@
-import { and, eq, sql } from "drizzle-orm"
+import { and, eq, gte, ilike, lt, or, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import {
   creditTransactions,
   enterprises,
+  generationTasks,
+  taskSourceEnum,
   users,
   creditTxTypeEnum,
 } from "@/db/schema"
@@ -296,13 +298,20 @@ export async function allocateCreditsToUser(input: {
  *   3. 写一条 allocation_deduct 流水（关联 enterpriseId+userId+taskId）。
  */
 export async function deductUserCredits(
-  input: BaseTxInput & { amount: number },
+  input: BaseTxInput & { amount: number; tx?: DbTx },
 ): Promise<{ balanceAfter: number }> {
-  const { enterpriseId, amount, userId, taskId, remark } = input
+  const {
+    enterpriseId,
+    amount,
+    userId,
+    taskId,
+    remark,
+    tx: externalTx,
+  } = input
   if (amount <= 0) throw new Error("扣减金额必须为正数")
   if (!userId) throw new Error("扣减个人配额必须提供 userId")
 
-  return await db.transaction(async (tx) => {
+  const run = async (tx: DbTx): Promise<{ balanceAfter: number }> => {
     const [row] = await tx
       .select({
         balance: users.creditsBalance,
@@ -340,7 +349,10 @@ export async function deductUserCredits(
     })
 
     return { balanceAfter: updated!.balance }
-  })
+  }
+
+  if (externalTx) return run(externalTx)
+  return db.transaction(run)
 }
 
 /**
@@ -383,6 +395,71 @@ export async function refundUserCredits(
 
   if (externalTx) return run(externalTx)
   return db.transaction(run)
+}
+
+/**
+ * 退款（任务失败时由队列消费者/回收通道调用，退还到成员个人配额）。
+ * 按张退款：成功交付张数保留计费，失败张数退还；旧行无单价记录时全额退。
+ *
+ * 幂等保护：孤儿回收与消费端失败路径可能并发触发退款，这里用
+ * creditsCharged 条件更新做「认领」——仅当值仍等于读取值时才执行退款，
+ * 并发另一方认领失败直接返回，杜绝双倍退款（凭空增发积分）。
+ *
+ * 原子性：认领与退款在同一事务内提交。此前两步分离提交存在「认领成功、
+ * 退款写入失败」的窗口，退款会永久丢失；现在任一步失败整体回滚，重试时
+ * creditsCharged 仍是原值，可再次认领退款。
+ *
+ * 注意：本函数属于计费内部逻辑，绝不可放在 "use server" 文件中导出——
+ * 那样会把它暴露为可 HTTP 调用的 Server Action 端点（无归属/状态校验，
+ * 等于任意任务可退款，计费被绕过）。
+ */
+export async function refundFailedTask(taskId: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    const [task] = await tx
+      .select()
+      .from(generationTasks)
+      .where(eq(generationTasks.id, taskId))
+      .limit(1)
+    if (!task || task.creditsCharged <= 0) return
+
+    let refund = task.creditsCharged
+    let remaining = 0
+    if (task.costPerImage != null) {
+      const succeededCount = task.succeededIndexes?.length ?? 0
+      remaining = Math.min(
+        task.creditsCharged,
+        succeededCount * task.costPerImage,
+      )
+      refund = task.creditsCharged - remaining
+    }
+
+    // 认领：将 creditsCharged 原子地置为 remaining（仅当未被并发方改动）
+    const claimed = await tx
+      .update(generationTasks)
+      .set({ creditsCharged: remaining })
+      .where(
+        and(
+          eq(generationTasks.id, taskId),
+          eq(generationTasks.creditsCharged, task.creditsCharged),
+        ),
+      )
+      .returning({ id: generationTasks.id })
+    if (claimed.length === 0) return // 已被并发调用方处理
+
+    if (refund > 0) {
+      const failedCount = task.costPerImage != null
+        ? Math.floor(refund / task.costPerImage)
+        : task.imageCount
+      await refundUserCredits({
+        enterpriseId: task.enterpriseId,
+        amount: refund,
+        userId: task.userId,
+        taskId: task.id,
+        remark: `任务失败退还（${failedCount} 张）`,
+        tx,
+      })
+    }
+  })
 }
 
 /**
@@ -452,29 +529,86 @@ export async function setUserCreditsBalance(input: {
   })
 }
 
-/** 流水查询（按企业，分页） */
+/**
+ * 流水查询（按企业，分页；可按用户关键词 / 模块 / 日期范围筛选）。
+ *
+ * 模块推导：taskId 关联 generation_task（无外键，任务删除后 source 为
+ * null）；AI 对话流水的 taskId 存的是 assistant 消息 id，join 不到任务，
+ * 靠备注前缀「AI 对话」识别，筛选时同样按备注前缀匹配。
+ */
 export async function listTransactions(opts: {
   enterpriseId: string
   limit?: number
   offset?: number
   type?: CreditTxType
+  /** 用户关键词（username / 昵称模糊） */
+  q?: string
+  /** 精确按触发者过滤（个人积分流水：allocation/allocation_deduct 等的 userId） */
+  userId?: string
+  /** 模块筛选：source 五枚举之一，或 "chat"（AI 对话，按备注前缀） */
+  module?: string
+  /** 起始时刻（含） */
+  from?: Date
+  /** 排除上界（toEnd） */
+  toEnd?: Date
 }): Promise<{
-  items: (typeof creditTransactions.$inferSelect)[]
+  items: Array<
+    (typeof creditTransactions.$inferSelect) & {
+      /** 触发者显示名（昵称缺省回退用户名；userId 为空时无） */
+      userName: string | null
+      /** 关联生图任务的 source（对话 / 无任务流水为 null） */
+      source: string | null
+    }
+  >
   total: number
 }> {
-  const { enterpriseId, limit = 50, offset = 0, type } = opts
+  const {
+    enterpriseId,
+    limit = 50,
+    offset = 0,
+    type,
+    q,
+    userId,
+    module,
+    from,
+    toEnd,
+  } = opts
 
-  const where = type
-    ? and(
-        eq(creditTransactions.enterpriseId, enterpriseId),
-        eq(creditTransactions.type, type),
-      )
-    : eq(creditTransactions.enterpriseId, enterpriseId)
+  const conds = [eq(creditTransactions.enterpriseId, enterpriseId)]
+  if (type) conds.push(eq(creditTransactions.type, type))
+  if (userId) conds.push(eq(creditTransactions.userId, userId))
+  if (q) {
+    const kw = `%${q}%`
+    conds.push(or(ilike(users.username, kw), ilike(users.name, kw))!)
+  }
+  if (module === "chat") {
+    conds.push(ilike(creditTransactions.remark, "AI 对话%"))
+  } else if (module) {
+    conds.push(
+      eq(
+        generationTasks.source,
+        module as (typeof taskSourceEnum.enumValues)[number],
+      ),
+    )
+  }
+  if (from) conds.push(gte(creditTransactions.createdAt, from))
+  if (toEnd) conds.push(lt(creditTransactions.createdAt, toEnd))
+  const where = and(...conds)
 
-  const [items, [{ count }]] = await Promise.all([
+  const joinUsers = () =>
     db
-      .select()
+      .select({
+        tx: creditTransactions,
+        name: users.name,
+        username: users.username,
+        source: generationTasks.source,
+      })
       .from(creditTransactions)
+      .leftJoin(users, eq(creditTransactions.userId, users.id))
+      .leftJoin(generationTasks, eq(creditTransactions.taskId, generationTasks.id))
+
+  const [rows, [{ count }]] = await Promise.all([
+    joinUsers()
       .where(where)
       .orderBy(sql`${creditTransactions.createdAt} DESC`)
       .limit(limit)
@@ -482,8 +616,17 @@ export async function listTransactions(opts: {
     db
       .select({ count: sql<number>`count(*)::int` })
       .from(creditTransactions)
+      .leftJoin(users, eq(creditTransactions.userId, users.id))
+      .leftJoin(generationTasks, eq(creditTransactions.taskId, generationTasks.id))
       .where(where),
   ])
 
-  return { items, total: count }
+  return {
+    items: rows.map((r) => ({
+      ...r.tx,
+      userName: r.name || r.username || null,
+      source: r.source ?? null,
+    })),
+    total: count,
+  }
 }

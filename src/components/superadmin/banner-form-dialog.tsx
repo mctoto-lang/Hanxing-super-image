@@ -161,7 +161,9 @@ function BannerForm({ row, onDone }: { row: BannerRow | null; onDone: () => void
             items={BANNER_ICON_OPTIONS}
           >
             <SelectTrigger className="w-full">
-              <SelectValue />
+              <SelectValue>
+                {BANNER_ICON_OPTIONS.find((o) => o.value === icon)?.label ?? icon}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {BANNER_ICON_OPTIONS.map((o) => (

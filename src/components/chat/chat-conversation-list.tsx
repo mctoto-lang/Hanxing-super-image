@@ -247,7 +247,7 @@ function ConversationCard({
               <TooltipTrigger render={<span className="min-w-0 truncate text-sm" />}>
                 {conversation.title}
               </TooltipTrigger>
-              <TooltipContent side="right" align="start" sideOffset={8}>
+              <TooltipContent side="right" align="center" sideOffset={8}>
                 {conversation.title}
               </TooltipContent>
             </Tooltip>

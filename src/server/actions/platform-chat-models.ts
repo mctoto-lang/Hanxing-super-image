@@ -44,10 +44,14 @@ async function syncPresetChatModelToWhitelists(modelId: string) {
 function buildChatExtraConfig(d: {
   temperature?: number
   maxTokens?: number
+  thinkingOverrides?: NonNullable<ChatModelExtraConfig["thinkingOverrides"]>
 }): ChatModelExtraConfig {
   const cfg: ChatModelExtraConfig = {}
   if (d.temperature !== undefined) cfg.temperature = d.temperature
   if (d.maxTokens !== undefined && d.maxTokens > 0) cfg.maxTokens = d.maxTokens
+  if (d.thinkingOverrides && Object.keys(d.thinkingOverrides).length > 0) {
+    cfg.thinkingOverrides = d.thinkingOverrides
+  }
   return cfg
 }
 
@@ -69,6 +73,7 @@ export interface PresetChatModelRow {
   inputPriceCenticredits: number
   outputPriceCenticredits: number
   supportsThinking: boolean
+  supportsVision: boolean
   maxConcurrent: number
   maxRetries: number
   apiTimeout: number
@@ -111,6 +116,7 @@ export async function listPresetChatModelsAction(
       inputPriceCenticredits: chatApiConfigs.inputPriceCenticredits,
       outputPriceCenticredits: chatApiConfigs.outputPriceCenticredits,
       supportsThinking: chatApiConfigs.supportsThinking,
+      supportsVision: chatApiConfigs.supportsVision,
       maxConcurrent: chatApiConfigs.maxConcurrent,
       maxRetries: chatApiConfigs.maxRetries,
       apiTimeout: chatApiConfigs.apiTimeout,
@@ -165,6 +171,7 @@ export async function createPresetChatModelAction(
         inputPriceCenticredits: d.inputPriceCenticredits,
         outputPriceCenticredits: d.outputPriceCenticredits,
         supportsThinking: d.supportsThinking,
+        supportsVision: d.supportsVision,
         maxConcurrent: d.maxConcurrent,
         maxRetries: d.maxRetries,
         apiTimeout: d.apiTimeout,
@@ -228,6 +235,7 @@ export async function updatePresetChatModelAction(
   if (d.inputPriceCenticredits !== undefined) set.inputPriceCenticredits = d.inputPriceCenticredits
   if (d.outputPriceCenticredits !== undefined) set.outputPriceCenticredits = d.outputPriceCenticredits
   if (d.supportsThinking !== undefined) set.supportsThinking = d.supportsThinking
+  if (d.supportsVision !== undefined) set.supportsVision = d.supportsVision
   if (d.maxConcurrent !== undefined) set.maxConcurrent = d.maxConcurrent
   if (d.maxRetries !== undefined) set.maxRetries = d.maxRetries
   if (d.apiTimeout !== undefined) set.apiTimeout = d.apiTimeout

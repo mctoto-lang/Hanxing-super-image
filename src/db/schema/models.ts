@@ -83,6 +83,8 @@ export const models = pgTable(
     visibleInWeartry: boolean("visible_in_weartry")
       .default(false)
       .notNull(),
+    /** 样机渲染页 AI 生图（背景/重绘）可选 */
+    visibleInMockup: boolean("visible_in_mockup").default(false).notNull(),
     supportsReferenceImage: boolean("supports_reference_image")
       .default(false)
       .notNull(),

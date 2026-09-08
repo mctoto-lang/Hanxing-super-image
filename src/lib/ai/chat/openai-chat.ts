@@ -5,16 +5,18 @@
  *
  * - 请求体：{ model, messages, stream: true, stream_options: {include_usage},
  *   max_tokens, temperature?, reasoning_effort? }
- * - 思考强度：reasoning_effort: low/medium/high（off 不发送字段，由模型默认）；
- *   思考流读取 delta.reasoning_content（DeepSeek 系）或 delta.reasoning
- *   （OpenRouter 等网关变体），正文读取 delta.content。
+ * - 思考强度：reasoning_effort（低/中/高三档直传，高档位默认封顶 high，
+ *   可被管理员 thinkingOverrides 覆盖为网关自定义值；off 不发送字段，
+ *   由模型默认）；思考流读取 delta.reasoning_content（DeepSeek 系）或
+ *   delta.reasoning（OpenRouter 等网关变体），正文读取 delta.content。
  * - usage：开启 stream_options 后最后一个 chunk 携带 usage
  *   （prompt_tokens / completion_tokens）；兼容网关在多个 chunk 分次上报。
  */
 import {
   extractChatErrorMessage,
-  OPENAI_REASONING_EFFORTS,
   resolveOpenAiChatEndpoint,
+  resolveReasoningEffort,
+  type ChatContentPart,
   type ChatStreamEvent,
   type StreamChatAdapterOptions,
 } from "@/lib/ai/chat/chat-model-config"
@@ -57,11 +59,15 @@ export function createChatAbortSignal(
 export function buildOpenAiChatRequestBody(
   opts: StreamChatAdapterOptions,
 ): Record<string, unknown> {
-  const messages: Array<{ role: string; content: string }> = []
+  const messages: Array<{
+    role: string
+    content: string | ChatContentPart[]
+  }> = []
   if (opts.systemPrompt?.trim()) {
     messages.push({ role: "system", content: opts.systemPrompt.trim() })
   }
   for (const msg of opts.messages) {
+    // content 为 OpenAI 原生格式：纯文本或 text/image_url part 数组（多模态），直接透传
     messages.push({ role: msg.role, content: msg.content })
   }
   const body: Record<string, unknown> = {
@@ -74,12 +80,12 @@ export function buildOpenAiChatRequestBody(
   if (typeof opts.temperature === "number") {
     body.temperature = opts.temperature
   }
-  if (
-    opts.supportsThinking &&
-    opts.thinkingLevel !== "off" &&
-    OPENAI_REASONING_EFFORTS[opts.thinkingLevel]
-  ) {
-    body.reasoning_effort = OPENAI_REASONING_EFFORTS[opts.thinkingLevel]
+  if (opts.supportsThinking && opts.thinkingLevel !== "off") {
+    const effort = resolveReasoningEffort(
+      opts.thinkingLevel,
+      opts.thinkingOverrides,
+    )
+    if (effort) body.reasoning_effort = effort
   }
   return body
 }

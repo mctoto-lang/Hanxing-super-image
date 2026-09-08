@@ -1,7 +1,8 @@
 /**
  * 独立队列消费者 worker（手册 §5.4 / §5.6）
  *
- * 周期性消费两个队列：生图任务（Redis 队列）+ 对话任务（DB 表）。
+ * 周期性消费两个队列：生图任务（Redis 队列）+ 对话任务（DB 表）；
+ * 另含低频服务可用性采样循环（10 分钟，见 statusLoop）。
  * 解决「任务永久卡在 queued」——补齐队列消费者的触发器，与 Web 进程解耦，
  * 避免长耗时 AI 任务拖累用户请求响应。
  *
@@ -35,6 +36,7 @@ void (async () => {
   const { processQueueContinuous } = await import("@/lib/queue/processor")
   const { processChatQueueOnce } = await import("@/lib/queue/chat-processor")
   const { syncMockupJobs } = await import("@/server/services/mockup-service")
+  const { sampleAllServices } = await import("@/server/services/status-service")
 
   const interval = Number(process.env.QUEUE_POLL_INTERVAL_MS) || 2000
   const taskConcurrency = Number(process.env.WORKER_TASK_CONCURRENCY) || 8
@@ -80,6 +82,54 @@ void (async () => {
   }
 
   // 生图：常驻滑动窗口（完成即补位） + 对话：轮询循环，双队列并行消费
+  // 服务可用性采样：低频（5 分钟），平台 + 全部企业 PS-API/AI 端点 upsert 当日样本
+  const statusSampleInterval = 5 * 60 * 1000
+  const statusLoop = async (): Promise<void> => {
+    while (running) {
+      try {
+        const r = await sampleAllServices()
+        console.log(
+          `[worker:status] 采样完成: system=${r.system}, storage=${r.storage.configured ? r.storage.status : "未配置"}, ps-api ${r.psApi.sampled}/${r.psApi.total}${r.psApi.errors ? `（失败 ${r.psApi.errors}）` : ""}, ai ${r.ai.sampled}/${r.ai.enterprises}, chat ${r.chat.sampled}/${r.chat.enterprises}`,
+        )
+      } catch (err) {
+        console.error(
+          "[worker:status] 采样循环异常:",
+          err instanceof Error ? err.message : err,
+        )
+      }
+      await sleep(statusSampleInterval)
+    }
+  }
+
+  // 订阅套餐周期发放：扫描到期未发放的订阅，把套餐积分发到企业池
+  // （幂等由 plan_credit_grant 唯一索引保证；企业停用期间跳过，恢复后按锚点补发）
+  const { grantAllDueSubscriptions } = await import(
+    "@/server/services/subscription-service"
+  )
+  const subscriptionPollInterval =
+    Number(process.env.SUBSCRIPTION_POLL_INTERVAL_MS) || 60_000
+  const subscriptionLoop = async (): Promise<void> => {
+    while (running) {
+      try {
+        const results = await grantAllDueSubscriptions()
+        for (const r of results) {
+          const credits = r.results.reduce((s, g) => s + g.creditsGranted, 0)
+          if (credits > 0) {
+            console.log(
+              `[worker:subscription] 企业 ${r.enterpriseId} 周期发放 ${credits} 积分（${r.results.length} 期）`,
+            )
+          }
+        }
+      } catch (err) {
+        console.error(
+          "[worker:subscription] 发放循环异常:",
+          err instanceof Error ? err.message : err,
+        )
+      }
+      await sleep(subscriptionPollInterval)
+    }
+  }
+
   await Promise.all([
     processQueueContinuous({ isRunning: () => running }),
     runLoop("chat", processChatQueueOnce),
@@ -87,6 +137,8 @@ void (async () => {
       const r = await syncMockupJobs()
       return [{ processed: r.finalized, failed: 0 }]
     }),
+    statusLoop(),
+    subscriptionLoop(),
   ])
 
   console.log("[worker] 已停止")

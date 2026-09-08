@@ -281,7 +281,7 @@ function ConversationCard({
               >
                 {conversation.title}
               </TooltipTrigger>
-              <TooltipContent side="right" align="start" sideOffset={8}>
+              <TooltipContent side="right" align="center" sideOffset={8}>
                 {conversation.title}
               </TooltipContent>
             </Tooltip>

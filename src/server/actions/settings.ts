@@ -40,7 +40,9 @@ export async function updateProfileAction(input: {
     })
     .where(eq(users.id, ctx.user.id))
 
-  revalidatePath("/settings")
+  // 账户弹窗取代了 /settings 页面；昵称/头像同时展示在侧边栏，
+  // 需刷新整个 dashboard 布局（layout 级 revalidate）
+  revalidatePath("/", "layout")
   return { ok: true, error: null }
 }
 
@@ -64,7 +66,7 @@ export async function updateMyAvatarAction(input: { imageUrl: string | null }) {
     .set({ image: input.imageUrl, updatedAt: new Date() })
     .where(eq(users.id, ctx.user.id))
 
-  revalidatePath("/settings")
+  revalidatePath("/", "layout")
   return { ok: true, error: null }
 }
 

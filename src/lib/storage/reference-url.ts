@@ -99,3 +99,30 @@ export async function validateReferenceImageUrls(
   }
   return null
 }
+
+/**
+ * 单个 URL 是否指向平台可信存储（应用自身或 COS 桶）。
+ * 供服务端二次拉取（如导出 ZIP 内嵌 fetch）前防 SSRF：非可信 host 一律
+ * 不发起请求。只做 host 白名单 + 协议收紧（应用自身 http 放行以兼容本地
+ * 开发，其余仅 https）；租户段校验由写入侧 validateReferenceImageUrls 保证。
+ */
+export async function isPlatformStorageUrl(raw: string): Promise<boolean> {
+  if (raw.startsWith("data:")) return true // 自包含，无服务端请求
+  const hosts = await allowedStorageHosts()
+  let appHost: string | null = null
+  try {
+    appHost = new URL(env.NEXT_PUBLIC_APP_URL).hostname
+  } catch {
+    // NEXT_PUBLIC_APP_URL 未配置时仅按白名单 host 判断
+  }
+  try {
+    const parsed = new URL(raw, env.NEXT_PUBLIC_APP_URL)
+    if (!hosts.has(parsed.hostname)) return false
+    if (parsed.protocol !== "https:" && parsed.hostname !== appHost) {
+      return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}

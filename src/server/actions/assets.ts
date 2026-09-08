@@ -16,8 +16,8 @@ import { revalidatePath } from "next/cache"
 /**
  * 资产管理 Server Actions（手册 M4）
  *
- * 跨来源图片画廊（创作/工作台/商品主图），按企业 + 用户隔离。
- * 收藏、删除、查询。
+ * 跨来源图片画廊（自由创作/批量生图/商品/穿戴/样机），按企业 + 用户隔离。
+ * 查询、收藏。
  */
 
 /** 列出当前企业的所有图片资产（含来源模型信息） */
@@ -145,33 +145,3 @@ export async function unpinTaskAction(pinnedId: string) {
   return { ok: true, error: null }
 }
 
-/** 删除任务（仅自己的，软删：标记 status=failed，保留审计） */
-export async function deleteTaskAction(taskId: string) {
-  const ctx = await requireUserContext()
-  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
-
-  const [task] = await db
-    .select()
-    .from(generationTasks)
-    .where(
-      and(
-        eq(generationTasks.id, taskId),
-        eq(generationTasks.enterpriseId, enterpriseId),
-        eq(generationTasks.userId, ctx.user.id),
-      ),
-    )
-    .limit(1)
-  if (!task) return { ok: false, error: "任务不存在" }
-
-  // 同时清掉 resultImages（避免出现在画廊）
-  await db
-    .update(generationTasks)
-    .set({
-      resultImages: null,
-      errorMessage: "用户删除",
-    })
-    .where(eq(generationTasks.id, taskId))
-
-  revalidatePath("/assets")
-  return { ok: true, error: null }
-}

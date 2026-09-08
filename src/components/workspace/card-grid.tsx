@@ -34,6 +34,10 @@ interface CardGridProps {
   batchMode: boolean
   selectedCardIds: Set<string>
   flipAllToImage: boolean
+  /** 工具面板打开：点击卡片联动设为面板活动卡片 */
+  toolPanelMode?: boolean
+  activeCardId?: string | null
+  onCardActivate?: (cardId: string) => void
   selectedDeepenTemplate: TemplateRow | null
   selectedRegenTemplate: TemplateRow | null
   selectedTranslateTemplate: TemplateRow | null
@@ -76,6 +80,9 @@ export const CardGrid = memo(function CardGrid({
   batchMode,
   selectedCardIds,
   flipAllToImage,
+  toolPanelMode = false,
+  activeCardId = null,
+  onCardActivate,
   selectedDeepenTemplate,
   selectedRegenTemplate,
   selectedTranslateTemplate,
@@ -235,6 +242,9 @@ export const CardGrid = memo(function CardGrid({
             batchMode={batchMode}
             isSelected={selectedCardIds.has(card.id)}
             flipAllToImage={flipAllToImage}
+            panelMode={toolPanelMode}
+            isActiveCard={toolPanelMode && activeCardId === card.id}
+            onCardActivate={onCardActivate}
             selectedDeepenTemplate={selectedDeepenTemplate}
             selectedRegenTemplate={selectedRegenTemplate}
             selectedTranslateTemplate={selectedTranslateTemplate}

@@ -19,18 +19,32 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { toast } from "sonner"
 import { useRouter } from "next/navigation"
 import { createGroupAction } from "@/server/actions/admin-groups"
+import {
+  GroupModelPicker,
+  type GroupModelOption,
+} from "@/components/admin/group-model-picker"
 
 const PAGE_OPTIONS = [
-  { value: "create", label: "创作" },
+  { value: "create", label: "自由创作" },
+  { value: "chat", label: "AI 对话" },
   { value: "assets", label: "资产管理" },
   { value: "workspace", label: "批量生图" },
   { value: "product", label: "商品图片" },
+  { value: "weartry", label: "穿戴图片" },
   { value: "mockup", label: "样机渲染" },
   { value: "settings", label: "个人设置" },
 ] as const
 
-export function GroupCreateDialog() {
+export function GroupCreateDialog({
+  imageModels,
+  chatModels,
+}: {
+  imageModels: GroupModelOption[]
+  chatModels: GroupModelOption[]
+}) {
   const [open, setOpen] = React.useState(false)
+  const [imageSelected, setImageSelected] = React.useState<Set<string>>(new Set())
+  const [chatSelected, setChatSelected] = React.useState<Set<string>>(new Set())
   const router = useRouter()
 
   const [state, formAction, pending] = useActionState(
@@ -42,6 +56,8 @@ export function GroupCreateDialog() {
         name: String(formData.get("name") ?? ""),
         description: String(formData.get("description") ?? "") || undefined,
         allowedPages,
+        allowedModels: [...imageSelected],
+        allowedChatModels: [...chatSelected],
         maxConcurrent: Number(formData.get("maxConcurrent") ?? 2),
         priority: Number(formData.get("priority") ?? 0),
       })
@@ -60,7 +76,7 @@ export function GroupCreateDialog() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger render={<Button><Plus className="size-4" />新建权限组</Button>} />
-      <DialogContent className="sm:max-w-[480px]">
+      <DialogContent className="sm:max-w-[560px]">
         <DialogHeader>
           <DialogTitle>新建权限组</DialogTitle>
         </DialogHeader>
@@ -97,7 +113,7 @@ export function GroupCreateDialog() {
           </div>
           <div className="grid gap-2">
             <Label>允许页面（不勾选默认放行企业全部已开通模块）</Label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-4 gap-2">
               {PAGE_OPTIONS.map((o) => (
                 <label
                   key={o.value}
@@ -109,6 +125,18 @@ export function GroupCreateDialog() {
               ))}
             </div>
           </div>
+          <GroupModelPicker
+            label="可用生图模型"
+            options={imageModels}
+            selected={imageSelected}
+            onChange={setImageSelected}
+          />
+          <GroupModelPicker
+            label="可用对话模型"
+            options={chatModels}
+            selected={chatSelected}
+            onChange={setChatSelected}
+          />
           {state?.error ? (
             <p role="alert" className="text-sm text-destructive">{state.error}</p>
           ) : null}

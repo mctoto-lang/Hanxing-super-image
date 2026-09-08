@@ -63,6 +63,8 @@ export interface PromptInputProps
   status?: PromptInputStatus
   /** streaming 状态下点击停止按钮的回调；提供后才显示停止按钮 */
   onStop?: () => void
+  /** 允许空文本提交（纯图消息等场景；onSubmit 自行校验） */
+  allowEmptySubmit?: boolean
 }
 
 // ============================================================================
@@ -74,6 +76,7 @@ export function PromptInput({
   onSubmit,
   status = "ready",
   onStop,
+  allowEmptySubmit = false,
   children,
   ...props
 }: PromptInputProps) {
@@ -85,7 +88,7 @@ export function PromptInput({
       const form = event.currentTarget
       const formData = new FormData(form)
       const text = (formData.get("message") as string) || ""
-      if (!text.trim() && !isGenerating) return
+      if (!text.trim() && !isGenerating && !allowEmptySubmit) return
 
       try {
         const result = onSubmit({ text }, event)
@@ -99,7 +102,7 @@ export function PromptInput({
         // 出错不清空，用户可能想重试
       }
     },
-    [onSubmit, isGenerating],
+    [onSubmit, isGenerating, allowEmptySubmit],
   )
 
   const handleStop = React.useCallback(

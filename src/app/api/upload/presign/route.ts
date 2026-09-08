@@ -4,6 +4,7 @@ import { requireUserContext, getCurrentEnterpriseScope } from "@/lib/auth/sessio
 import { loadStorageConfig } from "@/lib/storage/config"
 import { createCosAdapter } from "@/lib/storage/cos"
 import { safeImageExt } from "@/lib/storage/ext"
+import { MAX_IMAGE_UPLOAD_BYTES, MAX_IMAGE_UPLOAD_MESSAGE } from "@/lib/upload/limits"
 
 /**
  * 参考图上传预签名端点（客户端直传 COS，手册 §3）
@@ -12,9 +13,8 @@ import { safeImageExt } from "@/lib/storage/ext"
  * 仅当 COS 配齐（凭证 + 上传桶）时返回预签名；否则返回 mode:local，
  * 由前端回退到 POST /api/upload（服务器转存，local 模式）。
  *
- * 鉴权 / 校验与 /api/upload 一致：仅登录用户、仅图片、单文件 ≤ 10MB。
+ * 鉴权 / 校验与 /api/upload 一致：仅登录用户、仅图片、单文件 ≤ 20MB。
  */
-const MAX_SIZE = 10 * 1024 * 1024 // 10MB
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"]
 
 interface PresignBody {
@@ -44,8 +44,8 @@ export async function POST(request: Request) {
   if (size <= 0) {
     return new NextResponse("invalid size", { status: 400 })
   }
-  if (size > MAX_SIZE) {
-    return new NextResponse("file too large (max 10MB)", { status: 413 })
+  if (size > MAX_IMAGE_UPLOAD_BYTES) {
+    return new NextResponse(MAX_IMAGE_UPLOAD_MESSAGE, { status: 413 })
   }
 
   const ext = safeImageExt(body.filename)

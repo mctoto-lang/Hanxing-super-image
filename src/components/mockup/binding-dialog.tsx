@@ -1,14 +1,13 @@
 "use client"
 
 import * as React from "react"
-import { Image as ImageIcon, Loader2, Replace, Type } from "lucide-react"
+import { Image as ImageIcon, Replace, Type } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
@@ -16,7 +15,7 @@ import { Input } from "@/components/ui/input"
 import { SmartImage } from "@/components/ui/smart-image"
 import type { MockupBindingSetting } from "@/db/schema"
 import type { MockupCardItemView, MockupLibraryImage } from "@/lib/mockup/types"
-import { renderCardItemAction, saveCardBindingsAction } from "@/server/actions/mockup"
+import { saveCardBindingsAction } from "@/server/actions/mockup"
 import { toImageSrc } from "@/lib/utils"
 import { ImageLibraryDialog } from "./image-library-dialog"
 
@@ -28,19 +27,17 @@ interface BindingDialogProps {
   item: MockupCardItemView | null
   /** 卡片当前保存的配置（弹窗初始值） */
   initialSettings: Record<string, MockupBindingSetting> | undefined
-  costPerRender: number
   /** 我的上传图片库（父级持有） */
   designAssets: MockupLibraryImage[]
   onDesignAssetUploaded: (image: MockupLibraryImage) => void
-  onRendered: () => void
   onSaved: () => void
 }
 
 /**
  * 图层替换弹窗（点击小方块打开）
  *
- * 左列 = PSD 绑定图层名（快照），右列 = 替换图片（图片库选择/上传）或文字输入。
- * 底部：仅渲染此样机（单张立即渲染）/ 保存配置（持久化，供整卡渲染用）。
+ * 左列 = PSD 绑定图层名（快照，背景图层置顶），右列 = 替换图片（图片库
+ * 选择/上传）或文字输入。选择图片或文字失焦后自动保存配置（供整卡渲染用）。
  */
 export function BindingDialog({
   open,
@@ -49,10 +46,8 @@ export function BindingDialog({
   cardTitle,
   item,
   initialSettings,
-  costPerRender,
   designAssets,
   onDesignAssetUploaded,
-  onRendered,
   onSaved,
 }: BindingDialogProps) {
   const [settings, setSettings] = React.useState<
@@ -61,22 +56,41 @@ export function BindingDialog({
   const [libraryBindingId, setLibraryBindingId] = React.useState<string | null>(
     null,
   )
-  const [saving, setSaving] = React.useState(false)
-  const [rendering, setRendering] = React.useState(false)
+  // 最近一次已持久化的快照，内容相同则跳过保存
+  const savedSnapshotRef = React.useRef<string>("")
 
   React.useEffect(() => {
     if (open && item) {
       setSettings({ ...(initialSettings ?? {}) })
+      savedSnapshotRef.current = JSON.stringify(initialSettings ?? {})
     }
   }, [open, item, initialSettings])
 
   if (!item) return null
 
+  const persistSettings = async (next: Record<string, MockupBindingSetting>) => {
+    const snapshot = JSON.stringify(next)
+    if (snapshot === savedSnapshotRef.current) return
+    savedSnapshotRef.current = snapshot
+    const res = await saveCardBindingsAction({
+      cardId,
+      groupItemId: item.id,
+      bindings: next,
+    })
+    if (!res.ok) {
+      toast.error(res.error ?? "自动保存失败")
+      return
+    }
+    onSaved()
+  }
+
   const pickImage = (bindingId: string, imageUrl: string) => {
-    setSettings((prev) => ({
-      ...prev,
-      [bindingId]: { imageUrl, text: prev[bindingId]?.text },
-    }))
+    const next = {
+      ...settings,
+      [bindingId]: { imageUrl, text: settings[bindingId]?.text },
+    }
+    setSettings(next)
+    void persistSettings(next)
     setLibraryBindingId(null)
   }
 
@@ -87,63 +101,18 @@ export function BindingDialog({
     }))
   }
 
-  const handleSave = async () => {
-    setSaving(true)
-    try {
-      const res = await saveCardBindingsAction({
-        cardId,
-        groupItemId: item.id,
-        bindings: settings,
-      })
-      if (!res.ok) {
-        toast.error(res.error ?? "保存失败")
-        return
-      }
-      toast.success("配置已保存")
-      onSaved()
-      onOpenChange(false)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const handleRenderSingle = async () => {
-    // 先保存当前配置再渲染（渲染读取卡片已存配置）
-    setRendering(true)
-    try {
-      const saveRes = await saveCardBindingsAction({
-        cardId,
-        groupItemId: item.id,
-        bindings: settings,
-      })
-      if (!saveRes.ok) {
-        toast.error(saveRes.error ?? "保存失败")
-        return
-      }
-      const res = await renderCardItemAction(cardId, item.id)
-      if (!res.ok) {
-        toast.error(res.error ?? "提交失败")
-        return
-      }
-      if (res.submitted > 0) {
-        toast.success(`已提交渲染，扣费 ${res.cost} 积分`)
-        onRendered()
-        onOpenChange(false)
-      } else {
-        const reason = res.skipped[0]?.reason ?? res.failedSubmits[0]?.message
-        toast.warning(reason ? `未渲染：${reason}` : "未渲染")
-      }
-    } finally {
-      setRendering(false)
-    }
-  }
-
+  // 背景绑定置顶
+  const orderedBindings = [...item.bindings].sort((a, b) => {
+    const ab = a.role === "background" ? 0 : 1
+    const bb = b.role === "background" ? 0 : 1
+    return ab - bb
+  })
   const imageCount = item.bindings.length
 
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="sm:max-w-[520px]">
+        <DialogContent className="sm:max-w-[560px]">
           <DialogHeader>
             <DialogTitle>替换图层 · {item.displayName}</DialogTitle>
             <DialogDescription>
@@ -157,12 +126,15 @@ export function BindingDialog({
                 该模板没有配置可替换图层，请在模板管理中编辑绑定后重新加入套组
               </div>
             ) : null}
-            {item.bindings.map((def) => {
+            {orderedBindings.map((def) => {
               const setting = settings[def.bindingId]
+              const isBackground = def.role === "background"
               return (
                 <div
                   key={def.bindingId}
-                  className="flex items-center gap-3 rounded-lg border p-2.5"
+                  className={`flex items-center gap-3 rounded-lg border p-2.5 ${
+                    isBackground ? "border-primary/40 bg-primary/5" : ""
+                  }`}
                 >
                   <div className="flex min-w-0 flex-1 items-center gap-2">
                     {def.type === "text" ? (
@@ -170,17 +142,16 @@ export function BindingDialog({
                     ) : (
                       <ImageIcon className="size-4 shrink-0 text-muted-foreground" />
                     )}
-                    <div className="min-w-0">
-                      <div className="truncate text-sm">
-                        {def.label || def.bindingId}
-                        {def.required ? (
-                          <span className="ml-1 text-destructive">*</span>
-                        ) : null}
-                      </div>
-                      <div className="truncate text-xs text-muted-foreground">
-                        {def.type === "text" ? "文字图层" : "图片图层"}
-                        {def.layerPath ? ` · ${def.layerPath}` : ""}
-                      </div>
+                    <div className="min-w-0 truncate text-sm">
+                      {def.label || def.bindingId}
+                      {isBackground ? (
+                        <span className="ml-1 rounded bg-primary/15 px-1 text-[9px] text-primary">
+                          背景
+                        </span>
+                      ) : null}
+                      {def.required ? (
+                        <span className="ml-1 text-destructive">*</span>
+                      ) : null}
                     </div>
                   </div>
 
@@ -188,13 +159,14 @@ export function BindingDialog({
                     <Input
                       value={setting?.text ?? ""}
                       onChange={(e) => setText(def.bindingId, e.target.value)}
+                      onBlur={() => void persistSettings(settings)}
                       placeholder={
                         def.required ? "必填文字" : "可选文字（留空不替换）"
                       }
                       className="max-w-[200px]"
                     />
                   ) : (
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
                       {setting?.imageUrl ? (
                         <SmartImage
                           src={toImageSrc(setting.imageUrl, { width: 80 })}
@@ -220,23 +192,6 @@ export function BindingDialog({
               )
             })}
           </div>
-
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button
-              variant="secondary"
-              disabled={rendering}
-              onClick={() => void handleRenderSingle()}
-            >
-              {rendering ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : null}
-              仅渲染此样机 · {costPerRender} 积分
-            </Button>
-            <Button disabled={saving} onClick={() => void handleSave()}>
-              {saving ? <Loader2 className="size-4 animate-spin" /> : null}
-              保存配置
-            </Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
 

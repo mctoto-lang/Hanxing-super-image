@@ -8,14 +8,38 @@ import type { ChatModelCard } from "@/server/actions/chat"
 
 export type { ChatModelCard }
 
-/** 思考强度档位（与后端统一） */
-export type ThinkingLevel = "off" | "low" | "medium" | "high"
+/** 思考强度档位（与后端统一；off 之外为滑杆六档） */
+export type ThinkingLevel =
+  | "off"
+  | "low"
+  | "medium"
+  | "high"
+  | "extra"
+  | "max"
+  | "ultracode"
 
 export const THINKING_LEVEL_LABELS: Record<ThinkingLevel, string> = {
   off: "关闭",
   low: "低",
   medium: "中",
   high: "高",
+  extra: "加强",
+  max: "最大",
+  ultracode: "极限",
+}
+
+const THINKING_LEVEL_KEYS: readonly string[] = [
+  "off",
+  "low",
+  "medium",
+  "high",
+  "extra",
+  "max",
+  "ultracode",
+]
+
+export function isThinkingLevel(value: unknown): value is ThinkingLevel {
+  return typeof value === "string" && THINKING_LEVEL_KEYS.includes(value)
 }
 
 /** 服务端返回的会话列表项 */
@@ -35,6 +59,8 @@ export interface ChatMessageItem {
   id: string
   role: string
   content: string
+  /** user 消息附带的图片 URL（多模态） */
+  images: string[] | null
   thinkingContent: string | null
   status: string
   inputTokens: number | null
@@ -51,8 +77,10 @@ export interface ChatMessageItem {
 /** 流式进行中的实时状态（乐观 UI） */
 export interface ChatStreamState {
   conversationId: string
-  /** 本轮发送的 user 消息（regenerate 时为 null，不新增 user 气泡） */
+  /** 本轮发送的 user 消息（regenerate 时为 null，不新增 user 气泡；纯图消息为空串） */
   userText: string | null
+  /** 本轮发送的 user 消息图片（多模态；regenerate 时为 null） */
+  userImages: string[] | null
   /** user 消息行 id（SSE message 事件返回，用于与服务器行去重） */
   userMessageId: string | null
   /** assistant 消息 id（SSE message 事件返回，用于与服务器行对齐） */

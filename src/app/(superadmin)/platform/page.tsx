@@ -2,8 +2,6 @@ import Link from "next/link"
 import {
   Building2,
   Users,
-  Settings,
-  Cpu,
   Image as ImageIcon,
   CheckCircle2,
   CalendarDays,
@@ -12,8 +10,6 @@ import {
   Gauge,
   Timer,
   FolderOpen,
-  SlidersHorizontal,
-  Megaphone,
 } from "lucide-react"
 import { requireSuperAdmin } from "@/lib/auth/session"
 import {
@@ -44,17 +40,14 @@ import {
 
 export const dynamic = "force-dynamic"
 
+/** 生图任务状态（queued/processing/completed/failed）+ 对话消息状态（streaming/stopped） */
 const STATUS_LABELS: Record<string, string> = {
   queued: "排队中",
   processing: "处理中",
+  streaming: "生成中",
   completed: "已完成",
   failed: "失败",
-}
-
-const TASK_TYPE_LABELS: Record<string, string> = {
-  deepen: "提示词深化",
-  regenerate: "重新生成",
-  translate: "翻译",
+  stopped: "已停止",
 }
 
 /**
@@ -105,94 +98,6 @@ export default async function PlatformPage({
       </div>
 
       {tab === "image" ? <ImageDashboard /> : <ChatDashboard />}
-
-      {/* 快捷入口 */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-        <Link href="/platform/enterprises">
-          <Card className="cursor-pointer transition-colors hover:border-primary">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Building2 className="size-4" /> 企业管理
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">
-              创建企业、配置模块开关、充值积分、模型配置
-            </CardContent>
-          </Card>
-        </Link>
-        <Link href="/platform/users">
-          <Card className="cursor-pointer transition-colors hover:border-primary">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Users className="size-4" /> 平台用户
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">
-              创建用户并分配到企业、设置初始角色
-            </CardContent>
-          </Card>
-        </Link>
-        <Link href="/platform/models">
-          <Card className="cursor-pointer transition-colors hover:border-primary">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Cpu className="size-4" /> 平台预置模型
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">
-              管理全企业共享模型、定义每张积分扣减
-            </CardContent>
-          </Card>
-        </Link>
-        <Link href="/platform/chat-models">
-          <Card className="cursor-pointer transition-colors hover:border-primary">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <MessageSquare className="size-4" /> 平台对话模型
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">
-              管理全企业共享的 OpenAI 兼容对话模型（提示词模板用）
-            </CardContent>
-          </Card>
-        </Link>
-        <Link href="/platform/system">
-          <Card className="cursor-pointer transition-colors hover:border-primary">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Settings className="size-4" /> 系统设置
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">
-              存储后端切换、队列参数配置
-            </CardContent>
-          </Card>
-        </Link>
-        <Link href="/platform/banners">
-          <Card className="cursor-pointer transition-colors hover:border-primary">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Megaphone className="size-4" /> 广告横幅
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">
-              配置登录后全站轮换展示的宣传横幅（倒计时 / 站外跳转 / 投放周期）
-            </CardContent>
-          </Card>
-        </Link>
-        <Link href="/platform/product-config">
-          <Card className="cursor-pointer transition-colors hover:border-primary">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <SlidersHorizontal className="size-4" /> 商品图片配置
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">
-              上架平台 / 语言 / 提示词模板 / 图片方向（含商品套图/A+详情页/产品精修二级分类）/ 尺寸规范 / AI 对话模型
-            </CardContent>
-          </Card>
-        </Link>
-      </div>
     </div>
   )
 }
@@ -204,12 +109,12 @@ async function ImageDashboard() {
     <>
       {/* KPI 卡（6 张） */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-        <KpiCard icon={<Building2 className="size-3.5" />} label="企业总数" value={stats.enterpriseCount} />
-        <KpiCard icon={<Users className="size-3.5" />} label="用户总数" value={stats.userCount} />
+        <KpiCard icon={<Building2 className="size-3.5 text-chart-3" />} label="企业总数" value={stats.enterpriseCount} />
+        <KpiCard icon={<Users className="size-3.5 text-chart-2" />} label="用户总数" value={stats.userCount} />
         <KpiCard label="平台积分总量" value={stats.totalCredits} />
-        <KpiCard icon={<ImageIcon className="size-3.5" />} label="累计生图" value={stats.totalTasks} />
-        <KpiCard icon={<CheckCircle2 className="size-3.5" />} label="已完成生图" value={stats.completedTasks} />
-        <KpiCard icon={<CalendarDays className="size-3.5" />} label="今日生图" value={stats.todayTasks} />
+        <KpiCard icon={<ImageIcon className="size-3.5 text-chart-1" />} label="累计生图" value={stats.totalTasks} />
+        <KpiCard icon={<CheckCircle2 className="size-3.5 text-chart-2" />} label="已完成生图" value={stats.completedTasks} />
+        <KpiCard icon={<CalendarDays className="size-3.5 text-chart-5" />} label="今日生图" value={stats.todayTasks} />
       </div>
 
       {/* 趋势面积图 + 状态分布环形图 */}
@@ -307,13 +212,9 @@ async function ImageDashboard() {
 
 async function ChatDashboard() {
   const stats = await getChatStatsAction()
-  const successRate =
-    stats.apiTotal > 0
-      ? ((stats.apiSuccessCount / stats.apiTotal) * 100).toFixed(1)
-      : null
   const avgDuration =
-    stats.apiAvgDurationMs != null
-      ? `${(stats.apiAvgDurationMs / 1000).toFixed(1)}s`
+    stats.avgDurationMs != null
+      ? `${(stats.avgDurationMs / 1000).toFixed(1)}s`
       : null
 
   return (
@@ -321,66 +222,66 @@ async function ChatDashboard() {
       {/* KPI 卡（5 张） */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <KpiCard
-          icon={<MessagesSquare className="size-3.5" />}
-          label="累计对话调用"
-          value={stats.totalCalls}
+          icon={<MessagesSquare className="size-3.5 text-chart-1" />}
+          label="累计对话消息"
+          value={stats.totalMessages}
         />
         <KpiCard
-          icon={<CalendarDays className="size-3.5" />}
-          label="今日对话调用"
-          value={stats.todayCalls}
+          icon={<CalendarDays className="size-3.5 text-chart-5" />}
+          label="今日对话消息"
+          value={stats.todayMessages}
         />
         <KpiCard
-          icon={<Gauge className="size-3.5" />}
-          label="API 成功率"
-          text={successRate != null ? `${successRate}%` : "—"}
+          icon={<Gauge className="size-3.5 text-chart-2" />}
+          label="消息成功率"
+          text={stats.successRate != null ? `${stats.successRate.toFixed(1)}%` : "—"}
         />
         <KpiCard
-          icon={<Timer className="size-3.5" />}
+          icon={<Timer className="size-3.5 text-chart-4" />}
           label="平均耗时"
           text={avgDuration ?? "—"}
         />
         <KpiCard
-          icon={<FolderOpen className="size-3.5" />}
-          label="创作会话总数"
+          icon={<FolderOpen className="size-3.5 text-chart-3" />}
+          label="对话会话总数"
           value={stats.conversationCount}
         />
       </div>
 
-      {/* 趋势面积图 + 任务类型环形图 */}
+      {/* 趋势面积图 + 消息状态分布环形图 */}
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader>
-            <CardTitle className="text-base">近 30 天对话调用趋势</CardTitle>
-            <CardDescription>按日聚合的对话任务数与完成数（深化/重生成/翻译）</CardDescription>
+            <CardTitle className="text-base">近 30 天对话消息趋势</CardTitle>
+            <CardDescription>按日聚合的助手消息数与完成数（/chat 交互式对话）</CardDescription>
           </CardHeader>
           <CardContent>
-            <TrendAreaChart data={stats.dailyTrend} emptyText="近 30 天暂无对话任务" />
+            <TrendAreaChart data={stats.dailyTrend} emptyText="近 30 天暂无对话消息" />
           </CardContent>
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">任务类型分布</CardTitle>
-            <CardDescription>按对话任务类型聚合</CardDescription>
+            <CardTitle className="text-base">消息状态分布</CardTitle>
+            <CardDescription>全部助手消息当前状态</CardDescription>
           </CardHeader>
           <CardContent>
             <DistributionPieChart
-              data={stats.taskTypeDistribution.map((t) => ({
-                label: TASK_TYPE_LABELS[t.taskType] ?? t.taskType,
-                value: t.count,
+              data={stats.statusDistribution.map((s) => ({
+                label: STATUS_LABELS[s.status] ?? s.status,
+                value: s.count,
               }))}
-              emptyText="暂无对话任务"
+              emptyText="暂无对话消息"
             />
           </CardContent>
         </Card>
       </div>
 
-      {/* 模型排行 + 状态分布 */}
+      {/* 模型排行 + 企业占比 */}
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader>
             <CardTitle className="text-base">对话模型使用排行（Top 10）</CardTitle>
-            <CardDescription>按调用次数排序的对话模型</CardDescription>
+            <CardDescription>按助手消息数排序的对话模型</CardDescription>
           </CardHeader>
           <CardContent>
             <RankingBarChart
@@ -394,16 +295,16 @@ async function ChatDashboard() {
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">任务状态分布</CardTitle>
-            <CardDescription>全部对话任务当前状态</CardDescription>
+            <CardTitle className="text-base">企业对话占比</CardTitle>
+            <CardDescription>按助手消息数聚合（Top 5 + 其他）</CardDescription>
           </CardHeader>
           <CardContent>
             <DistributionPieChart
-              data={stats.statusDistribution.map((s) => ({
-                label: STATUS_LABELS[s.status] ?? s.status,
-                value: s.count,
+              data={stats.enterpriseShare.map((e) => ({
+                label: e.name,
+                value: e.count,
               }))}
-              emptyText="暂无对话任务"
+              emptyText="暂无对话数据"
             />
           </CardContent>
         </Card>

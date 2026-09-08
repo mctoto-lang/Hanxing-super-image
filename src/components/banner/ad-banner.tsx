@@ -15,6 +15,7 @@ import {
 } from "lucide-react"
 import { Banner } from "@/components/ui/banner"
 import { Button, buttonVariants } from "@/components/ui/button"
+import { BeamWrapper } from "@/components/create/beam-wrapper"
 import { cn } from "@/lib/utils"
 import type { DisplayBanner } from "@/server/actions/platform-banners"
 
@@ -129,12 +130,22 @@ export function AdBanner({ banner }: { banner: DisplayBanner | null }) {
 
   return (
     <div className="pointer-events-none fixed inset-x-0 top-0 z-40 flex justify-center">
-      <Banner
-        variant="muted"
-        size="lg"
-        rounded="default"
-        className="dark pointer-events-auto mt-2 w-[min(48rem,calc(100%-2rem))] border text-foreground shadow-lg"
+      {/* 闪烁流光边框（生图卡片同款 border-beam）；wrapper 不挡点击，
+          Banner 自身 pointer-events-auto 保证按钮可点 */}
+      <BeamWrapper
+        active
+        colorVariant="colorful"
+        size="md"
+        theme="dark"
+        borderRadius={14}
+        className="pointer-events-none mt-2 w-[min(48rem,calc(100%-2rem))]"
       >
+        <Banner
+          variant="muted"
+          size="lg"
+          rounded="default"
+          className="dark pointer-events-auto w-full border text-foreground shadow-lg"
+        >
         <div className="flex w-full gap-2 md:items-center">
         <div className="flex grow gap-3 md:items-center">
           <div
@@ -179,7 +190,8 @@ export function AdBanner({ banner }: { banner: DisplayBanner | null }) {
           />
         </Button>
         </div>
-      </Banner>
+        </Banner>
+      </BeamWrapper>
     </div>
   )
 }

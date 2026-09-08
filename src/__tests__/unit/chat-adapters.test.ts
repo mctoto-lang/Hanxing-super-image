@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import {
   calcMessageCostCenticredits,
+  estimateMessageTokens,
   estimateTokens,
   formatCenticredits,
   mergeConsecutiveMessages,
@@ -277,6 +278,194 @@ describe("buildGeminiRequestBody", () => {
 
     const off = buildGeminiRequestBody(makeAdapterOpts({ thinkingLevel: "off" }))
     expect("thinkingConfig" in (off.generationConfig as object)).toBe(false)
+  })
+})
+
+// ═══════════════ 思考档位扩展（六档 + 管理员覆盖） ═══════════════
+
+describe("思考档位六档默认映射", () => {
+  it("openai：低/中/高直传，高档位封顶 high", () => {
+    expect(
+      buildOpenAiChatRequestBody(makeAdapterOpts({ thinkingLevel: "low" })).reasoning_effort,
+    ).toBe("low")
+    expect(
+      buildOpenAiChatRequestBody(makeAdapterOpts({ thinkingLevel: "high" })).reasoning_effort,
+    ).toBe("high")
+    for (const level of ["extra", "max", "ultracode"] as const) {
+      expect(
+        buildOpenAiChatRequestBody(makeAdapterOpts({ thinkingLevel: level })).reasoning_effort,
+      ).toBe("high")
+    }
+  })
+
+  it("claude：六档预算梯度且受 max_tokens 钳制", () => {
+    const cases = [
+      ["low", 2048],
+      ["medium", 8192],
+      ["high", 32768],
+      ["extra", 40960],
+      ["max", 49152],
+    ] as const
+    for (const [level, budget] of cases) {
+      const body = buildClaudeRequestBody(
+        makeAdapterOpts({ thinkingLevel: level, maxOutputTokens: 200_000 }),
+      )
+      expect(body.thinking).toEqual({ type: "enabled", budget_tokens: budget })
+    }
+    // ultracode 65536 超过默认 4096 输出上限 → 钳制
+    const clamped = buildClaudeRequestBody(makeAdapterOpts({ thinkingLevel: "ultracode" }))
+    expect(clamped.thinking).toEqual({ type: "enabled", budget_tokens: 4095 })
+  })
+
+  it("gemini：六档梯度 + ultracode 动态思考（-1）", () => {
+    const ultra = buildGeminiRequestBody(makeAdapterOpts({ thinkingLevel: "ultracode" }))
+    const gen = ultra.generationConfig as Record<string, unknown>
+    expect((gen.thinkingConfig as Record<string, unknown>).thinkingBudget).toBe(-1)
+
+    const extra = buildGeminiRequestBody(makeAdapterOpts({ thinkingLevel: "extra" }))
+    const gen2 = extra.generationConfig as Record<string, unknown>
+    expect((gen2.thinkingConfig as Record<string, unknown>).thinkingBudget).toBe(24576)
+  })
+})
+
+describe("思考档位管理员覆盖（thinkingOverrides）", () => {
+  it("openai：自定义 effort 直传（网关自定义值）", () => {
+    const body = buildOpenAiChatRequestBody(
+      makeAdapterOpts({
+        thinkingLevel: "ultracode",
+        thinkingOverrides: { ultracode: { effort: "xhigh" } },
+      }),
+    )
+    expect(body.reasoning_effort).toBe("xhigh")
+  })
+
+  it("openai：仅覆盖部分档位，未覆盖档位回退默认", () => {
+    const body = buildOpenAiChatRequestBody(
+      makeAdapterOpts({
+        thinkingLevel: "max",
+        thinkingOverrides: { ultracode: { effort: "xhigh" } },
+      }),
+    )
+    expect(body.reasoning_effort).toBe("high")
+  })
+
+  it("claude：覆盖 budget_tokens 生效", () => {
+    const body = buildClaudeRequestBody(
+      makeAdapterOpts({
+        thinkingLevel: "extra",
+        maxOutputTokens: 200_000,
+        thinkingOverrides: { extra: { budgetTokens: 12345 } },
+      }),
+    )
+    expect(body.thinking).toEqual({ type: "enabled", budget_tokens: 12345 })
+  })
+
+  it("gemini：覆盖 budgetTokens（含 -1 动态）生效", () => {
+    const body = buildGeminiRequestBody(
+      makeAdapterOpts({
+        thinkingLevel: "medium",
+        thinkingOverrides: { medium: { budgetTokens: -1 } },
+      }),
+    )
+    const gen = body.generationConfig as Record<string, unknown>
+    expect((gen.thinkingConfig as Record<string, unknown>).thinkingBudget).toBe(-1)
+  })
+
+  it("off 档位无论覆盖与否都不发送思考参数", () => {
+    const body = buildOpenAiChatRequestBody(
+      makeAdapterOpts({
+        thinkingLevel: "off",
+        thinkingOverrides: { low: { effort: "low" } },
+      }),
+    )
+    expect("reasoning_effort" in body).toBe(false)
+  })
+})
+
+// ═══════════════ 多模态（图片消息） ═══════════════
+
+const IMG_URL = "https://bucket.cos.ap-guangzhou.myqcloud.com/ref/e1/2026/09/a.png"
+
+function imageMessage() {
+  return {
+    role: "user" as const,
+    content: [
+      { type: "text" as const, text: "这张图里有什么" },
+      { type: "image_url" as const, image_url: { url: IMG_URL } },
+    ],
+  }
+}
+
+describe("多模态消息", () => {
+  it("mergeConsecutiveMessages：含图以 part 数组合并", () => {
+    const merged = mergeConsecutiveMessages([
+      imageMessage(),
+      { role: "user" as const, content: "补充一句" },
+    ])
+    expect(merged).toHaveLength(1)
+    expect(merged[0]!.content).toEqual([
+      { type: "text", text: "这张图里有什么" },
+      { type: "image_url", image_url: { url: IMG_URL } },
+      { type: "text", text: "补充一句" },
+    ])
+  })
+
+  it("mergeConsecutiveMessages：纯文本合并不变（折叠回字符串）", () => {
+    const merged = mergeConsecutiveMessages([
+      { role: "user" as const, content: "a" },
+      { role: "user" as const, content: "b" },
+    ])
+    expect(merged[0]!.content).toBe("a\n\nb")
+  })
+
+  it("estimateMessageTokens：图片按张数近似计入", () => {
+    const textOnly = estimateTokens("这张图里有什么")
+    const withImage = estimateMessageTokens(imageMessage())
+    expect(withImage).toBeGreaterThan(textOnly)
+    // 纯图消息也有估算值（不抛错）
+    expect(
+      estimateMessageTokens({
+        content: [{ type: "image_url", image_url: { url: IMG_URL } }],
+      }),
+    ).toBeGreaterThan(0)
+  })
+
+  it("openai：content 数组原样透传（OpenAI image_url 格式）", () => {
+    const body = buildOpenAiChatRequestBody(
+      makeAdapterOpts({ messages: [imageMessage()] }),
+    )
+    const messages = body.messages as Array<{ role: string; content: unknown }>
+    expect(messages[0]!.content).toEqual(imageMessage().content)
+  })
+
+  it("claude：图片转 URL source blocks", () => {
+    const body = buildClaudeRequestBody(
+      makeAdapterOpts({ messages: [imageMessage()] }),
+    )
+    const messages = body.messages as Array<{ role: string; content: unknown }>
+    expect(messages[0]!.content).toEqual([
+      { type: "text", text: "这张图里有什么" },
+      { type: "image", source: { type: "url", url: IMG_URL } },
+    ])
+  })
+
+  it("gemini：inlineImages 映射转 inlineData；缺失映射（取图失败）跳过图片", () => {
+    const inline = new Map([[IMG_URL, { mimeType: "image/png", data: "aGk=" }]])
+    const body = buildGeminiRequestBody(
+      makeAdapterOpts({ messages: [imageMessage()] }),
+      inline,
+    )
+    const contents = body.contents as Array<{ role: string; parts: unknown[] }>
+    expect(contents[0]!.parts).toEqual([
+      { text: "这张图里有什么" },
+      { inlineData: { mimeType: "image/png", data: "aGk=" } },
+    ])
+
+    const fallback = buildGeminiRequestBody(
+      makeAdapterOpts({ messages: [imageMessage()] }),
+    )
+    const fbContents = fallback.contents as Array<{ parts: unknown[] }>
+    expect(fbContents[0]!.parts).toEqual([{ text: "这张图里有什么" }])
   })
 })
 

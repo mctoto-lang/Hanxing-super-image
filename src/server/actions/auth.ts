@@ -2,11 +2,12 @@
 
 import { AuthError } from "next-auth"
 import { eq } from "drizzle-orm"
-import { signIn, signOut } from "@/lib/auth/config"
+import { signIn, signOut, auth } from "@/lib/auth/config"
 import { db } from "@/db/client"
 import { users } from "@/db/schema"
 import { loginSchema, type LoginInput } from "@/server/schemas/auth"
 import { loginRateLimiter } from "@/lib/rate-limit"
+import { removePresence } from "@/lib/presence"
 import { writeLoginLog } from "@/lib/audit"
 import { postLoginPath } from "@/lib/auth/post-login"
 import { headers } from "next/headers"
@@ -90,7 +91,16 @@ export async function loginAction(input: LoginInput) {
 
 /** 登出 */
 export async function logoutAction() {
+  // signOut 前取会话清理在线状态（即时下线；不清理也会 90s 自动过期）
+  const session = await auth()
   await signOut({ redirect: false })
+  if (session?.user?.enterpriseId && session.user.id) {
+    try {
+      await removePresence(session.user.enterpriseId, session.user.id)
+    } catch {
+      // Redis 抖动忽略，在线窗口到期自动下线
+    }
+  }
   return { ok: true }
 }
 

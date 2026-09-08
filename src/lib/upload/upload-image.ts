@@ -16,9 +16,15 @@ interface PresignResponse {
   contentType?: string
 }
 
+/** 读取失败响应的明文原因（路由返回纯文本，如"单张图片最大 20MB"），无则回退状态码 */
+async function errText(res: Response, fallback: string): Promise<Error> {
+  const text = (await res.text().catch(() => "")).trim()
+  return new Error(text || `${fallback}: ${res.status}`)
+}
+
 /**
  * 上传单张图片，返回可访问 URL。
- * @throws 上传失败时抛错，调用方负责 toast 提示。
+ * @throws 上传失败时抛错（尽量携带服务端返回的具体原因），调用方负责 toast 提示。
  */
 export async function uploadImage(file: File): Promise<string> {
   // 1. 请求预签名（含服务端格式/大小校验）
@@ -31,7 +37,7 @@ export async function uploadImage(file: File): Promise<string> {
       size: file.size,
     }),
   })
-  if (!presignResp.ok) throw new Error(`presign failed: ${presignResp.status}`)
+  if (!presignResp.ok) throw await errText(presignResp, "presign failed")
   const presign = (await presignResp.json()) as PresignResponse
 
   // 2. COS 直传
@@ -44,7 +50,7 @@ export async function uploadImage(file: File): Promise<string> {
       },
     })
     if (!putResp.ok) {
-      throw new Error(`cos upload failed: ${putResp.status}`)
+      throw await errText(putResp, "cos upload failed")
     }
     return presign.finalUrl
   }
@@ -56,7 +62,7 @@ export async function uploadImage(file: File): Promise<string> {
     method: "POST",
     body: formData,
   })
-  if (!uploadResp.ok) throw new Error(`upload failed: ${uploadResp.status}`)
+  if (!uploadResp.ok) throw await errText(uploadResp, "upload failed")
   const data = (await uploadResp.json()) as { url: string }
   return data.url
 }

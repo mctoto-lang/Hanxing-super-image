@@ -1,0 +1,1 @@
+ALTER TABLE "permission_group" ADD COLUMN "allowed_chat_models" jsonb DEFAULT '[]'::jsonb NOT NULL;

@@ -8,6 +8,8 @@ interface SmartImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
   src: string
   /** 占位文案，默认「图片已过期」 */
   fallbackText?: string
+  /** 进入失效占位态（图片为空或重试后仍失败）时回调，供外层撤掉加载骨架 */
+  onFallback?: () => void
   /** React 19：ref 作为常规 prop 接收并透传给内部 <img>（水合时序补偿检查用） */
   ref?: React.Ref<HTMLImageElement>
 }
@@ -26,6 +28,7 @@ export function SmartImage({
   alt = "",
   className,
   fallbackText = "图片已过期",
+  onFallback,
   ...rest
 }: SmartImageProps) {
   const [errored, setErrored] = React.useState(false)
@@ -36,6 +39,10 @@ export function SmartImage({
     setErrored(false)
     setRetrySrc(null)
   }, [src])
+
+  React.useEffect(() => {
+    if (errored || !src) onFallback?.()
+  }, [errored, src, onFallback])
 
   if (errored || !src) {
     return (
@@ -61,6 +68,8 @@ export function SmartImage({
     <img
       src={effectiveSrc}
       alt={alt}
+      loading="lazy"
+      decoding="async"
       onError={() => {
         if (!retrySrc && effectiveSrc.includes("imageMogr2")) {
           setRetrySrc(stripCosThumbnail(effectiveSrc))

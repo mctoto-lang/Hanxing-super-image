@@ -12,7 +12,7 @@ import {
   getCurrentEnterpriseScope,
 } from "@/lib/auth/session"
 import { checkModelAccess, effectiveConcurrentLimit } from "@/lib/auth/permissions"
-import { deductUserCredits, refundUserCredits } from "@/server/services/credits-service"
+import { deductUserCredits, refundFailedTask } from "@/server/services/credits-service"
 import { enqueue } from "@/lib/queue/task-queue"
 import { validateReferenceImageUrls } from "@/lib/storage/reference-url"
 import { submitTaskSchema } from "@/server/schemas/create"
@@ -167,55 +167,54 @@ export async function submitTaskAction(input: {
     }
   }
 
-  // 4. 创建任务记录（先 queued）
-  const [task] = await db
-    .insert(generationTasks)
-    .values({
-      enterpriseId: scope.enterpriseId,
-      userId: ctx.user.id,
-      modelId: d.modelId,
-      prompt: d.prompt,
-      imageSize: d.imageSize,
-      imageCount,
-      status: "queued",
-      taskType: "normal",
-      source: "create",
-      priority: ctx.group?.priority ?? 0,
-      creditsCharged: 0, // 扣减成功后更新
-      costPerImage: model.costPerImage, // 记录提交时单价（部分失败按张退款用）
-      referenceImages: d.referenceImages ?? null,
-      conversationId,
-    })
-    .returning()
-
-  // 5. 扣积分（个人配额，行锁事务）
+  // 4+5. 创建任务 + 扣积分 + 回写实收金额（单事务，任一步失败整体回滚）。
+  // 此前三步跨事务提交，崩溃在中间窗口会出现「任务已建未扣费」（孤儿
+  // 回收重新入队 = 免费生成）或「已扣费但 creditsCharged=0」（refundFailedTask
+  // 见 0 直接跳过 = 扣钱不退）。
+  let taskId: string
   try {
-    await deductUserCredits({
-      enterpriseId: scope.enterpriseId,
-      amount: totalCost,
-      userId: ctx.user.id,
-      taskId: task!.id,
-      remark: `生图 ${model.displayName} x${imageCount}`,
+    taskId = await db.transaction(async (tx) => {
+      const [task] = await tx
+        .insert(generationTasks)
+        .values({
+          enterpriseId: scope.enterpriseId,
+          userId: ctx.user.id,
+          modelId: d.modelId,
+          prompt: d.prompt,
+          imageSize: d.imageSize,
+          imageCount,
+          status: "queued",
+          taskType: "normal",
+          source: "create",
+          priority: ctx.group?.priority ?? 0,
+          creditsCharged: 0, // 事务内扣减成功后直接写入实收金额
+          costPerImage: model.costPerImage, // 记录提交时单价（部分失败按张退款用）
+          referenceImages: d.referenceImages ?? null,
+          conversationId,
+        })
+        .returning({ id: generationTasks.id })
+
+      await deductUserCredits({
+        enterpriseId: scope.enterpriseId,
+        amount: totalCost,
+        userId: ctx.user.id,
+        taskId: task!.id,
+        remark: `生图 ${model.displayName} x${imageCount}`,
+        tx,
+      })
+
+      await tx
+        .update(generationTasks)
+        .set({ creditsCharged: totalCost })
+        .where(eq(generationTasks.id, task!.id))
+      return task!.id
     })
   } catch (err) {
-    // 扣减失败：标记任务 failed
-    await db
-      .update(generationTasks)
-      .set({ status: "failed", errorMessage: "积分扣减失败" })
-      .where(eq(generationTasks.id, task!.id))
     return {
       ok: false,
-      error:
-        err instanceof Error
-          ? err.message
-          : "积分扣减失败",
+      error: err instanceof Error ? err.message : "积分扣减失败",
     }
   }
-
-  await db
-    .update(generationTasks)
-    .set({ creditsCharged: totalCost })
-    .where(eq(generationTasks.id, task!.id))
 
   // 6. 入队（Redis）。失败必须退款，否则用户积分已扣但任务永不处理。
   const groupMax = ctx.group?.maxConcurrent ?? model.maxConcurrent
@@ -227,7 +226,7 @@ export async function submitTaskAction(input: {
 
   try {
     await enqueue({
-      taskId: task!.id,
+      taskId,
       enterpriseId: scope.enterpriseId,
       modelId: d.modelId,
       prompt: d.prompt,
@@ -243,16 +242,16 @@ export async function submitTaskAction(input: {
     })
   } catch (err) {
     // 入队失败（如 Redis 闪断）：退还积分并标记任务失败，避免资金损失
-    await refundFailedTask(task!.id)
+    await refundFailedTask(taskId)
     await db
       .update(generationTasks)
       .set({
         status: "failed",
         errorMessage: "任务入队失败，积分已退还",
       })
-      .where(eq(generationTasks.id, task!.id))
+      .where(eq(generationTasks.id, taskId))
     console.error(
-      `[create] 任务 ${task!.id} 入队失败，已退款:`,
+      `[create] 任务 ${taskId} 入队失败，已退款:`,
       err instanceof Error ? err.message : err,
     )
     return {
@@ -271,7 +270,7 @@ export async function submitTaskAction(input: {
   return {
     ok: true,
     error: null,
-    taskId: task!.id,
+    taskId,
     conversationId,
     cost: totalCost,
     effectiveMaxConcurrent: effectiveMax,
@@ -335,13 +334,29 @@ export async function retryTaskAction(taskId: string) {
     }
   }
 
+  // 重新扣费 + 翻转状态（单事务）：扣费与记账分离提交的崩溃窗口会造成
+  // 「已扣费但 creditsCharged 未累加 → 失败退款按记账额少退」。
+  // 先翻转 DB 状态再入队：消费端终态守卫读 DB status，若入队先于状态
+  // 翻转，任务可能仍以 failed 被消费并直接丢弃（用户重试静默失效）
   try {
-    await deductUserCredits({
-      enterpriseId: scope.enterpriseId,
-      amount: retryCost,
-      userId: ctx.user.id,
-      taskId: task.id,
-      remark: `重试生图 ${model.displayName} x${pendingIndexes.length}`,
+    await db.transaction(async (tx) => {
+      await deductUserCredits({
+        enterpriseId: scope.enterpriseId,
+        amount: retryCost,
+        userId: ctx.user.id,
+        taskId: task.id,
+        remark: `重试生图 ${model.displayName} x${pendingIndexes.length}`,
+        tx,
+      })
+      await tx
+        .update(generationTasks)
+        .set({
+          status: "queued",
+          retryCount: task.retryCount + 1,
+          errorMessage: null,
+          creditsCharged: task.creditsCharged + retryCost, // 累加：保留已成功张计费
+        })
+        .where(eq(generationTasks.id, taskId))
     })
   } catch (err) {
     return {
@@ -349,18 +364,6 @@ export async function retryTaskAction(taskId: string) {
       error: err instanceof Error ? err.message : "积分扣减失败",
     }
   }
-
-  // 先翻转 DB 状态再入队：消费端终态守卫读 DB status，若入队先于状态
-  // 翻转，任务可能仍以 failed 被消费并直接丢弃（用户重试静默失效）
-  await db
-    .update(generationTasks)
-    .set({
-      status: "queued",
-      retryCount: task.retryCount + 1,
-      errorMessage: null,
-      creditsCharged: task.creditsCharged + retryCost, // 累加：保留已成功张计费
-    })
-    .where(eq(generationTasks.id, taskId))
 
   try {
     await enqueue({
@@ -396,65 +399,3 @@ export async function retryTaskAction(taskId: string) {
   return { ok: true, error: null, taskId }
 }
 
-/**
- * 退款（任务失败时由队列消费者调用，退还到成员个人配额）。
- * 按张退款：成功交付张数保留计费，失败张数退还；旧行无单价记录时全额退。
- *
- * 幂等保护：孤儿回收与消费端失败路径可能并发触发退款，这里用
- * creditsCharged 条件更新做「认领」——仅当值仍等于读取值时才执行退款，
- * 并发另一方认领失败直接返回，杜绝双倍退款（凭空增发积分）。
- *
- * 原子性：认领与退款在同一事务内提交。此前两步分离提交存在「认领成功、
- * 退款写入失败」的窗口，退款会永久丢失；现在任一步失败整体回滚，重试时
- * creditsCharged 仍是原值，可再次认领退款。
- */
-export async function refundFailedTask(
-  taskId: string,
-): Promise<void> {
-  await db.transaction(async (tx) => {
-    const [task] = await tx
-      .select()
-      .from(generationTasks)
-      .where(eq(generationTasks.id, taskId))
-      .limit(1)
-    if (!task || task.creditsCharged <= 0) return
-
-    let refund = task.creditsCharged
-    let remaining = 0
-    if (task.costPerImage != null) {
-      const succeededCount = task.succeededIndexes?.length ?? 0
-      remaining = Math.min(
-        task.creditsCharged,
-        succeededCount * task.costPerImage,
-      )
-      refund = task.creditsCharged - remaining
-    }
-
-    // 认领：将 creditsCharged 原子地置为 remaining（仅当未被并发方改动）
-    const claimed = await tx
-      .update(generationTasks)
-      .set({ creditsCharged: remaining })
-      .where(
-        and(
-          eq(generationTasks.id, taskId),
-          eq(generationTasks.creditsCharged, task.creditsCharged),
-        ),
-      )
-      .returning({ id: generationTasks.id })
-    if (claimed.length === 0) return // 已被并发调用方处理
-
-    if (refund > 0) {
-      const failedCount = task.costPerImage != null
-        ? Math.floor(refund / task.costPerImage)
-        : task.imageCount
-      await refundUserCredits({
-        enterpriseId: task.enterpriseId,
-        amount: refund,
-        userId: task.userId,
-        taskId: task.id,
-        remark: `任务失败退还（${failedCount} 张）`,
-        tx,
-      })
-    }
-  })
-}

@@ -1,9 +1,19 @@
 "use client"
 
-import { useEffect, useState } from "react"
 import { Check } from "lucide-react"
 import { Label } from "@/components/ui/label"
-import { Input } from "@/components/ui/input"
+import {
+  ColorPicker,
+  ColorPickerFormat,
+  ColorPickerHue,
+  ColorPickerOutput,
+  ColorPickerSelection,
+} from "@/components/ui/color-picker"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
 import { ImageEyedropperButton } from "./image-eyedropper"
 import {
@@ -14,11 +24,7 @@ import {
   formatHsb,
   formatRgb,
   hexToRgb,
-  hsbToRgb,
   nearestColorName,
-  parseHsb,
-  parseRgb,
-  rgbToHex,
   rgbToHsb,
 } from "@/lib/color/convert"
 
@@ -28,11 +34,9 @@ export interface SelectedColor {
   hex: string
 }
 
-type InputMode = "hex" | "hsb" | "rgb"
-
 /**
- * 可视化选色器：常用服装色库预设 + HEX/HSB/RGB 三模式自定义输入 + 原生
- * 取色器 + 图片取色（上传图片后在图上吸取像素色）。
+ * 可视化选色器：常用服装色库预设 + SV 选色面板（弹窗内含色相滑杆与
+ * HEX/RGB/HSB 格式切换输入）+ 图片取色（上传图片后在图上吸取像素色）。
  * 自定义色的名称自动匹配最近色库名（提示词注入用）。
  */
 export function ColorPickerField({
@@ -42,20 +46,8 @@ export function ColorPickerField({
   value: SelectedColor
   onChange: (next: SelectedColor) => void
 }) {
-  const [mode, setMode] = useState<InputMode>("hex")
-  const [hexDraft, setHexDraft] = useState(value.hex)
-  const [hsbDraft, setHsbDraft] = useState("")
-  const [rgbDraft, setRgbDraft] = useState("")
-
   const rgb = hexToRgb(value.hex)
   const hsb = rgb ? rgbToHsb(rgb) : null
-
-  // 外部变更（色库点选/最近使用回选）→ 同步草稿
-  useEffect(() => {
-    setHexDraft(value.hex)
-    setHsbDraft(hsb ? formatHsb(hsb) : "")
-    setRgbDraft(rgb ? formatRgb(rgb) : "")
-  }, [value.hex]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const applyHex = (hex: string, name?: string) => {
     const nextName =
@@ -102,74 +94,41 @@ export function ColorPickerField({
         ))}
       </div>
 
-      {/* 自定义：模式切换 + 输入 + 原生取色器 */}
+      {/* 自定义：选色弹窗 + 图片取色 */}
       <div className="space-y-2 rounded-lg border p-2.5">
-        <div className="flex items-center justify-between">
-          <Label className="text-xs">自定义颜色</Label>
-          <div className="flex rounded-md border p-0.5 text-[11px]">
-            {(["hex", "hsb", "rgb"] as const).map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => setMode(m)}
-                className={cn(
-                  "rounded px-2 py-0.5 uppercase transition-colors",
-                  mode === m
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {m}
-              </button>
-            ))}
-          </div>
-        </div>
+        <Label className="text-xs">自定义颜色</Label>
 
         <div className="flex items-center gap-2">
-          <input
-            type="color"
-            aria-label="取色器"
-            value={value.hex}
-            onChange={(e) => applyHex(e.target.value)}
-            className="size-8 shrink-0 cursor-pointer rounded-md border bg-transparent p-0.5"
-          />
-          {mode === "hex" && (
-            <Input
-              value={hexDraft}
-              onChange={(e) => setHexDraft(e.target.value)}
-              onBlur={() => {
-                const next = hexDraft.trim().replace(/^#/, "")
-                if (/^[0-9a-fA-F]{6}$/.test(next)) applyHex(`#${next}`)
-                else setHexDraft(value.hex)
-              }}
-              placeholder="#1F2A44"
-              className="h-8 font-mono text-xs uppercase"
-            />
-          )}
-          {mode === "hsb" && (
-            <Input
-              value={hsbDraft}
-              onChange={(e) => {
-                setHsbDraft(e.target.value)
-                const parsed = parseHsb(e.target.value)
-                if (parsed) applyHex(rgbToHex(hsbToRgb(parsed)))
-              }}
-              placeholder="231, 55, 27"
-              className="h-8 font-mono text-xs"
-            />
-          )}
-          {mode === "rgb" && (
-            <Input
-              value={rgbDraft}
-              onChange={(e) => {
-                setRgbDraft(e.target.value)
-                const parsed = parseRgb(e.target.value)
-                if (parsed) applyHex(rgbToHex(parsed))
-              }}
-              placeholder="31, 42, 68"
-              className="h-8 font-mono text-xs"
-            />
-          )}
+          {/* SV 选色面板 + 色相滑杆 + 格式输入（点击展开弹窗） */}
+          <Popover>
+            <PopoverTrigger
+              aria-label="打开取色面板"
+              title="打开取色面板"
+              className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md border border-input bg-transparent px-2 text-xs transition-colors hover:bg-accent/50"
+            >
+              <span
+                className="size-4 shrink-0 rounded-[4px] border border-black/10"
+                style={{ backgroundColor: value.hex }}
+              />
+              <span className="truncate font-mono uppercase">{value.hex}</span>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-72 gap-2">
+              <ColorPicker value={value.hex} onChange={applyHex}>
+                <ColorPickerSelection />
+                <ColorPickerHue />
+                <div className="flex items-center gap-2">
+                  <ColorPickerOutput />
+                  <ColorPickerFormat />
+                </div>
+              </ColorPicker>
+              <div className="flex items-center justify-between text-xs">
+                <span className="truncate font-medium">{value.name}</span>
+                <span className="font-mono text-muted-foreground">
+                  {value.hex}
+                </span>
+              </div>
+            </PopoverContent>
+          </Popover>
           {/* 图片取色：上传一张图片后在图上吸取像素色（仅本地读取） */}
           <ImageEyedropperButton onPick={applyHex} />
         </div>

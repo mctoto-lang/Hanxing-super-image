@@ -90,6 +90,11 @@ export default auth(async (req) => {
 export const config = {
   // 自托管 Docker 部署（手册 D16）。Next.js 16 起 Proxy 默认运行在 Node.js runtime，
   // 无需显式声明 runtime（crypto/redis 等 Node 模块可直接使用）。
-  // 排除静态资源
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  // 排除静态资源；api/mockup/psd-upload、api/mockup/font-upload 也排除——
+  // 大文件上传（PSD ≤300MB / 字体 ≤50MB）经 proxy 层会克隆缓冲请求体
+  // （默认上限 10MB，超出截断导致 "Unexpected end of form"），这两个路由
+  // 各自 requireEnterpriseContext 鉴权，无需走 proxy 守卫。
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|api/mockup/psd-upload|api/mockup/font-upload).*)",
+  ],
 }

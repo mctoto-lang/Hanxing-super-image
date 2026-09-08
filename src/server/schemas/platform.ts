@@ -1,6 +1,7 @@
 import { z } from "zod"
 import { MODULE_NAMES } from "@/db/schema"
 import { BANNER_ICON_NAMES } from "@/lib/banner"
+import { BADGE_ICON_KEYS } from "@/lib/plans/badge"
 
 /**
  * 平台管理 zod schemas（手册 M2）
@@ -118,4 +119,65 @@ export const deleteBannerSchema = z.object({
 export const toggleBannerSchema = z.object({
   id: z.string().uuid("缺少横幅 ID"),
   isActive: z.boolean(),
+})
+
+/** 订阅套餐新建/编辑入参（勋章 = 预设图标 key + #RRGGBB 颜色） */
+export const subscriptionPlanInputSchema = z.object({
+  name: z.string().trim().min(1, "套餐名称不能为空").max(50, "套餐名称最多 50 字符"),
+  iconKey: z.enum(BADGE_ICON_KEYS, { message: "请选择预设勋章图标" }),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/, "颜色格式为 #RRGGBB"),
+  creditsPerCycle: z
+    .number()
+    .int("周期积分必须为整数")
+    .min(1, "周期积分至少 1")
+    .max(1_000_000, "周期积分上限 100 万"),
+  cycleDays: z
+    .number()
+    .int("周期天数必须为整数")
+    .min(1, "周期至少 1 天")
+    .max(3650, "周期最长 10 年"),
+  maxMembers: z
+    .number()
+    .int("人数上限必须为整数")
+    .min(1, "人数上限至少 1")
+    .max(10_000)
+    .nullable()
+    .optional(),
+  sortOrder: z.number().int().min(0).max(9999).optional(),
+})
+
+export const updateSubscriptionPlanSchema = subscriptionPlanInputSchema.extend({
+  id: z.string().uuid("缺少套餐 ID"),
+})
+
+export const toggleSubscriptionPlanSchema = z.object({
+  id: z.string().uuid("缺少套餐 ID"),
+  isActive: z.boolean(),
+})
+
+/** 给企业分配套餐（分配即发放首期到企业积分池） */
+export const assignEnterprisePlanSchema = z
+  .object({
+    enterpriseId: z.string().uuid("请选择企业"),
+    planId: z.string().uuid("请选择套餐"),
+    expiresAt: isoTimestamp,
+  })
+  .superRefine((d, ctx) => {
+    if (new Date(d.expiresAt).getTime() <= Date.now()) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["expiresAt"],
+        message: "到期时间必须晚于当前时间",
+      })
+    }
+  })
+
+/** 套餐续期（仅延长到期时间） */
+export const renewEnterprisePlanSchema = z.object({
+  enterpriseId: z.string().uuid("请选择企业"),
+  expiresAt: isoTimestamp,
+})
+
+export const clearEnterprisePlanSchema = z.object({
+  enterpriseId: z.string().uuid("请选择企业"),
 })

@@ -54,14 +54,7 @@ export default async function AdminModelsPage({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">模型配置</h1>
-          <p className="text-sm text-muted-foreground">
-            {ctx.enterprise?.name} · 平台预置模型只读，企业私有模型可 CRUD（API
-            Key 加密落库）
-          </p>
-        </div>
+      <div className="flex items-center justify-end">
         {allowCustom ? (
           <ModelFormDialog />
         ) : (
@@ -172,6 +165,11 @@ export default async function AdminModelsPage({
                         {m.visibleInWeartry ? (
                           <Badge variant="outline" className="text-xs">
                             穿戴
+                          </Badge>
+                        ) : null}
+                        {m.visibleInMockup ? (
+                          <Badge variant="outline" className="text-xs">
+                            样机
                           </Badge>
                         ) : null}
                       </div>

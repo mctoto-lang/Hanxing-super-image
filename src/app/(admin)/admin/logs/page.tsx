@@ -8,6 +8,7 @@ import {
 import { cn } from "@/lib/utils"
 import {
   Card,
+  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
@@ -25,8 +26,11 @@ import {
 import {
   TablePagination,
   parsePageParam,
+  parseQueryParam,
 } from "@/components/shared/table-pagination"
 import { LogsTaskTable } from "@/components/admin/logs-task-table"
+import { AdminListFilters } from "@/components/admin/admin-list-filters"
+import { TASK_SOURCE_OPTIONS, filterQuery } from "@/lib/admin/table-filters"
 
 export const dynamic = "force-dynamic"
 
@@ -35,7 +39,7 @@ const PAGE_SIZE = 20
 /**
  * 操作日志：生图任务日志 + 登录审计（企业隔离）。
  *
- * Tab 与分页均由 URL 参数驱动（?tab=tasks|login&page=n），
+ * Tab / 筛选 / 分页均由 URL 参数驱动（?tab=tasks|login&q=&module=&from=&to=&page=n），
  * 服务端按当前 Tab 取数；铺满内容区宽度（与其他管理页一致）。
  */
 export default async function AdminLogsPage({
@@ -48,21 +52,25 @@ export default async function AdminLogsPage({
   const rawTab = Array.isArray(sp.tab) ? sp.tab[0] : sp.tab
   const tab = rawTab === "login" ? "login" : "tasks"
   const page = parsePageParam(sp)
+  const q = parseQueryParam(sp, "q")
+  const moduleFilter = parseQueryParam(sp, "module")
+  const from = parseQueryParam(sp, "from")
+  const to = parseQueryParam(sp, "to")
+
+  // Tab 切换链接携带当前筛选（分页参数不携带，切回第 1 页）
+  const filterQs = new URLSearchParams(
+    filterQuery({ q, module: moduleFilter, from, to }),
+  )
+  const withFilters = (tabValue: string) =>
+    filterQs.size > 0 ? `/admin/logs?tab=${tabValue}&${filterQs}` : `/admin/logs?tab=${tabValue}`
 
   const tabs = [
-    { value: "tasks", href: "/admin/logs?tab=tasks", label: "生图日志", icon: FileText },
-    { value: "login", href: "/admin/logs?tab=login", label: "登录日志", icon: LogIn },
+    { value: "tasks", href: withFilters("tasks"), label: "生图日志", icon: FileText },
+    { value: "login", href: withFilters("login"), label: "登录日志", icon: LogIn },
   ] as const
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-bold">操作日志</h1>
-        <p className="text-sm text-muted-foreground">
-          生图任务日志与登录审计（企业隔离）
-        </p>
-      </div>
-
       {/* Tab（Link 驱动，样式对齐 shadcn Tabs） */}
       <div className="inline-flex h-9 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground">
         {tabs.map((t) => (
@@ -82,19 +90,58 @@ export default async function AdminLogsPage({
         ))}
       </div>
 
-      {tab === "tasks" ? <TasksSection page={page} /> : <LoginSection page={page} />}
+      {tab === "tasks" ? (
+        <TasksSection
+          page={page}
+          q={q}
+          module={moduleFilter}
+          from={from}
+          to={to}
+        />
+      ) : (
+        <LoginSection page={page} />
+      )}
     </div>
   )
 }
 
-async function TasksSection({ page }: { page: number }) {
-  const { tasks, total } = await listTaskLogsAction({ page, pageSize: PAGE_SIZE })
+async function TasksSection({
+  page,
+  q,
+  module: moduleFilter,
+  from,
+  to,
+}: {
+  page: number
+  q: string
+  module: string
+  from: string
+  to: string
+}) {
+  const { tasks, total } = await listTaskLogsAction({
+    page,
+    pageSize: PAGE_SIZE,
+    q,
+    source: moduleFilter || undefined,
+    from,
+    to,
+  })
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">生图任务日志</CardTitle>
         <CardDescription>共 {total} 条任务记录</CardDescription>
+        <CardAction>
+          <AdminListFilters
+            basePath="/admin/logs"
+            q={q}
+            module={moduleFilter}
+            from={from}
+            to={to}
+            moduleOptions={TASK_SOURCE_OPTIONS}
+          />
+        </CardAction>
       </CardHeader>
       <CardContent>
         <LogsTaskTable tasks={tasks} />
@@ -104,7 +151,10 @@ async function TasksSection({ page }: { page: number }) {
         pageSize={PAGE_SIZE}
         total={total}
         basePath="/admin/logs"
-        query={{ tab: "tasks" }}
+        query={{
+          tab: "tasks",
+          ...filterQuery({ q, module: moduleFilter, from, to }),
+        }}
       />
     </Card>
   )

@@ -27,7 +27,12 @@ export function useTaskPolling({
   onStopped: (message: string) => void
 }) {
   const handlersRef = useRef({ onCompleted, onFailed, onStopped })
-  handlersRef.current = { onCompleted, onFailed, onStopped }
+
+  // 每次渲染后同步最新回调：render 期间写 ref 违反 React 规则
+  // （react-hooks/refs），放到无依赖 effect 中写值语义等价且安全
+  useEffect(() => {
+    handlersRef.current = { onCompleted, onFailed, onStopped }
+  })
 
   useEffect(() => {
     if (!taskId) return

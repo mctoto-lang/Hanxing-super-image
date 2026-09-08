@@ -1,0 +1,1 @@
+ALTER TABLE "model" ADD COLUMN "visible_in_mockup" boolean DEFAULT false NOT NULL;

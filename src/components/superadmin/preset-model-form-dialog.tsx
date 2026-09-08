@@ -62,6 +62,7 @@ interface FormState {
   visibleInWorkspace: boolean
   visibleInProduct: boolean
   visibleInWeartry: boolean
+  visibleInMockup: boolean
   supportsReferenceImage: boolean
   maxReferenceImages: number
   referenceImageField: string
@@ -92,6 +93,7 @@ function emptyState(): FormState {
     visibleInWorkspace: false,
     visibleInProduct: false,
     visibleInWeartry: false,
+    visibleInMockup: false,
     supportsReferenceImage: false,
     maxReferenceImages: 0,
     referenceImageField: "",
@@ -127,6 +129,7 @@ function fromModel(m: PresetModelRow): FormState {
     visibleInWorkspace: m.visibleInWorkspace,
     visibleInProduct: m.visibleInProduct,
     visibleInWeartry: m.visibleInWeartry,
+    visibleInMockup: m.visibleInMockup,
     supportsReferenceImage: m.supportsReferenceImage,
     maxReferenceImages: m.maxReferenceImages,
     referenceImageField: m.referenceImageField ?? "",
@@ -180,6 +183,7 @@ export function PresetModelFormDialog({
       visibleInWorkspace: state.visibleInWorkspace,
       visibleInProduct: state.visibleInProduct,
       visibleInWeartry: state.visibleInWeartry,
+      visibleInMockup: state.visibleInMockup,
       supportsReferenceImage: state.supportsReferenceImage,
       maxReferenceImages: state.maxReferenceImages,
       referenceImageField: state.referenceImageField,
@@ -469,6 +473,13 @@ export function PresetModelFormDialog({
                     onCheckedChange={(v) => up("visibleInWeartry", v === true)}
                   />
                   穿戴图片
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={state.visibleInMockup}
+                    onCheckedChange={(v) => up("visibleInMockup", v === true)}
+                  />
+                  样机渲染
                 </label>
               </div>
             </div>

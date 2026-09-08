@@ -60,14 +60,7 @@ export default async function AdminChatModelsPage({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">对话模型</h1>
-          <p className="text-sm text-muted-foreground">
-            {ctx.enterprise?.name} · OpenAI 兼容格式（提示词模板用）；平台预置只读，
-            企业私有可 CRUD（API Key 加密落库）
-          </p>
-        </div>
+      <div className="flex items-center justify-end">
         {allowCustom ? (
           <AdminChatModelFormDialog />
         ) : (

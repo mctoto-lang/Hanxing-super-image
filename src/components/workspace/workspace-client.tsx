@@ -13,6 +13,7 @@ import {
   ImagePlus,
   CheckSquare,
   Download,
+  PanelRight,
   Square,
   Pin,
   PinOff,
@@ -55,6 +56,7 @@ import { toast } from "sonner"
 import { Spinner } from "@/components/workspace/spinner"
 import { NewTaskDialog } from "@/components/workspace/new-task-dialog"
 import { CardGrid } from "@/components/workspace/card-grid"
+import { ToolPanel } from "@/components/workspace/tool-panel"
 import { TemplateSelectDialog } from "@/components/workspace/template-select-dialog"
 import { ModelSelectDialog } from "@/components/workspace/model-select-dialog"
 import { SizeSelectDialog } from "@/components/workspace/size-select-dialog"
@@ -591,6 +593,10 @@ export function WorkspaceClient({
   )
   const [flipAllToImage, setFlipAllToImage] = useState(false)
 
+  // ─── 工具面板（与批量模式互斥） ───
+  const [toolPanelOpen, setToolPanelOpen] = useState(false)
+  const [activeCardId, setActiveCardId] = useState<string | null>(null)
+
   // ─── 生成配置（localStorage 持久化） ───
   const [selectedFissionTemplate, setSelectedFissionTemplate] =
     useState<TemplateRow | null>(() => loadStoredGenerationConfig().fissionTemplate)
@@ -680,6 +686,7 @@ export function WorkspaceClient({
   const pollCardImagesRef = useRef<() => Promise<void>>(async () => {})
   const stopCardImagesPollRef = useRef<() => void>(() => {})
   const startCardImagesPollRef = useRef<() => void>(() => {})
+  const activeCardIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     activeTaskIdRef.current = activeTaskId
@@ -690,6 +697,24 @@ export function WorkspaceClient({
   useEffect(() => {
     cardsRef.current = cards
   }, [cards])
+  useEffect(() => {
+    activeCardIdRef.current = activeCardId
+  }, [activeCardId])
+
+  // ─── 工具面板开关（与批量模式互斥：后开者关闭先开者） ───
+  const toggleToolPanel = useCallback(() => {
+    setToolPanelOpen((prev) => {
+      const next = !prev
+      if (next) {
+        setBatchMode(false)
+        setSelectedCardIds(new Set())
+        setFlipAllToImage(false)
+        // 无活动卡片时默认聚焦第一张，面板打开即有内容
+        setActiveCardId((current) => current ?? cardsRef.current[0]?.id ?? null)
+      }
+      return next
+    })
+  }, [])
 
   // ─── 排序任务（置顶优先） ───
   const sortedTasks = useMemo(() => {
@@ -1071,6 +1096,9 @@ export function WorkspaceClient({
   const handleTaskSelect = useCallback((task: WorkspaceTaskRow) => {
     setBatchMode(false)
     setSelectedCardIds(new Set())
+    // 切换任务同样退出工具面板（与批量模式行为一致）
+    setToolPanelOpen(false)
+    setActiveCardId(null)
     setActiveTaskId(task.id)
   }, [])
 
@@ -1178,6 +1206,14 @@ export function WorkspaceClient({
 
   /** 单张卡片删除：从列表移除并同步任务卡片数（服务端已级联删图并更新 cardCount） */
   const handleCardDeleted = useCallback((cardId: string) => {
+    // 工具面板：活动卡片被删时自动切到相邻卡片（删除发生在 setCards 之前，
+    // cardsRef 仍是删除前的列表，可取到邻居）
+    if (activeCardIdRef.current === cardId) {
+      const list = cardsRef.current
+      const index = list.findIndex((c) => c.id === cardId)
+      const neighbor = list[index + 1] ?? list[index - 1] ?? null
+      setActiveCardId(neighbor ? neighbor.id : null)
+    }
     setCards((prev) => prev.filter((c) => c.id !== cardId))
     const taskId = activeTaskIdRef.current
     setTasks((prev) =>
@@ -1868,10 +1904,25 @@ export function WorkspaceClient({
                 )}
 
                 <Button
+                  variant={toolPanelOpen ? "default" : "outline"}
+                  size="sm"
+                  className="h-7 text-xs gap-1 rounded-md"
+                  onClick={toggleToolPanel}
+                >
+                  <PanelRight className="h-3.5 w-3.5" />
+                  {toolPanelOpen ? "工具面板已开" : "工具面板"}
+                </Button>
+
+                <Button
                   variant={batchMode ? "default" : "outline"}
                   size="sm"
                   className="h-7 text-xs gap-1 rounded-md"
                   onClick={() => {
+                    // 进入批量模式时关闭工具面板（互斥）
+                    if (!batchMode) {
+                      setToolPanelOpen(false)
+                      setActiveCardId(null)
+                    }
                     setBatchMode(!batchMode)
                     setSelectedCardIds(new Set())
                     setFlipAllToImage(false)
@@ -2121,6 +2172,9 @@ export function WorkspaceClient({
                   batchMode={batchMode}
                   selectedCardIds={selectedCardIds}
                   flipAllToImage={flipAllToImage}
+                  toolPanelMode={toolPanelOpen}
+                  activeCardId={activeCardId}
+                  onCardActivate={setActiveCardId}
                   selectedDeepenTemplate={selectedDeepenTemplate}
                   selectedRegenTemplate={selectedRegenTemplate}
                   selectedTranslateTemplate={selectedTranslateTemplate}
@@ -2156,6 +2210,26 @@ export function WorkspaceClient({
           </>
         )}
       </main>
+
+      {/* ─── 工具面板（浮动，与批量模式互斥） ─── */}
+      {toolPanelOpen && (
+        <ToolPanel
+          cards={cards}
+          activeCardId={activeCardId}
+          onClose={() => setToolPanelOpen(false)}
+          cardImages={
+            activeCardId ? cardImagesMap.get(activeCardId) ?? [] : []
+          }
+          selectedDeepenTemplate={selectedDeepenTemplate}
+          selectedRegenTemplate={selectedRegenTemplate}
+          selectedTranslateTemplate={selectedTranslateTemplate}
+          selectedImageModel={selectedImageModel}
+          selectedSize={selectedSize}
+          onCardUpdated={handleCardUpdated}
+          onCardDeleted={handleCardDeleted}
+          onCardGeneratingImage={handleCardGeneratingImage}
+        />
+      )}
 
       {/* ─── 对话框 ─── */}
 

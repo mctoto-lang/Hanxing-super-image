@@ -74,6 +74,7 @@ export default async function ChatPage({
           conversations={conversations as ChatConversationListItem[]}
           selectedConversation={selectedConversation}
           messages={messages}
+          userAvatarUrl={ctx.user.image ?? null}
         />
       </Suspense>
     </div>

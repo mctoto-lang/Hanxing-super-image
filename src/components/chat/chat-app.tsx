@@ -15,6 +15,7 @@ import type {
   ChatModelCard,
   ThinkingLevel,
 } from "@/components/chat/types"
+import { isThinkingLevel } from "@/components/chat/types"
 
 /**
  * AI 对话页根组件（布局复刻自由创作：左 280px 历史栏 + 右内容区）
@@ -41,13 +42,9 @@ function loadConfigDraft(): ConfigDraft {
     const parsed = JSON.parse(raw) as ConfigDraft
     return {
       modelId: typeof parsed.modelId === "string" ? parsed.modelId : null,
-      thinkingLevel:
-        parsed.thinkingLevel === "off" ||
-        parsed.thinkingLevel === "low" ||
-        parsed.thinkingLevel === "medium" ||
-        parsed.thinkingLevel === "high"
-          ? parsed.thinkingLevel
-          : null,
+      thinkingLevel: isThinkingLevel(parsed.thinkingLevel)
+        ? parsed.thinkingLevel
+        : null,
     }
   } catch {
     return { modelId: null, thinkingLevel: null }
@@ -68,11 +65,14 @@ export function ChatApp({
   conversations,
   selectedConversation,
   messages,
+  userAvatarUrl,
 }: {
   models: ChatModelCard[]
   conversations: ChatConversationListItem[]
   selectedConversation: ChatConversationListItem | null
   messages: ChatMessageItem[]
+  /** 当前用户头像（消息气泡展示；null = 占位图标） */
+  userAvatarUrl: string | null
 }) {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -156,7 +156,7 @@ export function ChatApp({
   }, [stream, messages, clear])
 
   const handleSubmit = React.useCallback(
-    async (text: string) => {
+    async (text: string, images: string[]) => {
       if (!selectedModel) {
         toast.error("请先选择模型")
         throw new Error("未选择模型")
@@ -166,6 +166,7 @@ export function ChatApp({
           conversationId: selectedConversation?.id ?? null,
           modelId: selectedModel.id,
           content: text,
+          images,
           thinkingLevel: selectedModel.supportsThinking ? thinkingLevel : "off",
         })
       } catch (err) {
@@ -253,6 +254,7 @@ export function ChatApp({
             onSubmit={handleSubmit}
             onStop={stop}
             onRegenerate={handleRegenerate}
+            userAvatarUrl={userAvatarUrl}
           />
         ) : (
           <div className="flex flex-1 items-center justify-center overflow-auto p-6">

@@ -19,9 +19,12 @@ import { cn } from "@/lib/utils"
 export function HistoryDateRangePicker({
   value,
   onChange,
+  size = "default",
 }: {
   value: DateRange | undefined
   onChange: (range: DateRange | undefined) => void
+  /** 触发按钮尺寸（工具栏场景用 sm） */
+  size?: "default" | "sm"
 }) {
   // 受控 + 关闭时整体卸载内容：避免退场动画结束后 Portal 残留悬浮日历
   const [open, setOpen] = useState(false)
@@ -41,7 +44,7 @@ export function HistoryDateRangePicker({
           <Button
             type="button"
             variant="outline"
-            size="default"
+            size={size}
             className={cn("gap-1.5 font-normal", value && "text-primary")}
           />
         }

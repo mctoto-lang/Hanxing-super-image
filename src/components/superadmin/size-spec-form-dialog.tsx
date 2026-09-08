@@ -100,7 +100,9 @@ function SizeSpecForm({ row, onDone }: { row: SizeSpecRow | null; onDone: () => 
             items={PLATFORMS}
           >
             <SelectTrigger className="w-full">
-              <SelectValue />
+              <SelectValue>
+                {PLATFORMS.find((p) => p.value === platformKey)?.label ?? platformKey}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {PLATFORMS.map((p) => (

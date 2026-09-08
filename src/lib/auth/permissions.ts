@@ -25,13 +25,13 @@ export function isEnterpriseOwner(ctx: UserContext | null): boolean {
   return ctx?.user.enterpriseRole === "owner"
 }
 
-/** 角色中文显示名（全项目唯一文案来源：owner=企业管理员、admin=管理员） */
+/** 角色中文显示名（全项目唯一文案来源：owner=企业管理员、admin=成员管理员） */
 export function roleLabel(role: EnterpriseRole | undefined): string {
   switch (role) {
     case "owner":
       return "企业管理员"
     case "admin":
-      return "管理员"
+      return "成员管理员"
     case "member":
       return "成员"
     default:

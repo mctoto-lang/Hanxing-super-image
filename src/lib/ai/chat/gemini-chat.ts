@@ -6,17 +6,20 @@
  *
  * - 历史消息映射：assistant → role:"model"；parts:[{text}]；
  * - systemInstruction 独立字段；generationConfig.maxOutputTokens 控制上限；
- * - 思考：generationConfig.thinkingConfig.thinkingBudget（1024/8192/24576），
- *   off 不发送字段（模型默认行为）；
+ * - 思考：generationConfig.thinkingConfig.thinkingBudget（六档梯度
+ *   1024 → 32768，ultracode = -1 动态思考；可被管理员 thinkingOverrides
+ *   覆盖；off 不发送字段，模型默认行为）；
  * - 流式数据块：candidates[0].content.parts[].text（含 thought:true 的
  *   思考摘要 part，归一化为 thinking_delta）；
  * - usage：usageMetadata.promptTokenCount / candidatesTokenCount。
  */
 import {
   extractChatErrorMessage,
-  GEMINI_THINKING_BUDGETS,
   mergeConsecutiveMessages,
   resolveGeminiStreamEndpoint,
+  resolveGeminiThinkingBudget,
+  toContentParts,
+  type ChatContentPart,
   type ChatStreamEvent,
   type StreamChatAdapterOptions,
 } from "@/lib/ai/chat/chat-model-config"
@@ -41,14 +44,39 @@ interface GeminiStreamChunk {
   error?: { code?: number; message?: string; status?: string }
 }
 
-/** 构建 Gemini 请求体（纯函数，单测直接覆盖；modelName 由 URL 承载） */
+/** Gemini inlineData 图片（Gemini 不支持公网 URL source，须服务端取图转 base64 内联） */
+export interface GeminiInlineData {
+  mimeType: string
+  data: string
+}
+
+function toGeminiParts(
+  content: string | ChatContentPart[],
+  inlineImages?: Map<string, GeminiInlineData>,
+): Array<Record<string, unknown>> {
+  const parts: Array<Record<string, unknown>> = []
+  for (const p of toContentParts(content)) {
+    if (p.type === "text") {
+      if (p.text) parts.push({ text: p.text })
+    } else {
+      const inline = inlineImages?.get(p.image_url.url)
+      // 取图/转换失败的图片跳过（文本部分仍发送）
+      if (inline) parts.push({ inlineData: inline })
+    }
+  }
+  if (parts.length === 0) parts.push({ text: "" })
+  return parts
+}
+
+/** 构建 Gemini 请求体（纯函数，单测直接覆盖；图片 part 依赖预转换的 inlineImages 映射） */
 export function buildGeminiRequestBody(
   opts: StreamChatAdapterOptions,
+  inlineImages?: Map<string, GeminiInlineData>,
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     contents: mergeConsecutiveMessages(opts.messages).map((m) => ({
       role: m.role === "assistant" ? "model" : "user",
-      parts: [{ text: m.content }],
+      parts: toGeminiParts(m.content, inlineImages),
     })),
     generationConfig: {
       maxOutputTokens: Math.max(1, opts.maxOutputTokens),
@@ -58,8 +86,10 @@ export function buildGeminiRequestBody(
       ...(opts.supportsThinking && opts.thinkingLevel !== "off"
         ? {
             thinkingConfig: {
-              thinkingBudget:
-                GEMINI_THINKING_BUDGETS[opts.thinkingLevel],
+              thinkingBudget: resolveGeminiThinkingBudget(
+                opts.thinkingLevel,
+                opts.thinkingOverrides,
+              ),
             },
           }
         : {}),
@@ -71,10 +101,72 @@ export function buildGeminiRequestBody(
   return body
 }
 
+/** 单张内联图片上限（Gemini 请求体总量 20MB，留多图余量） */
+const GEMINI_IMAGE_MAX_BYTES = 7 * 1024 * 1024
+const GEMINI_IMAGE_FETCH_TIMEOUT_MS = 20_000
+
+function guessImageMimeFromUrl(url: string): string | null {
+  const ext = url.split("?")[0]?.split(".").pop()?.toLowerCase()
+  switch (ext) {
+    case "png":
+      return "image/png"
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg"
+    case "webp":
+      return "image/webp"
+    case "gif":
+      return "image/gif"
+    case "heic":
+      return "image/heic"
+    default:
+      return null
+  }
+}
+
+/**
+ * 预取消息中的图片转 base64（Gemini 仅支持 inlineData / GCS fileData）。
+ * 单图失败跳过不阻断请求；URL 来源已由 sendChatMessageSchema 校验为本系统存储。
+ */
+export async function prepareGeminiInlineImages(
+  messages: StreamChatAdapterOptions["messages"],
+): Promise<Map<string, GeminiInlineData>> {
+  const urls = new Set<string>()
+  for (const m of messages) {
+    if (typeof m.content === "string") continue
+    for (const p of m.content) {
+      if (p.type === "image_url") urls.add(p.image_url.url)
+    }
+  }
+  const map = new Map<string, GeminiInlineData>()
+  await Promise.all(
+    [...urls].map(async (url) => {
+      try {
+        const res = await fetch(url, {
+          signal: AbortSignal.timeout(GEMINI_IMAGE_FETCH_TIMEOUT_MS),
+        })
+        if (!res.ok) return
+        const buf = Buffer.from(await res.arrayBuffer())
+        if (buf.byteLength === 0 || buf.byteLength > GEMINI_IMAGE_MAX_BYTES) return
+        const mimeType =
+          res.headers.get("content-type")?.split(";")[0]?.trim() ||
+          guessImageMimeFromUrl(url) ||
+          "image/jpeg"
+        if (!mimeType.startsWith("image/")) return
+        map.set(url, { mimeType, data: buf.toString("base64") })
+      } catch {
+        // 单图取图失败：跳过该图
+      }
+    }),
+  )
+  return map
+}
+
 export async function* streamGeminiChat(
   opts: StreamChatAdapterOptions,
 ): AsyncGenerator<ChatStreamEvent> {
   const endpoint = resolveGeminiStreamEndpoint(opts.apiEndpoint, opts.modelName)
+  const inlineImages = await prepareGeminiInlineImages(opts.messages)
   const { signal, dispose } = createChatAbortSignal(opts.apiTimeout, opts.signal)
   let response: Response
   try {
@@ -84,7 +176,7 @@ export async function* streamGeminiChat(
         "Content-Type": "application/json",
         "x-goog-api-key": opts.apiKey,
       },
-      body: JSON.stringify(buildGeminiRequestBody(opts)),
+      body: JSON.stringify(buildGeminiRequestBody(opts, inlineImages)),
       signal,
     })
   } catch (err) {

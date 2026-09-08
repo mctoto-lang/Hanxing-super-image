@@ -14,15 +14,16 @@ import {
 import { db } from "@/db/client"
 import {
   chatApiConfigs,
-  chatTasks,
-  conversations,
+  chatConversations,
+  chatMessages,
   enterprises,
+  enterpriseSubscriptions,
   generationTasks,
   models,
   permissionGroups,
+  subscriptionPlans,
   systemSettings,
   users,
-  workspaceApiLogs,
   type ModuleName,
   type SystemSettingValue,
 } from "@/db/schema"
@@ -329,8 +330,26 @@ export async function listEnterprisesAction(opts: PlatformListParams = {}) {
         visiblePresetModels: enterprises.visiblePresetModels,
         visiblePresetChatModels: enterprises.visiblePresetChatModels,
         createdAt: enterprises.createdAt,
+        // 当前订阅套餐（未分配时均为 null）
+        planId: subscriptionPlans.id,
+        planName: subscriptionPlans.name,
+        planIconKey: subscriptionPlans.iconKey,
+        planColor: subscriptionPlans.color,
+        planCreditsPerCycle: subscriptionPlans.creditsPerCycle,
+        planCycleDays: subscriptionPlans.cycleDays,
+        planMaxMembers: subscriptionPlans.maxMembers,
+        planExpiresAt: enterpriseSubscriptions.expiresAt,
+        planStartsAt: enterpriseSubscriptions.startsAt,
       })
       .from(enterprises)
+      .leftJoin(
+        enterpriseSubscriptions,
+        eq(enterpriseSubscriptions.enterpriseId, enterprises.id),
+      )
+      .leftJoin(
+        subscriptionPlans,
+        eq(subscriptionPlans.id, enterpriseSubscriptions.planId),
+      )
       .where(where)
       .orderBy(enterprises.createdAt)
       .limit(pageSize)
@@ -338,7 +357,18 @@ export async function listEnterprisesAction(opts: PlatformListParams = {}) {
     db.select({ total: count() }).from(enterprises).where(where),
   ])
 
-  return { items, total, page, pageSize }
+  const now = Date.now()
+  return {
+    items: items.map((e) => ({
+      ...e,
+      planExpiresAt: e.planExpiresAt?.toISOString() ?? null,
+      planStartsAt: e.planStartsAt?.toISOString() ?? null,
+      planIsExpired: e.planExpiresAt ? e.planExpiresAt.getTime() <= now : false,
+    })),
+    total,
+    page,
+    pageSize,
+  }
 }
 
 /** 列出所有平台用户（超管，分页 + 可选搜索 username/昵称/邮箱） */
@@ -529,26 +559,31 @@ export async function getPlatformStatsAction(): Promise<PlatformStats> {
 /**
  * 对话类数据看板统计（超管）
  *
- * 数据源：
- * - chatTasks：对话任务（深化/重生成/翻译）总量、今日、状态/类型分布、30 天趋势、模型排行
- * - workspaceApiLogs（apiType=chat）：成功率、平均耗时
- * - conversations：创作会话总数
+ * 数据源：/chat 交互式对话的 chat_message（按助手消息计，每条 = 一次
+ * 模型调用）+ chat_conversation。早期版本统计 chat_task（工作台批量
+ * 提示词任务）/ workspace_api_logs，与交互式对话数据脱节导致看板恒为
+ * 空，已切换为真实对话数据。
  */
 export interface ChatPlatformStats {
-  totalCalls: number
-  todayCalls: number
+  /** 助手消息总数 */
+  totalMessages: number
+  todayMessages: number
+  /** 对话会话总数（chat_conversation） */
+  conversationCount: number
+  /** 助手消息状态分布（streaming/completed/failed/stopped） */
   statusDistribution: { status: string; count: number }[]
-  taskTypeDistribution: { taskType: string; count: number }[]
   dailyTrend: Array<{ day: string; taskCount: number; completedCount: number }>
   modelRanking: Array<{
     configId: string | null
     displayName: string | null
     taskCount: number
   }>
-  apiTotal: number
-  apiSuccessCount: number
-  apiAvgDurationMs: number | null
-  conversationCount: number
+  /** completed 占助手消息总数比例（0-100，无消息时 null） */
+  successRate: number | null
+  /** 助手消息平均耗时（毫秒） */
+  avgDurationMs: number | null
+  /** 企业对话占比（助手消息数 Top 5 + 其他） */
+  enterpriseShare: Array<{ name: string; count: number }>
 }
 
 export async function getChatStatsAction(): Promise<ChatPlatformStats> {
@@ -556,66 +591,78 @@ export async function getChatStatsAction(): Promise<ChatPlatformStats> {
 
   const todayStart = new Date()
   todayStart.setHours(0, 0, 0, 0)
+  // 仅统计助手消息：一条助手消息 = 一次模型调用（用户消息不产生调用）
+  const assistant = eq(chatMessages.role, "assistant")
 
-  const [totalAgg, todayAgg, statusRows, typeRows, trend, ranking, apiAgg, convAgg] =
+  const [totalAgg, todayAgg, statusRows, trend, ranking, convAgg, entRows] =
     await Promise.all([
-      db.select({ c: count() }).from(chatTasks),
+      db
+        .select({
+          c: count(),
+          avgDuration: sql<number | null>`avg(${chatMessages.durationMs})::int`,
+        })
+        .from(chatMessages)
+        .where(assistant),
       db
         .select({ c: count() })
-        .from(chatTasks)
-        .where(gte(chatTasks.createdAt, todayStart)),
+        .from(chatMessages)
+        .where(and(assistant, gte(chatMessages.createdAt, todayStart))),
       db
-        .select({ status: chatTasks.status, count: count() })
-        .from(chatTasks)
-        .groupBy(chatTasks.status),
-      db
-        .select({ taskType: chatTasks.taskType, count: count() })
-        .from(chatTasks)
-        .groupBy(chatTasks.taskType),
+        .select({ status: chatMessages.status, count: count() })
+        .from(chatMessages)
+        .where(assistant)
+        .groupBy(chatMessages.status),
       db
         .select({
-          day: sql<string>`to_char(date_trunc('day', ${chatTasks.createdAt}), 'YYYY-MM-DD')`,
+          day: sql<string>`to_char(date_trunc('day', ${chatMessages.createdAt}), 'YYYY-MM-DD')`,
           taskCount: count(),
-          completedCount: sql<number>`count(*) filter (where ${chatTasks.status} = 'completed')::int`,
+          completedCount: sql<number>`count(*) filter (where ${chatMessages.status} = 'completed')::int`,
         })
-        .from(chatTasks)
+        .from(chatMessages)
         .where(
-          sql`${chatTasks.createdAt} >= ${sql.raw("CURRENT_DATE - INTERVAL '29 days'")}`,
+          and(
+            assistant,
+            sql`${chatMessages.createdAt} >= ${sql.raw("CURRENT_DATE - INTERVAL '29 days'")}`,
+          ),
         )
-        .groupBy(sql`date_trunc('day', ${chatTasks.createdAt})`)
-        .orderBy(sql`date_trunc('day', ${chatTasks.createdAt})`),
+        .groupBy(sql`date_trunc('day', ${chatMessages.createdAt})`)
+        .orderBy(sql`date_trunc('day', ${chatMessages.createdAt})`),
       db
         .select({
-          configId: chatTasks.apiConfigId,
+          configId: chatMessages.modelId,
           displayName: chatApiConfigs.displayName,
           taskCount: count(),
         })
-        .from(chatTasks)
-        .leftJoin(chatApiConfigs, eq(chatTasks.apiConfigId, chatApiConfigs.id))
-        .groupBy(chatTasks.apiConfigId, chatApiConfigs.displayName)
+        .from(chatMessages)
+        .leftJoin(chatApiConfigs, eq(chatMessages.modelId, chatApiConfigs.id))
+        .where(assistant)
+        .groupBy(chatMessages.modelId, chatApiConfigs.displayName)
         .orderBy(desc(count()))
         .limit(10),
+      db.select({ c: count() }).from(chatConversations),
       db
-        .select({
-          total: count(),
-          successCount: sql<number>`count(*) filter (where ${workspaceApiLogs.responseStatus} = 'success')::int`,
-          avgDuration: sql<number | null>`avg(${workspaceApiLogs.durationMs})::int`,
-        })
-        .from(workspaceApiLogs)
-        .where(eq(workspaceApiLogs.apiType, "chat")),
-      db.select({ c: count() }).from(conversations),
+        .select({ name: enterprises.name, count: count() })
+        .from(chatMessages)
+        .innerJoin(enterprises, eq(chatMessages.enterpriseId, enterprises.id))
+        .where(assistant)
+        .groupBy(enterprises.name)
+        .orderBy(desc(count()))
+        .limit(5),
     ])
 
+  const totalMessages = totalAgg[0]?.c ?? 0
+  const completedCount =
+    statusRows.find((s) => s.status === "completed")?.count ?? 0
+  const top5Total = entRows.reduce((acc, r) => acc + r.count, 0)
+  const restCount = totalMessages - top5Total
+
   return {
-    totalCalls: totalAgg[0]?.c ?? 0,
-    todayCalls: todayAgg[0]?.c ?? 0,
+    totalMessages,
+    todayMessages: todayAgg[0]?.c ?? 0,
+    conversationCount: convAgg[0]?.c ?? 0,
     statusDistribution: statusRows.map((s) => ({
       status: s.status,
       count: s.count,
-    })),
-    taskTypeDistribution: typeRows.map((t) => ({
-      taskType: t.taskType,
-      count: t.count,
     })),
     dailyTrend: trend.map((t) => ({
       day: t.day,
@@ -627,21 +674,25 @@ export async function getChatStatsAction(): Promise<ChatPlatformStats> {
       displayName: r.displayName,
       taskCount: r.taskCount,
     })),
-    apiTotal: apiAgg[0]?.total ?? 0,
-    apiSuccessCount: apiAgg[0]?.successCount ?? 0,
-    apiAvgDurationMs: apiAgg[0]?.avgDuration ?? null,
-    conversationCount: convAgg[0]?.c ?? 0,
+    successRate:
+      totalMessages > 0 ? (completedCount / totalMessages) * 100 : null,
+    avgDurationMs: totalAgg[0]?.avgDuration ?? null,
+    enterpriseShare: [
+      ...entRows.map((r) => ({ name: r.name ?? "—", count: r.count })),
+      ...(restCount > 0 ? [{ name: "其他企业", count: restCount }] : []),
+    ],
   }
 }
 
 
 /* ═══════════════ 企业级样机渲染服务配置（system_setting key="mockup"） ═══════════════ */
 
-/** 下发给超管的配置视图（密钥明文不出库，仅 hasApiKey） */
+/** 下发给超管的配置视图（密钥明文不出库，仅 hasApiKey/hasWebhookSecret） */
 export interface MockupSettingView {
   enterpriseId: string
   apiBaseUrl: string
   hasApiKey: boolean
+  hasWebhookSecret: boolean
   costPerRender: number
   enabled: boolean
 }
@@ -649,6 +700,7 @@ export interface MockupSettingView {
 interface MockupSettingValue {
   apiBaseUrl?: string
   apiKeyEncrypted?: string
+  webhookSecretEncrypted?: string
   costPerRender?: number
   enabled?: boolean
 }
@@ -679,6 +731,7 @@ export async function getMockupSettingAction(
     enterpriseId,
     apiBaseUrl: v.apiBaseUrl ?? "",
     hasApiKey: Boolean(v.apiKeyEncrypted),
+    hasWebhookSecret: Boolean(v.webhookSecretEncrypted),
     costPerRender: Number.isFinite(cost) && cost > 0 ? Math.floor(cost) : 1,
     enabled: v.enabled !== false,
   }
@@ -689,6 +742,8 @@ export async function saveMockupSettingAction(input: {
   apiBaseUrl: string
   /** 留空 = 保留已存密钥 */
   apiKey?: string
+  /** Webhook 签名密钥（与 PS-API 该 API Key 的 webhookSecret 配对）；留空 = 保留；传 "-" 清除 */
+  webhookSecret?: string
   costPerRender: number
   enabled: boolean
 }): Promise<{ ok: boolean; error: string | null }> {
@@ -719,6 +774,14 @@ export async function saveMockupSettingAction(input: {
   const existing = await readMockupSetting(enterpriseId)
   const newKey = String(input.apiKey ?? "").trim()
   const apiKeyEncrypted = newKey ? encrypt(newKey) : (existing.apiKeyEncrypted ?? "")
+  // webhookSecret：留空保留；输入 "-" 表示清除（关闭终态推送，回落纯轮询）
+  const newSecret = String(input.webhookSecret ?? "").trim()
+  const webhookSecretEncrypted =
+    newSecret === "-"
+      ? ""
+      : newSecret
+        ? encrypt(newSecret)
+        : (existing.webhookSecretEncrypted ?? "")
   const enabled = input.enabled === true
 
   if (enabled && (!apiBaseUrl || !apiKeyEncrypted)) {
@@ -728,6 +791,7 @@ export async function saveMockupSettingAction(input: {
   const value = {
     apiBaseUrl,
     apiKeyEncrypted,
+    webhookSecretEncrypted,
     costPerRender: cost,
     enabled,
   } as unknown as SystemSettingValue

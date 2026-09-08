@@ -148,6 +148,11 @@ export default async function PlatformModelsPage({
                           穿戴
                         </Badge>
                       ) : null}
+                      {m.visibleInMockup ? (
+                        <Badge variant="outline" className="text-xs">
+                          样机
+                        </Badge>
+                      ) : null}
                     </div>
                   </TableCell>
                   <TableCell>

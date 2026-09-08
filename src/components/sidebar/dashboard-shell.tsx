@@ -4,8 +4,11 @@ import { redirect } from "next/navigation"
 import { AppSidebar } from "@/components/sidebar/app-sidebar"
 import { buildNavMain, buildSidebarUser } from "@/components/sidebar/sidebar-data"
 import { HeaderTitle } from "@/components/sidebar/dashboard-header-title"
+import { OnlineMembers } from "@/components/sidebar/online-members"
 import { AdBanner } from "@/components/banner/ad-banner"
+import { GrokBallCursor } from "@/components/grok-ball/grok-ball-cursor"
 import { getDisplayBanner } from "@/server/actions/platform-banners"
+import { getEnterprisePlanInfo } from "@/server/services/subscription-service"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
 
 /**
@@ -34,17 +37,24 @@ export async function DashboardShell({
   // 广告横幅：超管配置，随机轮换一条；无生效横幅时渲染为空
   const banner = await getDisplayBanner()
 
+  // 企业订阅套餐摘要（勋章 + 账户弹窗订阅页签；超管/无企业为 null）
+  const plan = ctx.user.enterpriseId
+    ? await getEnterprisePlanInfo(ctx.user.enterpriseId)
+    : null
+
   const inner = contentScroll === "inner"
 
   return (
     <>
       {/* 广告横幅：悬浮于视口顶部（fixed 覆盖显示，不占布局空间） */}
       <AdBanner banner={banner} />
+      {/* 鼠标跟随表情圆球：单击切换 32 种表情，聊天时自动联动（偏好走 localStorage） */}
+      <GrokBallCursor />
       <SidebarProvider
         className={cn(inner && "h-svh max-h-svh overflow-hidden")}
       >
         <AppSidebar
-          user={buildSidebarUser(ctx)}
+          user={buildSidebarUser(ctx, plan)}
           enterprise={
             ctx.enterprise
               ? {
@@ -66,6 +76,10 @@ export async function DashboardShell({
           <header className="flex h-16 shrink-0 items-center gap-2 border-b px-4">
             <SidebarTrigger className="-ml-1" />
             <HeaderTitle className="ml-4" />
+            {/* 企业在线成员头像组：超管/无企业不展示（内部自动轮询心跳） */}
+            <OnlineMembers
+              enabled={!!ctx.user.enterpriseId && !ctx.user.isSuperAdmin}
+            />
           </header>
           <div className={cn("min-h-0 flex-1 p-4", inner && "overflow-y-auto")}>
             {children}

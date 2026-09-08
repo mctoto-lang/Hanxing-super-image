@@ -31,9 +31,8 @@ import {
   DEFAULT_FISSION_TEMPLATE,
   type ChatApiConfig,
 } from "@/server/services/workspace-ai"
-import { deductUserCredits, refundUserCredits } from "@/server/services/credits-service"
+import { deductUserCredits, refundFailedTask, refundUserCredits } from "@/server/services/credits-service"
 import { saveExportTicket } from "@/server/services/export-ticket"
-import { refundFailedTask } from "@/server/actions/create"
 import { enqueue, enqueueMany } from "@/lib/queue/task-queue"
 import { validateReferenceImageUrls } from "@/lib/storage/reference-url"
 import { revalidatePath } from "next/cache"
@@ -1296,82 +1295,81 @@ async function generateCardImageInternal(opts: {
     }
   }
 
-  const [cardImage] = await db
-    .insert(cardImages)
-    .values({
-      enterpriseId,
-      cardId: card.id,
-      imageApiId: apiId,
-      imageUrl: "",
-      size,
-      status: "pending",
-      isSelected: false,
-      generationPrompt: prompt,
-      source: "generated",
-    })
-    .returning()
-
-  const [genTask] = await db
-    .insert(generationTasks)
-    .values({
-      enterpriseId,
-      userId: ctx.user.id,
-      modelId: apiId,
-      prompt,
-      imageSize: size || "1024x1024",
-      imageCount: 1,
-      status: "queued",
-      taskType: "workspace_single",
-      source: "workspace",
-      priority: ctx.group?.priority ?? 0,
-      creditsCharged: 0,
-      costPerImage: model.costPerImage, // 记录提交时单价（部分失败按张退款用）
-      referenceImages:
-        card.referenceImages.length > 0 ? card.referenceImages : null,
-    })
-    .returning()
-
-  await db
-    .update(cardImages)
-    .set({ generationTaskId: genTask!.id, updatedAt: new Date() })
-    .where(eq(cardImages.id, cardImage!.id))
-
+  // 建图片行 + 任务 + 扣费 + 记账（单事务，任一步失败整体回滚）。此前
+  // 分离提交，崩溃在中间窗口会出现「任务已建未扣费」（孤儿回收重新入队
+  // = 免费生成）或「已扣费未记账」（失败退款按记账额少退）。
+  let genTaskId: string
+  let cardImageId: string
   try {
-    await deductUserCredits({
-      enterpriseId,
-      amount: cost,
-      userId: ctx.user.id,
-      taskId: genTask!.id,
-      remark: `工作台生图 ${model.displayName} x1`,
-    })
-  } catch (err) {
-    await db
-      .update(generationTasks)
-      .set({ status: "failed", errorMessage: "积分扣减失败" })
-      .where(eq(generationTasks.id, genTask!.id))
-    await db
-      .update(cardImages)
-      .set({
-        status: "failed",
-        errorMessage: "积分扣减失败",
-        updatedAt: new Date(),
+    const r = await db.transaction(async (tx) => {
+      const [cardImage] = await tx
+        .insert(cardImages)
+        .values({
+          enterpriseId,
+          cardId: card.id,
+          imageApiId: apiId,
+          imageUrl: "",
+          size,
+          status: "pending",
+          isSelected: false,
+          generationPrompt: prompt,
+          source: "generated",
+        })
+        .returning({ id: cardImages.id })
+
+      const [genTask] = await tx
+        .insert(generationTasks)
+        .values({
+          enterpriseId,
+          userId: ctx.user.id,
+          modelId: apiId,
+          prompt,
+          imageSize: size || "1024x1024",
+          imageCount: 1,
+          status: "queued",
+          taskType: "workspace_single",
+          source: "workspace",
+          priority: ctx.group?.priority ?? 0,
+          creditsCharged: 0,
+          costPerImage: model.costPerImage, // 记录提交时单价（部分失败按张退款用）
+          referenceImages:
+            card.referenceImages.length > 0 ? card.referenceImages : null,
+        })
+        .returning({ id: generationTasks.id })
+
+      await tx
+        .update(cardImages)
+        .set({ generationTaskId: genTask!.id, updatedAt: new Date() })
+        .where(eq(cardImages.id, cardImage!.id))
+
+      await deductUserCredits({
+        enterpriseId,
+        amount: cost,
+        userId: ctx.user.id,
+        taskId: genTask!.id,
+        remark: `工作台生图 ${model.displayName} x1`,
+        tx,
       })
-      .where(eq(cardImages.id, cardImage!.id))
+
+      await tx
+        .update(generationTasks)
+        .set({ creditsCharged: cost })
+        .where(eq(generationTasks.id, genTask!.id))
+      return { cardImageId: cardImage!.id, genTaskId: genTask!.id }
+    })
+    cardImageId = r.cardImageId
+    genTaskId = r.genTaskId
+  } catch (err) {
     return {
       ok: false,
       error: err instanceof Error ? err.message : "积分扣减失败",
     }
   }
 
-  await db
-    .update(generationTasks)
-    .set({ creditsCharged: cost })
-    .where(eq(generationTasks.id, genTask!.id))
-
   // 入队（Redis）。失败必须退款，否则用户积分已扣但任务永不处理。
   try {
     await enqueue({
-      taskId: genTask!.id,
+      taskId: genTaskId,
       enterpriseId,
       modelId: apiId,
       prompt,
@@ -1386,11 +1384,11 @@ async function generateCardImageInternal(opts: {
     })
   } catch (err) {
     // 入队失败（如 Redis 闪断）：退还积分并标记失败
-    await refundFailedTask(genTask!.id)
+    await refundFailedTask(genTaskId)
     await db
       .update(generationTasks)
       .set({ status: "failed", errorMessage: "任务入队失败，积分已退还" })
-      .where(eq(generationTasks.id, genTask!.id))
+      .where(eq(generationTasks.id, genTaskId))
     await db
       .update(cardImages)
       .set({
@@ -1398,9 +1396,9 @@ async function generateCardImageInternal(opts: {
         errorMessage: "任务入队失败，积分已退还",
         updatedAt: new Date(),
       })
-      .where(eq(cardImages.id, cardImage!.id))
+      .where(eq(cardImages.id, cardImageId))
     console.error(
-      `[workspace] 任务 ${genTask!.id} 入队失败，已退款:`,
+      `[workspace] 任务 ${genTaskId} 入队失败，已退款:`,
       err instanceof Error ? err.message : err,
     )
     return {
@@ -1411,8 +1409,8 @@ async function generateCardImageInternal(opts: {
 
   return {
     ok: true,
-    cardImageId: cardImage!.id,
-    generationTaskId: genTask!.id,
+    cardImageId,
+    generationTaskId: genTaskId,
   }
 }
 
@@ -1578,6 +1576,13 @@ export async function addUploadedCardImageAction(
   if (!owned) return { ok: false, error: "卡片不存在" }
   const imageUrl = input.imageUrl.trim()
   if (!imageUrl) return { ok: false, error: "图片地址无效" }
+  // 图片归属校验：上传图 URL 会被参考图链路转给上游、被导出链路在服务端
+  // 二次拉取，必须困在本企业上传的存储对象内（防 SSRF / 跨租户引用）
+  const refErr = await validateReferenceImageUrls(
+    [imageUrl],
+    scope.enterpriseId,
+  )
+  if (refErr) return { ok: false, error: refErr }
   const [img] = await db
     .insert(cardImages)
     .values({
@@ -1702,68 +1707,90 @@ export async function batchGenerateImageAction(
   }
   if (valid.length === 0) return { ok: true, submitted: 0, tasks, errors }
 
-  // ── 一次性总额扣费（一条行锁事务；余额不足快速失败，什么都不写）──
+  // ── 一次性总额扣费 + 建任务/图片行（单事务，任一步失败整体回滚）。
+  // 此前先扣费提交、再插行：崩溃在中间窗口会出现「已扣费但无任务行」，
+  // 退款与对账都无凭据。余额不足快速失败，什么都不写。
   const cost = model!.costPerImage
   const totalCost = cost * valid.length
-  let charged = false
   let insertedTaskIds: string[] = []
+  let imageIdByCard = new Map<string, string>()
   try {
-    await deductUserCredits({
-      enterpriseId,
-      amount: totalCost,
-      userId: ctx.user.id,
-      taskId: null,
-      remark: `工作台批量生图 ${model!.displayName} x${valid.length}`,
+    const r = await db.transaction(async (tx) => {
+      await deductUserCredits({
+        enterpriseId,
+        amount: totalCost,
+        userId: ctx.user.id,
+        taskId: null,
+        remark: `工作台批量生图 ${model!.displayName} x${valid.length}`,
+        tx,
+      })
+
+      // ── 批量 INSERT 任务行（creditsCharged 逐行记录，退款逻辑不变）──
+      const insertedTasks = await tx
+        .insert(generationTasks)
+        .values(
+          valid.map((v) => ({
+            enterpriseId,
+            userId: ctx.user.id,
+            modelId: model!.id,
+            prompt: v.prompt,
+            imageSize: input.size || "1024x1024",
+            imageCount: 1,
+            status: "queued" as const,
+            taskType: "workspace_single" as const,
+            source: "workspace" as const,
+            priority: ctx.group?.priority ?? 0,
+            creditsCharged: cost,
+            costPerImage: cost, // 记录提交时单价（部分失败按张退款用）
+            referenceImages:
+              v.card.referenceImages.length > 0 ? v.card.referenceImages : null,
+          })),
+        )
+        .returning({ id: generationTasks.id })
+      const taskIds = insertedTasks.map((t) => t.id)
+
+      // ── 批量 INSERT 图片行，直接带 generationTaskId（省掉逐卡 UPDATE）──
+      const insertedImages = await tx
+        .insert(cardImages)
+        .values(
+          valid.map((v, i) => ({
+            enterpriseId,
+            cardId: v.card.id,
+            generationTaskId: taskIds[i]!,
+            imageApiId: model!.id,
+            imageUrl: "",
+            size: input.size,
+            status: "pending" as const,
+            isSelected: false,
+            generationPrompt: v.prompt,
+            source: "generated",
+          })),
+        )
+        .returning({ id: cardImages.id, cardId: cardImages.cardId })
+
+      return {
+        taskIds,
+        imageIdByCard: new Map(
+          insertedImages.map((row) => [row.cardId, row.id] as const),
+        ),
+      }
     })
-    charged = true
+    insertedTaskIds = r.taskIds
+    imageIdByCard = r.imageIdByCard
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "批量提交失败"
+    console.error("[workspace] 批量生图扣费/建行失败（事务已回滚）:", msg)
+    return {
+      ok: true,
+      submitted: 0,
+      tasks: [],
+      errors: valid.map((v) => ({ cardId: v.card.id, error: msg })),
+    }
+  }
 
-    // ── 批量 INSERT 任务行（creditsCharged 逐行记录，退款逻辑不变）──
-    const insertedTasks = await db
-      .insert(generationTasks)
-      .values(
-        valid.map((v) => ({
-          enterpriseId,
-          userId: ctx.user.id,
-          modelId: model!.id,
-          prompt: v.prompt,
-          imageSize: input.size || "1024x1024",
-          imageCount: 1,
-          status: "queued" as const,
-          taskType: "workspace_single" as const,
-          source: "workspace" as const,
-          priority: ctx.group?.priority ?? 0,
-          creditsCharged: cost,
-          costPerImage: cost, // 记录提交时单价（部分失败按张退款用）
-          referenceImages:
-            v.card.referenceImages.length > 0 ? v.card.referenceImages : null,
-        })),
-      )
-      .returning({ id: generationTasks.id })
-    insertedTaskIds = insertedTasks.map((t) => t.id)
-
-    // ── 批量 INSERT 图片行，直接带 generationTaskId（省掉逐卡 UPDATE）──
-    const insertedImages = await db
-      .insert(cardImages)
-      .values(
-        valid.map((v, i) => ({
-          enterpriseId,
-          cardId: v.card.id,
-          generationTaskId: insertedTaskIds[i]!,
-          imageApiId: model!.id,
-          imageUrl: "",
-          size: input.size,
-          status: "pending" as const,
-          isSelected: false,
-          generationPrompt: v.prompt,
-          source: "generated",
-        })),
-      )
-      .returning({ id: cardImages.id, cardId: cardImages.cardId })
-    const imageIdByCard = new Map(
-      insertedImages.map((r) => [r.cardId, r.id] as const),
-    )
-
-    // ── pipeline 一次入队 ──
+  // ── pipeline 一次入队（事务外：Redis 不可用不能吞掉已落库的任务，
+  // 失败走补偿——全额退款 + 已提交行批量置 failed）──
+  try {
     await enqueueMany(
       valid.map((v, i) => ({
         taskId: insertedTaskIds[i]!,
@@ -1791,23 +1818,21 @@ export async function batchGenerateImageAction(
     return { ok: true, submitted: valid.length, tasks: resultTasks, errors }
   } catch (err) {
     const msg = err instanceof Error ? err.message : "批量提交失败"
-    console.error("[workspace] 批量生图提交失败，执行补偿:", msg)
+    console.error("[workspace] 批量生图入队失败，执行补偿:", msg)
     // 全额退款 + 已插入行批量置 failed，保证积分与任务状态一致
-    if (charged) {
-      try {
-        await refundUserCredits({
-          enterpriseId,
-          amount: totalCost,
-          userId: ctx.user.id,
-          taskId: null,
-          remark: `工作台批量生图失败退还 x${valid.length}`,
-        })
-      } catch (refundErr) {
-        console.error(
-          "[workspace] 批量生图退款失败（需人工对账）:",
-          refundErr instanceof Error ? refundErr.message : refundErr,
-        )
-      }
+    try {
+      await refundUserCredits({
+        enterpriseId,
+        amount: totalCost,
+        userId: ctx.user.id,
+        taskId: null,
+        remark: `工作台批量生图失败退还 x${valid.length}`,
+      })
+    } catch (refundErr) {
+      console.error(
+        "[workspace] 批量生图退款失败（需人工对账）:",
+        refundErr instanceof Error ? refundErr.message : refundErr,
+      )
     }
     if (insertedTaskIds.length > 0) {
       await db
@@ -2111,6 +2136,10 @@ export async function batchAttachUploadedImagesAction(
   const ctx = await requireUserContext()
   const scope = getCurrentEnterpriseScope(ctx)
   const urls = normalizeReferenceImages(imageUrls)
+  // 归属校验同 addUploadedCardImageAction：批量绑定前校验全部 URL，
+  // 防止外域/跨租户 URL 借此落库（导出时会被服务端拉取，构成 SSRF）
+  const refErr = await validateReferenceImageUrls(urls, scope.enterpriseId)
+  if (refErr) return { ok: false, updatedCardIds: [], imagesByCard: {} }
   const updatedCardIds: string[] = []
   const imagesByCard: Record<string, CardImageRow[]> = {}
 

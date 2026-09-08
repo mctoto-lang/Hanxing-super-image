@@ -22,7 +22,7 @@ import {
   updatePromptTemplateConfigAction,
 } from "@/server/actions/platform-product-config"
 import { PRODUCT_PROMPT_SCENES } from "@/db/schema"
-import { SCENE_TEMPLATE_VARS } from "@/lib/product/prompt-vars"
+import { SCENE_TEMPLATE_VARS, type TemplateVarDef } from "@/lib/product/prompt-vars"
 import {
   DEFAULT_PROMPT_TEMPLATES,
   PROMPT_SCENE_LABELS,
@@ -35,10 +35,16 @@ import {
   WEARTRY_PROMPT_SCENE_NOTES,
   WEARTRY_PROMPT_SCENES,
 } from "@/lib/weartry/prompt-defaults"
+import {
+  MOCKUP_DEFAULT_PROMPT_TEMPLATES,
+  MOCKUP_PROMPT_SCENE_LABELS,
+  MOCKUP_PROMPT_SCENE_NOTES,
+  MOCKUP_PROMPT_SCENES,
+} from "@/lib/mockup/prompt-defaults"
 import { WEARTRY_SCENE_TEMPLATE_VARS } from "@/lib/weartry/prompt-vars"
 
-/** 配置中心归属：商品图片 / 穿戴图片（场景清单与默认值按端隔离，互不可见） */
-export type PromptConfigVariant = "product" | "weartry"
+/** 配置中心归属：商品图片 / 穿戴图片 / 样机渲染（场景清单与默认值按端隔离，互不可见） */
+export type PromptConfigVariant = "product" | "weartry" | "mockup"
 
 /** 按端取场景清单 / 标签 / 默认模板 / 说明 / 变量注册表 */
 function getVariantMaps(variant: PromptConfigVariant) {
@@ -49,6 +55,15 @@ function getVariantMaps(variant: PromptConfigVariant) {
       defaults: WEARTRY_DEFAULT_PROMPT_TEMPLATES,
       notes: WEARTRY_PROMPT_SCENE_NOTES,
       vars: WEARTRY_SCENE_TEMPLATE_VARS,
+    }
+  }
+  if (variant === "mockup") {
+    return {
+      scenes: MOCKUP_PROMPT_SCENES,
+      labels: MOCKUP_PROMPT_SCENE_LABELS,
+      defaults: MOCKUP_DEFAULT_PROMPT_TEMPLATES,
+      notes: MOCKUP_PROMPT_SCENE_NOTES,
+      vars: {} as Record<string, TemplateVarDef[]>,
     }
   }
   return {

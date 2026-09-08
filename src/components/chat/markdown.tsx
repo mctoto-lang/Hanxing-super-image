@@ -63,7 +63,8 @@ export function ChatMarkdown({
   return (
     <div
       className={cn(
-        "prose prose-sm dark:prose-invert max-w-none break-words",
+        // 正文排版对齐 agent 模板：15px / foreground/90（prose 默认行高 ~1.71）
+        "prose prose-sm dark:prose-invert max-w-none break-words text-[15px] text-foreground/90",
         // 收紧 prose 默认首尾与标题间距，贴合聊天气泡节奏
         "[&_:first-child]:mt-0 [&_:last-child]:mb-0 [&_h1]:mt-3 [&_h2]:mt-3 [&_h3]:mt-3",
         "[&_pre]:rounded-lg [&_pre]:bg-muted/60 [&_pre]:p-3 [&_pre]:text-xs",
@@ -72,7 +73,11 @@ export function ChatMarkdown({
         "[&_a]:text-primary [&_a]:no-underline hover:[&_a]:underline",
         "[&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5",
         "[&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:text-muted-foreground",
-        "[&_table]:text-xs [&_th]:border [&_td]:border",
+        // hr（模型输出 --- 分节）与表格边框统一为中性灰白：Typography 默认
+        // --tw-prose-hr 为 slate 蓝灰（#364153），深色背景下呈蓝色；v4 的
+        // border 宽度类默认 currentColor，深色下过亮
+        "[&_hr]:border-border/70 [&_hr]:my-4",
+        "[&_table]:text-xs [&_th]:border [&_th]:border-border/60 [&_td]:border [&_td]:border-border/60",
         className,
       )}
     >

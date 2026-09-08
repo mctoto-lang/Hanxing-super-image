@@ -65,6 +65,7 @@ export async function* dispatchStreamChat(
     messages: opts.messages,
     systemPrompt: opts.systemPrompt,
     thinkingLevel: opts.thinkingLevel,
+    thinkingOverrides: model.extraConfig?.thinkingOverrides ?? null,
     signal: opts.signal,
   }
   switch (format) {

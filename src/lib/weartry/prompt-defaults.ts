@@ -24,9 +24,9 @@ export const WEARTRY_PROMPT_SCENES = PRODUCT_PROMPT_SCENES.filter((s) =>
   s.startsWith("weartry."),
 ) as Array<(typeof PRODUCT_PROMPT_SCENES)[number]>
 
-/** 商品图片专属场景清单（穿戴场景从商品配置中心隐藏，两端配置完全分割） */
+/** 商品图片专属场景清单（穿戴/样机场景从商品配置中心隐藏，各端配置完全分割） */
 export const PRODUCT_ONLY_PROMPT_SCENES = PRODUCT_PROMPT_SCENES.filter(
-  (s) => !s.startsWith("weartry."),
+  (s) => !s.startsWith("weartry.") && !s.startsWith("mockup."),
 ) as Array<(typeof PRODUCT_PROMPT_SCENES)[number]>
 
 /** AI 帮写输出的编号格式说明（与服务端 parseProductBrief 的契约一致） */

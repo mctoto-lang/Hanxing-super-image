@@ -10,6 +10,7 @@ import {
   createChatConversation,
   ensureConversationTitle,
   finalizeChatMessage,
+  generateConversationTitle,
   getMessagesWithLastUserIndex,
   getOwnedChatConversation,
   settleChatUsage,
@@ -20,6 +21,7 @@ import { dispatchStreamChat } from "@/lib/ai/chat"
 import type { ThinkingLevel } from "@/lib/ai/chat"
 import {
   calcMessageCostCenticredits,
+  estimateMessageTokens,
   estimateTokens,
 } from "@/lib/ai/chat/chat-model-config"
 import { acquireChatSlot, releaseChatSlot } from "@/lib/queue/chat-concurrency"
@@ -111,7 +113,9 @@ export async function POST(req: Request) {
   if (!conversationId) {
     const created = await createChatConversation({
       ctx,
-      title: truncateConversationTitle(d.content),
+      title:
+        (d.content ? truncateConversationTitle(d.content) : "") ||
+        (d.images.length > 0 ? "图片对话" : "新对话"),
       modelId: model.id,
       thinkingLevel: d.thinkingLevel,
     })
@@ -137,8 +141,7 @@ export async function POST(req: Request) {
   // 插入 user 消息（regenerate 复用最后一条 user 消息，不新插入）
   // 顺带清扫遗留 streaming 消息（上次流式进程死亡未收尾的行）
   await sweepStaleStreamingMessages()
-  let history: Array<{ role: string; content: string }> = []
-  let newMessageContent = d.content
+  let history: Array<{ role: string; content: string; images?: string[] | null }> = []
   let userMessageId: string | null = null
   try {
     const { messages, lastUserIndex } = await getMessagesWithLastUserIndex(
@@ -153,11 +156,10 @@ export async function POST(req: Request) {
         })
         return jsonError("会话内没有可重新生成的消息", 400)
       }
-      // 重新生成：上下文截止到最后一条 user 消息（含），其后的 assistant 响应不再携带
+      // 重新生成：上下文截止到最后一条 user 消息（含，含其图片），其后的 assistant 响应不再携带
       history = messages
         .slice(0, lastUserIndex + 1)
-        .map((m) => ({ role: m.role, content: m.content }))
-      newMessageContent = ""
+        .map((m) => ({ role: m.role, content: m.content, images: m.images }))
     } else {
       const [userMsg] = await db
         .insert(chatMessages)
@@ -167,10 +169,15 @@ export async function POST(req: Request) {
           userId: ctx.user.id,
           role: "user",
           content: d.content,
+          images: d.images,
         })
         .returning({ id: chatMessages.id })
       userMessageId = userMsg!.id
-      history = messages.map((m) => ({ role: m.role, content: m.content }))
+      history = messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+        images: m.images,
+      }))
     }
   } catch (err) {
     await releaseChatSlot({
@@ -190,13 +197,18 @@ export async function POST(req: Request) {
         history: history.slice(0, -1),
         maxContextTokens: model.maxContextTokens,
         maxOutputTokens: model.maxOutputTokens,
-        newMessageContent: history[history.length - 1]?.content ?? "",
+        newMessage: {
+          content: history[history.length - 1]?.content ?? "",
+          images: history[history.length - 1]?.images ?? [],
+        },
+        supportsVision: model.supportsVision,
       })
     : buildContextWindow({
         history,
         maxContextTokens: model.maxContextTokens,
         maxOutputTokens: model.maxOutputTokens,
-        newMessageContent: d.content,
+        newMessage: { content: d.content, images: d.images },
+        supportsVision: model.supportsVision,
       })
 
   const [assistantMsg] = await db
@@ -255,7 +267,7 @@ export async function POST(req: Request) {
       const budgetAbort = new AbortController()
       const budgetAllowanceCenticredits = ctx.user.creditsBalance * 100 + 100
       const estimatedInputTokens = contextWindow.reduce(
-        (acc, m) => acc + estimateTokens(m.content),
+        (acc, m) => acc + estimateMessageTokens(m),
         0,
       )
       let lastBudgetCheckAt = 0
@@ -321,10 +333,10 @@ export async function POST(req: Request) {
       // ── 收尾：无论成败，落库 + 计费（try 内异常不允许再打断收尾）──
       let costCenticredits = 0
       try {
-        // usage 缺失兜底：按字符估算，保证计费与圆环不缺值
+        // usage 缺失兜底：按字符/图片张数估算，保证计费与圆环不缺值
         const finalInputTokens =
           inputTokens ??
-          contextWindow.reduce((acc, m) => acc + estimateTokens(m.content), 0)
+          contextWindow.reduce((acc, m) => acc + estimateMessageTokens(m), 0)
         const finalOutputTokens = outputTokens ?? estimateTokens(content)
 
         const aborted = req.signal.aborted
@@ -371,6 +383,16 @@ export async function POST(req: Request) {
 
         if (!isNewConversation && userMessageId) {
           await ensureConversationTitle(conversationId, truncateConversationTitle(d.content))
+        }
+
+        // 新会话首条消息完成后：AI 生成标题覆盖截断兜底（在 done 事件前完成，
+        // 保证前端 done → refresh 能拿到新标题；失败静默保留截断标题）
+        if (isNewConversation && d.content) {
+          await generateConversationTitle({
+            enterpriseId,
+            conversationId,
+            firstUserText: d.content,
+          })
         }
       } catch (err) {
         send({

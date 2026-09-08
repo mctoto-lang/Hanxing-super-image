@@ -51,6 +51,7 @@ function makeCtx(
       id: user.id,
       username: "test",
       name: null,
+      email: null,
       image: null,
       isSuperAdmin: false,
       enterpriseId: user.enterpriseId,

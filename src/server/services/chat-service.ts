@@ -10,8 +10,15 @@ import {
 } from "@/db/schema"
 import { estimateTokens } from "@/lib/ai/chat/chat-model-config"
 import { calcMessageCostCenticredits } from "@/lib/ai/chat/chat-model-config"
-import type { ChatUpstreamMessage, ThinkingLevel } from "@/lib/ai/chat/chat-model-config"
+import {
+  estimateMessageTokens,
+  type ChatContentPart,
+  type ChatUpstreamMessage,
+  type ThinkingLevel,
+} from "@/lib/ai/chat/chat-model-config"
 import type { UserContext } from "@/lib/auth/session"
+import { callChatApi } from "@/server/services/workspace-ai"
+import { resolveProductChatConfig } from "@/server/services/product-ai-config"
 
 /**
  * AI 对话服务层（/chat）
@@ -30,9 +37,9 @@ const CONTEXT_SAFETY_MARGIN = 512
 // ═══════════════ 模型可见性 ═══════════════
 
 /**
- * 当前用户可用的对话模型（平台预置 ∩ 企业白名单 + 企业私有）。
- * 与 listAvailableModelsAction（生图）同构；对话模型暂不做权限组
- * 粒度限制（allowedModels 只作用于生图模型）。
+ * 当前用户可用的对话模型（平台预置 ∩ 企业白名单 + 企业私有，
+ * 再经权限组 allowedChatModels 白名单过滤；组白名单空 = 放行全部）。
+ * 与 listAvailableModelsAction（生图）同构。
  */
 export async function listAccessibleChatModels(
   ctx: UserContext,
@@ -52,10 +59,16 @@ export async function listAccessibleChatModels(
 
   const whitelist =
     (ctx.enterprise.visiblePresetChatModels as string[] | null) ?? []
-  if (whitelist.length === 0) return scoped
-  return scoped.filter(
-    (m) => m.enterpriseId !== null || whitelist.includes(m.id),
-  )
+  const visible =
+    whitelist.length === 0
+      ? scoped
+      : scoped.filter(
+          (m) => m.enterpriseId !== null || whitelist.includes(m.id),
+        )
+
+  const groupAllowed = ctx.group?.allowedChatModels ?? []
+  if (groupAllowed.length === 0) return visible
+  return visible.filter((m) => groupAllowed.includes(m.id))
 }
 
 /** 校验模型可访问（流式路由用）；返回 null 或拒绝原因 */
@@ -74,6 +87,10 @@ export function checkChatModelAccess(
     if (whitelist.length > 0 && !whitelist.includes(model.id)) {
       return "该平台预置对话模型未对企业开放"
     }
+  }
+  const groupAllowed = ctx.group?.allowedChatModels ?? []
+  if (groupAllowed.length > 0 && !groupAllowed.includes(model.id)) {
+    return "当前权限组未开放该对话模型"
   }
   return null
 }
@@ -166,26 +183,56 @@ export async function sweepStaleStreamingMessages(): Promise<number> {
 
 // ═══════════════ 上下文窗口 ═══════════════
 
+/** 上下文构建输入的历史消息（user 消息可带图片 URL） */
+export interface ChatHistoryMessage {
+  role: string
+  content: string
+  images?: string[] | null
+}
+
+/** 单条消息 → 上游消息形态（多模态模型 + 带图 user 消息 → part 数组） */
+function toUpstreamMessage(
+  msg: ChatHistoryMessage,
+  supportsVision: boolean,
+): ChatUpstreamMessage {
+  const role = msg.role === "assistant" ? "assistant" : "user"
+  const images = supportsVision ? (msg.images ?? []) : []
+  if (images.length === 0) return { role, content: msg.content }
+  const parts: ChatContentPart[] = []
+  if (msg.content) parts.push({ type: "text", text: msg.content })
+  for (const url of images) {
+    parts.push({ type: "image_url", image_url: { url } })
+  }
+  return { role, content: parts }
+}
+
 /**
  * 构建发往上游的上下文窗口（纯函数，单测覆盖）。
  *
  * 预算 = maxContext − maxOutput − 新消息 − 安全余量；
  * 从新到旧回填，超出预算的最旧消息被截断（UI 仍显示全量历史）。
  * 新消息始终保留（由上游按超长报错兜底）。
+ * 图片仅在目标模型 supportsVision 时携带，否则降级为纯文本。
  */
 export function buildContextWindow(input: {
-  history: Array<{ role: string; content: string }>
+  history: ChatHistoryMessage[]
   maxContextTokens: number
   maxOutputTokens: number
-  newMessageContent?: string
+  newMessage?: { content: string; images?: string[] }
+  /** 目标模型是否多模态（false 时历史图片剔除） */
+  supportsVision?: boolean
 }): ChatUpstreamMessage[] {
   const {
     history,
     maxContextTokens,
     maxOutputTokens,
-    newMessageContent = "",
+    newMessage,
+    supportsVision = false,
   } = input
-  const newTokens = estimateTokens(newMessageContent)
+
+  const newTokens = newMessage
+    ? estimateMessageTokens(toUpstreamMessage({ role: "user", ...newMessage }, supportsVision))
+    : 0
   const budget =
     maxContextTokens - maxOutputTokens - newTokens - CONTEXT_SAFETY_MARGIN
 
@@ -193,16 +240,16 @@ export function buildContextWindow(input: {
   let acc = newTokens
   for (let i = history.length - 1; i >= 0; i--) {
     const msg = history[i]!
-    const tokens = estimateTokens(msg.content)
+    const tokens = estimateMessageTokens(toUpstreamMessage(msg, supportsVision))
     if (acc + tokens > budget) break
     acc += tokens
-    selected.unshift({
-      role: msg.role === "assistant" ? "assistant" : "user",
-      content: msg.content,
-    })
+    selected.unshift(toUpstreamMessage(msg, supportsVision))
   }
-  if (newMessageContent) {
-    selected.push({ role: "user", content: newMessageContent })
+  if (
+    newMessage &&
+    (newMessage.content || (newMessage.images?.length ?? 0) > 0)
+  ) {
+    selected.push(toUpstreamMessage({ role: "user", ...newMessage }, supportsVision))
   }
   return selected
 }
@@ -445,6 +492,7 @@ export async function listChatMessagesWithModel(conversationId: string, limit = 
       id: chatMessages.id,
       role: chatMessages.role,
       content: chatMessages.content,
+      images: chatMessages.images,
       thinkingContent: chatMessages.thinkingContent,
       status: chatMessages.status,
       inputTokens: chatMessages.inputTokens,
@@ -491,4 +539,62 @@ export async function ensureConversationTitle(
         eq(chatConversations.title, "新对话"),
       ),
     )
+}
+
+// ═══════════════ AI 标题生成 ═══════════════
+
+/**
+ * AI 生成会话标题（新会话首条消息完成后调用，覆盖截断式兜底标题）。
+ *
+ * - 复用工作台内部 AI（resolveProductChatConfig + callChatApi，openai 格式），
+ *   成本由平台承担、不走用户对话计费；
+ * - 任何失败（未配置内部 AI / 调用超时 / 输出异常）静默保留截断标题，
+ *   不影响消息流收尾。
+ */
+export async function generateConversationTitle(input: {
+  enterpriseId: string
+  conversationId: string
+  firstUserText: string
+}): Promise<void> {
+  const text = input.firstUserText.trim()
+  if (!text) return
+  try {
+    const config = await resolveProductChatConfig(input.enterpriseId)
+    if (!config) return
+
+    const raw = await callChatApi({
+      config: {
+        ...config,
+        // 标题只要十几个字，压低输出上限避免异常长回复
+        extraConfig: { ...config.extraConfig, maxTokens: 64 },
+      },
+      messages: [
+        {
+          role: "system",
+          content:
+            "你是对话标题生成器。根据用户消息生成一个简短的中文对话标题，不超过 16 个字，概括用户意图。直接输出标题文本：不要引号、不要句号、不要换行、不要任何解释。",
+        },
+        { role: "user", content: text.slice(0, 2000) },
+      ],
+      temperature: 0.3,
+      timeoutMs: 15_000,
+    })
+
+    const title = raw
+      .split("\n")[0]!
+      .replace(/["'“”‘’「」]/g, "")
+      .trim()
+      .slice(0, 20)
+    if (!title) return
+
+    await db
+      .update(chatConversations)
+      .set({ title, updatedAt: new Date() })
+      .where(eq(chatConversations.id, input.conversationId))
+  } catch (err) {
+    console.warn(
+      "[chat] AI 标题生成失败（保留截断标题）:",
+      err instanceof Error ? err.message : String(err),
+    )
+  }
 }

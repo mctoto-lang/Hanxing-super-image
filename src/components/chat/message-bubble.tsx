@@ -7,33 +7,41 @@ import {
   Copy,
   Cpu,
   RefreshCw,
+  ThumbsDown,
+  ThumbsUp,
   TriangleAlert,
   User,
 } from "lucide-react"
-import { ThinkingReasoning } from "@/components/ui/thinking-reasoning"
+import { AgentReasoning, AgentStatusLine } from "@/components/chat/agent-reasoning"
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { toImageSrc } from "@/lib/utils"
+import { ImageViewer } from "@/components/ui/image-viewer"
+import { cn, toImageSrc } from "@/lib/utils"
 import { ChatMarkdown } from "@/components/chat/markdown"
 import { formatCenticredits } from "@/lib/ai/chat/chat-model-config"
 
 /**
  * 对话消息气泡
  *
- * - user：右对齐纯文本气泡（whitespace-pre-wrap），hover 复制
- * - assistant：左侧模型头像 + markdown 正文 + 可折叠思考过程 +
- *   meta 行（模型 · tokens · 消耗 · 时长）+ 失败横幅 + 复制/重新生成
- * - 流式进行中：正文尾部闪烁光标；思考块自动展开、结束自动收起
+ * - user：右对齐气泡（文本 + 可选图片网格，点击放大预览），hover 复制，
+ *   头像用当前用户真实头像（无头像时占位图标）
+ * - assistant：左侧模型头像（真实模型图标）+ 消息状态行（像素点阵 + shimmer
+ *   阶段文案，仅流式中展示）+ 可折叠思考过程（AgentReasoning，模板 agent
+ *   样式）+ 细分隔线（完成态有思考时）+ markdown 正文 + 失败横幅 +
+ *   meta 行（模型 · tokens · 消耗 · 时长）+ hover 点赞/点踩/复制/重新生成
+ * - 流式进行中：正文尾部闪烁光标
  */
 
 export interface BubbleViewModel {
   id: string
   role: "user" | "assistant"
   content: string
+  /** user 消息图片（多模态；空数组/无图为 null） */
+  images?: string[] | null
   thinkingContent: string | null
   status: "connecting" | "streaming" | "completed" | "failed" | "stopped"
   inputTokens: number | null
@@ -71,36 +79,134 @@ function CopyButton({ text }: { text: string }) {
   )
 }
 
+/** 点赞/点踩：纯前端互斥切换高亮，不上报后端 */
+function FeedbackButtons() {
+  const [feedback, setFeedback] = React.useState<"up" | "down" | null>(null)
+  const toggle = (value: "up" | "down") =>
+    setFeedback((prev) => (prev === value ? null : value))
+  return (
+    <>
+      {(["up", "down"] as const).map((value) => {
+        const Icon = value === "up" ? ThumbsUp : ThumbsDown
+        const active = feedback === value
+        return (
+          <button
+            key={value}
+            type="button"
+            onClick={() => toggle(value)}
+            className={cn(
+              "inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+              active && "text-primary hover:text-primary",
+            )}
+            aria-label={value === "up" ? "点赞" : "点踩"}
+            aria-pressed={active}
+          >
+            <Icon className="size-3.5" />
+          </button>
+        )
+      })}
+    </>
+  )
+}
+
+/** user 消息图片网格（点击放大预览） */
+function MessageImages({ images }: { images: string[] }) {
+  const [viewerIndex, setViewerIndex] = React.useState<number | null>(null)
+  return (
+    <>
+      <div className="mt-1.5 flex max-w-full flex-wrap justify-end gap-1.5">
+        {images.map((url, i) => (
+          <button
+            key={url + i}
+            type="button"
+            onClick={() => setViewerIndex(i)}
+            className="size-28 shrink-0 overflow-hidden rounded-xl border border-primary/30 transition-opacity hover:opacity-90"
+            aria-label="查看图片"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={toImageSrc(url, { width: 320 })}
+              alt=""
+              loading="lazy"
+              className="size-full object-cover"
+            />
+          </button>
+        ))}
+      </div>
+      <ImageViewer
+        open={viewerIndex != null}
+        onOpenChange={(open) => {
+          if (!open) setViewerIndex(null)
+        }}
+        images={images}
+        index={viewerIndex ?? 0}
+        onIndexChange={setViewerIndex}
+      />
+    </>
+  )
+}
+
 export function MessageBubble({
   message,
+  userAvatarUrl,
   onRegenerate,
 }: {
   message: BubbleViewModel
+  /** 当前用户头像（user 气泡展示；null = 占位图标） */
+  userAvatarUrl?: string | null
   onRegenerate?: () => void
 }) {
   const isUser = message.role === "user"
   const isLive = message.status === "streaming" || message.status === "connecting"
+  // 消息阶段（驱动状态行文案与思考块生命周期）：
+  // 连接（啥都没有）→ 思考（思考流式、正文未开始）→ 回复（正文流式中）
+  const isThinking = isLive && !message.content
+  const phaseLabel =
+    !message.content && !message.thinkingContent
+      ? "连接模型中…"
+      : isThinking
+        ? "思考中…"
+        : "正在回复…"
 
   if (isUser) {
     return (
       <div className="group flex justify-end gap-2.5 py-2">
         <div className="relative max-w-[85%]">
-          <div className="rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-sm text-primary-foreground">
-            <p className="whitespace-pre-wrap break-words">{message.content}</p>
-          </div>
-          <div className="absolute -left-9 top-1 opacity-0 transition-opacity group-hover:opacity-100">
-            <CopyButton text={message.content} />
-          </div>
+          {message.content ? (
+            <div className="rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-sm text-primary-foreground">
+              <p className="whitespace-pre-wrap break-words">{message.content}</p>
+            </div>
+          ) : null}
+          {message.images && message.images.length > 0 ? (
+            <MessageImages images={message.images} />
+          ) : null}
+          {message.content ? (
+            <div className="absolute -left-9 top-1 opacity-0 transition-opacity group-hover:opacity-100">
+              <CopyButton text={message.content} />
+            </div>
+          ) : null}
         </div>
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted">
-          <User className="size-4 text-muted-foreground" />
+        <div className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full border bg-card">
+          {userAvatarUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={toImageSrc(userAvatarUrl)}
+              alt=""
+              className="size-full rounded-full object-cover"
+            />
+          ) : (
+            <User className="size-4 text-muted-foreground" />
+          )}
         </div>
       </div>
     )
   }
 
   return (
-    <div className="group flex gap-2.5 py-2">
+    <div
+      className="group flex gap-2.5 py-2"
+      style={{ animation: "agent-fade 300ms ease-out both" }}
+    >
       <div className="flex size-8 shrink-0 items-center justify-center rounded-full border bg-card">
         {message.modelIconUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
@@ -114,15 +220,19 @@ export function MessageBubble({
         )}
       </div>
       <div className="min-w-0 flex-1 space-y-1.5">
-        {/* 思考过程（有思考内容时展示：默认折叠，点击展开；流式时 shimmer
-            标签 + 逐行淡入，结束后标签变为「思考了 X 秒」摘要，展开可滚动） */}
+        {/* 状态行：流式全程常驻（像素点阵 + shimmer 阶段文案：
+            连接模型中… → 思考中… → 正在回复…），完成后消失 */}
+        {isLive ? <AgentStatusLine label={phaseLabel} /> : null}
+
+        {/* 思考过程（模板 agent 样式）：思考流式期间展开跟随最新行；
+            正文开始后自动收起为「思考了 X 秒」摘要，点击可展开滚动查看 */}
         {message.thinkingContent ? (
-          <ThinkingReasoning
+          <AgentReasoning
             lines={message.thinkingContent
               .split(/\n+/)
               .map((s) => s.trim())
               .filter(Boolean)}
-            streaming={isLive}
+            streaming={isThinking}
             elapsedS={
               message.durationMs && message.durationMs > 0
                 ? Math.max(1, Math.round(message.durationMs / 1000))
@@ -131,14 +241,14 @@ export function MessageBubble({
           />
         ) : null}
 
+        {/* 完成后思考摘要与正文之间的细分隔线 */}
+        {!isLive && message.thinkingContent && message.content ? (
+          <div aria-hidden="true" className="my-2 h-px shrink-0 bg-border/70" />
+        ) : null}
+
         {/* 正文（markdown + 流式光标） */}
         {message.content ? (
           <ChatMarkdown content={message.content} className="min-h-6" />
-        ) : isLive ? (
-          <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-            <span className="inline-block size-1.5 animate-pulse rounded-full bg-primary" />
-            {message.status === "connecting" ? "连接模型中…" : "正在回复…"}
-          </div>
         ) : null}
         {message.content && isLive ? (
           <span className="ml-0.5 inline-block h-4 w-[2px] animate-pulse rounded-sm bg-primary align-text-bottom" />
@@ -195,6 +305,7 @@ export function MessageBubble({
               </>
             ) : null}
             <span className="ml-1 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+              {message.content ? <FeedbackButtons /> : null}
               {message.content ? <CopyButton text={message.content} /> : null}
               {onRegenerate ? (
                 <button

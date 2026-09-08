@@ -4,10 +4,7 @@ import { listMembersAction } from "@/server/actions/admin-users"
 import { listGroupsAction as listGroups } from "@/server/actions/admin-groups"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Search } from "lucide-react"
 import {
   Table,
   TableBody,
@@ -22,6 +19,7 @@ import {
   parseQueryParam,
 } from "@/components/shared/table-pagination"
 import { MemberCreateDialog } from "@/components/admin/member-create-dialog"
+import { MemberSearchInput } from "@/components/admin/member-search-input"
 import { MemberEditDialog } from "@/components/admin/member-edit-dialog"
 import { RemoveMemberDialog } from "@/components/admin/remove-member-dialog"
 import { AllocateCreditsDialog } from "@/components/admin/allocate-credits-dialog"
@@ -46,28 +44,15 @@ export default async function AdminUsersPage({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold">成员管理</h1>
-          <p className="text-sm text-muted-foreground">
-            {ctx.enterprise?.name} · 共 {total} 名成员
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <form action="/admin/users" className="flex items-center gap-2">
-            <Input
-              name="q"
-              defaultValue={q}
-              placeholder="搜索用户名 / 昵称 / 邮箱"
-              className="w-56"
-            />
-            <Button type="submit" variant="outline" size="sm">
-              <Search className="size-3.5" />
-              搜索
-            </Button>
-          </form>
-          <MemberCreateDialog />
-        </div>
+      <div className="flex items-center justify-end gap-2">
+        <MemberSearchInput defaultValue={q} />
+        <MemberCreateDialog
+          groups={groups.map((g) => ({
+            id: g.id,
+            name: g.name,
+            isDefault: g.isDefault,
+          }))}
+        />
       </div>
 
       <Card>

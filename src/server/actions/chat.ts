@@ -33,6 +33,7 @@ export type ChatModelCard = {
   inputPriceCenticredits: number
   outputPriceCenticredits: number
   supportsThinking: boolean
+  supportsVision: boolean
   enterpriseId: string | null
 }
 
@@ -54,6 +55,7 @@ export async function listChatModelsAction(): Promise<ChatModelCard[]> {
     inputPriceCenticredits: m.inputPriceCenticredits,
     outputPriceCenticredits: m.outputPriceCenticredits,
     supportsThinking: m.supportsThinking,
+    supportsVision: m.supportsVision,
     enterpriseId: m.enterpriseId,
   }))
 }

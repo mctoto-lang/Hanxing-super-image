@@ -31,9 +31,11 @@ import {
 } from "@/server/actions/admin-logs"
 
 export const SOURCE_LABELS: Record<string, string> = {
-  create: "创作",
-  workspace: "批量",
+  create: "自由创作",
+  workspace: "批量生图",
   product: "商品图片",
+  weartry: "穿戴图片",
+  mockup: "样机渲染",
 }
 
 export const STATUS_VARIANTS: Record<
@@ -109,7 +111,7 @@ export function LogsTaskTable({ tasks }: { tasks: TaskLogRow[] }) {
           <TableRow>
             <TableHead>用户</TableHead>
             <TableHead>状态</TableHead>
-            <TableHead>来源</TableHead>
+            <TableHead>模块</TableHead>
             <TableHead className="text-right">积分</TableHead>
             <TableHead>提示词</TableHead>
             <TableHead>时间</TableHead>
@@ -179,8 +181,8 @@ export function LogsTaskTable({ tasks }: { tasks: TaskLogRow[] }) {
         </TableBody>
       </Table>
 
-      {/* 任务详情弹窗 */}
-      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+      {/* 任务详情弹窗（trap-focus：不锁页面滚动、不禁用侧边栏交互） */}
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen} modal="trap-focus">
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>任务详情</DialogTitle>
@@ -196,7 +198,7 @@ export function LogsTaskTable({ tasks }: { tasks: TaskLogRow[] }) {
                 <Field label="模型" value={detail.modelName ?? "—"} />
                 <Field label="状态" value={STATUS_LABELS[detail.status] ?? detail.status} />
                 <Field
-                  label="来源"
+                  label="模块"
                   value={SOURCE_LABELS[detail.source] ?? detail.source}
                 />
                 <Field

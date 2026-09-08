@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useState } from "react"
 import type { ChatStreamState, ThinkingLevel } from "@/components/chat/types"
+import { emitGrokEmotion } from "@/lib/grok-ball-bus"
 
 /**
  * SSE 流式对话客户端 Hook
@@ -10,6 +11,8 @@ import type { ChatStreamState, ThinkingLevel } from "@/components/chat/types"
  * - AbortController 对接 PromptInput 的 onStop（停止后服务端仍会落库并计费）
  * - 事件流：conversation → message → delta/thinking_delta/usage* → done | error
  * - pre-stream 校验失败（4xx JSON）直接抛错给调用方 toast
+ * - Grok Ball 联动（SKILL.md 状态映射）：接收任务 31 → 思考 30 → 输出 39
+ *   → 完成 33（3s 回退）/ 出错 34 / 用户停止 41；到期自动回退手动表情
  */
 
 export interface UseChatStreamResult {
@@ -19,6 +22,7 @@ export interface UseChatStreamResult {
     conversationId: string | null
     modelId: string
     content: string
+    images?: string[]
     thinkingLevel: ThinkingLevel
     regenerate?: boolean
   }) => Promise<void>
@@ -31,6 +35,7 @@ interface SendOptions {
   conversationId: string | null
   modelId: string
   content: string
+  images?: string[]
   thinkingLevel: ThinkingLevel
   regenerate?: boolean
 }
@@ -59,6 +64,7 @@ export function useChatStream(hooks: {
       setStream({
         conversationId: opts.conversationId ?? "__pending__",
         userText: opts.regenerate ? null : opts.content,
+        userImages: opts.regenerate ? null : (opts.images ?? []),
         userMessageId: null,
         assistantMessageId: null,
         assistantText: "",
@@ -74,6 +80,22 @@ export function useChatStream(hooks: {
         setStream((prev) => (prev ? { ...prev, ...p } : prev))
       }
 
+      // Grok Ball 表情阶段去重：只在阶段切换时发事件
+      let grokPhase: "task" | "think" | "output" | null = null
+      let grokHadError = false
+      const grokPhaseEnter = (
+        phase: "task" | "think" | "output",
+        emotionId: string,
+        duration = 0,
+      ) => {
+        if (grokPhase === phase) return
+        grokPhase = phase
+        emitGrokEmotion(emotionId, duration)
+      }
+
+      // 接收任务：发出请求即短暂提示
+      grokPhaseEnter("task", "31", 1500)
+
       try {
         const resp = await fetch("/api/chat/stream", {
           method: "POST",
@@ -82,6 +104,7 @@ export function useChatStream(hooks: {
             conversationId: opts.conversationId,
             modelId: opts.modelId,
             content: opts.content,
+            images: opts.images ?? [],
             thinkingLevel: opts.thinkingLevel,
             regenerate: opts.regenerate ?? false,
           }),
@@ -138,6 +161,7 @@ export function useChatStream(hooks: {
                 })
                 break
               case "delta":
+                grokPhaseEnter("output", "39")
                 setStream((prev) =>
                   prev
                     ? { ...prev, assistantText: prev.assistantText + String(evt.text ?? "") }
@@ -145,6 +169,7 @@ export function useChatStream(hooks: {
                 )
                 break
               case "thinking_delta":
+                grokPhaseEnter("think", "30")
                 setStream((prev) =>
                   prev
                     ? {
@@ -173,9 +198,12 @@ export function useChatStream(hooks: {
                 )
                 break
               case "error":
+                grokHadError = true
+                emitGrokEmotion("34", 3000)
                 patch({ error: String(evt.message ?? "未知错误") })
                 break
               case "done":
+                if (!grokHadError) emitGrokEmotion("33", 3000)
                 patch({
                   status: "done",
                   costCenticredits:
@@ -189,6 +217,7 @@ export function useChatStream(hooks: {
         }
       } catch (err) {
         if (!(err instanceof DOMException && err.name === "AbortError")) {
+          emitGrokEmotion("34", 3000)
           patch({
             status: "error",
             error: err instanceof Error ? err.message : String(err),
@@ -196,6 +225,7 @@ export function useChatStream(hooks: {
           throw err
         }
         // 用户主动停止：服务端收尾后仍会发 done，这里先行标记
+        emitGrokEmotion("41", 2000)
         patch({ status: "done" })
       } finally {
         abortRef.current = null

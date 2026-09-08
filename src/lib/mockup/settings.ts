@@ -17,6 +17,8 @@ export interface MockupEnterpriseConfig {
   apiBaseUrl: string
   /** 渲染服务 API Key（已解密） */
   apiKey: string
+  /** 渲染服务 Webhook 签名密钥（已解密；与 PS-API 该 API Key 的 webhookSecret 一致，空=未启用推送） */
+  webhookSecret: string
   /** 渲染单价（积分/张） */
   costPerRender: number
   enabled: boolean
@@ -26,6 +28,8 @@ interface MockupSettingValue {
   apiBaseUrl?: string
   /** AES-256-GCM 加密后的 API Key（encrypt() 产物） */
   apiKeyEncrypted?: string
+  /** AES-256-GCM 加密后的 Webhook 签名密钥（与 PS-API 侧 API Key 的 webhookSecret 配对） */
+  webhookSecretEncrypted?: string
   costPerRender?: number
   enabled?: boolean
 }
@@ -47,12 +51,39 @@ export async function loadMockupConfig(
     )
     .limit(1)
 
-  const v = (row?.value ?? {}) as MockupSettingValue
+  return row ? parseMockupConfig(row.value) : null
+}
+
+/**
+ * 列举全部已启用的样机渲染企业配置（服务可用性采样遍历用）。
+ */
+export async function listMockupConfigs(): Promise<
+  Array<MockupEnterpriseConfig & { enterpriseId: string }>
+> {
+  const rows = await db
+    .select()
+    .from(systemSettings)
+    .where(eq(systemSettings.key, "mockup"))
+
+  const configs: Array<MockupEnterpriseConfig & { enterpriseId: string }> = []
+  for (const row of rows) {
+    if (!row.enterpriseId) continue // 理论不存在（企业级配置必带企业）
+    const cfg = parseMockupConfig(row.value)
+    if (cfg) configs.push({ ...cfg, enterpriseId: row.enterpriseId })
+  }
+  return configs
+}
+
+function parseMockupConfig(raw: unknown): MockupEnterpriseConfig | null {
+  const v = (raw ?? {}) as MockupSettingValue
 
   const apiBaseUrl = (v.apiBaseUrl ?? "").replace(/\/+$/, "")
   const apiKey = v.apiKeyEncrypted
     ? safelyDecrypt(v.apiKeyEncrypted)
     : env.MOCKUP_API_KEY ?? ""
+  const webhookSecret = v.webhookSecretEncrypted
+    ? safelyDecrypt(v.webhookSecretEncrypted)
+    : ""
   const settingCost = Number(v.costPerRender)
   const envCost = Number(env.MOCKUP_COST_PER_RENDER)
   const costPerRender =
@@ -64,7 +95,7 @@ export async function loadMockupConfig(
 
   if (!apiBaseUrl || !apiKey || v.enabled === false) return null
 
-  return { apiBaseUrl, apiKey, costPerRender, enabled: true }
+  return { apiBaseUrl, apiKey, webhookSecret, costPerRender, enabled: true }
 }
 
 function safelyDecrypt(payload: string): string {

@@ -168,11 +168,11 @@ export function MemberEditDialog({
                 onValueChange={(v) => setRole((v ?? "member") as EnterpriseRole)}
               >
                 <SelectTrigger className="w-full">
-                  <SelectValue>{role === "admin" ? "管理员" : "成员"}</SelectValue>
+                  <SelectValue>{role === "admin" ? "成员管理员" : "成员"}</SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="member">成员</SelectItem>
-                  <SelectItem value="admin">管理员</SelectItem>
+                  <SelectItem value="admin">成员管理员</SelectItem>
                 </SelectContent>
               </Select>
             </div>

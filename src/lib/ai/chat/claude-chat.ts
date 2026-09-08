@@ -6,16 +6,19 @@
  * - system 独立字段（非 messages 内 system 角色）；
  * - max_tokens 必填：取 min(请求上限, 模型 maxOutputTokens)；
  * - 消息须 user/assistant 交替（mergeConsecutiveMessages 预处理）；
- * - 思考：thinking: {type:"enabled", budget_tokens}，档位 2048/8192/32768
- *   且必须 < max_tokens（低输出上限模型自动钳制；thinking 开启时不发送
- *   temperature——Anthropic 限制扩展思考仅支持默认温度）；
+ * - 思考：thinking: {type:"enabled", budget_tokens}，六档梯度 2048 → 65536
+ *   （可被管理员 thinkingOverrides 覆盖），且必须 < max_tokens（低输出上限
+ *   模型自动钳制；thinking 开启时不发送 temperature——Anthropic 限制扩展
+ *   思考仅支持默认温度）；
  * - usage：message_start 报 input_tokens，message_delta 报（累计）output_tokens。
  */
 import {
-  CLAUDE_THINKING_BUDGETS,
   extractChatErrorMessage,
   mergeConsecutiveMessages,
   resolveClaudeEndpoint,
+  resolveClaudeThinkingBudget,
+  toContentParts,
+  type ChatContentPart,
   type ChatStreamEvent,
   type StreamChatAdapterOptions,
 } from "@/lib/ai/chat/chat-model-config"
@@ -39,6 +42,25 @@ export function clampClaudeThinkingBudget(
   return Math.max(min, Math.min(budget, maxTokens - 1))
 }
 
+/**
+ * content → Claude content blocks：
+ * text → {type:"text"}；image_url → {type:"image", source:{type:"url"}}
+ * （Anthropic Messages API 原生支持 URL source，图片由上游拉取）。
+ */
+function toClaudeContent(
+  content: string | ChatContentPart[],
+): string | Array<Record<string, unknown>> {
+  if (typeof content === "string") return content
+  const blocks = toContentParts(content)
+    .filter((p) => p.type !== "text" || p.text)
+    .map((p) =>
+      p.type === "text"
+        ? { type: "text", text: p.text }
+        : { type: "image", source: { type: "url", url: p.image_url.url } },
+    )
+  return blocks.length > 0 ? blocks : ""
+}
+
 /** 构建 Claude 请求体（纯函数，单测直接覆盖） */
 export function buildClaudeRequestBody(
   opts: StreamChatAdapterOptions,
@@ -50,7 +72,7 @@ export function buildClaudeRequestBody(
     stream: true,
     messages: mergeConsecutiveMessages(opts.messages).map((m) => ({
       role: m.role,
-      content: m.content,
+      content: toClaudeContent(m.content),
     })),
   }
   if (opts.systemPrompt?.trim()) {
@@ -59,7 +81,7 @@ export function buildClaudeRequestBody(
   const level = opts.thinkingLevel
   const budget =
     opts.supportsThinking && level !== "off"
-      ? CLAUDE_THINKING_BUDGETS[level]
+      ? resolveClaudeThinkingBudget(level, opts.thinkingOverrides)
       : null
   if (budget != null) {
     body.thinking = {

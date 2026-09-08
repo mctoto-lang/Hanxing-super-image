@@ -9,6 +9,7 @@ import {
   resolveCardDisplayImage,
   sanitizeFilenamePart,
 } from "@/lib/workspace/helpers"
+import { isPlatformStorageUrl } from "@/lib/storage/reference-url"
 
 /**
  * 工作台导出下载（手册 M5，1:1 对齐旧项目 /api/workspace/export-ticket 消费端）
@@ -131,6 +132,15 @@ async function exportZip(request: Request): Promise<NextResponse> {
       imagesByCard.get(card.id) ?? [],
     )
     if (!img?.imageUrl) continue
+    // SSRF 防护：卡片图片 URL 中 uploaded 来源可由用户写入（写入侧已做
+    // 归属校验），服务端二次拉取前仍强制 host 白名单（应用自身 / COS 桶），
+    // 防止历史脏数据或新绕过路径借导出通道读取内网资源并打进 ZIP
+    if (!(await isPlatformStorageUrl(img.imageUrl))) {
+      console.warn(
+        `[workspace/export] 跳过非平台存储图片（card=${card.id}）`,
+      )
+      continue
+    }
     const idx = String(card.cardIndex).padStart(2, "0")
     const filename = `${taskName}-${idx}.${format}`
     fetchTasks.push(

@@ -25,8 +25,14 @@ import { toast } from "sonner"
 import { useRouter } from "next/navigation"
 import { createMemberAction } from "@/server/actions/admin-users"
 
-export function MemberCreateDialog() {
+export function MemberCreateDialog({
+  groups,
+}: {
+  groups: Array<{ id: string; name: string; isDefault: boolean }>
+}) {
   const [open, setOpen] = React.useState(false)
+  const [role, setRole] = React.useState<"member" | "admin">("member")
+  const [groupId, setGroupId] = React.useState("")
   const router = useRouter()
 
   const [state, formAction, pending] = useActionState(
@@ -37,6 +43,8 @@ export function MemberCreateDialog() {
         name: String(formData.get("name") ?? "") || undefined,
         email: String(formData.get("email") ?? "") || undefined,
         role: (formData.get("role") as "admin" | "member" | undefined) ?? "member",
+        // 未选择时走后端默认逻辑：自动进入企业默认权限组
+        groupId: groupId || undefined,
       })
       if (res.ok) {
         toast.success("成员创建成功")
@@ -82,18 +90,51 @@ export function MemberCreateDialog() {
             <Label>角色</Label>
             <Select
               name="role"
-              defaultValue="member"
+              value={role}
+              onValueChange={(v) => setRole((v ?? "member") as "member" | "admin")}
               items={[
                 { value: "member", label: "成员" },
-                { value: "admin", label: "管理员" },
+                { value: "admin", label: "成员管理员" },
               ]}
             >
               <SelectTrigger className="w-full">
-                <SelectValue />
+                <SelectValue>
+                  {role === "admin" ? "成员管理员" : "成员"}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="member">成员</SelectItem>
-                <SelectItem value="admin">管理员</SelectItem>
+                <SelectItem value="admin">成员管理员</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid gap-2">
+            <Label>权限组</Label>
+            <Select
+              value={groupId || "__default__"}
+              onValueChange={(v) => setGroupId(v && v !== "__default__" ? v : "")}
+              items={[
+                { value: "__default__", label: "默认权限组（自动分配）" },
+                ...groups.map((g) => ({
+                  value: g.id,
+                  label: g.isDefault ? `${g.name}（默认）` : g.name,
+                })),
+              ]}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue>
+                  {groupId
+                    ? (groups.find((g) => g.id === groupId)?.name ?? "选择权限组")
+                    : "默认权限组（自动分配）"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__default__">默认权限组（自动分配）</SelectItem>
+                {groups.map((g) => (
+                  <SelectItem key={g.id} value={g.id}>
+                    {g.isDefault ? `${g.name}（默认）` : g.name}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>

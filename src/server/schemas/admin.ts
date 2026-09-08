@@ -32,6 +32,7 @@ export const permissionGroupSchema = z.object({
   name: z.string().min(2, "组名至少 2 字符").max(100),
   description: z.string().max(500).optional(),
   allowedModels: z.array(z.string().uuid()).default([]),
+  allowedChatModels: z.array(z.string().uuid()).default([]),
   allowedPages: z.array(z.enum(MODULE_NAMES)).default([]),
   maxConcurrent: z.number().int().min(1).max(100).default(2),
   priority: z.number().int().min(0).max(100).default(0),
@@ -71,6 +72,7 @@ export const modelConfigSchema = z.object({
   visibleInWorkspace: z.boolean().default(false),
   visibleInProduct: z.boolean().default(false),
   visibleInWeartry: z.boolean().default(false),
+  visibleInMockup: z.boolean().default(false),
   supportsReferenceImage: z.boolean().default(false),
   maxReferenceImages: z.number().int().min(0).max(10).default(0),
   referenceImageField: z.string().max(50).optional(),
@@ -109,6 +111,23 @@ export const chatModelConfigSchema = z.object({
   outputPriceCenticredits: z.number().int().min(0).max(100_000).default(0),
   /** 是否支持思考强度档位 */
   supportsThinking: z.boolean().default(false),
+  /** 是否支持多模态（图片输入；开启后对话输入框可 @ 上传图片） */
+  supportsVision: z.boolean().default(false),
+  /**
+   * 各思考档位的上游参数覆盖（extraConfig.thinkingOverrides）。
+   * openai/grok 格式读 effort（可传 "xhigh" 等网关自定义值），
+   * claude/gemini 读 budgetTokens（gemini 允许 -1 = 动态思考）；
+   * 留空的档位用内置默认映射（openai 高档位封顶 high）。
+   */
+  thinkingOverrides: z
+    .record(
+      z.enum(["low", "medium", "high", "extra", "max", "ultracode"]),
+      z.object({
+        effort: z.string().trim().min(1).max(20).optional(),
+        budgetTokens: z.number().int().min(-1).max(1_000_000).optional(),
+      }),
+    )
+    .optional(),
   maxConcurrent: z.number().int().min(1).default(5),
   maxRetries: z.number().int().min(0).default(3),
   apiTimeout: z.number().int().min(1).default(120),

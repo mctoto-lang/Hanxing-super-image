@@ -33,6 +33,7 @@ export function UserCreateDialog({
 }) {
   const [open, setOpen] = React.useState(false)
   const [enterpriseId, setEnterpriseId] = React.useState("")
+  const [role, setRole] = React.useState<"owner" | "admin" | "member">("member")
   const router = useRouter()
 
   const [state, formAction, pending] = useActionState(
@@ -127,19 +128,28 @@ export function UserCreateDialog({
               <Label htmlFor="role">角色</Label>
               <Select
                 name="role"
-                defaultValue="member"
+                value={role}
+                onValueChange={(v) =>
+                  setRole((v ?? "member") as "owner" | "admin" | "member")
+                }
                 items={[
                   { value: "member", label: "成员" },
-                  { value: "admin", label: "管理员" },
+                  { value: "admin", label: "成员管理员" },
                   { value: "owner", label: "企业管理员" },
                 ]}
               >
                 <SelectTrigger className="w-full">
-                  <SelectValue />
+                  <SelectValue>
+                    {role === "owner"
+                      ? "企业管理员"
+                      : role === "admin"
+                        ? "成员管理员"
+                        : "成员"}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="member">成员</SelectItem>
-                  <SelectItem value="admin">管理员</SelectItem>
+                  <SelectItem value="admin">成员管理员</SelectItem>
                   <SelectItem value="owner">企业管理员</SelectItem>
                 </SelectContent>
               </Select>

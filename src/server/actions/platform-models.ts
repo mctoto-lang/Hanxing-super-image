@@ -84,6 +84,7 @@ export interface PresetModelRow {
   visibleInWorkspace: boolean
   visibleInProduct: boolean
   visibleInWeartry: boolean
+  visibleInMockup: boolean
   supportsReferenceImage: boolean
   maxReferenceImages: number
   referenceImageField: string | null
@@ -133,6 +134,7 @@ export async function listPresetModelsAction(
       visibleInWorkspace: models.visibleInWorkspace,
       visibleInProduct: models.visibleInProduct,
       visibleInWeartry: models.visibleInWeartry,
+      visibleInMockup: models.visibleInMockup,
       supportsReferenceImage: models.supportsReferenceImage,
       maxReferenceImages: models.maxReferenceImages,
       referenceImageField: models.referenceImageField,
@@ -205,6 +207,7 @@ export async function createPresetModelAction(
         visibleInWorkspace: d.visibleInWorkspace,
         visibleInProduct: d.visibleInProduct,
         visibleInWeartry: d.visibleInWeartry,
+        visibleInMockup: d.visibleInMockup,
         supportsReferenceImage: d.supportsReferenceImage,
         maxReferenceImages: d.maxReferenceImages,
         referenceImageField: d.referenceImageField || null,
@@ -294,6 +297,7 @@ export async function updatePresetModelAction(
     set.visibleInWorkspace = d.visibleInWorkspace
   if (d.visibleInProduct !== undefined) set.visibleInProduct = d.visibleInProduct
   if (d.visibleInWeartry !== undefined) set.visibleInWeartry = d.visibleInWeartry
+  if (d.visibleInMockup !== undefined) set.visibleInMockup = d.visibleInMockup
   if (d.supportsReferenceImage !== undefined)
     set.supportsReferenceImage = d.supportsReferenceImage
   if (d.maxReferenceImages !== undefined)

@@ -42,6 +42,7 @@ function toBubble(m: ChatMessageItem): BubbleViewModel {
     id: m.id,
     role: m.role === "assistant" ? "assistant" : "user",
     content: m.content,
+    images: m.images && m.images.length > 0 ? m.images : null,
     thinkingContent: m.thinkingContent,
     status: (m.status as BubbleViewModel["status"]) ?? "completed",
     inputTokens: m.inputTokens,
@@ -68,6 +69,7 @@ export function ChatDetail({
   onSubmit,
   onStop,
   onRegenerate,
+  userAvatarUrl,
 }: {
   conversationId: string
   messages: ChatMessageItem[]
@@ -79,9 +81,11 @@ export function ChatDetail({
   contextTokens: number
   live: ChatStreamState | null
   isStreaming: boolean
-  onSubmit: (text: string) => Promise<void>
+  onSubmit: (text: string, images: string[]) => Promise<void>
   onStop: () => void
   onRegenerate: () => void
+  /** 当前用户头像（user 气泡展示；null = 占位图标） */
+  userAvatarUrl: string | null
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const footerRef = useRef<HTMLDivElement>(null)
@@ -111,6 +115,10 @@ export function ChatDetail({
         id: "live-user",
         role: "user",
         content: activeLive.userText,
+        images:
+          activeLive.userImages && activeLive.userImages.length > 0
+            ? activeLive.userImages
+            : null,
         thinkingContent: null,
         status: "streaming",
         inputTokens: null,
@@ -244,6 +252,7 @@ export function ChatDetail({
                   )}
                   <MessageBubble
                     message={m}
+                    userAvatarUrl={userAvatarUrl}
                     onRegenerate={
                       i === lastAssistantIdx && !isStreaming && m.content
                         ? onRegenerate

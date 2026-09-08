@@ -14,9 +14,8 @@ import {
   type UserContext,
 } from "@/lib/auth/session"
 import { checkModelAccess } from "@/lib/auth/permissions"
-import { deductUserCredits, refundUserCredits } from "@/server/services/credits-service"
+import { deductUserCredits, refundFailedTask, refundUserCredits } from "@/server/services/credits-service"
 import { enqueue } from "@/lib/queue/task-queue"
-import { refundFailedTask } from "@/server/actions/create"
 import { validateReferenceImageUrls } from "@/lib/storage/reference-url"
 import { aiActionRateLimiter } from "@/lib/rate-limit"
 import { callAiJson, AI_SYNC_TIMEOUT_MS } from "@/server/services/ai-json"
@@ -820,64 +819,60 @@ export async function generateProductV2Action(
     }
   }
 
-  // 5. 建任务
-  const createdTasks: Array<{ id: string }> = []
-  for (const item of taskItems) {
-    const [task] = await db
-      .insert(generationTasks)
-      .values({
-        enterpriseId: scope.enterpriseId,
-        userId: ctx.user.id,
-        modelId: d.modelId,
-        prompt: item.prompt,
-        imageSize,
-        imageCount: 1,
-        status: "queued",
-        taskType: "product",
-        source: "product",
-        priority: ctx.group?.priority ?? 0,
-        creditsCharged: 0,
-        referenceImages: allReferenceImages,
-        templateInfo: item.templateInfo,
-      })
-      .returning({ id: generationTasks.id })
-    createdTasks.push({ id: task!.id })
-  }
-
-  // 6. 扣费（行锁事务，失败标 failed）
+  // 5~7. 建任务 + 扣费 + 均摊记账（单事务，任一步失败整体回滚）。此前
+  // 三步分离提交，崩溃在中间窗口会出现「任务已建未扣费」（孤儿回收重新
+  // 入队 = 免费生成）或「已扣费未记账」（失败退款按记账额少退）。
+  let createdTasks: Array<{ id: string }>
   try {
-    await deductUserCredits({
-      enterpriseId: scope.enterpriseId,
-      amount: totalCost,
-      userId: ctx.user.id,
-      taskId: createdTasks[0]!.id,
-      remark: `商品图片V2 ${model.displayName} x${taskItems.length}`,
+    createdTasks = await db.transaction(async (tx) => {
+      const rows: Array<{ id: string }> = []
+      for (const item of taskItems) {
+        const [task] = await tx
+          .insert(generationTasks)
+          .values({
+            enterpriseId: scope.enterpriseId,
+            userId: ctx.user.id,
+            modelId: d.modelId,
+            prompt: item.prompt,
+            imageSize,
+            imageCount: 1,
+            status: "queued",
+            taskType: "product",
+            source: "product",
+            priority: ctx.group?.priority ?? 0,
+            creditsCharged: 0,
+            referenceImages: allReferenceImages,
+            templateInfo: item.templateInfo,
+          })
+          .returning({ id: generationTasks.id })
+        rows.push({ id: task!.id })
+      }
+
+      await deductUserCredits({
+        enterpriseId: scope.enterpriseId,
+        amount: totalCost,
+        userId: ctx.user.id,
+        taskId: rows[0]!.id,
+        remark: `商品图片V2 ${model.displayName} x${taskItems.length}`,
+        tx,
+      })
+
+      const perTaskCost = Math.floor(totalCost / taskItems.length)
+      const remainder = totalCost - perTaskCost * taskItems.length
+      for (let i = 0; i < rows.length; i++) {
+        const share = perTaskCost + (i === 0 ? remainder : 0)
+        await tx
+          .update(generationTasks)
+          .set({ creditsCharged: share })
+          .where(eq(generationTasks.id, rows[i]!.id))
+      }
+      return rows
     })
   } catch (err) {
-    await db
-      .update(generationTasks)
-      .set({ status: "failed", errorMessage: "积分扣减失败" })
-      .where(
-        inArray(
-          generationTasks.id,
-          createdTasks.map((t) => t.id),
-        ),
-      )
     return {
       ok: false,
       error: err instanceof Error ? err.message : "积分扣减失败",
     }
-  }
-
-  // 7. 均摊 creditsCharged
-  const perTaskCost = Math.floor(totalCost / taskItems.length)
-  const remainder = totalCost - perTaskCost * taskItems.length
-  for (let i = 0; i < createdTasks.length; i++) {
-    const share = perTaskCost + (i === 0 ? remainder : 0)
-    await db
-      .update(generationTasks)
-      .set({ creditsCharged: share })
-      .where(eq(generationTasks.id, createdTasks[i]!.id))
   }
 
   // 8. 入队（失败全额退款兜底）
@@ -1132,13 +1127,33 @@ export async function retryProductV2TaskAction(
     }
   }
 
+  // 重新扣费 + 翻转状态（单事务）：扣费与记账分离提交的崩溃窗口会造成
+  // 「已扣费但 creditsCharged 未累加 → 失败退款按记账额少退」。
+  // 先翻转 DB 状态再入队（消费端终态守卫读 DB status，入队先于状态
+  // 翻转会让重试以 failed 终态被消费端直接丢弃）
   try {
-    await deductUserCredits({
-      enterpriseId: scope.enterpriseId,
-      amount: retryCost,
-      userId: ctx.user.id,
-      taskId: task.id,
-      remark: `重试商品图片 ${model.displayName} x${pendingIndexes.length}`,
+    await db.transaction(async (tx) => {
+      await deductUserCredits({
+        enterpriseId: scope.enterpriseId,
+        amount: retryCost,
+        userId: ctx.user.id,
+        taskId: task.id,
+        remark: `重试商品图片 ${model.displayName} x${pendingIndexes.length}`,
+        tx,
+      })
+      await tx
+        .update(generationTasks)
+        .set({
+          status: "queued",
+          retryCount: task.retryCount + 1,
+          errorMessage: null,
+          creditsCharged: task.creditsCharged + retryCost, // 累加：保留已成功张计费
+          // 回写单价使后续按张退款精确；仅无已成功张时回写——有已成功张时
+          // creditsCharged 与按张公式结构不匹配，回写反而会把退款算错
+          costPerImage:
+            succeeded.length === 0 ? unitPrice : task.costPerImage,
+        })
+        .where(eq(generationTasks.id, taskId))
     })
   } catch (err) {
     return {
@@ -1146,22 +1161,6 @@ export async function retryProductV2TaskAction(
       error: err instanceof Error ? err.message : "积分扣减失败",
     }
   }
-
-  // 先翻转 DB 状态再入队（消费端终态守卫读 DB status，入队先于状态
-  // 翻转会让重试以 failed 终态被消费端直接丢弃）
-  await db
-    .update(generationTasks)
-    .set({
-      status: "queued",
-      retryCount: task.retryCount + 1,
-      errorMessage: null,
-      creditsCharged: task.creditsCharged + retryCost, // 累加：保留已成功张计费
-      // 回写单价使后续按张退款精确；仅无已成功张时回写——有已成功张时
-      // creditsCharged 与按张公式结构不匹配，回写反而会把退款算错
-      costPerImage:
-        succeeded.length === 0 ? unitPrice : task.costPerImage,
-    })
-    .where(eq(generationTasks.id, taskId))
 
   try {
     await enqueue({

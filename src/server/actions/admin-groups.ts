@@ -39,6 +39,7 @@ export async function listGroupsAction(opts: ListPageParams = {}) {
         name: permissionGroups.name,
         description: permissionGroups.description,
         allowedModels: permissionGroups.allowedModels,
+        allowedChatModels: permissionGroups.allowedChatModels,
         allowedPages: permissionGroups.allowedPages,
         maxConcurrent: permissionGroups.maxConcurrent,
         priority: permissionGroups.priority,
@@ -65,6 +66,7 @@ export async function createGroupAction(input: {
   name: string
   description?: string
   allowedModels?: string[]
+  allowedChatModels?: string[]
   allowedPages?: string[]
   maxConcurrent?: number
   priority?: number
@@ -84,6 +86,7 @@ export async function createGroupAction(input: {
       name: d.name,
       description: d.description ?? null,
       allowedModels: d.allowedModels,
+      allowedChatModels: d.allowedChatModels,
       allowedPages: d.allowedPages,
       maxConcurrent: d.maxConcurrent,
       priority: d.priority,
@@ -102,6 +105,7 @@ export async function updateGroupAction(
     name: string
     description?: string
     allowedModels?: string[]
+    allowedChatModels?: string[]
     allowedPages?: string[]
     maxConcurrent?: number
     priority?: number
@@ -139,6 +143,9 @@ export async function updateGroupAction(
         : {}),
       ...(parsed.data.allowedModels
         ? { allowedModels: parsed.data.allowedModels }
+        : {}),
+      ...(parsed.data.allowedChatModels
+        ? { allowedChatModels: parsed.data.allowedChatModels }
         : {}),
       ...(parsed.data.allowedPages
         ? { allowedPages: parsed.data.allowedPages }

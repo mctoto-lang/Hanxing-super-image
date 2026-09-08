@@ -116,6 +116,8 @@ export interface ExternalTemplateSummary {
   latestVersion: number
   published: boolean
   thumbnailObjectKey: string | null
+  /** 缩略图预签名直链（浏览器 <img> 直接加载；local 模式为相对地址需拼 apiBaseUrl；旧版 PS-API 无此字段） */
+  thumbnailUrl?: string | null
   /** 归属用户（null=平台共享） */
   ownerUserId: string | null
   /** public=企业内可见 / private=仅归属人、企业管理员、平台超管 */
@@ -301,17 +303,23 @@ export async function publishTemplate(
 /**
  * 拉取模板缩略图（未上传缩略图时 404，由调用方降级占位）。
  * 非公开模板需带用户上下文（否则 404）。
+ * init.ifNoneMatch 携带上游 ETag 做协商缓存（上游已升级支持 304 时生效）。
  */
 export async function fetchTemplateThumbnail(
   cfg: MockupApiConfig,
   templateId: string,
   user?: MockupUserContext,
+  init?: { ifNoneMatch?: string },
 ): Promise<Response> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 20_000)
   try {
     return await fetch(`${cfg.apiBaseUrl}/v1/templates/${templateId}/thumbnail`, {
-      headers: { Authorization: `Bearer ${cfg.apiKey}`, ...userHeaders(user) },
+      headers: {
+        Authorization: `Bearer ${cfg.apiKey}`,
+        ...userHeaders(user),
+        ...(init?.ifNoneMatch ? { "If-None-Match": init.ifNoneMatch } : {}),
+      },
       signal: controller.signal,
       cache: "no-store",
     })
@@ -336,6 +344,93 @@ export async function regenerateTemplateThumbnail(
     JSON_TIMEOUT_MS,
     user,
   )
+}
+
+/**
+ * 删除模板（软删除；仅归属人/企业管理员，已发布自动先归档）。
+ * PS-API 较新版本才有此端点，旧版返回 404。
+ */
+export async function deleteExternalTemplate(
+  cfg: MockupApiConfig,
+  templateId: string,
+  user?: MockupUserContext,
+): Promise<{ templateId: string; status: string; storagePurged: boolean }> {
+  return apiFetch(
+    cfg,
+    `/v1/templates/${templateId}/delete`,
+    { method: "POST" },
+    JSON_TIMEOUT_MS,
+    user,
+  )
+}
+
+/**
+ * 修改模板可见性（public=企业内 / private=仅归属人与企业管理员；
+ * 仅归属人/企业管理员可改）。
+ */
+export async function setExternalTemplateVisibility(
+  cfg: MockupApiConfig,
+  templateId: string,
+  visibility: "public" | "private",
+  user?: MockupUserContext,
+): Promise<{ templateId: string; visibility: "public" | "private" }> {
+  return apiFetch(
+    cfg,
+    `/v1/templates/${templateId}/visibility`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ visibility }),
+    },
+    JSON_TIMEOUT_MS,
+    user,
+  )
+}
+
+/* ─── 字体库（全局共享，不按租户隔离） ─── */
+
+export interface ExternalFont {
+  fontId: string
+  familyName: string
+  postscriptName: string
+  style: string
+  createdAt: string
+}
+
+export async function listFonts(
+  cfg: MockupApiConfig,
+): Promise<ExternalFont[]> {
+  const data = await apiFetch<{ fonts: ExternalFont[] }>(
+    cfg,
+    "/v1/fonts",
+    { method: "GET" },
+    JSON_TIMEOUT_MS,
+  )
+  return data.fonts
+}
+
+/** 上传字体（原始二进制 body；仅 .ttf/.otf/.ttc，≤50MB） */
+export async function uploadFont(
+  cfg: MockupApiConfig,
+  opts: { fileName: string; buffer: Buffer },
+): Promise<{
+  fontId: string
+  familyName: string
+  postscriptName: string
+  style: string
+  published: boolean
+  installed: boolean
+  installMessage?: string
+}> {
+  const query = `?fileName=${encodeURIComponent(opts.fileName)}`
+  return apiFetch(cfg, `/v1/fonts/upload${query}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "Content-Length": String(opts.buffer.length),
+    },
+    body: new Uint8Array(opts.buffer),
+  }, UPLOAD_TIMEOUT_MS)
 }
 
 /* ─── 素材三步上传 ─── */
@@ -385,6 +480,28 @@ export async function completeAsset(
   return apiFetch(cfg, `/v1/assets/${assetId}/complete`, { method: "POST" })
 }
 
+/**
+ * 按 URL 导入素材（PS-API POST /v1/assets/import-url）。
+ * 服务端拉取 + sha256 秒传，替代本服务「下载再三步上传」的双倍带宽中转。
+ * 未升级的 PS-API 无此端点 → 抛 NOT_FOUND(404)，调用方回退三步上传。
+ */
+export async function importAssetFromUrl(
+  cfg: MockupApiConfig,
+  opts: { url: string; fileName?: string; mimeType?: string },
+): Promise<{
+  assetId: string
+  sha256: string
+  sizeBytes: number
+  deduplicated: boolean
+}> {
+  return apiFetch(cfg, "/v1/assets/import-url", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(opts),
+    // 服务端要拉取最多 150MB 素材，放宽超时
+  }, 120_000)
+}
+
 /* ─── 渲染任务 ─── */
 
 export async function createRenderJob(
@@ -421,6 +538,95 @@ export async function getRenderJob(
   jobId: string,
 ): Promise<ExternalRenderJob> {
   return apiFetch<ExternalRenderJob>(cfg, `/v1/render-jobs/${jobId}`)
+}
+
+/** 批量提交结果条目（与请求 jobs 数组位置对齐） */
+export interface ExternalBatchResultItem {
+  index: number
+  ok: boolean
+  /** true=新创建；false=幂等命中返回已有任务 */
+  created?: boolean
+  jobId?: string
+  /**
+   * 兼容旧版 PS-API：批量结果曾误返回 jobCode（路由 schema 只声明 jobId，
+   * Fastify 序列化会剥掉它导致任务编号丢失）；两字段都尝试读取。
+   */
+  jobCode?: string
+  status?: string
+  idempotencyKey?: string
+  createdAt?: string
+  /** ok=false 时的错误码/信息 */
+  error?: string
+  message?: string
+}
+
+/** 批量接口放宽超时（一次最多 50 项逐项校验） */
+const BATCH_TIMEOUT_MS = 60_000
+
+/**
+ * 批量提交渲染任务（PS-API POST /v1/render-jobs/batch）。
+ * 一次 HTTP 提交 ≤50 个任务替代逐个串行请求；逐项幂等、部分失败逐项返回。
+ * 未升级的 PS-API 无此端点 → 抛 NOT_FOUND(404)，调用方回退逐个提交。
+ */
+export async function createRenderJobsBatch(
+  cfg: MockupApiConfig,
+  opts: {
+    jobs: Array<{
+      idempotencyKey: string
+      templateVersionId: string
+      input: Record<string, { assetId?: string; text?: string }>
+      outputFormat?: "png" | "jpeg" | "psd"
+      outputQuality?: number
+    }>
+    webhookUrl?: string
+  },
+  user?: MockupUserContext,
+): Promise<{ results: ExternalBatchResultItem[] }> {
+  return apiFetch<{ results: ExternalBatchResultItem[] }>(
+    cfg,
+    "/v1/render-jobs/batch",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...(opts.webhookUrl ? { webhookUrl: opts.webhookUrl } : {}),
+        jobs: opts.jobs.map((j) => ({
+          idempotencyKey: j.idempotencyKey,
+          templateVersionId: j.templateVersionId,
+          input: j.input,
+          output: {
+            format: j.outputFormat ?? "png",
+            ...(j.outputQuality ? { quality: j.outputQuality } : {}),
+          },
+        })),
+      }),
+    },
+    BATCH_TIMEOUT_MS,
+    user,
+  )
+}
+
+/** 批量查询结果条目：存在的为完整任务视图，不存在的为 { jobId, notFound } */
+export type ExternalBatchJobItem = ExternalRenderJob | {
+  jobId: string
+  notFound: true
+}
+
+/**
+ * 批量查询任务状态（PS-API GET /v1/render-jobs?ids=）。
+ * 一次 HTTP 拉取 ≤100 个任务替代逐个轮询；结果与 ids 位置对齐。
+ * 未升级的 PS-API 无此端点 → 抛 NOT_FOUND(404)，调用方回退逐个查询。
+ */
+export async function getRenderJobs(
+  cfg: MockupApiConfig,
+  jobIds: string[],
+): Promise<{ jobs: ExternalBatchJobItem[] }> {
+  return apiFetch<{ jobs: ExternalBatchJobItem[] }>(
+    cfg,
+    `/v1/render-jobs?ids=${encodeURIComponent(jobIds.join(","))}`,
+    {},
+    BATCH_TIMEOUT_MS,
+  )
 }
 
 export async function cancelRenderJob(

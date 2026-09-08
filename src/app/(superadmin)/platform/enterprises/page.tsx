@@ -1,5 +1,6 @@
 import { requireSuperAdmin } from "@/lib/auth/session"
 import { listEnterprisesAction } from "@/server/actions/platform"
+import { listSubscriptionPlansAction } from "@/server/actions/platform-plans"
 import { listPresetModelsAction } from "@/server/actions/platform-models"
 import { listPresetChatModelsAction } from "@/server/actions/platform-chat-models"
 import {
@@ -26,11 +27,13 @@ import {
   parsePageParam,
   parseQueryParam,
 } from "@/components/shared/table-pagination"
+import { PlanBadge } from "@/components/shared/plan-badge"
 import { EnterpriseCreateDialog } from "@/components/superadmin/enterprise-create-dialog"
 import { RechargeDialog } from "@/components/superadmin/recharge-dialog"
 import { ModulesDialog } from "@/components/superadmin/modules-dialog"
 import { MockupConfigDialog } from "@/components/superadmin/mockup-config-dialog"
 import { EnterpriseModelConfigDialog } from "@/components/superadmin/enterprise-model-config-dialog"
+import { PlanAssignDialog } from "@/components/superadmin/plan-assign-dialog"
 import type { ModuleName } from "@/db/schema"
 
 export const dynamic = "force-dynamic"
@@ -60,11 +63,26 @@ export default async function EnterprisesPage({
     { items: enterprises, total, pageSize },
     { items: presetModels, total: presetTotal },
     { items: presetChatModels },
+    { items: plans },
   ] = await Promise.all([
     listEnterprisesAction({ page, pageSize: 20, q }),
     listPresetModelsAction({ pageSize: 100 }), // 企业模型配置弹窗全量下拉
     listPresetChatModelsAction({ pageSize: 100 }), // 对话模型白名单全量下拉
+    listSubscriptionPlansAction(), // 分配套餐弹窗数据源（启用中套餐）
   ])
+  // 可分配套餐 = 启用中的套餐（弹窗内按企业当前套餐自动并入续期选项）
+  const assignablePlans = plans
+    .filter((p) => p.isActive)
+    .map((p) => ({
+      id: p.id,
+      name: p.name,
+      iconKey: p.iconKey,
+      color: p.color,
+      creditsPerCycle: p.creditsPerCycle,
+      cycleDays: p.cycleDays,
+      maxMembers: p.maxMembers,
+      isActive: p.isActive,
+    }))
 
   return (
     <div className="space-y-4">
@@ -104,6 +122,7 @@ export default async function EnterprisesPage({
                 <TableHead>企业名称</TableHead>
                 <TableHead>Slug</TableHead>
                 <TableHead>状态</TableHead>
+                <TableHead>订阅套餐</TableHead>
                 <TableHead className="text-right">积分余额</TableHead>
                 <TableHead>已开通模块</TableHead>
                 <TableHead>自定义模型</TableHead>
@@ -114,7 +133,7 @@ export default async function EnterprisesPage({
               {enterprises.length === 0 ? (
                 <TableRow>
                   <TableCell
-                    colSpan={7}
+                    colSpan={8}
                     className="py-8 text-center text-muted-foreground"
                   >
                     {q ? `未找到与「${q}」匹配的企业` : "暂无企业，点击右上角创建"}
@@ -124,6 +143,23 @@ export default async function EnterprisesPage({
               {enterprises.map((e) => {
                 const visible = (e.visiblePresetModels as string[]) ?? []
                 const visibleChat = (e.visiblePresetChatModels as string[]) ?? []
+                // 行内可分配选项：启用中套餐 + 当前套餐（可能已停用，仅供续期）
+                const rowPlans =
+                  e.planId && !assignablePlans.some((p) => p.id === e.planId)
+                    ? [
+                        ...assignablePlans,
+                        {
+                          id: e.planId,
+                          name: e.planName ?? "",
+                          iconKey: e.planIconKey ?? "medal",
+                          color: e.planColor ?? "#8b5cf6",
+                          creditsPerCycle: e.planCreditsPerCycle ?? 0,
+                          cycleDays: e.planCycleDays ?? 30,
+                          maxMembers: e.planMaxMembers ?? null,
+                          isActive: false,
+                        },
+                      ]
+                    : assignablePlans
                 return (
                   <TableRow key={e.id}>
                     <TableCell className="font-medium">{e.name}</TableCell>
@@ -134,6 +170,27 @@ export default async function EnterprisesPage({
                       >
                         {e.status === "active" ? "正常" : "已停用"}
                       </Badge>
+                    </TableCell>
+                    <TableCell>
+                      {e.planId && e.planName ? (
+                        <div className="space-y-0.5">
+                          <PlanBadge
+                            iconKey={e.planIconKey}
+                            color={e.planColor}
+                            name={e.planName}
+                            isExpired={e.planIsExpired}
+                            size="sm"
+                          />
+                          <div className="text-xs text-muted-foreground">
+                            到期{" "}
+                            {new Date(e.planExpiresAt ?? "").toLocaleDateString("zh-CN")}
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">
+                          免费版
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
                       {e.creditsBalance.toLocaleString("zh-CN")}
@@ -163,6 +220,23 @@ export default async function EnterprisesPage({
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex flex-wrap justify-end gap-2">
+                        <PlanAssignDialog
+                          enterpriseId={e.id}
+                          enterpriseName={e.name}
+                          current={
+                            e.planId && e.planName
+                              ? {
+                                  planId: e.planId,
+                                  planName: e.planName,
+                                  iconKey: e.planIconKey ?? "medal",
+                                  color: e.planColor ?? "#8b5cf6",
+                                  expiresAt: e.planExpiresAt ?? "",
+                                  isExpired: e.planIsExpired,
+                                }
+                              : null
+                          }
+                          plans={rowPlans}
+                        />
                         <RechargeDialog
                           enterpriseId={e.id}
                           enterpriseName={e.name}

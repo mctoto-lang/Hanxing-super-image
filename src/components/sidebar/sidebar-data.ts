@@ -1,6 +1,7 @@
 import type { UserContext } from "@/lib/auth/session"
 import { roleLabel } from "@/lib/auth/permissions"
 import type { ModuleName } from "@/db/schema"
+import type { PlanBadgeInfo } from "@/lib/plans/badge"
 import type { NavItem, SidebarUser } from "./types"
 
 /**
@@ -43,8 +44,9 @@ const IMAGE_GEN_ORDER: Exclude<ModuleName, "settings">[] = [
  * 「企业管理」分组下子项（页面均在 /admin/* 下，与聚合页卡片一致）。
  */
 const ADMIN_NAV: { title: string; url: string }[] = [
+  { title: "数据看板", url: "/admin/stats" },
   { title: "成员管理", url: "/admin/users" },
-  { title: "模型配置", url: "/admin/models" },
+  { title: "生图模型", url: "/admin/models" },
   { title: "对话模型", url: "/admin/chat-models" },
   { title: "权限组", url: "/admin/groups" },
   { title: "积分流水", url: "/admin/credits" },
@@ -58,11 +60,13 @@ const ADMIN_NAV: { title: string; url: string }[] = [
 const PLATFORM_NAV: { title: string; url: string }[] = [
   { title: "数据看板", url: "/platform" },
   { title: "企业管理", url: "/platform/enterprises" },
+  { title: "订阅套餐", url: "/platform/plans" },
   { title: "平台用户", url: "/platform/users" },
   { title: "预置模型", url: "/platform/models" },
   { title: "对话模型", url: "/platform/chat-models" },
   { title: "商品图片配置", url: "/platform/product-config" },
   { title: "穿戴图片管理", url: "/platform/weartry-config" },
+  { title: "样机提示词", url: "/platform/mockup-config" },
   { title: "广告横幅", url: "/platform/banners" },
   { title: "系统设置", url: "/platform/system" },
 ]
@@ -141,12 +145,19 @@ export function buildNavMain(ctx: UserContext): NavItem[] {
 }
 
 /** 构建用户卡数据（角色文案统一取 roleLabel，全项目唯一来源） */
-export function buildSidebarUser(ctx: UserContext): SidebarUser {
+export function buildSidebarUser(
+  ctx: UserContext,
+  plan: PlanBadgeInfo | null = null,
+): SidebarUser {
   return {
     name: ctx.user.name || ctx.user.username,
     username: ctx.user.username,
+    email: ctx.user.email,
     avatar: ctx.user.image ?? null,
     roleLabel: ctx.user.isSuperAdmin ? "超管" : roleLabel(ctx.user.enterpriseRole),
     groupName: ctx.group?.name ?? null,
+    isSuperAdmin: ctx.user.isSuperAdmin,
+    enterpriseName: ctx.enterprise?.name ?? null,
+    plan,
   }
 }

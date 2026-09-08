@@ -74,11 +74,13 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+  /* 数据看板图表五色（Tailwind 分类色板：蓝/青/紫/琥珀/玫红，
+     统一 500 档亮度、色相均匀分布；暗色模式用 400 档提亮） */
+  --chart-1: oklch(0.623 0.214 259.815);
+  --chart-2: oklch(0.704 0.14 182.503);
+  --chart-3: oklch(0.606 0.25 292.717);
+  --chart-4: oklch(0.769 0.188 70.08);
+  --chart-5: oklch(0.645 0.246 16.439);
   --radius: 0.625rem;
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
@@ -109,11 +111,11 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+  --chart-1: oklch(0.707 0.165 254.624);
+  --chart-2: oklch(0.777 0.152 181.912);
+  --chart-3: oklch(0.702 0.183 293.541);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.712 0.194 13.428);
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.488 0.243 264.376);
@@ -520,165 +522,96 @@
   }
 }
 
-/* ===== 思考过程动画（ui/thinking-reasoning.tsx：chat 思考流）=====
-   结构：header（纯文字标签 shimmer 思考中 / 完成摘要 + chevron，无悬停
-   效果）→ collapsible（grid-template-rows 1fr→0fr 高度动画）→ 视口
-   （height/mask 由组件 inline 注入：内容超过 MAX_H=180px 封顶、translateY
-   上滑露最新行，完成后展开为可滚动 + 上下 FADE=16px 渐隐）。行距 20px、
-   行间 gap 4px 均参与实测高度，几何常量在组件内，改版需两侧同步 */
-@keyframes tr-block-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes tr-sentence-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes tr-shine {
+/* ===== AI agent 动画（ui/ai-agent-response.tsx + chat/agent-reasoning.tsx）=====
+   模板 ai-agent-response 的三段动画（原模板内嵌在 ThinkingState 组件里，
+   移到这里以便 PixelDotsLoader / AgentReasoning 等构建块单独使用）：
+   - agent-pixel-on：3x3 像素点阵加载器（PixelDotsLoader）逐点呼吸
+   - agent-shimmer：「思考中…」渐变裁切文字流光扫过
+   - agent-fade：行/块淡入上浮（思考行、时间线条目入场） */
+@keyframes agent-pixel-on {
   0%,
-  18% {
-    background-position: 100% 0;
-  }
-  82%,
   100% {
-    background-position: 0% 0;
+    opacity: 0.15;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 0.95;
+    transform: scale(1.1);
   }
 }
 
-.trr-root {
-  width: 100%;
-  font-size: 0.75rem;
-  line-height: 1.25rem;
-  color: var(--muted-foreground);
-  animation: tr-block-in 0.3s ease both;
+@keyframes agent-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }
 
-/* 纯文字标签 + 折叠箭头：无内边距/圆角/悬停效果，点击切换折叠 */
-.trr-header {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  border: none;
-  background: transparent;
-  padding: 0;
-  font: inherit;
-  color: inherit;
-  cursor: default;
-  -webkit-user-select: none;
-  user-select: none;
+@keyframes agent-fade {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-.trr-clickable {
-  cursor: pointer;
-}
-
-.trr-label {
-  display: inline-flex;
-  align-items: center;
-  white-space: nowrap;
-}
-
-.trr-verb {
-  font-weight: 500;
-  color: var(--foreground);
-}
-
-.trr-chevron {
-  opacity: 0.7;
-  transition: transform 0.2s ease;
-}
-
-.trr-header[aria-expanded="true"] .trr-chevron {
-  transform: rotate(180deg);
-}
-
-/* 「思考中…」流光：渐变裁切文字 + 高光往返扫过 */
-.trr-shimmer {
-  background-image: linear-gradient(
-    90deg,
-    var(--muted-foreground) 0%,
-    var(--foreground) 50%,
-    var(--muted-foreground) 100%
-  );
-  background-size: 200% 100%;
-  background-repeat: no-repeat;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  animation: tr-shine 2.4s linear infinite;
-}
-
-/* 折叠容器：grid-template-rows 高度动画（0fr 折叠，内容 min-height:0 放行） */
-.trr-collapsible {
-  display: grid;
-  grid-template-rows: 1fr;
-  opacity: 1;
-  transition:
-    grid-template-rows 0.3s ease,
-    opacity 0.25s ease;
-}
-
-.trr-collapsed {
-  grid-template-rows: 0fr;
-  opacity: 0;
-}
-
-.trr-inner {
-  min-height: 0;
-  overflow: hidden;
-}
-
-.trr-viewport {
-  position: relative;
-  overflow: hidden;
-  margin-top: 0.25rem;
-}
-
-/* 完成后展开：切换为可滚动，mask 交由 inline style 按滚动位置控制 */
-.trr-scroll {
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
-}
-
-.trr-stream {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  transition: transform 0.45s ease;
-}
-
-.trr-sentence {
-  margin: 0;
-  overflow-wrap: break-word;
-  animation: tr-sentence-in 0.35s ease both;
-}
-
+/* 动画经组件 inline style 注入，需 !important 才能在降级时覆盖 */
 @media (prefers-reduced-motion: reduce) {
-  .trr-root,
-  .trr-sentence {
-    animation: none;
+  [style*="agent-pixel-on"],
+  [style*="agent-shimmer"],
+  [style*="agent-fade"] {
+    animation: none !important;
   }
+}
 
-  .trr-shimmer {
-    animation: none;
-    background-image: none;
-    color: var(--muted-foreground);
+/* ── 资产管理画廊：收藏心形动画（弹跳 + 收藏成功外圈光环） ── */
+@keyframes assets-heart-pop {
+  0% {
+    transform: scale(1);
   }
-
-  .trr-collapsible,
-  .trr-chevron,
-  .trr-stream {
-    transition: none;
+  40% {
+    transform: scale(1.45);
+  }
+  70% {
+    transform: scale(0.85);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.assets-heart-pop {
+  animation: assets-heart-pop 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes assets-heart-ring {
+  0% {
+    transform: scale(0.7);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+.assets-heart-ring {
+  position: relative;
+}
+.assets-heart-ring::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 9999px;
+  border: 2px solid #f43f5e;
+  pointer-events: none;
+  animation: assets-heart-ring 0.5s ease-out forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .assets-heart-pop,
+  .assets-heart-ring::after {
+    animation: none;
   }
 }

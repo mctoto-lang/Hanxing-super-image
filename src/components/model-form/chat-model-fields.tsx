@@ -13,7 +13,16 @@ import {
 } from "@/components/ui/select"
 import { ModelIconUpload } from "@/components/model-form/model-icon-upload"
 import { BadgeField } from "@/components/model-form/badge-field"
-import { CHAT_FORMAT_ENDPOINT_EXAMPLES, formatPricePerMillion } from "@/lib/ai/chat/chat-model-config"
+import {
+  CHAT_ACTIVE_THINKING_LEVELS,
+  CHAT_FORMAT_ENDPOINT_EXAMPLES,
+  CLAUDE_THINKING_BUDGETS,
+  GEMINI_THINKING_BUDGETS,
+  OPENAI_REASONING_EFFORTS,
+  formatPricePerMillion,
+  type ActiveThinkingLevel,
+} from "@/lib/ai/chat/chat-model-config"
+import { THINKING_LEVEL_LABELS } from "@/components/chat/types"
 
 /**
  * 对话模型表单字段（超管平台预置 / 企业私有 共用）
@@ -38,6 +47,34 @@ const FORMAT_ENDPOINT_HINTS: Record<string, string> = {
   grok: "OpenAI 兼容，默认 https://api.x.ai/v1，自动拼接 /chat/completions",
 }
 
+const OVERRIDE_HINTS: Record<string, string> = {
+  openai: "填 reasoning_effort（如 low / medium / high，网关自定义值如 xhigh 也可）",
+  claude: "填 thinking.budget_tokens（须小于单次最大输出 tokens）",
+  gemini: "填 thinkingBudget（tokens 数，-1 = 动态思考）",
+  grok: "填 reasoning_effort（如 low / medium / high，网关自定义值如 xhigh 也可）",
+}
+
+/** 思考档位覆盖的表单态（输入框字符串，留空 = 内置默认） */
+export interface ThinkingOverrideFormValue {
+  effort: string
+  budgetTokens: string
+}
+
+export type ThinkingOverridesFormState = Record<
+  ActiveThinkingLevel,
+  ThinkingOverrideFormValue
+>
+
+function emptyThinkingOverrides(): ThinkingOverridesFormState {
+  return CHAT_ACTIVE_THINKING_LEVELS.reduce(
+    (acc, level) => {
+      acc[level] = { effort: "", budgetTokens: "" }
+      return acc
+    },
+    {} as ThinkingOverridesFormState,
+  )
+}
+
 export interface ChatModelFormState {
   name: string
   displayName: string
@@ -55,6 +92,8 @@ export interface ChatModelFormState {
   inputPrice: string // 积分/百万（两位小数字符串），提交转厘
   outputPrice: string
   supportsThinking: boolean
+  supportsVision: boolean
+  thinkingOverrides: ThinkingOverridesFormState
   maxConcurrent: number
   maxRetries: number
   apiTimeout: number
@@ -79,6 +118,8 @@ export function emptyChatModelState(): ChatModelFormState {
     inputPrice: "",
     outputPrice: "",
     supportsThinking: false,
+    supportsVision: false,
+    thinkingOverrides: emptyThinkingOverrides(),
     maxConcurrent: 5,
     maxRetries: 3,
     apiTimeout: 120,
@@ -95,12 +136,21 @@ export function chatModelFormFromRow(m: {
   iconUrl: string | null
   apiEndpoint: string
   formatType?: string | null
-  extraConfig: { temperature?: number; maxTokens?: number } | null
+  extraConfig:
+    | ({
+        temperature?: number
+        maxTokens?: number
+        thinkingOverrides?: NonNullable<
+          import("@/lib/ai/chat/chat-model-config").ChatThinkingOverrides
+        >
+      })
+    | null
   maxContextTokens?: number | null
   maxOutputTokens?: number | null
   inputPriceCenticredits?: number | null
   outputPriceCenticredits?: number | null
   supportsThinking?: boolean | null
+  supportsVision?: boolean | null
   maxConcurrent: number
   maxRetries: number
   apiTimeout: number
@@ -134,7 +184,25 @@ export function chatModelFormFromRow(m: {
     outputPrice:
       m.outputPriceCenticredits != null && m.outputPriceCenticredits > 0
         ? formatPricePerMillion(m.outputPriceCenticredits)
-        : "",    supportsThinking: m.supportsThinking ?? false,
+        : "",
+    supportsThinking: m.supportsThinking ?? false,
+    supportsVision: m.supportsVision ?? false,
+    thinkingOverrides: (() => {
+      const overrides = emptyThinkingOverrides()
+      const stored = m.extraConfig?.thinkingOverrides
+      if (stored) {
+        for (const level of CHAT_ACTIVE_THINKING_LEVELS) {
+          const o = stored[level]
+          if (!o) continue
+          overrides[level] = {
+            effort: o.effort ?? "",
+            budgetTokens:
+              o.budgetTokens !== undefined ? String(o.budgetTokens) : "",
+          }
+        }
+      }
+      return overrides
+    })(),
     maxConcurrent: m.maxConcurrent,
     maxRetries: m.maxRetries,
     apiTimeout: m.apiTimeout,
@@ -159,6 +227,23 @@ export function buildChatModelInput(
   const maxTokens = Number(state.maxTokens)
   const maxContextTokens = Number(state.maxContextTokens)
   const maxOutputTokens = Number(state.maxOutputTokens)
+  const thinkingOverrides: Record<
+    string,
+    { effort?: string; budgetTokens?: number }
+  > = {}
+  for (const level of CHAT_ACTIVE_THINKING_LEVELS) {
+    const form = state.thinkingOverrides[level]
+    if (!form) continue
+    const entry: { effort?: string; budgetTokens?: number } = {}
+    if (form.effort.trim()) entry.effort = form.effort.trim()
+    const budget = Number(form.budgetTokens)
+    if (form.budgetTokens.trim() !== "" && Number.isFinite(budget)) {
+      entry.budgetTokens = Math.floor(budget)
+    }
+    if (entry.effort !== undefined || entry.budgetTokens !== undefined) {
+      thinkingOverrides[level] = entry
+    }
+  }
   return {
     name: state.name,
     displayName: state.displayName,
@@ -187,6 +272,8 @@ export function buildChatModelInput(
     inputPriceCenticredits: priceToCenticredits(state.inputPrice),
     outputPriceCenticredits: priceToCenticredits(state.outputPrice),
     supportsThinking: state.supportsThinking,
+    supportsVision: state.supportsVision,
+    ...(Object.keys(thinkingOverrides).length > 0 ? { thinkingOverrides } : {}),
     maxConcurrent: state.maxConcurrent,
     maxRetries: state.maxRetries,
     apiTimeout: state.apiTimeout,
@@ -207,6 +294,17 @@ export function ChatModelFields({
   ) => void
   isEdit: boolean
 }) {
+  const upOverride = (
+    level: ActiveThinkingLevel,
+    field: "effort" | "budgetTokens",
+    val: string,
+  ) => {
+    up("thinkingOverrides", {
+      ...state.thinkingOverrides,
+      [level]: { ...state.thinkingOverrides[level], [field]: val },
+    })
+  }
+
   return (
     <>
       <div className="grid gap-4 sm:grid-cols-2">
@@ -260,7 +358,9 @@ export function ChatModelFields({
             onValueChange={(v) => up("formatType", v ?? "openai")}
           >
             <SelectTrigger className="w-full">
-              <SelectValue />
+              <SelectValue>
+                {CHAT_FORMAT_LABELS[state.formatType as keyof typeof CHAT_FORMAT_LABELS] ?? state.formatType}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {Object.entries(CHAT_FORMAT_LABELS).map(([value, label]) => (
@@ -368,7 +468,7 @@ export function ChatModelFields({
           <div>
             <Label htmlFor="cm-supportsThinking">支持思考强度</Label>
             <p className="text-xs text-muted-foreground">
-              开启后用户可选择 关闭/低/中/高 四档思考强度
+              开启后用户可滑动选择 关闭 / 低 / 中 / 高 / 加强 / 最大 / 极限 思考强度
             </p>
           </div>
           <Switch
@@ -377,6 +477,71 @@ export function ChatModelFields({
             onCheckedChange={(v) => up("supportsThinking", v)}
           />
         </div>
+
+        <div className="flex items-center justify-between gap-3 sm:col-span-2">
+          <div>
+            <Label htmlFor="cm-supportsVision">支持多模态（图片输入）</Label>
+            <p className="text-xs text-muted-foreground">
+              开启后用户可在对话输入框点击 @ 上传图片（需模型本身支持图片理解）
+            </p>
+          </div>
+          <Switch
+            id="cm-supportsVision"
+            checked={state.supportsVision}
+            onCheckedChange={(v) => up("supportsVision", v)}
+          />
+        </div>
+
+        {/* 思考档位参数覆盖（管理员自定义高档位参数，先测试再投产） */}
+        {state.supportsThinking ? (
+          <div className="grid gap-3 border-t pt-3 sm:col-span-2">
+            <div>
+              <Label>思考档位参数覆盖（可选）</Label>
+              <p className="text-xs text-muted-foreground">
+                {OVERRIDE_HINTS[state.formatType] ?? OVERRIDE_HINTS.openai}
+                ；留空档位使用内置默认值。建议覆盖后先在对话页测试再投入生产。
+              </p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-3">
+              {CHAT_ACTIVE_THINKING_LEVELS.map((level) => {
+                const form = state.thinkingOverrides[level]
+                const isTokenFormat =
+                  state.formatType === "claude" || state.formatType === "gemini"
+                const id = `cm-thinking-${level}`
+                return (
+                  <div key={level} className="grid gap-1.5">
+                    <Label htmlFor={id} className="text-xs">
+                      {THINKING_LEVEL_LABELS[level]}
+                    </Label>
+                    {isTokenFormat ? (
+                      <Input
+                        id={id}
+                        type="number"
+                        min={-1}
+                        value={form.budgetTokens}
+                        onChange={(e) =>
+                          upOverride(level, "budgetTokens", e.target.value)
+                        }
+                        placeholder={String(
+                          state.formatType === "gemini"
+                            ? GEMINI_THINKING_BUDGETS[level]
+                            : CLAUDE_THINKING_BUDGETS[level],
+                        )}
+                      />
+                    ) : (
+                      <Input
+                        id={id}
+                        value={form.effort}
+                        onChange={(e) => upOverride(level, "effort", e.target.value)}
+                        placeholder={OPENAI_REASONING_EFFORTS[level]}
+                      />
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {/* 生成参数（留空 = 默认；工作台内部 AI 消费） */}

@@ -29,6 +29,7 @@ export interface UserContext {
     | "id"
     | "username"
     | "name"
+    | "email"
     | "image"
     | "isSuperAdmin"
     | "enterpriseId"
@@ -94,6 +95,7 @@ export const getCurrentUserContext = cache(async (): Promise<UserContext | null>
       id: user.id,
       username: user.username,
       name: user.name,
+      email: user.email,
       image: user.image,
       isSuperAdmin: user.isSuperAdmin,
       enterpriseId: user.enterpriseId,

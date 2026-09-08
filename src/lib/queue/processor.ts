@@ -28,7 +28,7 @@ import { callImageApi } from "@/lib/ai"
 import { mergeImageResults } from "@/lib/ai/image-model-config"
 import { env } from "@/lib/env"
 import { getStorage } from "@/lib/storage"
-import { refundFailedTask } from "@/server/actions/create"
+import { refundFailedTask } from "@/server/services/credits-service"
 
 /**
  * 队列消费核心逻辑（手册 §5.4）
@@ -621,8 +621,10 @@ async function processOneTask(
   }
 
   // 图片并发槽位（企业 + 模型 + 权限组上限；计数器 TTL 自愈在 acquire 内续期）。
-  // 首次等待时打一条日志，便于从 worker 输出直接确认限流生效
-  const slotTtlSec = Math.ceil((task.taskTimeout || 600_000) / 1000) + 300
+  // 首次等待时打一条日志，便于从 worker 输出直接确认限流生效。
+  // 注意 taskTimeout 单位是秒（见上方 taskTimeoutMs 换算），TTL 取
+  // taskTimeout + 300s 兜底，避免长任务槽位提前过期导致并发超发
+  const slotTtlSec = Math.max(30, task.taskTimeout || 600) + 300
   let loggedSlotWait = false
   const slots = {
     acquireSlot: async () => {

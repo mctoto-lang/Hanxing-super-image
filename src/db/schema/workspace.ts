@@ -17,6 +17,7 @@ import { enterprises } from "./enterprise"
 import { users } from "./auth"
 import { models } from "./models"
 import { generationTasks } from "./tasks"
+import type { ChatThinkingOverrides } from "@/lib/ai/chat/chat-model-config"
 
 /**
  * 批量生图工作台（手册 §4.4、M5，1:1 对齐旧项目）
@@ -29,6 +30,8 @@ import { generationTasks } from "./tasks"
 export interface ChatModelExtraConfig {
   temperature?: number
   maxTokens?: number
+  /** 各思考档位的上游参数覆盖（effort / budgetTokens；留空档位用内置默认） */
+  thinkingOverrides?: ChatThinkingOverrides
   [key: string]: unknown
 }
 
@@ -78,6 +81,8 @@ export const chatApiConfigs = pgTable(
       .notNull(),
     /** 是否支持思考强度（UI 显示 关闭/低/中/高 选择器） */
     supportsThinking: boolean("supports_thinking").default(false).notNull(),
+    /** 是否支持多模态（图片输入；开启后对话输入框可 @ 上传图片） */
+    supportsVision: boolean("supports_vision").default(false).notNull(),
     maxConcurrent: integer("max_concurrent").default(5).notNull(),
     maxRetries: integer("max_retries").default(3).notNull(),
     apiTimeout: integer("api_timeout").default(120).notNull(),

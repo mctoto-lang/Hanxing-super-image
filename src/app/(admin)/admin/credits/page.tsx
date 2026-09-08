@@ -2,8 +2,8 @@ import { requireEnterpriseContext } from "@/lib/auth/session"
 import { listTransactionsAction } from "@/server/actions/credits"
 import {
   Card,
+  CardAction,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
@@ -19,7 +19,14 @@ import {
 import {
   TablePagination,
   parsePageParam,
+  parseQueryParam,
 } from "@/components/shared/table-pagination"
+import { AdminListFilters } from "@/components/admin/admin-list-filters"
+import {
+  CREDIT_MODULE_OPTIONS,
+  MODULE_LABELS,
+  filterQuery,
+} from "@/lib/admin/table-filters"
 
 export const dynamic = "force-dynamic"
 
@@ -31,6 +38,7 @@ const TYPE_LABELS: Record<string, string> = {
   allocation: "分配下发",
   allocation_deduct: "个人消费",
   allocation_refund: "个人退还",
+  plan_grant: "套餐发放",
 }
 
 const TYPE_VARIANTS: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
@@ -41,6 +49,14 @@ const TYPE_VARIANTS: Record<string, "default" | "secondary" | "destructive" | "o
   allocation: "secondary",
   allocation_deduct: "secondary",
   allocation_refund: "outline",
+  plan_grant: "default",
+}
+
+/** 模块列：source（生图任务）→ 中文；备注前缀识别 AI 对话；其余显示 — */
+function moduleLabelOf(t: { source: string | null; remark: string | null }): string {
+  if (t.source) return MODULE_LABELS[t.source] ?? t.source
+  if (t.remark?.startsWith("AI 对话")) return "AI 对话"
+  return "—"
 }
 
 export default async function AdminCreditsPage({
@@ -49,9 +65,21 @@ export default async function AdminCreditsPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>
 }) {
   const ctx = await requireEnterpriseContext()
-  const page = parsePageParam(await searchParams)
+  const sp = await searchParams
+  const page = parsePageParam(sp)
+  const q = parseQueryParam(sp, "q")
+  const moduleFilter = parseQueryParam(sp, "module")
+  const from = parseQueryParam(sp, "from")
+  const to = parseQueryParam(sp, "to")
   const { items: transactions, total, pageSize: actionPageSize } =
-    await listTransactionsAction({ page, pageSize: 20 })
+    await listTransactionsAction({
+      page,
+      pageSize: 20,
+      q,
+      module: moduleFilter,
+      from,
+      to,
+    })
 
   // 统计：当前页 allocation_deduct 已消费累计（负数取绝对值作参考）
   const consumedByUsers = transactions
@@ -60,13 +88,6 @@ export default async function AdminCreditsPage({
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-bold">积分流水</h1>
-        <p className="text-sm text-muted-foreground">
-          {ctx.enterprise?.name} · 企业积分池与分配流水（需求 3：池→个人配额两级）
-        </p>
-      </div>
-
       <div className="grid gap-4 sm:grid-cols-3">
         <Card>
           <CardHeader className="pb-2">
@@ -103,24 +124,40 @@ export default async function AdminCreditsPage({
       <Card>
         <CardHeader>
           <CardTitle className="text-base">流水记录</CardTitle>
-          <CardDescription>共 {total} 条（D8：企业共享积分池）</CardDescription>
+          <CardAction>
+            <AdminListFilters
+              basePath="/admin/credits"
+              q={q}
+              module={moduleFilter}
+              from={from}
+              to={to}
+              moduleOptions={CREDIT_MODULE_OPTIONS}
+            />
+          </CardAction>
         </CardHeader>
         <CardContent>
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>时间</TableHead>
+                <TableHead>用户</TableHead>
+                <TableHead>模块</TableHead>
+                <TableHead>明细</TableHead>
                 <TableHead>类型</TableHead>
-                <TableHead className="text-right">变动</TableHead>
-                <TableHead className="text-right">变动后余额</TableHead>
-                <TableHead>备注</TableHead>
+                <TableHead className="text-right">积分消耗</TableHead>
+                <TableHead>时间</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {transactions.map((t) => (
                 <TableRow key={t.id}>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {new Date(t.createdAt).toLocaleString("zh-CN")}
+                  <TableCell className="font-medium">
+                    {t.userName ?? "—"}
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground">
+                    {moduleLabelOf(t)}
+                  </TableCell>
+                  <TableCell className="max-w-[280px] truncate text-sm text-muted-foreground">
+                    {t.remark ?? "—"}
                   </TableCell>
                   <TableCell>
                     <Badge variant={TYPE_VARIANTS[t.type] ?? "outline"}>
@@ -128,25 +165,22 @@ export default async function AdminCreditsPage({
                     </Badge>
                   </TableCell>
                   <TableCell
-                    className={`text-right tabular-nums font-medium ${
+                    className={`text-right font-medium tabular-nums ${
                       t.amount > 0 ? "text-emerald-500" : "text-destructive"
                     }`}
                   >
                     {t.amount > 0 ? "+" : ""}
                     {t.amount.toLocaleString("zh-CN")}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {t.balanceAfter.toLocaleString("zh-CN")}
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {t.remark ?? "—"}
+                  <TableCell className="text-xs text-muted-foreground">
+                    {new Date(t.createdAt).toLocaleString("zh-CN")}
                   </TableCell>
                 </TableRow>
               ))}
               {transactions.length === 0 ? (
                 <TableRow>
                   <TableCell
-                    colSpan={5}
+                    colSpan={6}
                     className="text-center text-muted-foreground"
                   >
                     暂无流水记录
@@ -161,6 +195,7 @@ export default async function AdminCreditsPage({
           pageSize={actionPageSize}
           total={total}
           basePath="/admin/credits"
+          query={filterQuery({ q, module: moduleFilter, from, to })}
         />
       </Card>
     </div>

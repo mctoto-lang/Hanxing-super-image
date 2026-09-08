@@ -45,6 +45,7 @@ export const creditTxTypeEnum = pgEnum("credit_tx_type", [
   "allocation", // 分配（负，企业管理员从企业池下发到成员个人配额）
   "allocation_deduct", // 个人配额消费（负，成员生图扣个人配额）
   "allocation_refund", // 个人配额退还（正，任务失败退还到成员个人配额）
+  "plan_grant", // 套餐周期发放（正，订阅套餐每周期自动发放到企业池）
 ])
 export type CreditTxType = (typeof creditTxTypeEnum.enumValues)[number]
 

@@ -81,6 +81,11 @@ interface FlipCardProps {
   batchMode: boolean
   isSelected: boolean
   flipAllToImage: boolean
+  /** 工具面板打开：点击卡片联动设为面板活动卡片（保留原有翻面等交互） */
+  panelMode?: boolean
+  /** 工具面板打开时本卡是否为活动卡片（紫色描边高亮） */
+  isActiveCard?: boolean
+  onCardActivate?: (cardId: string) => void
   selectedDeepenTemplate: TemplateRow | null
   selectedRegenTemplate: TemplateRow | null
   selectedTranslateTemplate: TemplateRow | null
@@ -110,6 +115,9 @@ export const FlipCard = memo(function FlipCard({
   batchMode,
   isSelected,
   flipAllToImage,
+  panelMode = false,
+  isActiveCard = false,
+  onCardActivate,
   selectedDeepenTemplate,
   selectedRegenTemplate,
   selectedTranslateTemplate,
@@ -527,6 +535,11 @@ export const FlipCard = memo(function FlipCard({
     e.stopPropagation()
     if (batchMode) {
       onToggleSelect(card.id)
+      return
+    }
+    // 工具面板打开：点击任意卡片联动为面板活动卡片（其他交互不变）
+    if (panelMode) {
+      onCardActivate?.(card.id)
     }
   }
 
@@ -623,17 +636,18 @@ export const FlipCard = memo(function FlipCard({
           className={cn(
             "relative overflow-hidden rounded-2xl border transition-all duration-200 [content-visibility:auto] [contain-intrinsic-size:auto_300px]",
             batchMode && "cursor-pointer",
-            isSelected && batchMode
+            // 批量选中 / 工具面板活动卡片：同一套蓝色选中效果
+            (isSelected && batchMode) || isActiveCard
               ? "border-blue-600 bg-blue-50/20 ring-2 ring-blue-600"
               : "border-border bg-card",
             isPromptLoading && "ring-2 ring-primary/40",
           )}
         >
-          {batchMode && isSelected && (
+          {(batchMode && isSelected) || isActiveCard ? (
             <div className="absolute right-2.5 top-2.5 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-blue-600 text-white shadow-sm">
               <Check className="h-4 w-4" />
             </div>
-          )}
+          ) : null}
           <div
             className="absolute inset-0"
             style={{ perspective: "1000px" }}
@@ -705,11 +719,12 @@ export const FlipCard = memo(function FlipCard({
                   <div
                     className="group relative h-full w-full cursor-pointer"
                     onClick={(e) => {
-                      if (!batchMode) {
-                        e.stopPropagation()
-                        setGalleryInitialMode("selected")
-                        setShowGallery(true)
-                      }
+                      // 批量模式 / 工具面板模式：不拦截，冒泡到卡片容器
+                      // （批量选择 toggle / 切换面板活动卡片），也不开图库
+                      if (batchMode || panelMode) return
+                      e.stopPropagation()
+                      setGalleryInitialMode("selected")
+                      setShowGallery(true)
                     }}
                   >
                     {/* COS/远程图片，直连或经代理加载；SmartImage 自动显示失效占位 */}

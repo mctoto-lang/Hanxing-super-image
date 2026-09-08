@@ -25,7 +25,8 @@ import {
  * 企业级样机渲染服务配置（超管）
  *
  * 每个企业对接各自的 psd-render-api 实例：服务地址 / API Key（AES 加密落库，
- * 留空不修改）/ 渲染单价（积分/样机）/ 启用开关。
+ * 留空不修改）/ Webhook 签名密钥（与 PS-API 该 API Key 的 webhookSecret 配对，
+ * 配对后渲染终态主动推送）/ 渲染单价（积分/样机）/ 启用开关。
  */
 export function MockupConfigDialog({
   enterpriseId,
@@ -40,6 +41,8 @@ export function MockupConfigDialog({
   const [apiBaseUrl, setApiBaseUrl] = React.useState("")
   const [hasApiKey, setHasApiKey] = React.useState(false)
   const [apiKey, setApiKey] = React.useState("")
+  const [hasWebhookSecret, setHasWebhookSecret] = React.useState(false)
+  const [webhookSecret, setWebhookSecret] = React.useState("")
   const [costPerRender, setCostPerRender] = React.useState(1)
   const [enabled, setEnabled] = React.useState(false)
 
@@ -52,9 +55,11 @@ export function MockupConfigDialog({
         if (stop) return
         setApiBaseUrl(cfg.apiBaseUrl)
         setHasApiKey(cfg.hasApiKey)
+        setHasWebhookSecret(cfg.hasWebhookSecret)
         setCostPerRender(cfg.costPerRender)
         setEnabled(cfg.enabled)
         setApiKey("")
+        setWebhookSecret("")
       })
       .finally(() => {
         if (!stop) setLoading(false)
@@ -71,6 +76,7 @@ export function MockupConfigDialog({
         enterpriseId,
         apiBaseUrl,
         apiKey: apiKey || undefined,
+        webhookSecret: webhookSecret ? webhookSecret : undefined,
         costPerRender,
         enabled,
       })
@@ -131,6 +137,26 @@ export function MockupConfigDialog({
                 onChange={(e) => setApiKey(e.target.value)}
                 placeholder={hasApiKey ? "已配置（留空不修改）" : "sk_live_…"}
               />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="mockup-webhook-secret">Webhook 签名密钥</Label>
+              <Input
+                id="mockup-webhook-secret"
+                type="password"
+                value={webhookSecret}
+                onChange={(e) => setWebhookSecret(e.target.value)}
+                placeholder={
+                  hasWebhookSecret
+                    ? "已配置（留空不修改，输入 - 清除）"
+                    : "选填；填入后启用渲染终态主动推送"
+                }
+              />
+              <p className="text-xs text-muted-foreground">
+                与 PS-API 该 API Key 的 webhookSecret 保持一致；配置后渲染
+                完成/失败即时推送回调（仍需应用配置外部可达地址
+                NEXT_PUBLIC_APP_URL），未配置则纯轮询收敛
+              </p>
             </div>
 
             <div className="space-y-1.5">
