@@ -25,7 +25,8 @@ export function toImageSrc(
   if (url.startsWith("data:")) return url
   // 腾讯云 COS 双桶域名直连（参考图桶 / 生成图桶均为 *.myqcloud.com）
   if (url.includes(".myqcloud.com/")) {
-    if (opts?.width && !url.includes("imageMogr2")) {
+    // 数据万象处理不了 SVG（imageMogr2 必失败），矢量图标不追加缩略参数
+    if (opts?.width && !url.includes("imageMogr2") && !/\.svg(?:\?|#|$)/.test(url)) {
       const sep = url.includes("?") ? "&" : "?"
       // width 定宽等比缩放：thumbnail/400x → 宽 ≤400px，高按比例
       return `${url}${sep}imageMogr2/thumbnail/${opts.width}x`

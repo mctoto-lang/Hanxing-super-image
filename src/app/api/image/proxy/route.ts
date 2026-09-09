@@ -154,6 +154,10 @@ export async function GET(request: Request) {
       "Content-Type": contentType,
       "Cache-Control": "public, max-age=86400, immutable",
     })
+    // SVG 经代理透传时强制下载：防止在应用同源上下文直接导航执行脚本
+    if (contentType.includes("image/svg+xml")) {
+      headers.set("Content-Disposition", "attachment")
+    }
     const contentLength = resp.headers.get("content-length")
     if (contentLength) headers.set("Content-Length", contentLength)
     // 流式透传响应体（不做整包 arrayBuffer 缓冲，100 图并发时避免

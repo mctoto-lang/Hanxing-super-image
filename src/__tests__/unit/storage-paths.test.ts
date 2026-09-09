@@ -5,7 +5,9 @@ import { getLocalPath, UPLOAD_ROOT } from "@/lib/storage/local"
 
 /**
  * 存储路径安全单测（审查 H1/H2 修复）：
- * - safeImageExt：上传文件名扩展名白名单，防任意扩展名（html/svg）落盘；
+ * - safeImageExt：上传文件名扩展名白名单，防任意扩展名（html）落盘；
+ *   svg 已对配置图开放（上传前 sanitizeSvg 清洗 + 托管强制 attachment
+ *   下载，见 svg-sanitize.test.ts），其余端点在上游按 MIME 拒绝；
  * - getLocalPath：本地删除路径困在 uploads 根内，防 query/fragment 携带
  *   ".." 段绕过 URL 规范化造成任意文件删除；
  * - validateReferenceImageUrls：引用图 URL 租户校验 + 穿越段拒绝。
@@ -29,7 +31,6 @@ describe("safeImageExt 扩展名白名单", () => {
 
   it("非图片扩展名一律回落 png（含恶意构造）", () => {
     expect(safeImageExt("x.html")).toBe("png")
-    expect(safeImageExt("x.svg")).toBe("png")
     expect(safeImageExt("x.htaccess")).toBe("png")
     // 末段带斜杠的伪造文件名（子路径段），同样不在白名单
     expect(safeImageExt("x./etc/passwd")).toBe("png")

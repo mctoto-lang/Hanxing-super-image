@@ -31,6 +31,9 @@ const CONTENT_TYPES: Record<string, string> = {
   png: "image/png",
   webp: "image/webp",
   gif: "image/gif",
+  // SVG 图标（仅 /api/upload/config 清洗后落盘）：强制 attachment——
+  // 直接导航变下载而非执行（防同源存储型 XSS），<img> 渲染不受影响
+  svg: "image/svg+xml",
 }
 
 export const dynamic = "force-dynamic"
@@ -99,6 +102,9 @@ export async function GET(
         "Content-Type": contentType,
         "Cache-Control": "public, max-age=31536000, immutable",
         "X-Content-Type-Options": "nosniff",
+        ...(ext === "svg"
+          ? { "Content-Disposition": "attachment" }
+          : {}),
       },
     })
   } catch {

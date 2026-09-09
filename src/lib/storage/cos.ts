@@ -183,6 +183,9 @@ export function createCosAdapter(cfg: StorageConfig): CosAdapter {
         Body: buffer,
         ContentLength: buffer.length,
         ContentType: contentTypeFromExt(ext),
+        // SVG（模型图标）强制下载：直接导航到 COS URL 变下载而非执行
+        // 脚本（防存储型 XSS），<img> 渲染不受 Content-Disposition 影响
+        ...(ext === "svg" ? { ContentDisposition: "attachment" } : {}),
         // Domain 缺省时 SDK 走默认公网域名；内网开关开启时强制 tencentcos.cn
         ...(domain ? { Domain: domain } : {}),
       })
