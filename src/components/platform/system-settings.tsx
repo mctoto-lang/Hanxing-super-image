@@ -49,7 +49,9 @@ export function SystemSettings({
     try {
       const res = await saveStorageSettingAction(storage)
       if (res.ok) {
-        toast.success("存储设置已保存")
+        toast.success(
+          res.tested ? "存储设置已保存，COS 连通性验证通过" : "存储设置已保存",
+        )
       } else {
         toast.error(res.error ?? "保存失败")
       }

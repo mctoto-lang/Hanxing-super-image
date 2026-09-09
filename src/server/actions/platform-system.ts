@@ -8,8 +8,10 @@ import {
   encryptStorageSecret,
   loadStorageConfig,
   maskStorageSecret,
+  normalizeStorageSubmission,
   type StorageConfig,
 } from "@/lib/storage/config"
+import { verifyCosConfig } from "@/lib/storage/cos"
 import { revalidatePath } from "next/cache"
 
 /**
@@ -97,28 +99,56 @@ export async function getStorageSettingAction(): Promise<StorageSetting> {
   return { ...cfg, cosSecretKey: maskStorageSecret(cfg.cosSecretKey) }
 }
 
-/** 保存存储设置 */
+/**
+ * 保存存储设置。
+ *
+ * 保存出口统一走 normalizeStorageSubmission（字段 trim + 掩码保留旧值 +
+ * 「换 SecretId 必须同时换 SecretKey」硬拦截）；COS 配齐时先做 headBucket
+ * 签名连通性自检（fail-closed，失败拒绝保存），把密钥/桶名/内网开关配错
+ * 在保存当场暴露，而不是等生产上传报签名错误。
+ */
 export async function saveStorageSettingAction(
   input: StorageSetting,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; tested?: boolean }> {
   await requireSuperAdmin()
-  // SecretKey AES-256-GCM 加密落库（同 API Key 策略，DB 备份/只读账号不泄密）：
-  // - 表单未修改（原样提交掩码）→ 保留现值，顺带把历史明文升级为密文；
-  // - 提交新值 → 加密；提交空串 → 清空（切换回 local 存储时使用）
-  let secretKeyToStore: string
-  if (input.cosSecretKey.startsWith("••••••")) {
-    const current = await loadStorageConfig()
-    secretKeyToStore = encryptStorageSecret(current.cosSecretKey)
-  } else {
-    secretKeyToStore = encryptStorageSecret(input.cosSecretKey)
+
+  const current = await loadStorageConfig()
+  const normalized = normalizeStorageSubmission(input, current)
+  if (!normalized.ok) return { ok: false, error: normalized.error }
+  const { value, effectiveSecretKey } = normalized
+
+  // COS 配齐（凭证 + 桶）→ 保存前连通性自检；掩码保留旧密钥时同样验证现值
+  let tested = false
+  if (
+    value.provider === "cos" &&
+    value.cosSecretId &&
+    effectiveSecretKey &&
+    value.cosRegion &&
+    value.cosBucket
+  ) {
+    const verify = await verifyCosConfig({
+      cosSecretId: value.cosSecretId,
+      cosSecretKey: effectiveSecretKey,
+      cosRegion: value.cosRegion,
+      cosBucket: value.cosBucket,
+      cosForceInternalEndpoint: value.cosForceInternalEndpoint,
+    })
+    if (!verify.ok) return { ok: false, error: verify.error }
+    tested = true
   }
+
+  // SecretKey AES-256-GCM 加密落库（同 API Key 策略，DB 备份/只读账号不泄密）；
+  // 掩码保留旧密钥时重新加密落库，顺带把历史明文升级为密文
   await upsertPlatformSetting(
     "storage",
-    { ...input, cosSecretKey: secretKeyToStore } as unknown as SystemSettingValue,
+    {
+      ...value,
+      cosSecretKey: encryptStorageSecret(effectiveSecretKey),
+    } as unknown as SystemSettingValue,
     "存储后端配置（local/cos）",
   )
   revalidatePath("/platform/system")
-  return { ok: true }
+  return { ok: true, tested }
 }
 
 /** 获取队列设置 */

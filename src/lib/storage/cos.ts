@@ -295,3 +295,102 @@ export function createCosAdapter(cfg: StorageConfig): CosAdapter {
     },
   }
 }
+
+/* ─── 保存设置时的连通性自检 ─── */
+
+/** headBucket 自检超时（防保存动作挂死） */
+const VERIFY_TIMEOUT_MS = 10_000
+
+export interface VerifyCosConfigInput {
+  cosSecretId: string
+  cosSecretKey: string
+  cosRegion: string
+  cosBucket: string
+  /** 开启时自检走 tencentcos.cn 内网域名，顺带验证内网连通性 */
+  cosForceInternalEndpoint?: boolean
+}
+
+/** SDK 错误体可能是 XML 字符串（restful 错误）或网络错误 message，统一提取 */
+function verifyErrorDetail(err: unknown): { status?: number; body: string } {
+  if (typeof err === "object" && err !== null) {
+    const e = err as { statusCode?: unknown; error?: unknown; message?: unknown }
+    return {
+      status: typeof e.statusCode === "number" ? e.statusCode : undefined,
+      body:
+        typeof e.error === "string"
+          ? e.error
+          : typeof e.message === "string"
+            ? e.message
+            : JSON.stringify(err),
+    }
+  }
+  return { body: String(err) }
+}
+
+/** 把 headBucket 失败翻译成可操作的中文提示（保存动作原样 toast 给超管） */
+function describeVerifyError(err: unknown, internal: boolean): string {
+  if (err instanceof Error && err.message === "verify-timeout") {
+    return `COS 连通性测试超时：请检查 Region 与服务器网络${
+      internal ? "；内网域名开关已开启，服务器若不在腾讯云同地域请关闭后重试" : ""
+    }`
+  }
+  const { status, body } = verifyErrorDetail(err)
+  const code = body.match(/<Code>([^<]+)<\/Code>/)?.[1] ?? ""
+
+  if (code === "SignatureDoesNotMatch" || /Signature.*invalid/i.test(body)) {
+    return "COS 签名校验失败：SecretId/SecretKey 不匹配。更换 SecretId 时必须同时重新输入对应的 SecretKey；并确认是子账号永久密钥（非临时密钥）"
+  }
+  if (code === "NoSuchBucket" || status === 404) {
+    return "COS 桶不存在：请核对 Bucket 名称（需带 APPID 后缀，如 hanxing-1250000000）与 Region"
+  }
+  if (status === 403 || code === "AccessDenied") {
+    return "COS 密钥签名有效，但该子账号无此桶权限：请在 CAM 授予该桶读写权限"
+  }
+  return `无法连接 COS（${body.slice(0, 160)}）：请检查 Region、服务器网络${
+    internal ? "；内网域名开关已开启，服务器若不在腾讯云同地域请关闭后重试" : ""
+  }`
+}
+
+/**
+ * 保存存储设置前的连通性自检：对桶发一次 headBucket（带签名，不读不写内容）。
+ * 一次性验证「密钥对签名有效 + 桶存在 + 子账号有权限」，内网开关开启时
+ * 同时验证内网域名连通——把密钥/桶名/开关配错在保存当场暴露，而不是
+ * 等到生产上传报 The Signature you specified is invalid。
+ */
+export async function verifyCosConfig(
+  cfg: VerifyCosConfigInput,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const internal = cfg.cosForceInternalEndpoint === true
+  const cos = new COS({
+    SecretId: cfg.cosSecretId,
+    SecretKey: cfg.cosSecretKey,
+  })
+  const domain = internal
+    ? `${cfg.cosBucket}.cos.${cfg.cosRegion}.tencentcos.cn`
+    : undefined
+
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("verify-timeout")), VERIFY_TIMEOUT_MS)
+  })
+  const head = new Promise<void>((resolve, reject) => {
+    // 回调风格在各 SDK 版本行为一致；headBucket 幂等、不产生存储费用
+    cos.headBucket(
+      {
+        Bucket: cfg.cosBucket,
+        Region: cfg.cosRegion,
+        ...(domain ? { Domain: domain } : {}),
+      },
+      (err) => (err ? reject(err) : resolve()),
+    )
+  })
+
+  try {
+    await Promise.race([head, timeout])
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: describeVerifyError(err, internal) }
+  } finally {
+    clearTimeout(timer)
+  }
+}

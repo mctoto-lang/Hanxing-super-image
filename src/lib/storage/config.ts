@@ -110,10 +110,75 @@ export function decryptStorageSecret(stored: string): string {
   }
 }
 
+/** 掩码前缀：maskStorageSecret 生成、normalizeStorageSubmission 识别「未修改」 */
+const SECRET_MASK_PREFIX = "••••••"
+
 /** 超管回显掩码：仅保留明文尾 4 位；保存时原样提交则视为「未修改」 */
 export function maskStorageSecret(plain: string): string {
   if (!plain) return ""
-  return `••••••${plain.slice(-4)}`
+  return `${SECRET_MASK_PREFIX}${plain.slice(-4)}`
+}
+
+/**
+ * 保存存储设置出口的规范化与校验（纯函数，供 saveStorageSettingAction 调用、单测覆盖）。
+ *
+ * - 凭证 / 域名 / 前缀字段一律 trim：粘贴带入的首尾空白会让 COS 签名与域名
+ *   匹配静默失效（生产已踩：The Signature you specified is invalid）；
+ * - SecretId 与 SecretKey 必须成对更换：换了 SecretId 却保留掩码旧密钥时
+ *   硬拦截，避免存下「新 Id + 旧 Key」这种签名必然全部失败且无任何提示的组合；
+ * - effectiveSecretKey：掩码 → 保留现值（调用方加密落库，顺带把历史明文升级
+ *   为密文）；其余原样（含空串，表示清空、切回 local 存储）。
+ */
+export function normalizeStorageSubmission(
+  input: Partial<StorageConfig>,
+  current: StorageConfig,
+):
+  | { ok: false; error: string }
+  | { ok: true; value: StorageConfig; effectiveSecretKey: string } {
+  const value: StorageConfig = {
+    ...DEFAULT_STORAGE,
+    ...input,
+    provider: input.provider === "cos" ? "cos" : "local",
+    cosSecretId: (input.cosSecretId ?? "").trim(),
+    cosSecretKey: (input.cosSecretKey ?? "").trim(),
+    cosRegion: (input.cosRegion ?? "").trim(),
+    cosBucket: (input.cosBucket ?? "").trim(),
+    cosBaseUrl: (input.cosBaseUrl ?? "").trim(),
+    refPrefix: (input.refPrefix ?? DEFAULT_STORAGE.refPrefix).trim(),
+    configPrefix: (input.configPrefix ?? DEFAULT_STORAGE.configPrefix).trim(),
+    generatePrefix: (
+      input.generatePrefix ?? DEFAULT_STORAGE.generatePrefix
+    ).trim(),
+    localImagePrefix: (
+      input.localImagePrefix ?? DEFAULT_STORAGE.localImagePrefix
+    ).trim(),
+    cosForceInternalEndpoint: input.cosForceInternalEndpoint === true,
+    allowedDownloadHosts: Array.isArray(input.allowedDownloadHosts)
+      ? input.allowedDownloadHosts
+          .filter((h): h is string => typeof h === "string")
+          .map((h) => h.trim())
+          .filter(Boolean)
+      : [],
+  }
+
+  const keyMasked = value.cosSecretKey.startsWith(SECRET_MASK_PREFIX)
+  if (
+    keyMasked &&
+    value.provider === "cos" &&
+    value.cosSecretId !== current.cosSecretId.trim()
+  ) {
+    return {
+      ok: false,
+      error:
+        "SecretId 已变更，但 SecretKey 未重新输入（当前保留的是旧密钥）。更换密钥对时两个字段必须同时更新。",
+    }
+  }
+
+  return {
+    ok: true,
+    value,
+    effectiveSecretKey: keyMasked ? current.cosSecretKey : value.cosSecretKey,
+  }
 }
 
 /**
