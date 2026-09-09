@@ -21,7 +21,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { ImageViewer } from "@/components/ui/image-viewer"
-import { cn, toImageSrc } from "@/lib/utils"
+import { cn, copyText, toImageSrc } from "@/lib/utils"
 import { ChatMarkdown } from "@/components/chat/markdown"
 import { formatCenticredits } from "@/lib/ai/chat/chat-model-config"
 
@@ -66,7 +66,8 @@ function CopyButton({ text }: { text: string }) {
     <button
       type="button"
       onClick={() => {
-        void navigator.clipboard.writeText(text).then(() => {
+        void copyText(text).then((ok) => {
+          if (!ok) return
           setCopied(true)
           if (timerRef.current) clearTimeout(timerRef.current)
           timerRef.current = setTimeout(() => setCopied(false), 1500)

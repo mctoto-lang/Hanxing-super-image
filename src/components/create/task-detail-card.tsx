@@ -37,7 +37,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { toImageSrc } from "@/lib/utils"
+import { copyText, toImageSrc } from "@/lib/utils"
 import { SmartImage } from "@/components/ui/smart-image"
 import { ImageGeneration } from "@/components/ui/image-generation"
 import { parseImageSize, sizeToRatioLabel } from "@/lib/image-sizes"
@@ -307,11 +307,11 @@ export function TaskDetailCard({
 
   /** 复制提示词到剪贴板（悬停浮层内的「复制提示词」按钮） */
   async function handleCopyPrompt() {
-    try {
-      await navigator.clipboard.writeText(task.prompt)
+    const ok = await copyText(task.prompt)
+    if (ok) {
       setPromptHover(false)
       toast.success("已复制到剪贴板")
-    } catch {
+    } else {
       toast.error("复制失败，请手动选择复制")
     }
   }

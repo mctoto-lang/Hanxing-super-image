@@ -49,3 +49,69 @@ export function stripCosThumbnail(src: string): string {
   if (idx === -1) return src
   return src.slice(0, idx).replace(/[?&]\s*$/, "")
 }
+
+/**
+ * 客户端随机 id（UUID v4）。
+ * crypto.randomUUID 仅在安全上下文（HTTPS / localhost）与较新浏览器可用，
+ * HTTP 线上环境为 undefined——曾导致图片库上传后乐观行构造抛错、成功上传被
+ * 误报为失败；getRandomValues 在非安全上下文仍可用，作为一级回退。
+ */
+export function randomId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID()
+  }
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const bytes = crypto.getRandomValues(new Uint8Array(16))
+    // RFC 4122：byte6 高半字节 version=4，byte8 高两位 variant=10
+    bytes[6] = (bytes[6]! & 0x0f) | 0x40
+    bytes[8] = (bytes[8]! & 0x3f) | 0x80
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+  }
+  return `id-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+/**
+ * 复制文本到剪贴板（成功返回 true）。
+ * navigator.clipboard 仅安全上下文（HTTPS / localhost）可用，HTTP 线上为
+ * undefined——复制按钮曾因此静默失效甚至假报「已复制」；execCommand('copy')
+ * 非安全上下文仍可用（需在用户点击等手势内调用），作为兜底。
+ */
+export async function copyText(text: string): Promise<boolean> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      // 权限被拒 / 文档失焦等：落入 execCommand 兜底
+    }
+  }
+  if (typeof document === "undefined") return false
+  try {
+    const ta = document.createElement("textarea")
+    ta.value = text
+    ta.setAttribute("readonly", "")
+    // 离屏但保持可渲染：display:none 在部分浏览器会导致复制失败
+    ta.style.position = "fixed"
+    ta.style.top = "-9999px"
+    document.body.appendChild(ta)
+    // 保留用户原选区，复制后还原
+    const selection = document.getSelection()
+    const prevRange =
+      selection && selection.rangeCount > 0
+        ? selection.getRangeAt(0)
+        : null
+    ta.select()
+    // iOS Safari 需要 setSelectionRange 才会真正选中
+    ta.setSelectionRange(0, text.length)
+    const ok = document.execCommand("copy")
+    document.body.removeChild(ta)
+    if (selection && prevRange) {
+      selection.removeAllRanges()
+      selection.addRange(prevRange)
+    }
+    return ok
+  } catch {
+    return false
+  }
+}

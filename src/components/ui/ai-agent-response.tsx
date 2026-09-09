@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { cn } from "@/lib/utils"
+import { cn, copyText } from "@/lib/utils"
 import {
   ChevronDown,
   Search,
@@ -117,9 +117,11 @@ export function TerminalCommand({
 
   const handleCopy = () => {
     const fullText = output ? `$ ${command}\n\n${output}` : `$ ${command}`
-    void navigator.clipboard.writeText(fullText)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1800)
+    void copyText(fullText).then((ok) => {
+      if (!ok) return
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1800)
+    })
   }
 
   return (
@@ -234,9 +236,11 @@ export function FileDiff({ file, rows = [], className }: FileDiffProps) {
     const textContent = rows
       .map((r) => `${r.type === "add" ? "+" : r.type === "del" ? "-" : " "} ${r.text}`)
       .join("\n")
-    void navigator.clipboard.writeText(textContent)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1800)
+    void copyText(textContent).then((ok) => {
+      if (!ok) return
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1800)
+    })
   }
 
   return (

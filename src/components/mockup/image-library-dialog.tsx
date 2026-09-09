@@ -24,7 +24,7 @@ import {
 } from "@/server/actions/mockup"
 import type { MockupLibraryImage } from "@/lib/mockup/types"
 import type { DateRange } from "react-day-picker"
-import { cn, toImageSrc } from "@/lib/utils"
+import { cn, randomId, toImageSrc } from "@/lib/utils"
 
 /** 多选上限与服务端单批次任务上限一致 */
 const MAX_SELECT = 100
@@ -152,7 +152,7 @@ export function ImageLibraryDialog({
         return
       }
       const image: MockupLibraryImage = {
-        id: crypto.randomUUID(),
+        id: randomId(),
         imageUrl: url,
         fileName: file.name,
         createdAt: new Date().toISOString(),
@@ -198,7 +198,7 @@ export function ImageLibraryDialog({
           const res = await addMockupDesignAssetAction({ imageUrl: url, fileName: file.name })
           if (!res.ok) throw new Error(res.error ?? "入库失败")
           const image: MockupLibraryImage = {
-            id: crypto.randomUUID(),
+            id: randomId(),
             imageUrl: url,
             fileName: file.name,
             createdAt: new Date().toISOString(),

@@ -28,7 +28,7 @@ import {
 } from "@/components/ui/tooltip"
 import { SmartImage } from "@/components/ui/smart-image"
 import { getStorageProxyUrl } from "@/lib/storage/proxy"
-import { toImageSrc } from "@/lib/utils"
+import { copyText, toImageSrc } from "@/lib/utils"
 
 /** 缩放范围与步进（0.25 步进在二进制下精确，无浮点漂移） */
 const MIN_SCALE = 0.5
@@ -257,10 +257,10 @@ export function ImageViewer({
   /** 复制提示词（悬浮信息面板内） */
   async function handleCopyPrompt() {
     if (!info?.prompt) return
-    try {
-      await navigator.clipboard.writeText(info.prompt)
+    const ok = await copyText(info.prompt)
+    if (ok) {
       toast.success("已复制到剪贴板")
-    } catch {
+    } else {
       toast.error("复制失败，请手动选择复制")
     }
   }

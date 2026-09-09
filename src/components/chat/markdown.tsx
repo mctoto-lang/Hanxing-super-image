@@ -5,7 +5,7 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import rehypeHighlight from "rehype-highlight"
 import { Check, Copy } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { cn, copyText } from "@/lib/utils"
 
 /**
  * AI 对话 markdown 渲染
@@ -28,7 +28,8 @@ function PreWithCopy({ children }: { children?: React.ReactNode }) {
 
   function handleCopy() {
     const text = preRef.current?.textContent ?? ""
-    void navigator.clipboard.writeText(text).then(() => {
+    void copyText(text).then((ok) => {
+      if (!ok) return
       setCopied(true)
       if (timerRef.current) clearTimeout(timerRef.current)
       timerRef.current = setTimeout(() => setCopied(false), 1500)
