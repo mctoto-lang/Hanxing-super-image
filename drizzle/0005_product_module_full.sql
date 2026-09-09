@@ -2,7 +2,8 @@ ALTER TABLE "product_main_template" DROP CONSTRAINT "product_main_template_group
 --> statement-breakpoint
 ALTER TABLE "product_main_template" ALTER COLUMN "group_id" DROP NOT NULL;--> statement-breakpoint
 ALTER TABLE "product_main_template" ALTER COLUMN "prompt_template" SET DEFAULT '';--> statement-breakpoint
-ALTER TABLE "product_main_template" ALTER COLUMN "is_active" SET DATA TYPE boolean;--> statement-breakpoint
+ALTER TABLE "product_main_template" ALTER COLUMN "is_active" DROP DEFAULT;--> statement-breakpoint
+ALTER TABLE "product_main_template" ALTER COLUMN "is_active" SET DATA TYPE boolean USING "is_active"::text::boolean;--> statement-breakpoint
 ALTER TABLE "product_main_template" ALTER COLUMN "is_active" SET DEFAULT true;--> statement-breakpoint
 ALTER TABLE "product_library_image" ADD COLUMN "name" varchar(200);--> statement-breakpoint
 ALTER TABLE "product_main_template" ADD COLUMN "user_id" uuid NOT NULL;--> statement-breakpoint
