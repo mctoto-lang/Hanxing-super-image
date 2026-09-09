@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Database, Save, Settings, Clock } from "lucide-react"
+import { Database, Save, Clock } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { MorphingInfinity } from "@/components/ui/morphing-infinity"
 import { Input } from "@/components/ui/input"
@@ -25,24 +25,16 @@ import {
 import { toast } from "sonner"
 import {
   saveStorageSettingAction,
-  saveQueueSettingAction,
   type StorageSetting,
-  type QueueSetting,
 } from "@/server/actions/platform-system"
 
 interface SystemSettingsProps {
   initialStorage: StorageSetting
-  initialQueue: QueueSetting
 }
 
-export function SystemSettings({
-  initialStorage,
-  initialQueue,
-}: SystemSettingsProps) {
+export function SystemSettings({ initialStorage }: SystemSettingsProps) {
   const [storage, setStorage] = useState<StorageSetting>(initialStorage)
-  const [queue, setQueue] = useState<QueueSetting>(initialQueue)
   const [savingStorage, setSavingStorage] = useState(false)
-  const [savingQueue, setSavingQueue] = useState(false)
 
   const handleSaveStorage = async () => {
     setSavingStorage(true)
@@ -59,22 +51,6 @@ export function SystemSettings({
       toast.error("保存失败")
     } finally {
       setSavingStorage(false)
-    }
-  }
-
-  const handleSaveQueue = async () => {
-    setSavingQueue(true)
-    try {
-      const res = await saveQueueSettingAction(queue)
-      if (res.ok) {
-        toast.success("队列参数已保存")
-      } else {
-        toast.error(res.error ?? "保存失败")
-      }
-    } catch {
-      toast.error("保存失败")
-    } finally {
-      setSavingQueue(false)
     }
   }
 
@@ -363,83 +339,6 @@ export function SystemSettings({
             或 _platform&gt;/。COS 控制台对 ref/、gen/ 前缀各配一条生命周期规则即可覆盖全部企业，详见
             docs/storage-lifecycle.md。
           </p>
-        </CardContent>
-      </Card>
-
-      {/* 队列配置 */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Settings className="size-4" />
-            队列参数
-          </CardTitle>
-          <CardDescription>
-            全局队列轮询间隔、企业并发上限、任务超时时间
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-3">
-            <div className="space-y-2">
-              <Label htmlFor="poll-interval">轮询间隔（毫秒）</Label>
-              <Input
-                id="poll-interval"
-                type="number"
-                min={500}
-                step={500}
-                value={queue.pollIntervalMs}
-                onChange={(e) =>
-                  setQueue((prev) => ({
-                    ...prev,
-                    pollIntervalMs: Number(e.target.value) || 2000,
-                  }))
-                }
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="max-concurrent">企业并发上限</Label>
-              <Input
-                id="max-concurrent"
-                type="number"
-                min={1}
-                max={20}
-                value={queue.maxConcurrentPerEnterprise}
-                onChange={(e) =>
-                  setQueue((prev) => ({
-                    ...prev,
-                    maxConcurrentPerEnterprise:
-                      Number(e.target.value) || 5,
-                  }))
-                }
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="timeout">任务超时（秒）</Label>
-              <Input
-                id="timeout"
-                type="number"
-                min={30}
-                step={30}
-                value={queue.taskTimeoutSec}
-                onChange={(e) =>
-                  setQueue((prev) => ({
-                    ...prev,
-                    taskTimeoutSec: Number(e.target.value) || 120,
-                  }))
-                }
-              />
-            </div>
-          </div>
-
-          <div className="flex justify-end">
-            <Button onClick={handleSaveQueue} disabled={savingQueue}>
-              {savingQueue ? (
-                <MorphingInfinity className="mr-2 size-4" />
-              ) : (
-                <Save className="mr-2 size-4" />
-              )}
-              {savingQueue ? "保存中..." : "保存队列设置"}
-            </Button>
-          </div>
         </CardContent>
       </Card>
     </div>

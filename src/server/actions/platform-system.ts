@@ -18,7 +18,9 @@ import { revalidatePath } from "next/cache"
  * 平台系统设置 Server Actions（手册 M7、§4.4）
  *
  * 仅超管可操作。平台级设置 enterpriseId=NULL。
- * 当前支持：storage（存储后端）、queue（队列阈值）。
+ * 当前支持：storage（存储后端）。
+ * （原 queue 队列参数设置已移除：运行时只消费 env 与模型/企业/分组级
+ * 配置，该设置从未被读取——企业并发在「企业管理」中设置。）
  *
  * ⚠️ unique(key, enterpriseId) 对 NULL 不去重（Postgres NULL≠NULL），历史保存
  * 用 onConflictDoUpdate 永远命不中 NULL 行，会不断插入重复行——读写都必须
@@ -86,12 +88,6 @@ export async function listSettingsAction(): Promise<
 /** 存储配置（双桶结构，与 src/lib/storage/config.ts 的 StorageConfig 一致） */
 export type StorageSetting = StorageConfig
 
-export interface QueueSetting {
-  pollIntervalMs: number
-  maxConcurrentPerEnterprise: number
-  taskTimeoutSec: number
-}
-
 /** 获取存储设置（读 system_setting，向后兼容旧单桶配置；SecretKey 回显掩码） */
 export async function getStorageSettingAction(): Promise<StorageSetting> {
   await requireSuperAdmin()
@@ -149,30 +145,4 @@ export async function saveStorageSettingAction(
   )
   revalidatePath("/platform/system")
   return { ok: true, tested }
-}
-
-/** 获取队列设置 */
-export async function getQueueSettingAction(): Promise<QueueSetting> {
-  await requireSuperAdmin()
-  const value = await getSettingAction("queue")
-  return {
-    pollIntervalMs: (value?.pollIntervalMs as number) ?? 2000,
-    maxConcurrentPerEnterprise:
-      (value?.maxConcurrentPerEnterprise as number) ?? 5,
-    taskTimeoutSec: (value?.taskTimeoutSec as number) ?? 120,
-  }
-}
-
-/** 保存队列设置 */
-export async function saveQueueSettingAction(
-  input: QueueSetting,
-): Promise<{ ok: boolean; error?: string }> {
-  await requireSuperAdmin()
-  await upsertPlatformSetting(
-    "queue",
-    input as unknown as SystemSettingValue,
-    "队列参数（轮询间隔/并发上限/超时）",
-  )
-  revalidatePath("/platform/system")
-  return { ok: true }
 }
