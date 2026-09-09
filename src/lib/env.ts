@@ -95,8 +95,12 @@ function loadEnv(): Env {
     for (const issue of parsed.error.issues) {
       console.error(`   - ${issue.path.join(".")}: ${issue.message}`)
     }
-    // 在开发期直接抛错；生产期由 next 启动日志暴露
-    if (process.env.NODE_ENV === "production") {
+    // next build 的页面数据收集会模块级求值本文件，而镜像构建期没有密钥
+    // （.dockerignore 排除 .env*）是常态：构建期放行（NEXT_PHASE 由 Next.js
+    // 注入），真实校验留给运行时（standalone server / worker / migrate 均
+    // 会重新求值且无 NEXT_PHASE，缺失即拒绝启动）。
+    const isBuildPhase = process.env.NEXT_PHASE === "phase-production-build"
+    if (process.env.NODE_ENV === "production" && !isBuildPhase) {
       throw new Error("环境变量校验失败，拒绝启动")
     }
     console.warn(
