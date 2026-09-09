@@ -67,7 +67,7 @@ export const models = pgTable(
     costPerImage: integer("cost_per_image").default(1).notNull(),
     /** 结构化尺寸预设（替代 supportedSizes） */
     sizePresets: jsonb("size_presets").$type<ModelSizePreset[]>(),
-    /** 创作页是否显示 1-4 生成数量选择 */
+    /** 创作页是否显示 1-4 生成数量选择（即梦模型下为「次数」，每次出 jimengN 张） */
     supportsImageCount: boolean("supports_image_count")
       .default(false)
       .notNull(),
