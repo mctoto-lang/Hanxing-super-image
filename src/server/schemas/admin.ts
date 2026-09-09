@@ -100,11 +100,26 @@ export const chatModelConfigSchema = z.object({
   badgeText: z.string().max(30).optional(),
   badgeColor: z.string().max(30).optional(),
   temperature: z.number().min(0).max(2).optional(),
-  maxTokens: z.number().int().min(0).max(200_000).optional(),
+  maxTokens: z
+    .number()
+    .int()
+    .min(0, "Max Tokens 不能为负数")
+    .max(1_000_000, "Max Tokens 不能超过 1000000")
+    .optional(),
   /** 最大上下文 tokens（上下文圆环分母 + 服务端裁剪预算） */
-  maxContextTokens: z.number().int().min(1024).max(2_000_000).default(32768),
-  /** 单次最大输出 tokens（请求 max_tokens 上限） */
-  maxOutputTokens: z.number().int().min(256).max(200_000).default(4096),
+  maxContextTokens: z
+    .number()
+    .int()
+    .min(1024, "最大上下文至少 1024")
+    .max(2_000_000, "最大上下文不能超过 2000000")
+    .default(32768),
+  /** 单次最大输出 tokens（请求 max_tokens 上限；已有上游支持 384K 输出） */
+  maxOutputTokens: z
+    .number()
+    .int()
+    .min(256, "单次最大输出至少 256")
+    .max(1_000_000, "单次最大输出不能超过 1000000")
+    .default(4096),
   /** 百万输入 token 价格（厘 = 0.01 积分；0 = 免费） */
   inputPriceCenticredits: z.number().int().min(0).max(100_000).default(0),
   /** 百万输出 token 价格（厘 = 0.01 积分；0 = 免费） */

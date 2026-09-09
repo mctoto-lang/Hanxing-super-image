@@ -416,7 +416,6 @@ export function ChatModelFields({
             type="number"
             min={1024}
             max={2000000}
-            step={1024}
             value={state.maxContextTokens}
             onChange={(e) => up("maxContextTokens", e.target.value)}
             placeholder="32768"
@@ -429,8 +428,7 @@ export function ChatModelFields({
             id="cm-maxOutputTokens"
             type="number"
             min={256}
-            max={200000}
-            step={256}
+            max={1000000}
             value={state.maxOutputTokens}
             onChange={(e) => up("maxOutputTokens", e.target.value)}
             placeholder="4096"
