@@ -9,9 +9,12 @@
  * 运行：docker compose run --rm migrate npx tsx scripts/migrate-runtime.ts
  */
 
-// loadEnvFile 必须早于会触发 env.ts 校验的 import（静态 import 会被提升，
-// 见 worker.ts/seed.ts 同款说明）
-process.loadEnvFile()
+// 先加载本地 .env（开发）；容器内没有 .env 文件（compose 注入 env），忽略
+try {
+  process.loadEnvFile()
+} catch {
+  // .env 不存在时忽略（生产环境靠容器注入 env）
+}
 
 async function main() {
   const [{ env }, { default: postgres }, { drizzle }, { migrate }] =
