@@ -1204,6 +1204,22 @@ export function WorkspaceClient({
     )
   }, [])
 
+  /** 设为展示图后同步图片行单选状态（服务端已单选，清除旧图 isSelected 避免双勾选） */
+  const handleCardImageSelected = useCallback(
+    (cardId: string, imageId: string) => {
+      const rows = cardImagesMapRef.current.get(cardId)
+      if (!rows?.length) return
+      const nextMap = new Map(cardImagesMapRef.current)
+      nextMap.set(
+        cardId,
+        rows.map((item) => ({ ...item, isSelected: item.id === imageId })),
+      )
+      cardImagesMapRef.current = nextMap
+      setCardImagesMap(nextMap)
+    },
+    [],
+  )
+
   /** 单张卡片删除：从列表移除并同步任务卡片数（服务端已级联删图并更新 cardCount） */
   const handleCardDeleted = useCallback((cardId: string) => {
     // 工具面板：活动卡片被删时自动切到相邻卡片（删除发生在 setCards 之前，
@@ -2228,6 +2244,7 @@ export function WorkspaceClient({
           onCardUpdated={handleCardUpdated}
           onCardDeleted={handleCardDeleted}
           onCardGeneratingImage={handleCardGeneratingImage}
+          onCardImageSelected={handleCardImageSelected}
         />
       )}
 

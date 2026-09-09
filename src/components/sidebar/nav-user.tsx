@@ -33,7 +33,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar"
-import { PlanBadge } from "@/components/shared/plan-badge"
+import { BadgeIcon, PlanBadge } from "@/components/shared/plan-badge"
 import { AccountDialog } from "@/components/account/account-dialog"
 import {
   readGrokBallEnabled,
@@ -133,14 +133,18 @@ export function NavUser({
             <div className="grid flex-1 text-left text-sm leading-tight">
               <span className="flex items-center gap-1">
                 <span className="truncate font-semibold">{user.name}</span>
+                {/* 侧边栏收起区只显示套餐图标（悬停提示套餐名），展开面板仍用药丸 */}
                 {user.plan ? (
-                  <PlanBadge
-                    iconKey={user.plan.iconKey}
-                    color={user.plan.color}
-                    isExpired={user.plan.isExpired}
-                    size="sm"
-                    className="max-w-14"
-                  />
+                  <span title={user.plan.planName}>
+                    <BadgeIcon
+                      iconKey={user.plan.iconKey}
+                      color={user.plan.color}
+                      className={cn(
+                        "shrink-0",
+                        user.plan.isExpired && "opacity-45 saturate-0",
+                      )}
+                    />
+                  </span>
                 ) : null}
               </span>
               <span className="truncate text-xs text-muted-foreground">

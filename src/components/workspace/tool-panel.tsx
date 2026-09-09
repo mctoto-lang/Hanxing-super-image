@@ -161,6 +161,8 @@ interface ToolPanelProps {
   onCardUpdated: (card: PromptCardRow) => void
   onCardDeleted: (cardId: string) => void
   onCardGeneratingImage: (cardId: string, generating: boolean) => void
+  /** 设为展示图后同步父级 cardImagesMap 的单选状态（清除旧图 isSelected） */
+  onCardImageSelected: (cardId: string, imageId: string) => void
 }
 
 const HEADER_ICON_BUTTON_CLASS =
@@ -179,6 +181,7 @@ export function ToolPanel({
   onCardUpdated,
   onCardDeleted,
   onCardGeneratingImage,
+  onCardImageSelected,
 }: ToolPanelProps) {
   const cardIndex = cards.findIndex((c) => c.id === activeCardId)
   const card = cardIndex >= 0 ? cards[cardIndex] : null
@@ -614,6 +617,8 @@ export function ToolPanel({
       const res = await selectCardImageAction(image.id)
       if (!res.ok) throw new Error(res.error || "选定图片失败")
       setSelectedOverrideId(image.id)
+      // 同步父级图片行单选状态，旧展示图的勾选立即清除（服务端已单选，仅缺本地对账）
+      onCardImageSelected(card.id, image.id)
       // 同步选中图冗余字段，卡片正面立即切换，无需等待轮询
       onCardUpdated({
         ...card,
@@ -1196,6 +1201,8 @@ export function ToolPanel({
           onImageSelected={(image) => {
             if (!card) return
             setSelectedOverrideId(image.id)
+            // 同步父级图片行单选状态，旧展示图的勾选立即清除
+            onCardImageSelected(card.id, image.id)
             // 同步选中图冗余字段，卡片正面立即切换（与卡片背面行为一致）
             onCardUpdated({
               ...card,

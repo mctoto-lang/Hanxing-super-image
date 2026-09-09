@@ -28,7 +28,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { MorphingInfinity } from "@/components/ui/morphing-infinity"
-import { BadgeIcon, PlanBadge } from "@/components/shared/plan-badge"
+import { PlanBadge } from "@/components/shared/plan-badge"
 import { uploadAvatarImage } from "@/lib/upload/upload-avatar-image"
 import {
   changePasswordAction,
@@ -50,7 +50,7 @@ import { cn } from "@/lib/utils"
  * 无滚动）+ 右侧内容区（页标题固定 + 内容区内部滚动，滚动条隐藏）。
  *
  * 页签：
- *   - 个人主页：账户信息（头像 + 套餐勋章角标 + 字段行）/ 修改密码 / 系统（退出登录）
+ *   - 个人主页：账户信息（头像 + 字段行）/ 修改密码 / 系统（退出登录）
  *   - 订阅：套餐勋章（图标+文字药丸，配置色）+ 升级按钮 + 积分数字 + 用量流水表（合并原「企业订阅」「积分额度」）
  *
  * 差异约定（已与需求方确认）：积分为 ⚡数字 展示（无饼图）；「升级」按钮仅
@@ -312,25 +312,10 @@ function ProfileTab({ user }: { user: SidebarUser }) {
       <section className="space-y-4">
         <SectionTitle>账户信息</SectionTitle>
         <div className="flex items-center gap-4">
-          <div className="relative shrink-0">
-            <Avatar className="size-14">
-              <AvatarImage src={avatar ?? undefined} alt={user.name} />
-              <AvatarFallback className="text-lg">{initials}</AvatarFallback>
-            </Avatar>
-            {/* 套餐勋章角标（参考图头像右上角小徽章） */}
-            {user.plan ? (
-              <span
-                className={cn(
-                  "absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full border border-popover",
-                  user.plan.isExpired && "saturate-0 opacity-60",
-                )}
-                style={{ backgroundColor: user.plan.color }}
-                title={user.plan.planName}
-              >
-                <BadgeIcon iconKey={user.plan.iconKey} color="#ffffff" className="size-3" />
-              </span>
-            ) : null}
-          </div>
+          <Avatar className="size-14 shrink-0">
+            <AvatarImage src={avatar ?? undefined} alt={user.name} />
+            <AvatarFallback className="text-lg">{initials}</AvatarFallback>
+          </Avatar>
           <div className="min-w-0 flex-1">
             <div className="truncate text-base font-semibold">{user.name}</div>
             <div className="truncate text-sm text-muted-foreground">
