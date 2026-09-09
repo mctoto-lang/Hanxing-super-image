@@ -18,6 +18,7 @@ export const createEnterpriseSchema = z.object({
     .regex(slugRegex, "slug 只能含小写字母、数字、短横线"),
   enabledModules: z.array(z.enum(MODULE_NAMES)).optional(),
   maxConcurrent: z.number().int().min(1).max(100).optional(),
+  chatMaxConcurrent: z.number().int().min(1).max(100).optional(),
   initialCredits: z.number().int().min(0).optional(),
   allowCustomModels: z.boolean().optional(),
   visiblePresetModels: z.array(z.string().uuid()).optional(),
@@ -58,6 +59,21 @@ export const rechargeSchema = z.object({
 export const updateModulesSchema = z.object({
   enterpriseId: z.string().uuid("请选择企业"),
   modules: z.array(z.enum(MODULE_NAMES)),
+})
+
+/** 企业级并发配置（生图 + 对话，企业管理页设置） */
+export const updateEnterpriseConcurrencySchema = z.object({
+  enterpriseId: z.string().uuid("请选择企业"),
+  maxConcurrent: z
+    .number()
+    .int("生图并发必须为整数")
+    .min(1, "生图并发至少 1")
+    .max(100, "生图并发不能超过 100"),
+  chatMaxConcurrent: z
+    .number()
+    .int("对话并发必须为整数")
+    .min(1, "对话并发至少 1")
+    .max(100, "对话并发不能超过 100"),
 })
 
 /** 企业级模型配置（需求 2b）：是否允许自建私有模型 + 可见平台预置模型白名单 */

@@ -38,7 +38,10 @@ export const enterprises = pgTable("enterprise", {
     .$type<ModuleName[]>()
     .default(["create", "chat", "assets", "mockup", "settings"])
     .notNull(),
+  /** 生图企业级并发上限（Redis 槽位跨副本强制，图片级计数；≤0 = 不限） */
   maxConcurrent: integer("max_concurrent").default(5).notNull(),
+  /** 对话企业级并发上限（/chat 流式在途流数，Redis 计数跨副本强制；≤0 = 不限） */
+  chatMaxConcurrent: integer("chat_max_concurrent").default(5).notNull(),
   allowCustomModels: boolean("allow_custom_models")
     .default(true)
     .notNull(), // 超管开关：是否允许企业自建私有模型

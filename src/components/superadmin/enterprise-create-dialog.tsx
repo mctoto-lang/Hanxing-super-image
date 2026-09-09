@@ -45,6 +45,7 @@ export function EnterpriseCreateDialog() {
         slug: String(formData.get("slug") ?? ""),
         enabledModules: modules as never,
         maxConcurrent: Number(formData.get("maxConcurrent") ?? 5),
+        chatMaxConcurrent: Number(formData.get("chatMaxConcurrent") ?? 5),
         initialCredits: Number(formData.get("initialCredits") ?? 0),
         owner: formData.get("owner_username")
           ? {
@@ -94,7 +95,7 @@ export function EnterpriseCreateDialog() {
               />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <div className="grid gap-2">
               <Label htmlFor="initialCredits">初始积分</Label>
               <Input
@@ -106,10 +107,20 @@ export function EnterpriseCreateDialog() {
               />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="maxConcurrent">企业并发上限</Label>
+              <Label htmlFor="maxConcurrent">生图并发上限</Label>
               <Input
                 id="maxConcurrent"
                 name="maxConcurrent"
+                type="number"
+                min={1}
+                defaultValue={5}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="chatMaxConcurrent">对话并发上限</Label>
+              <Input
+                id="chatMaxConcurrent"
+                name="chatMaxConcurrent"
                 type="number"
                 min={1}
                 defaultValue={5}

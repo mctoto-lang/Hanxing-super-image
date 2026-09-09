@@ -70,6 +70,9 @@ export async function POST(req: Request) {
     return jsonError("无权使用 AI 对话", 403)
   }
   const enterpriseId = ctx.user.enterpriseId
+  // 企业对话并发上限：早退守卫的 narrowing 不进闭包（finally 释放槽位），
+  // 守卫后先取局部量
+  const enterpriseChatMax = ctx.enterprise.chatMaxConcurrent
 
   let body: unknown
   try {
@@ -126,11 +129,13 @@ export async function POST(req: Request) {
     if (!conv) return jsonError("会话不存在或无权操作", 404)
   }
 
-  // 并发槽（用户 + 模型）：获取失败不落任何消息
+  // 并发槽（用户 + 企业 + 模型）：获取失败不落任何消息
   const slotTtl = (model.taskTimeout || 300) + 60
   const acquired = await acquireChatSlot({
     userId: ctx.user.id,
+    enterpriseId,
     modelId: model.id,
+    enterpriseMaxConcurrent: enterpriseChatMax,
     modelMaxConcurrent: model.maxConcurrent,
     ttlSec: slotTtl,
   })
@@ -151,7 +156,9 @@ export async function POST(req: Request) {
       if (lastUserIndex < 0) {
         await releaseChatSlot({
           userId: ctx.user.id,
+          enterpriseId,
           modelId: model.id,
+          enterpriseMaxConcurrent: enterpriseChatMax,
           modelMaxConcurrent: model.maxConcurrent,
         })
         return jsonError("会话内没有可重新生成的消息", 400)
@@ -182,7 +189,9 @@ export async function POST(req: Request) {
   } catch (err) {
     await releaseChatSlot({
       userId: ctx.user.id,
+      enterpriseId,
       modelId: model.id,
+      enterpriseMaxConcurrent: enterpriseChatMax,
       modelMaxConcurrent: model.maxConcurrent,
     })
     return jsonError(
@@ -402,7 +411,9 @@ export async function POST(req: Request) {
       } finally {
         await releaseChatSlot({
           userId: ctx.user.id,
+          enterpriseId,
           modelId: model.id,
+          enterpriseMaxConcurrent: enterpriseChatMax,
           modelMaxConcurrent: model.maxConcurrent,
         })
       }

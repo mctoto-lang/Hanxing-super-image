@@ -267,6 +267,13 @@
       "when": 1788773202375,
       "tag": "0037_enterprise_subscription",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1788944666373,
+      "tag": "0038_enterprise_chat_concurrency",
+      "breakpoints": true
     }
   ]
 }

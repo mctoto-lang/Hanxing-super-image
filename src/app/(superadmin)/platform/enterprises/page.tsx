@@ -33,6 +33,7 @@ import { RechargeDialog } from "@/components/superadmin/recharge-dialog"
 import { ModulesDialog } from "@/components/superadmin/modules-dialog"
 import { MockupConfigDialog } from "@/components/superadmin/mockup-config-dialog"
 import { EnterpriseModelConfigDialog } from "@/components/superadmin/enterprise-model-config-dialog"
+import { EnterpriseConcurrencyDialog } from "@/components/superadmin/enterprise-concurrency-dialog"
 import { PlanAssignDialog } from "@/components/superadmin/plan-assign-dialog"
 import type { ModuleName } from "@/db/schema"
 
@@ -126,6 +127,7 @@ export default async function EnterprisesPage({
                 <TableHead className="text-right">积分余额</TableHead>
                 <TableHead>已开通模块</TableHead>
                 <TableHead>自定义模型</TableHead>
+                <TableHead>并发（生图/对话）</TableHead>
                 <TableHead className="text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
@@ -133,7 +135,7 @@ export default async function EnterprisesPage({
               {enterprises.length === 0 ? (
                 <TableRow>
                   <TableCell
-                    colSpan={8}
+                    colSpan={9}
                     className="py-8 text-center text-muted-foreground"
                   >
                     {q ? `未找到与「${q}」匹配的企业` : "暂无企业，点击右上角创建"}
@@ -218,6 +220,9 @@ export default async function EnterprisesPage({
                         </span>
                       )}
                     </TableCell>
+                    <TableCell className="text-xs tabular-nums text-muted-foreground">
+                      {e.maxConcurrent} / {e.chatMaxConcurrent}
+                    </TableCell>
                     <TableCell className="text-right">
                       <div className="flex flex-wrap justify-end gap-2">
                         <PlanAssignDialog
@@ -240,6 +245,12 @@ export default async function EnterprisesPage({
                         <RechargeDialog
                           enterpriseId={e.id}
                           enterpriseName={e.name}
+                        />
+                        <EnterpriseConcurrencyDialog
+                          enterpriseId={e.id}
+                          enterpriseName={e.name}
+                          maxConcurrent={e.maxConcurrent}
+                          chatMaxConcurrent={e.chatMaxConcurrent}
                         />
                         <ModulesDialog
                           enterpriseId={e.id}

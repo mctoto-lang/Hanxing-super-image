@@ -1,0 +1,1 @@
+ALTER TABLE "enterprise" ADD COLUMN "chat_max_concurrent" integer DEFAULT 5 NOT NULL;

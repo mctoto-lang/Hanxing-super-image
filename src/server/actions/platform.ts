@@ -35,6 +35,7 @@ import {
   createUserSchema,
   rechargeSchema,
   updateModulesSchema,
+  updateEnterpriseConcurrencySchema,
   updateEnterpriseModelConfigSchema,
 } from "@/server/schemas/platform"
 import { revalidatePath } from "next/cache"
@@ -83,6 +84,7 @@ export async function createEnterpriseAction(input: {
   slug: string
   enabledModules?: ModuleName[]
   maxConcurrent?: number
+  chatMaxConcurrent?: number
   initialCredits?: number
   allowCustomModels?: boolean
   visiblePresetModels?: string[]
@@ -112,6 +114,7 @@ export async function createEnterpriseAction(input: {
       slug: d.slug,
       enabledModules: d.enabledModules ?? ["create", "assets", "mockup", "settings"],
       maxConcurrent: d.maxConcurrent ?? 5,
+      chatMaxConcurrent: d.chatMaxConcurrent ?? 5,
       creditsBalance: d.initialCredits ?? 0,
       allowCustomModels: d.allowCustomModels ?? true,
       visiblePresetModels: d.visiblePresetModels ?? [],
@@ -261,6 +264,36 @@ export async function updateModulesAction(input: {
 }
 
 /**
+ * 更新企业级并发上限（企业管理页设置）：
+ * - maxConcurrent 生图并发（Redis 槽位跨副本强制，原有逻辑不变）
+ * - chatMaxConcurrent 对话并发（/chat 流式在途流数）
+ */
+export async function updateEnterpriseConcurrencyAction(input: {
+  enterpriseId: string
+  maxConcurrent: number
+  chatMaxConcurrent: number
+}) {
+  await requireSuperAdmin()
+  const parsed = updateEnterpriseConcurrencySchema.safeParse(input)
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
+  }
+  const d = parsed.data
+
+  await db
+    .update(enterprises)
+    .set({
+      maxConcurrent: d.maxConcurrent,
+      chatMaxConcurrent: d.chatMaxConcurrent,
+      updatedAt: new Date(),
+    })
+    .where(eq(enterprises.id, d.enterpriseId))
+
+  revalidatePath("/platform/enterprises")
+  return { ok: true as const, error: null }
+}
+
+/**
  * 更新企业模型配置（需求 2b）
  *
  * - allowCustomModels：是否允许企业自建私有模型
@@ -326,6 +359,7 @@ export async function listEnterprisesAction(opts: PlatformListParams = {}) {
         creditsBalance: enterprises.creditsBalance,
         enabledModules: enterprises.enabledModules,
         maxConcurrent: enterprises.maxConcurrent,
+        chatMaxConcurrent: enterprises.chatMaxConcurrent,
         allowCustomModels: enterprises.allowCustomModels,
         visiblePresetModels: enterprises.visiblePresetModels,
         visiblePresetChatModels: enterprises.visiblePresetChatModels,
