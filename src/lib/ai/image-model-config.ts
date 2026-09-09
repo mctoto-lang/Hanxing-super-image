@@ -176,9 +176,9 @@ export function validateImageModelConfig(input: ImageModelConfigInput): void {
   const n = config.jimeng_n ?? config.jimengN
   if (
     n !== undefined &&
-    (!Number.isInteger(Number(n)) || Number(n) < 1 || Number(n) > 4)
+    (!Number.isInteger(Number(n)) || Number(n) < 1 || Number(n) > 8)
   ) {
-    throw new Error("jimeng_n 必须是 1 到 4 的整数")
+    throw new Error("jimeng_n 必须是 1 到 8 的整数")
   }
 }
 

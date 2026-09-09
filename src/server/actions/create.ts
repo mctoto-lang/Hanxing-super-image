@@ -166,7 +166,24 @@ export async function submitTaskAction(input: {
   if (accessErr) return { ok: false, error: accessErr }
 
   // 3. 积分预估 + 扣减（个人配额，需求 3）
-  const imageCount = Math.max(1, d.imageCount ?? 1)
+  // 即梦相乘语义：创作页选择为「次数」（1-4），每次产出模型配置的
+  // jimengN 张（1-8，>4 由适配器自动拆分多次 API 请求，单次上游上限 4 张）；
+  // 总张数 = 次数 × N，按张计费。jimengN 缺省 1 = 行为与旧版一致。
+  // 32 = 4 次 × 8 张的防御性上限（页面 zod 与模型 zod 已分别限制）。
+  const batches = Math.max(1, d.imageCount ?? 1)
+  const perBatch =
+    model.apiFormat === "jimeng"
+      ? Math.min(
+          8,
+          Math.max(
+            1,
+            Number(
+              (model.extraConfig as Record<string, unknown> | null)?.jimengN,
+            ) || 1,
+          ),
+        )
+      : 1
+  const imageCount = Math.min(32, batches * perBatch)
   const totalCost = model.costPerImage * imageCount
   if (ctx.user.creditsBalance < totalCost) {
     return {

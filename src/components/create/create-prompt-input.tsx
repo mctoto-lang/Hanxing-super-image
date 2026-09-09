@@ -180,7 +180,17 @@ export function CreatePromptInput({
     () => resolveSizePresets(selectedModel?.sizePresets, { includeDisabled: true }),
     [selectedModel?.sizePresets],
   )
-  const totalCost = (selectedModel?.costPerImage ?? 0) * imageCount
+  // 即梦相乘语义：选择为「次数」，每次产出模型配置的 jimengN 张（1-8，
+  // 缺省 1）；总张数 = 次数 × N，按张计费（与服务端 submitTaskAction 一致）
+  const jimengPerBatch =
+    selectedModel?.apiFormat === "jimeng"
+      ? Math.min(
+          8,
+          Math.max(1, Number(selectedModel.extraConfig?.jimengN) || 1),
+        )
+      : 1
+  const totalCost =
+    (selectedModel?.costPerImage ?? 0) * imageCount * jimengPerBatch
   const canAfford = totalCost <= userCredits
   const hasModels = models.length > 0
 
@@ -532,6 +542,14 @@ export function CreatePromptInput({
               supportsCount={supportsCount}
               count={imageCount}
               onCountChange={setImageCount}
+              countLabel={
+                jimengPerBatch > 1 ? "选择次数" : "选择生成数量"
+              }
+              countHint={
+                jimengPerBatch > 1
+                  ? `每次 ${jimengPerBatch} 张 × 次数，按张计费`
+                  : undefined
+              }
             />
 
             {/* 积分进度环（位于尺寸选择器右侧） */}

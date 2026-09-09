@@ -51,7 +51,7 @@ export const modelConfigSchema = z.object({
   apiKey: z.string().optional(), // 创建时必填（action 内校验），编辑留空=不修改
   apiFormat: z.enum(["openai", "jimeng"]),
   jimengResolution: z.enum(["1k", "2k", "4k"]).optional(),
-  jimengN: z.number().int().min(1).max(4).optional(),
+  jimengN: z.number().int().min(1).max(8).optional(),
   costPerImage: z.number().int().min(0).default(1),
   description: z.string().max(300).optional(),
   badgeText: z.string().max(30).optional(),

@@ -19,7 +19,7 @@ export interface CreateModel {
   costPerImage: number
   /** 结构化尺寸预设；空表示使用系统默认 */
   sizePresets: ModelSizePreset[] | null
-  /** 创作页是否显示 1-4 生成数量选择 */
+  /** 创作页是否显示 1-4 生成数量选择（即梦模型下为「次数」，每次出 jimengN 张） */
   supportsImageCount: boolean
   /** 是否支持「智能」比例（size=auto，模型决定尺寸） */
   supportsSmartSize: boolean

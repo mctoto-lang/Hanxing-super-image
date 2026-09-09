@@ -159,12 +159,13 @@ export function TaskDetailCard({
     }
   }, [])
 
-  const images = (task.resultImages ?? []).slice(0, 8)
+  // 展示上限 32 = 创作页次数上限 4 × 即梦每次 N 上限 8
+  const images = (task.resultImages ?? []).slice(0, 32)
   const pending = task.status === "queued" || task.status === "processing"
   // 非进行中任务的缺失张数（全失败 = 全部；部分失败 = 总数 - 成功数），用于失败占位格
   const missingCount = pending
     ? 0
-    : Math.max(0, Math.min(task.imageCount, 8) - images.length)
+    : Math.max(0, Math.min(task.imageCount, 32) - images.length)
   const status = STATUS_MAP[task.status]
   const { width, height } = parseImageSize(task.imageSize)
   const refImages = task.referenceImages ?? []
@@ -498,7 +499,7 @@ export function TaskDetailCard({
         </div>
       ) : pending ? (
         <div className="mt-2 grid grid-cols-4 gap-1.5">
-          {Array.from({ length: Math.min(task.imageCount, 8) }).map((_, i) => (
+          {Array.from({ length: Math.min(task.imageCount, 32) }).map((_, i) => (
             <ImageGeneration
               key={i}
               showMeta={false}

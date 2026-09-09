@@ -398,15 +398,19 @@ export function ModelFormDialog({
                 </Select>
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="jimengN">生成数量 N（1-4）</Label>
+                <Label htmlFor="jimengN">生成数量 N（1-8）</Label>
                 <Input
                   id="jimengN"
                   type="number"
                   min={1}
-                  max={4}
+                  max={8}
                   value={state.jimengN}
                   onChange={(e) => up("jimengN", Number(e.target.value))}
                 />
+                <p className="text-xs text-muted-foreground">
+                  每次生成 N 张，按张计费；创作页选择为次数，总张数 = 次数 ×
+                  N。N &gt; 4 时自动拆分多次即梦请求（单次上游上限 4 张）。
+                </p>
               </div>
             </div>
           )}
@@ -510,7 +514,8 @@ export function ModelFormDialog({
               <span className="text-sm font-medium">
                 创作页生成数量选择（1-4）
                 <span className="ml-2 text-xs font-normal text-muted-foreground">
-                  开启后用户可在自由创作页选择生成 1-4 张
+                  开启后用户可在自由创作页选择 1-4；即梦模型下为「次数」，每次出
+                  N 张（总张数 = 次数 × N）
                 </span>
               </span>
               <Switch

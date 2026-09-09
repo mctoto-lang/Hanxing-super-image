@@ -30,12 +30,12 @@ export type { ImageGenResult, ImageApiSlotCallbacks }
  * 统一调用：根据模型 apiFormat 分发。
  *
  * 返回按图片序号（index）组织的结果数组：OpenAI 逐张请求支持单张失败
- * （部分成功），即梦为单请求整体成败（全或无）。
+ * （部分成功），即梦为多请求拆分但整体成败（全或无）。
  *
  * @param model 模型行（来自 DB）
  * @param opts  prompt/imageSize/imageCount/referenceImages
  * @param downloadAndUpload 图片下载转存回调
- * @param slots 图片并发槽位回调（OpenAI 逐张占用；即梦单请求不占用）
+ * @param slots 图片并发槽位回调（OpenAI 逐张占用；即梦请求不占用）
  */
 export async function callImageApi(opts: {
   model: ModelRow
@@ -87,8 +87,9 @@ export async function callImageApi(opts: {
     })
   }
 
-  // jimeng：单请求生成 n 张，整体成败（无槽位回调、不支持部分成功）。
-  // 按需张数生成（部分重试只补失败张），返回结果映射回请求的序号
+  // jimeng：按需张数自动拆分请求（单次上游上限 4 张，并发窗口 4），整体
+  // 成败（无槽位回调、不支持部分成功）。部分重试只补失败张，返回结果映射
+  // 回请求的序号（jimengN 已在提交端相乘进 imageCount，此处不再覆盖）
   const jimengIndexes =
     indexes && indexes.length > 0
       ? indexes

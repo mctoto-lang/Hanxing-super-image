@@ -20,7 +20,8 @@ const AUTO = "auto"
  * 一个 Popover 内含三段：
  * 1. 选择比例：横向单行分段样式。supportsAuto 时首项「智能」(value=auto)。
  *    被后台关闭的比例(enabled=false)置灰不可选。
- * 2. 选择生成数量：supportsCount 时显示 1-4（铺满整行）。
+ * 2. 选择生成数量：supportsCount 时显示 1-4（铺满整行）。即梦模型下选择为
+ *    「次数」（每次产出模型配置的 N 张），由 countLabel/countHint 覆盖文案。
  * 3. 选择尺寸：宽 × 高 输入（W/H 前缀、右对齐），实时生效（输入即取消比例高亮，
  *    生图按自定义尺寸进行）；value=auto 时禁用。单位 PX。
  */
@@ -32,6 +33,8 @@ export function SizePickerPopover({
   supportsCount,
   count,
   onCountChange,
+  countLabel = "选择生成数量",
+  countHint,
 }: {
   presets: SizePreset[]
   supportsAuto: boolean
@@ -40,6 +43,10 @@ export function SizePickerPopover({
   supportsCount: boolean
   count: number
   onCountChange: (n: number) => void
+  /** 数量段标题（即梦模型传「选择次数」） */
+  countLabel?: string
+  /** 数量段下方提示（如「每次 8 张 × 次数，按张计费」） */
+  countHint?: string
 }) {
   const [open, setOpen] = React.useState(false)
   const isAuto = value === AUTO
@@ -150,7 +157,7 @@ export function SizePickerPopover({
         {supportsCount ? (
           <div className="mt-3">
             <div className="mb-1.5 text-xs font-medium text-muted-foreground">
-              选择生成数量
+              {countLabel}
             </div>
             <div className="flex w-full rounded-lg border bg-muted/50 p-0.5">
               {COUNTS.map((n) => (
@@ -169,6 +176,9 @@ export function SizePickerPopover({
                 </button>
               ))}
             </div>
+            {countHint ? (
+              <p className="mt-1 text-[11px] text-muted-foreground">{countHint}</p>
+            ) : null}
           </div>
         ) : null}
 
