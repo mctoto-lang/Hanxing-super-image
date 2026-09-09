@@ -72,7 +72,7 @@ export function ModelIconUpload({
         <img
           src={toImageSrc(value)}
           alt="模型图标"
-          className="size-12 shrink-0 rounded-lg border object-cover"
+          className="size-12 shrink-0 rounded-lg border object-contain"
         />
       ) : (
         <button

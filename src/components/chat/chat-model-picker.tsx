@@ -45,7 +45,7 @@ export function ChatModelPicker({
               <img
                 src={toImageSrc(selected.iconUrl)}
                 alt=""
-                className="size-4 shrink-0 rounded object-cover"
+                className="size-4 shrink-0 rounded object-contain"
               />
             ) : (
               <Cpu className="size-3.5 shrink-0" />
@@ -97,7 +97,7 @@ export function ChatModelPicker({
                     <img
                       src={toImageSrc(m.iconUrl)}
                       alt=""
-                      className="size-9 shrink-0 rounded-lg object-cover"
+                      className="size-9 shrink-0 rounded-lg object-contain"
                     />
                   ) : (
                     <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">

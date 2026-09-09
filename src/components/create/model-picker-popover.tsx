@@ -46,7 +46,7 @@ export function ModelPickerPopover({
               <img
                 src={toImageSrc(selected.iconUrl)}
                 alt=""
-                className="size-4 rounded object-cover shrink-0"
+                className="size-4 rounded object-contain shrink-0"
               />
             ) : (
               <Cpu className="size-3.5 shrink-0" />
@@ -96,7 +96,7 @@ export function ModelPickerPopover({
                     <img
                       src={toImageSrc(m.iconUrl)}
                       alt=""
-                      className="size-9 rounded-lg object-cover shrink-0"
+                      className="size-9 rounded-lg object-contain shrink-0"
                     />
                   ) : (
                     <div className="size-9 rounded-lg bg-muted flex items-center justify-center shrink-0">

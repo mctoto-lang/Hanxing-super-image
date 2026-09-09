@@ -122,7 +122,7 @@ export function Combobox({
                 <img
                   src={toImageSrc(selected.iconUrl)}
                   alt=""
-                  className="size-4 shrink-0 rounded object-cover"
+                  className="size-4 shrink-0 rounded object-contain"
                 />
               ) : null}
               <span className="truncate">{selected.label}</span>
@@ -196,7 +196,7 @@ export function Combobox({
                       <img
                         src={toImageSrc(o.iconUrl)}
                         alt=""
-                        className="size-5 shrink-0 rounded object-cover"
+                        className="size-5 shrink-0 rounded object-contain"
                       />
                     ) : null}
                     <span className="flex min-w-0 flex-1 flex-col">
