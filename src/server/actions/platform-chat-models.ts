@@ -1,11 +1,15 @@
 "use server"
 
-import { and, eq, isNull, sql } from "drizzle-orm"
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import { chatApiConfigs, enterprises, type ChatModelExtraConfig } from "@/db/schema"
 import { requireSuperAdmin } from "@/lib/auth/session"
 import { chatModelConfigSchema } from "@/server/schemas/admin"
 import { encrypt } from "@/lib/crypto"
+import {
+  nextSortOrder,
+  redistributeSortOrder,
+} from "@/server/services/sort-order"
 import { revalidatePath } from "next/cache"
 
 /**
@@ -125,7 +129,7 @@ export async function listPresetChatModelsAction(
     })
     .from(chatApiConfigs)
     .where(isNull(chatApiConfigs.enterpriseId))
-    .orderBy(chatApiConfigs.createdAt)
+    .orderBy(asc(chatApiConfigs.sortOrder), asc(chatApiConfigs.createdAt))
 
   return {
     items: rows.slice((page - 1) * pageSize, page * pageSize),
@@ -176,6 +180,7 @@ export async function createPresetChatModelAction(
         maxRetries: d.maxRetries,
         apiTimeout: d.apiTimeout,
         taskTimeout: d.taskTimeout,
+        sortOrder: await nextSortOrder(chatApiConfigs),
         isActive: true,
       })
       .returning({ id: chatApiConfigs.id })
@@ -287,6 +292,31 @@ export async function togglePresetChatModelActiveAction(
     .set({ isActive, updatedAt: new Date() })
     .where(eq(chatApiConfigs.id, modelId))
 
+  revalidatePath("/platform/chat-models")
+  return { ok: true, error: null }
+}
+
+/** 拖拽排序：按新顺序重写平台预置对话模型 sortOrder（用户端对话模型列表同步生效） */
+export async function reorderPresetChatModelsAction(
+  ids: string[],
+): Promise<{ ok: true; error: null } | { ok: false; error: string }> {
+  await requireSuperAdmin()
+  if (ids.length === 0) return { ok: true, error: null }
+  // 归属校验：仅平台预置行可重排（同 reorderPresetModelsAction）
+  const rows = await db
+    .select({ id: chatApiConfigs.id })
+    .from(chatApiConfigs)
+    .where(
+      and(inArray(chatApiConfigs.id, ids), isNull(chatApiConfigs.enterpriseId)),
+    )
+  if (rows.length !== new Set(ids).size) {
+    return { ok: false, error: "仅可调整平台预置对话模型的顺序" }
+  }
+  try {
+    await redistributeSortOrder(chatApiConfigs, ids)
+  } catch {
+    return { ok: false, error: "排序保存失败" }
+  }
   revalidatePath("/platform/chat-models")
   return { ok: true, error: null }
 }

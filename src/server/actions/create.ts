@@ -1,6 +1,6 @@
 "use server"
 
-import { and, eq } from "drizzle-orm"
+import { and, asc, eq, isNull } from "drizzle-orm"
 import { db } from "@/db/client"
 import {
   conversations,
@@ -61,6 +61,7 @@ export async function listAvailableModelsAction() {
     })
     .from(models)
     .where(and(eq(models.isActive, true), eq(models.visibleInCreate, true)))
+    .orderBy(asc(models.sortOrder), asc(models.createdAt))
 
   // 平台 + 本企业私有模型
   const accessible = createVisible.filter(
@@ -132,6 +133,7 @@ export async function submitTaskAction(input: {
           eq(conversations.id, conversationId),
           eq(conversations.enterpriseId, scope.enterpriseId),
           eq(conversations.userId, ctx.user.id),
+          isNull(conversations.deletedAt),
         ),
       )
       .limit(1)
@@ -316,6 +318,7 @@ export async function retryTaskAction(taskId: string) {
       and(
         eq(generationTasks.id, taskId),
         eq(generationTasks.enterpriseId, scope.enterpriseId),
+        isNull(generationTasks.deletedAt),
       ),
     )
     .limit(1)

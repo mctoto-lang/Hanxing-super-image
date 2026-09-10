@@ -5,8 +5,8 @@ import {
   Bot,
   Check,
   Copy,
-  Cpu,
   RefreshCw,
+  Sparkle,
   ThumbsDown,
   ThumbsUp,
   TriangleAlert,
@@ -103,7 +103,11 @@ function FeedbackButtons() {
             aria-label={value === "up" ? "点赞" : "点踩"}
             aria-pressed={active}
           >
-            <Icon className="size-3.5" />
+            {/* 激活态实心填充（仅变色在深色模式下可见性低），未激活保持描边 */}
+            <Icon
+              className="size-3.5"
+              fill={active ? "currentColor" : "none"}
+            />
           </button>
         )
       })}
@@ -282,7 +286,7 @@ export function MessageBubble({
                   <Tooltip>
                     <TooltipTrigger render={<span className="tabular-nums cursor-default" />}>
                       <span className="inline-flex items-center gap-0.5">
-                        <Cpu className="size-3" />
+                        <Sparkle className="size-3" fill="currentColor" strokeWidth={0} />
                         {formatCenticredits(message.costCenticredits)} 积分
                       </span>
                     </TooltipTrigger>

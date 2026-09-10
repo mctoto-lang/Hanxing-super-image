@@ -15,12 +15,15 @@ import {
   DirectionToggleActiveButton,
   type DirectionRow,
 } from "@/components/superadmin/direction-form-dialog"
+import { DragHandle, useDragSort } from "@/hooks/use-drag-sort"
+import { reorderDirectionsAction } from "@/server/actions/platform-product"
 
 /**
  * 穿戴图片-服装组图方向配置（单作用域 appliesTo="weartry"）
  *
  * 与商品图片的方向配置共用 product_direction 表但作用域互斥，
- * 两端配置页完全分割（此处只显示/新增 weartry 作用域行）。
+ * 两端配置页完全分割（此处只显示/新增 weartry 作用域行）；
+ * 顺序由行首手柄拖拽维护。
  */
 export function WeartryDirectionsConfig({
   directions,
@@ -28,6 +31,10 @@ export function WeartryDirectionsConfig({
   directions: DirectionRow[]
 }) {
   const rows = directions.filter((d) => d.appliesTo.includes("weartry"))
+  const { ordered, rowProps, handleProps } = useDragSort({
+    items: rows,
+    commit: (ids) => reorderDirectionsAction(ids),
+  })
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-4">
@@ -47,7 +54,7 @@ export function WeartryDirectionsConfig({
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>排序</TableHead>
+              <TableHead className="w-8" aria-label="拖动排序" />
               <TableHead>标识</TableHead>
               <TableHead>名称</TableHead>
               <TableHead className="hidden md:table-cell">提示词模板</TableHead>
@@ -57,16 +64,21 @@ export function WeartryDirectionsConfig({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rows.length === 0 ? (
+            {ordered.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
                   暂无方向，请点击右上角新增（或运行 pnpm seed:weartry）
                 </TableCell>
               </TableRow>
             ) : (
-              rows.map((d) => (
-                <TableRow key={d.id} className={d.isActive ? "" : "opacity-50"}>
-                  <TableCell className="tabular-nums">{d.sortOrder}</TableCell>
+              ordered.map((d) => (
+                <TableRow
+                  key={d.id}
+                  {...rowProps(d.id, d.isActive ? "" : "opacity-50")}
+                >
+                  <TableCell className="w-8">
+                    <DragHandle handleProps={handleProps(d.id)} />
+                  </TableCell>
                   <TableCell className="font-mono text-xs">{d.key}</TableCell>
                   <TableCell>
                     <div className="font-medium">{d.name}</div>

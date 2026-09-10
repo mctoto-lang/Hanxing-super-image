@@ -1,6 +1,6 @@
 "use server"
 
-import { and, eq, isNull, or } from "drizzle-orm"
+import { and, asc, eq, isNull, or } from "drizzle-orm"
 import { db } from "@/db/client"
 import { models, type ModelExtraConfig } from "@/db/schema"
 import {
@@ -11,6 +11,7 @@ import { modelConfigSchema } from "@/server/schemas/admin"
 import { validateImageModelConfig } from "@/lib/ai/image-model-config"
 import { encrypt } from "@/lib/crypto"
 import { revalidatePath } from "next/cache"
+import { nextSortOrder } from "@/server/services/sort-order"
 
 /**
  * 模型配置管理 Server Actions（手册 §4.3、§5.6、M3）
@@ -26,11 +27,15 @@ function buildExtraConfig(input: {
   apiFormat: "openai" | "jimeng"
   jimengResolution?: "1k" | "2k" | "4k"
   jimengN?: number
+  quality?: string
 }): ModelExtraConfig {
-  // openai 标准格式无额外配置项
-  if (input.apiFormat === "openai") return {}
-  // jimeng
   const cfg: ModelExtraConfig = {}
+  // openai：质量参数透传（空 = 不写 = 关闭）
+  if (input.apiFormat === "openai") {
+    if (input.quality?.trim()) cfg.quality = input.quality.trim()
+    return cfg
+  }
+  // jimeng
   if (input.jimengResolution) cfg.jimengResolution = input.jimengResolution
   if (input.jimengN) cfg.jimengN = input.jimengN
   return cfg
@@ -88,7 +93,7 @@ export async function listModelsAction(
     .where(
       or(isNull(models.enterpriseId), eq(models.enterpriseId, enterpriseId)),
     )
-    .orderBy(models.createdAt)
+    .orderBy(asc(models.sortOrder), asc(models.createdAt))
 
   // 平台预置模型按企业白名单过滤（空 = 全部可见）
   const visiblePreset =
@@ -146,6 +151,8 @@ export async function createModelAction(input: Record<string, unknown>) {
   }
 
   try {
+    // 追加到列表末尾（用户侧各模型列表按 sortOrder 排序，企业新建默认 0 会跳到预置模型之前）
+    const sortOrder = await nextSortOrder(models)
     await db.insert(models).values({
       enterpriseId, // 企业私有模型
       name: d.name,
@@ -154,6 +161,7 @@ export async function createModelAction(input: Record<string, unknown>) {
       apiKeyEncrypted: encrypt(d.apiKey),
       apiFormat: d.apiFormat,
       extraConfig,
+      sortOrder,
       costPerImage: d.costPerImage,
       description: d.description || null,
       badgeText: d.badgeText || null,
@@ -222,14 +230,14 @@ export async function updateModelAction(
   }
 
   const apiFormat = d.apiFormat ?? existing.apiFormat
-  const extraConfig =
-    d.apiFormat || d.jimengResolution
-      ? buildExtraConfig({
-          apiFormat,
-          jimengResolution: d.jimengResolution,
-          jimengN: d.jimengN,
-        })
-      : existing.extraConfig
+  // 表单为全量提交（schema 的 apiFormat 必填），始终按扁平字段重建
+  // extraConfig——本次关闭的开关（如 quality）其旧值随之清除，无残留
+  const extraConfig = buildExtraConfig({
+    apiFormat,
+    jimengResolution: d.jimengResolution,
+    jimengN: d.jimengN,
+    quality: d.quality,
+  })
 
   try {
     validateImageModelConfig({ apiFormat, extraConfig })

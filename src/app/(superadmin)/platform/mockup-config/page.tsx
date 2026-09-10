@@ -1,20 +1,8 @@
 import { requireSuperAdmin } from "@/lib/auth/session"
 import { listPromptTemplatesConfigAction } from "@/server/actions/platform-product-config"
-import { Badge } from "@/components/ui/badge"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
-import {
-  PromptTemplateEditButton,
-  PromptTemplateFormDialog,
-  PromptTemplateToggleActiveButton,
-  type PromptTemplateConfigRow,
-} from "@/components/superadmin/prompt-template-config-dialogs"
+import { PromptTemplateFormDialog } from "@/components/superadmin/prompt-template-config-dialogs"
+import type { PromptTemplateConfigRow } from "@/components/superadmin/prompt-template-config-dialogs"
+import { PromptTemplatesTable } from "@/components/superadmin/prompt-templates-table"
 import { MOCKUP_PROMPT_SCENE_LABELS } from "@/lib/mockup/prompt-defaults"
 
 export const dynamic = "force-dynamic"
@@ -45,44 +33,7 @@ export default async function MockupPromptTemplatesConfigPage() {
           暂无模板，请点击右上角新增；缺失场景运行时使用内置默认模板
         </div>
       ) : (
-        <div className="rounded-lg border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>模板名称</TableHead>
-                <TableHead>场景（scene）</TableHead>
-                <TableHead className="hidden md:table-cell">模板内容</TableHead>
-                <TableHead>状态</TableHead>
-                <TableHead className="text-right">操作</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {templates.map((t) => (
-                <TableRow key={t.id} className={t.isActive ? "" : "opacity-50"}>
-                  <TableCell className="font-medium">{t.name}</TableCell>
-                  <TableCell className="font-mono text-xs">{t.scene}</TableCell>
-                  <TableCell className="hidden max-w-[360px] truncate text-xs text-muted-foreground md:table-cell">
-                    {t.template}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={t.isActive ? "default" : "outline"}>
-                      {t.isActive ? "启用" : "停用"}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex items-center justify-end gap-1">
-                      <PromptTemplateEditButton row={t} variant="mockup" />
-                      <PromptTemplateToggleActiveButton
-                        id={t.id}
-                        isActive={t.isActive}
-                      />
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+        <PromptTemplatesTable templates={templates} variant="mockup" />
       )}
       {templates.length < Object.keys(MOCKUP_PROMPT_SCENE_LABELS).length && (
         <p className="text-xs text-muted-foreground">

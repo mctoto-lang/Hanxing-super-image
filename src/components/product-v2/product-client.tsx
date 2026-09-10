@@ -75,6 +75,7 @@ import type {
 } from "@/lib/product/types"
 import {
   PRODUCT_MODE_LABELS,
+  REFINE_FIXED_KEYS,
   REPLICATE_LEVELS,
   type ProductMode,
 } from "@/lib/product/dictionaries"
@@ -144,7 +145,7 @@ const INTRO: Record<
     title: "产品精修",
     description: "一键画质优化：去瑕疵、增光泽、校正色彩",
     bullets: [
-      "5 种快捷优化项可多选组合",
+      `${REFINE_FIXED_KEYS.length} 种快捷优化项可多选组合`,
       "保持商品主体与构图不变",
       "修复划痕/提升清晰度/修正透视",
     ],

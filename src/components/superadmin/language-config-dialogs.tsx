@@ -45,7 +45,6 @@ function LanguageForm({
   const [label, setLabel] = useState(row?.label ?? "")
   const [outputName, setOutputName] = useState(row?.outputName ?? "")
   const [imageDirective, setImageDirective] = useState(row?.imageDirective ?? "")
-  const [sortOrder, setSortOrder] = useState(row?.sortOrder ?? 99)
 
   const submit = async () => {
     setSubmitting(true)
@@ -54,7 +53,6 @@ function LanguageForm({
         label,
         outputName,
         imageDirective: imageDirective || undefined,
-        sortOrder,
       }
       const res = row
         ? await updateLanguageConfigAction(row.id, base)
@@ -107,15 +105,6 @@ function LanguageForm({
         <p className="text-xs text-muted-foreground">
           注入生图 prompt 的图内文字语言指令；留空则不注入
         </p>
-      </div>
-      <div className="space-y-1.5">
-        <Label>排序</Label>
-        <Input
-          type="number"
-          min={0}
-          value={sortOrder}
-          onChange={(e) => setSortOrder(Number(e.target.value) || 0)}
-        />
       </div>
       <div className="flex justify-end gap-2 pt-2">
         <Button variant="outline" onClick={onDone}>

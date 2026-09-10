@@ -47,7 +47,6 @@ function PlatformForm({
   const [generalPromptSegment, setGeneralPromptSegment] = useState(
     row?.generalPromptSegment ?? "",
   )
-  const [sortOrder, setSortOrder] = useState(row?.sortOrder ?? 99)
 
   const submit = async () => {
     setSubmitting(true)
@@ -56,7 +55,6 @@ function PlatformForm({
         label,
         heroPromptSegment: heroPromptSegment || undefined,
         generalPromptSegment: generalPromptSegment || undefined,
-        sortOrder,
       }
       const res = row
         ? await updatePlatformConfigAction(row.id, base)
@@ -113,15 +111,6 @@ function PlatformForm({
         <p className="text-xs text-muted-foreground">
           注入所有生图 prompt 的平台风格偏好；留空则不注入
         </p>
-      </div>
-      <div className="space-y-1.5">
-        <Label>排序</Label>
-        <Input
-          type="number"
-          min={0}
-          value={sortOrder}
-          onChange={(e) => setSortOrder(Number(e.target.value) || 0)}
-        />
       </div>
       <div className="flex justify-end gap-2 pt-2">
         <Button variant="outline" onClick={onDone}>

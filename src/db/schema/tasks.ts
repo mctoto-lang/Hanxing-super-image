@@ -65,6 +65,8 @@ export const generationTasks = pgTable(
     retryErrors: jsonb("retry_errors").$type<string[]>(),
     templateInfo: jsonb("template_info"),
     taskUuid: varchar("task_uuid", { length: 64 }),
+    /** 软删除时间（null = 未删）：用户删任务/会话只隐藏，管理端看板/生图日志/积分流水仍可见 */
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

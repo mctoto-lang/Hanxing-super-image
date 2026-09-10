@@ -22,6 +22,10 @@ import {
   toggleBannerSchema,
   updateBannerSchema,
 } from "@/server/schemas/platform"
+import {
+  nextSortOrder,
+  redistributeSortOrder,
+} from "@/server/services/sort-order"
 import { revalidatePath } from "next/cache"
 import type { PlatformListParams } from "./platform"
 
@@ -84,12 +88,28 @@ export async function createBannerAction(input: BannerActionInput) {
     countdownEndsAt: toDate(d.countdownEndsAt),
     startsAt: toDate(d.startsAt),
     endsAt: toDate(d.endsAt),
-    sortOrder: d.sortOrder ?? 0,
+    sortOrder: d.sortOrder ?? (await nextSortOrder(banners)),
     isActive: d.isActive ?? true,
   })
 
   revalidatePath("/platform/banners")
   return { ok: true as const, error: null }
+}
+
+/**
+ * 拖拽排序：按新顺序重写横幅 sortOrder。
+ * 列表分页 20/页——拖拽仅当前页子集，值重分配保证跨页相对顺序不变；
+ * 不 bump updatedAt（避免展示端「关闭横幅」记忆被重置）。
+ */
+export async function reorderBannersAction(ids: string[]) {
+  await requireSuperAdmin()
+  try {
+    await redistributeSortOrder(banners, ids)
+  } catch {
+    return { ok: false, error: "排序保存失败" }
+  }
+  revalidatePath("/platform/banners")
+  return { ok: true, error: null }
 }
 
 /** 更新横幅（updatedAt 变化 → 展示端关闭记忆失效，横幅重新出现） */

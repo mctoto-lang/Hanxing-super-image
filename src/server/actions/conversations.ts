@@ -1,11 +1,12 @@
 "use server"
 
-import { and, desc, eq, sql } from "drizzle-orm"
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import {
   conversations,
   generationTasks,
   models,
+  pinnedTasks,
 } from "@/db/schema"
 import {
   requireUserContext,
@@ -40,6 +41,7 @@ export async function listConversationsAction() {
       and(
         eq(conversations.enterpriseId, scope.enterpriseId),
         eq(conversations.userId, ctx.user.id),
+        isNull(conversations.deletedAt),
       ),
     )
     .orderBy(
@@ -92,6 +94,7 @@ export async function renameConversationAction(input: {
         eq(conversations.id, parsed.data.id),
         eq(conversations.enterpriseId, scope.enterpriseId),
         eq(conversations.userId, ctx.user.id),
+        isNull(conversations.deletedAt),
       ),
     )
     .returning({ id: conversations.id })
@@ -116,6 +119,7 @@ export async function togglePinConversationAction(id: string) {
         eq(conversations.id, id),
         eq(conversations.enterpriseId, scope.enterpriseId),
         eq(conversations.userId, ctx.user.id),
+        isNull(conversations.deletedAt),
       ),
     )
     .limit(1)
@@ -132,21 +136,52 @@ export async function togglePinConversationAction(id: string) {
   return { ok: true, error: null, pinned: !conv.pinnedAt }
 }
 
-/** 删除会话（cascade 删其下 task，不退积分——已消费算沉没） */
+/**
+ * 删除会话（软删：会话与其下全部任务隐藏，管理端看板/生图日志/积分流水
+ * 仍可见；不退积分——已消费算沉没）
+ */
 export async function deleteConversationAction(id: string) {
   const ctx = await requireUserContext()
   const scope = getCurrentEnterpriseScope(ctx)
 
-  const result = await db
-    .delete(conversations)
-    .where(
-      and(
-        eq(conversations.id, id),
-        eq(conversations.enterpriseId, scope.enterpriseId),
-        eq(conversations.userId, ctx.user.id),
-      ),
-    )
-    .returning({ id: conversations.id })
+  const now = new Date()
+  const result = await db.transaction(async (tx) => {
+    const [conv] = await tx
+      .update(conversations)
+      .set({ deletedAt: now })
+      .where(
+        and(
+          eq(conversations.id, id),
+          eq(conversations.enterpriseId, scope.enterpriseId),
+          eq(conversations.userId, ctx.user.id),
+          isNull(conversations.deletedAt),
+        ),
+      )
+      .returning({ id: conversations.id })
+    if (!conv) return []
+
+    // 任务随会话整批软删；收藏行硬删（任务行保留后原 cascade 不再触发）
+    const taskIds = await tx
+      .update(generationTasks)
+      .set({ deletedAt: now })
+      .where(
+        and(
+          eq(generationTasks.conversationId, id),
+          isNull(generationTasks.deletedAt),
+        ),
+      )
+      .returning({ id: generationTasks.id })
+
+    if (taskIds.length > 0) {
+      await tx.delete(pinnedTasks).where(
+        inArray(
+          pinnedTasks.taskId,
+          taskIds.map((t) => t.id),
+        ),
+      )
+    }
+    return [conv]
+  })
 
   if (result.length === 0) {
     return { ok: false, error: "会话不存在或无权操作" }
@@ -169,6 +204,7 @@ export async function listConversationTasksAction(conversationId: string) {
         eq(conversations.id, conversationId),
         eq(conversations.enterpriseId, scope.enterpriseId),
         eq(conversations.userId, ctx.user.id),
+        isNull(conversations.deletedAt),
       ),
     )
     .limit(1)
@@ -187,13 +223,19 @@ export async function listConversationTasksAction(conversationId: string) {
       errorMessage: generationTasks.errorMessage,
       creditsCharged: generationTasks.creditsCharged,
       createdAt: generationTasks.createdAt,
+      startedAt: generationTasks.startedAt,
       completedAt: generationTasks.completedAt,
       modelDisplayName: models.displayName,
       modelIconUrl: models.iconUrl,
     })
     .from(generationTasks)
     .innerJoin(models, eq(generationTasks.modelId, models.id))
-    .where(eq(generationTasks.conversationId, conversationId))
+    .where(
+      and(
+        eq(generationTasks.conversationId, conversationId),
+        isNull(generationTasks.deletedAt),
+      ),
+    )
     .orderBy(desc(generationTasks.createdAt))
     .limit(50)
 
@@ -201,21 +243,38 @@ export async function listConversationTasksAction(conversationId: string) {
   return rows.reverse()
 }
 
-/** 删除单次生成结果（硬删 task，不退积分） */
+/**
+ * 删除单次生成结果（软删 task，管理端日志仍可见；不退积分）。
+ *
+ * 仅限创作页（source=create）的任务：product/weartry/mockup 模块没有
+ * 删除功能，其列表/轮询查询也不过滤 deletedAt，若放行会被直接调用
+ * action 软删后仍在前端可见。
+ */
 export async function deleteTaskAction(taskId: string) {
   const ctx = await requireUserContext()
   const scope = getCurrentEnterpriseScope(ctx)
 
-  const result = await db
-    .delete(generationTasks)
-    .where(
-      and(
-        eq(generationTasks.id, taskId),
-        eq(generationTasks.enterpriseId, scope.enterpriseId),
-        eq(generationTasks.userId, ctx.user.id),
-      ),
-    )
-    .returning({ id: generationTasks.id })
+  const now = new Date()
+  const result = await db.transaction(async (tx) => {
+    const [task] = await tx
+      .update(generationTasks)
+      .set({ deletedAt: now })
+      .where(
+        and(
+          eq(generationTasks.id, taskId),
+          eq(generationTasks.source, "create"),
+          eq(generationTasks.enterpriseId, scope.enterpriseId),
+          eq(generationTasks.userId, ctx.user.id),
+          isNull(generationTasks.deletedAt),
+        ),
+      )
+      .returning({ id: generationTasks.id })
+    if (!task) return []
+
+    // 收藏行硬删（任务行保留后原 cascade 不再触发）
+    await tx.delete(pinnedTasks).where(eq(pinnedTasks.taskId, taskId))
+    return [task]
+  })
 
   if (result.length === 0) {
     return { ok: false, error: "任务不存在或无权操作" }

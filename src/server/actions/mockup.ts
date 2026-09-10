@@ -1,6 +1,6 @@
 "use server"
 
-import { and, asc, desc, eq, gte, ilike, inArray, lt, or, sql } from "drizzle-orm"
+import { and, asc, desc, eq, gte, ilike, inArray, isNull, lt, or, sql } from "drizzle-orm"
 import { randomUUID } from "node:crypto"
 import { revalidatePath } from "next/cache"
 import { after } from "next/server"
@@ -72,7 +72,6 @@ import { enqueue } from "@/lib/queue/task-queue"
 import { validateReferenceImageUrls } from "@/lib/storage/reference-url"
 import { deductUserCredits, refundFailedTask } from "@/server/services/credits-service"
 import {
-  cancelMockupRenderJob,
   mockupRenderWebhookUrl,
   prewarmExternalAssets,
   submitExternalRenderJobsBatch,
@@ -457,6 +456,9 @@ export async function getMockupPageDataAction(): Promise<MockupPageData> {
   const aiImagesByItem = new Map<string, MockupAiImageView[]>()
   const aiGeneratingKeys = new Set<string>()
   const pendingAiApplies: MockupPageData["pendingAiApplies"] = []
+  // 在途 AI 任务播种清单（页面刷新后前端恢复轮询；限 24h 内，防历史卡死任务永久轮询）
+  const pendingAiTasks: MockupPageData["pendingAiTasks"] = []
+  const aiSeedCutoff = Date.now() - 24 * 60 * 60 * 1000
   // 对比视图补充素材：每方块首个 AI背景落地时间（定位纯套版基准图）+
   // 已落地条目的落地时间（定位落地后首张重套样机渲染图）
   const firstAppliedByItem = new Map<
@@ -476,6 +478,18 @@ export async function getMockupPageDataAction(): Promise<MockupPageData> {
     // 进行中的 AI 生图任务 → 方块显示纯加载动画（页面刷新后仍可见）
     if (row.status === "queued" || row.status === "processing") {
       aiGeneratingKeys.add(key)
+      // 下发在途任务播种前端轮询：队列重试窗口内刷新页面，重试成功仍能自动套版
+      if (
+        cards.some((c) => c.id === info.cardId) &&
+        row.createdAt.getTime() >= aiSeedCutoff
+      ) {
+        pendingAiTasks.push({
+          taskId: row.id,
+          aiKind: info.aiKind,
+          cardId: info.cardId,
+          groupItemId: info.groupItemId,
+        })
+      }
       continue
     }
     const image = row.resultImages?.[0]
@@ -618,6 +632,7 @@ export async function getMockupPageDataAction(): Promise<MockupPageData> {
     })),
     creditsBalance: ctx.user.creditsBalance,
     pendingAiApplies,
+    pendingAiTasks,
   }
 }
 
@@ -1930,7 +1945,7 @@ export async function listMockupDesignAssetsAction(limit = 200): Promise<{
   }
 }
 
-/** 生成图资产（最近的生图任务结果，图片库第二个 Tab） */
+/** 生成图资产（本人最近生图任务结果，图片库第二个 Tab；个人维度，与 /assets 口径一致） */
 export async function listGeneratedAssetsAction(limit = 200): Promise<{
   ok: boolean
   images: MockupLibraryImage[]
@@ -1947,7 +1962,9 @@ export async function listGeneratedAssetsAction(limit = 200): Promise<{
     .where(
       and(
         eq(generationTasks.enterpriseId, scope.enterpriseId),
+        eq(generationTasks.userId, ctx.user.id),
         eq(generationTasks.status, "completed"),
+        isNull(generationTasks.deletedAt),
         sql`${generationTasks.resultImages} IS NOT NULL`,
       ),
     )
@@ -2375,7 +2392,27 @@ export async function renderCardItemAction(
       cost: 0,
     }
   }
-  return renderInternal(ctx, [cardId], groupItemId, { outputFormat })
+  const scope = getCurrentEnterpriseScope(ctx)
+  // 最近一次渲染失败（如 AI背景落地后的自动重渲染失败）→ 放行重试，
+  // 否则会被「仅首次渲染」规则以「已渲染出图」为由跳过
+  const [latest] = await db
+    .select({ status: generationTasks.status })
+    .from(generationTasks)
+    .where(
+      and(
+        eq(generationTasks.taskType, "mockup"),
+        eq(generationTasks.enterpriseId, scope.enterpriseId),
+        eq(generationTasks.userId, ctx.user.id),
+        sql`${generationTasks.templateInfo}->>'cardId' = ${cardId}`,
+        sql`${generationTasks.templateInfo}->>'groupItemId' = ${groupItemId}`,
+      ),
+    )
+    .orderBy(desc(generationTasks.createdAt))
+    .limit(1)
+  return renderInternal(ctx, [cardId], groupItemId, {
+    outputFormat,
+    allowCompleted: latest?.status === "failed",
+  })
 }
 
 /** 轮询：我在途任务实时状态（透传外部进度，终态即时收敛） */
@@ -2428,38 +2465,6 @@ export async function getMockupStatusAction(): Promise<{
     })
   }
   return { ok: true, updates }
-}
-
-/** 取消在途渲染任务 */
-export async function cancelMockupTaskAction(taskId: string): Promise<{
-  ok: boolean
-  error: string | null
-  message: string | null
-}> {
-  const ctx = await requireEnterpriseContext()
-  const scope = getCurrentEnterpriseScope(ctx)
-
-  const [task] = await db
-    .select()
-    .from(generationTasks)
-    .where(
-      and(
-        eq(generationTasks.id, taskId),
-        eq(generationTasks.enterpriseId, scope.enterpriseId),
-        eq(generationTasks.userId, ctx.user.id),
-      ),
-    )
-    .limit(1)
-  if (!task) return { ok: false, error: "任务不存在", message: null }
-  if (task.status !== "queued" && task.status !== "processing") {
-    return { ok: false, error: "任务已结束", message: null }
-  }
-  const info = parseMockupInfo(task.templateInfo)
-  if (!info?.externalJobId) {
-    return { ok: false, error: "任务提交中，请稍候再取消", message: null }
-  }
-  const res = await cancelMockupRenderJob(scope.enterpriseId, info.externalJobId)
-  return { ok: res.cancelled, error: null, message: res.message }
 }
 
 /* ═══════════════ 批量替换（小模板级） ═══════════════ */
@@ -3064,6 +3069,7 @@ export async function listMockupModelsAction(): Promise<
     .where(
       and(eq(models.isActive, true), eq(models.visibleInMockup, true)),
     )
+    .orderBy(asc(models.sortOrder), asc(models.createdAt))
 
   const accessible = rows.filter(
     (m) => m.enterpriseId === null || m.enterpriseId === scope.enterpriseId,
@@ -3286,24 +3292,8 @@ export async function applyMockupAiBackgroundAction(input: unknown): Promise<{
     return { ok: false, error: "AI背景图尚未生成完成" }
   }
 
-  // 幂等认领：仅当未落地时继续（并发/重复调用直接短路）
-  const claimed = await db
-    .update(generationTasks)
-    .set({
-      templateInfo: sql`jsonb_set(coalesce(${generationTasks.templateInfo}, '{}'::jsonb), '{appliedAt}', ${JSON.stringify(new Date().toISOString())}::jsonb)`,
-    })
-    .where(
-      and(
-        eq(generationTasks.id, task.id),
-        sql`${generationTasks.templateInfo}->>'appliedAt' IS NULL`,
-      ),
-    )
-    .returning({ id: generationTasks.id })
-  if (claimed.length === 0) {
-    return { ok: true, error: null }
-  }
-
-  // 校验卡片与小模板仍在，且存在背景绑定
+  // 校验卡片与小模板仍在，且存在背景绑定（先于认领：校验失败不烧掉 appliedAt，
+  // 修复卡片/小模板/背景图层后仍可重新落地）
   const [card] = await db
     .select()
     .from(mockupCards)
@@ -3333,6 +3323,23 @@ export async function applyMockupAiBackgroundAction(input: unknown): Promise<{
   const bgDef = defs.find((b) => b.role === "background" && b.type !== "text")
   if (!bgDef) {
     return { ok: false, error: "该小模板没有标记为「背景」的图片图层，请先在模板管理中编辑绑定" }
+  }
+
+  // 幂等认领：仅当未落地时继续（并发/重复调用直接短路）
+  const claimed = await db
+    .update(generationTasks)
+    .set({
+      templateInfo: sql`jsonb_set(coalesce(${generationTasks.templateInfo}, '{}'::jsonb), '{appliedAt}', ${JSON.stringify(new Date().toISOString())}::jsonb)`,
+    })
+    .where(
+      and(
+        eq(generationTasks.id, task.id),
+        sql`${generationTasks.templateInfo}->>'appliedAt' IS NULL`,
+      ),
+    )
+    .returning({ id: generationTasks.id })
+  if (claimed.length === 0) {
+    return { ok: true, error: null }
   }
 
   // 填入背景绑定并保存

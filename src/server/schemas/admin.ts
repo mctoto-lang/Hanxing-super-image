@@ -52,6 +52,8 @@ export const modelConfigSchema = z.object({
   apiFormat: z.enum(["openai", "jimeng"]),
   jimengResolution: z.enum(["1k", "2k", "4k"]).optional(),
   jimengN: z.number().int().min(1).max(8).optional(),
+  /** OpenAI 格式质量参数透传（管理员填入具体值；空 = 不传） */
+  quality: z.string().trim().max(50).optional(),
   costPerImage: z.number().int().min(0).default(1),
   description: z.string().max(300).optional(),
   badgeText: z.string().max(30).optional(),
@@ -120,10 +122,20 @@ export const chatModelConfigSchema = z.object({
     .min(256, "单次最大输出至少 256")
     .max(1_000_000, "单次最大输出不能超过 1000000")
     .default(4096),
-  /** 百万输入 token 价格（厘 = 0.01 积分；0 = 免费） */
-  inputPriceCenticredits: z.number().int().min(0).max(100_000).default(0),
-  /** 百万输出 token 价格（厘 = 0.01 积分；0 = 免费） */
-  outputPriceCenticredits: z.number().int().min(0).max(100_000).default(0),
+  /** 百万输入 token 价格（厘 = 0.01 积分；0 = 免费；上限 10000 积分） */
+  inputPriceCenticredits: z
+    .number()
+    .int()
+    .min(0)
+    .max(1_000_000, "每百万 tokens 输入价格不能超过 10000 积分")
+    .default(0),
+  /** 百万输出 token 价格（厘 = 0.01 积分；0 = 免费；上限 10000 积分） */
+  outputPriceCenticredits: z
+    .number()
+    .int()
+    .min(0)
+    .max(1_000_000, "每百万 tokens 输出价格不能超过 10000 积分")
+    .default(0),
   /** 是否支持思考强度档位 */
   supportsThinking: z.boolean().default(false),
   /** 是否支持多模态（图片输入；开启后对话输入框可 @ 上传图片） */

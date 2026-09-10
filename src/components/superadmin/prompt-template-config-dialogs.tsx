@@ -102,7 +102,6 @@ function PromptTemplateForm({
   const [name, setName] = useState(row?.name ?? "")
   const [template, setTemplate] = useState(row?.template ?? "")
   const [note, setNote] = useState(row?.note ?? "")
-  const [sortOrder, setSortOrder] = useState(row?.sortOrder ?? 99)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const sceneNote = scene ? row?.note || maps.notes[scene] || "" : ""
@@ -116,7 +115,6 @@ function PromptTemplateForm({
         name,
         template,
         note: note || undefined,
-        sortOrder,
       }
       const res = row
         ? await updatePromptTemplateConfigAction(row.id, base)
@@ -218,15 +216,6 @@ function PromptTemplateForm({
             value={note}
             onChange={(e) => setNote(e.target.value)}
             placeholder="留空使用内置说明"
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label>排序</Label>
-          <Input
-            type="number"
-            min={0}
-            value={sortOrder}
-            onChange={(e) => setSortOrder(Number(e.target.value) || 0)}
           />
         </div>
       </div>

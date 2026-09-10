@@ -59,6 +59,8 @@ export const chatConversations = pgTable(
     lastMessageAt: timestamp("last_message_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
+    /** 软删除时间（null = 未删）：用户删会话只隐藏，管理端看板统计仍可见 */
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -104,6 +106,8 @@ export const chatMessages = pgTable(
     costCenticredits: integer("cost_centicredits").default(0).notNull(),
     durationMs: integer("duration_ms"),
     errorMessage: text("error_message"),
+    /** 软删除时间（null = 未删）：随会话软删整批置位，管理端看板统计仍可见 */
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

@@ -78,6 +78,10 @@ export async function callImageApi(opts: {
         apiEndpoint: model.apiEndpoint,
         apiTimeout: model.apiTimeout,
         referenceImageField: model.referenceImageField ?? undefined,
+        quality:
+          typeof extraConfig.quality === "string"
+            ? extraConfig.quality
+            : undefined,
       },
       task: { prompt, imageSize, imageCount, indexes, referenceImages: referenceImagesForUpstream },
       apiKey,

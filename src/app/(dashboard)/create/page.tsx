@@ -39,6 +39,7 @@ export default async function CreatePage({
       errorMessage: r.errorMessage,
       creditsCharged: r.creditsCharged,
       createdAt: r.createdAt,
+      startedAt: r.startedAt,
       completedAt: r.completedAt,
       modelDisplayName: r.modelDisplayName,
       modelIconUrl: r.modelIconUrl,

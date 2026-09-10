@@ -54,6 +54,8 @@ interface FormState {
   apiFormat: "openai" | "jimeng"
   jimengResolution: "" | "1k" | "2k" | "4k"
   jimengN: number
+  qualityEnabled: boolean
+  quality: string
   costPerImage: number
   sizePresets: ModelSizePreset[]
   supportsImageCount: boolean
@@ -85,6 +87,8 @@ function emptyState(): FormState {
     apiFormat: "openai",
     jimengResolution: "",
     jimengN: 1,
+    qualityEnabled: false,
+    quality: "",
     costPerImage: 1,
     sizePresets: DEFAULT_SIZE_PRESETS.map((p) => ({ ...p })),
     supportsImageCount: false,
@@ -119,6 +123,8 @@ function fromModel(m: PresetModelRow): FormState {
     apiFormat: m.apiFormat,
     jimengResolution: (ec.jimengResolution as "" | "1k" | "2k" | "4k") ?? "",
     jimengN: ec.jimengN ?? 1,
+    qualityEnabled: Boolean(ec.quality),
+    quality: (ec.quality as string) ?? "",
     costPerImage: m.costPerImage,
     sizePresets: m.sizePresets
       ? m.sizePresets.map((p) => ({ ...p }))
@@ -196,6 +202,13 @@ export function PresetModelFormDialog({
     if (state.apiFormat === "jimeng") {
       input.jimengResolution = state.jimengResolution || undefined
       input.jimengN = state.jimengN
+    }
+    if (state.apiFormat === "openai") {
+      if (state.qualityEnabled && !state.quality.trim()) {
+        toast.error("已开启质量参数，请填入具体质量值")
+        return
+      }
+      input.quality = state.qualityEnabled ? state.quality.trim() : undefined
     }
     if (state.apiKey) input.apiKey = state.apiKey
 
@@ -390,6 +403,43 @@ export function PresetModelFormDialog({
                   N。N &gt; 4 时自动拆分多次即梦请求（单次上游上限 4 张）。
                 </p>
               </div>
+            </div>
+          )}
+
+          {state.apiFormat === "openai" && (
+            <div className="space-y-3 rounded-md border p-3">
+              <label className="flex items-center justify-between">
+                <span className="text-sm font-medium">
+                  质量参数（quality）
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                    开启后生图请求透传 quality 字段，值按上游接口文档填写；关闭则不传
+                  </span>
+                </span>
+                <Switch
+                  checked={state.qualityEnabled}
+                  onCheckedChange={(v) => up("qualityEnabled", v)}
+                />
+              </label>
+              {state.qualityEnabled && (
+                <div className="grid gap-2">
+                  <Label htmlFor="p-quality">质量值</Label>
+                  <Input
+                    id="p-quality"
+                    value={state.quality}
+                    onChange={(e) => up("quality", e.target.value)}
+                    placeholder="如 high、medium、low、auto、hd、standard"
+                    list="p-quality-suggestions"
+                  />
+                  <datalist id="p-quality-suggestions">
+                    <option value="high" />
+                    <option value="medium" />
+                    <option value="low" />
+                    <option value="auto" />
+                    <option value="hd" />
+                    <option value="standard" />
+                  </datalist>
+                </div>
+              )}
             </div>
           )}
 

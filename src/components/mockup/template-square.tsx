@@ -5,11 +5,9 @@ import { createPortal } from "react-dom"
 import { useTheme } from "next-themes"
 import {
   AlertTriangle,
-  Ban,
   Image as ImageIcon,
   RotateCcw,
   Sparkle,
-  X,
 } from "lucide-react"
 import { BeamWrapper } from "@/components/create/beam-wrapper"
 import { ImageGeneration } from "@/components/ui/image-generation"
@@ -35,9 +33,7 @@ interface TemplateSquareProps {
   aiGenerating?: boolean
   /** 点击方块（父级打开操作菜单），携带方块视口矩形供菜单定位 */
   onOpen: (rect: DOMRect) => void
-  onCancel?: () => void
   onRetry?: () => void
-  cancelling?: boolean
 }
 
 /**
@@ -49,7 +45,7 @@ interface TemplateSquareProps {
  * BeamWrapper；渲染 busy 态两者均不显示）/ 失败
  * （原因 + 已退款 + 重试）。
  * 点击打开操作菜单（替换图层/AI背景/AI渲染/查看原图/查看对比，见父级）；
- * 渲染中/AI生图中点击无效（不可操作，悬停取消小按钮除外）。
+ * 渲染中/AI生图中点击无效（不可操作）。
  *
  * 完成态悬停预览 portal 到 body 并 fixed 定位（卡片列表 overflow 裁剪会截断
  * absolute 浮层）；上方场景按底边锚定（translateY(-100%)），与下方间距一致。
@@ -61,9 +57,7 @@ export function TemplateSquare({
   hasAi,
   aiGenerating,
   onOpen,
-  onCancel,
   onRetry,
-  cancelling,
 }: TemplateSquareProps) {
   const t = live ?? task
   const busy = t?.status === "queued" || t?.status === "processing"
@@ -169,13 +163,6 @@ export function TemplateSquare({
           </div>
         ) : null}
 
-        {/* 取消中角标 */}
-        {cancelling ? (
-          <span className="absolute inset-0 z-10 flex items-center justify-center bg-background/70 text-[10px] text-muted-foreground">
-            <Ban className="mr-1 size-3" /> 取消中
-          </span>
-        ) : null}
-
         {/* AI 生图中：ig- 纯加载动画，无任何文字/进度/阶段角标
             （渲染 busy 态由上方分支处理，二者不叠加） */}
         {aiGenerating && !busy ? (
@@ -213,22 +200,8 @@ export function TemplateSquare({
         </BeamWrapper>
       </div>
 
-      {/* 悬停操作：取消（渲染中）/ 重试（失败） */}
+      {/* 悬停操作：重试（失败） */}
       <div className="absolute right-1 top-1 z-10 hidden gap-1 group-hover/sq:flex">
-        {busy && onCancel ? (
-          <span
-            role="button"
-            tabIndex={0}
-            title="取消渲染（取消后退款）"
-            className="flex size-5 items-center justify-center rounded bg-background/85 text-muted-foreground shadow hover:text-destructive"
-            onClick={(e) => {
-              e.stopPropagation()
-              onCancel()
-            }}
-          >
-            <X className="size-3" />
-          </span>
-        ) : null}
         {t?.status === "failed" && onRetry ? (
           <span
             role="button"

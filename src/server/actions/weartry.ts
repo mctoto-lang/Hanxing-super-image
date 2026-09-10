@@ -234,6 +234,7 @@ export async function listWeartryModelsAction(): Promise<WeartryModelRow[]> {
         eq(models.supportsReferenceImage, true),
       ),
     )
+    .orderBy(asc(models.sortOrder), asc(models.createdAt))
   const accessible = rows.filter(
     (m) => m.enterpriseId === null || m.enterpriseId === scope.enterpriseId,
   )

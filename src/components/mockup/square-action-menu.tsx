@@ -4,6 +4,12 @@ import * as React from "react"
 import { createPortal } from "react-dom"
 import { Eye, Layers, Sparkles, Split, Wand2 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 
 /**
  * 样机方块操作菜单（水平居中于方块的竖排选项，选项左对齐；portal +
@@ -148,28 +154,47 @@ export function SquareActionMenu({
       }}
       className="z-50 flex flex-col gap-0.5 rounded-lg border bg-popover p-1 shadow-lg"
     >
-      {items.map((item) => (
-        <button
-          key={item.key}
-          type="button"
-          disabled={item.disabled}
-          title={item.disabled ? (item.reason ?? "当前不可用") : item.label}
-          className={cn(
-            "flex w-full items-center justify-start gap-1.5 whitespace-nowrap rounded-md px-2 py-1.5 text-xs transition",
-            item.disabled
-              ? "cursor-not-allowed text-muted-foreground/40"
-              : "text-foreground hover:bg-accent hover:text-accent-foreground",
-          )}
-          onClick={() => {
-            if (item.disabled) return
-            onClose()
-            item.onClick()
-          }}
-        >
-          {item.icon}
-          {item.label}
-        </button>
-      ))}
+      {items.map((item) => {
+        // disabled <button> 不派发鼠标事件：禁用项的按钮 pointer-events-none，
+        // 悬停落在 TooltipTrigger 的 span 包裹层上（否则 Tooltip 无法触发）
+        const button = (
+          <button
+            type="button"
+            disabled={item.disabled}
+            className={cn(
+              "flex w-full items-center justify-start gap-1.5 whitespace-nowrap rounded-md px-2 py-1.5 text-xs transition",
+              item.disabled
+                ? "cursor-not-allowed pointer-events-none text-muted-foreground/40"
+                : "text-foreground hover:bg-accent hover:text-accent-foreground",
+            )}
+            onClick={() => {
+              if (item.disabled) return
+              onClose()
+              item.onClick()
+            }}
+          >
+            {item.icon}
+            {item.label}
+          </button>
+        )
+        if (!item.disabled) {
+          return <React.Fragment key={item.key}>{button}</React.Fragment>
+        }
+        return (
+          <TooltipProvider key={item.key}>
+            <Tooltip>
+              <TooltipTrigger
+                render={<span className="block w-full cursor-not-allowed" />}
+              >
+                {button}
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                {item.reason ?? "当前不可用"}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )
+      })}
     </div>,
     document.body,
   )

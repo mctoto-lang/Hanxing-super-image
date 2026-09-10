@@ -1,8 +1,8 @@
 "use server"
 
-import { and, desc, eq, sql } from "drizzle-orm"
+import { and, desc, eq, isNull, sql } from "drizzle-orm"
 import { db } from "@/db/client"
-import { chatConversations } from "@/db/schema"
+import { chatConversations, chatMessages } from "@/db/schema"
 import {
   requireUserContext,
   getCurrentEnterpriseScope,
@@ -81,6 +81,7 @@ export async function listChatConversationsAction() {
       and(
         eq(chatConversations.enterpriseId, scope.enterpriseId),
         eq(chatConversations.userId, ctx.user.id),
+        isNull(chatConversations.deletedAt),
       ),
     )
     .orderBy(
@@ -101,6 +102,7 @@ export async function getChatConversationAction(id: string) {
         eq(chatConversations.id, id),
         eq(chatConversations.enterpriseId, scope.enterpriseId),
         eq(chatConversations.userId, ctx.user.id),
+        isNull(chatConversations.deletedAt),
       ),
     )
     .limit(1)
@@ -119,6 +121,7 @@ export async function listChatMessagesAction(conversationId: string) {
         eq(chatConversations.id, conversationId),
         eq(chatConversations.enterpriseId, scope.enterpriseId),
         eq(chatConversations.userId, ctx.user.id),
+        isNull(chatConversations.deletedAt),
       ),
     )
     .limit(1)
@@ -146,6 +149,7 @@ export async function renameChatConversationAction(input: {
         eq(chatConversations.id, parsed.data.id),
         eq(chatConversations.enterpriseId, scope.enterpriseId),
         eq(chatConversations.userId, ctx.user.id),
+        isNull(chatConversations.deletedAt),
       ),
     )
     .returning({ id: chatConversations.id })
@@ -170,6 +174,7 @@ export async function togglePinChatConversationAction(id: string) {
         eq(chatConversations.id, id),
         eq(chatConversations.enterpriseId, scope.enterpriseId),
         eq(chatConversations.userId, ctx.user.id),
+        isNull(chatConversations.deletedAt),
       ),
     )
     .limit(1)
@@ -186,21 +191,42 @@ export async function togglePinChatConversationAction(id: string) {
   return { ok: true, error: null, pinned: !conv.pinnedAt }
 }
 
-/** 删除会话（cascade 删消息；已消耗积分不退——沉没成本） */
+/**
+ * 删除会话（软删：会话与消息整批隐藏，管理端看板统计仍可见；
+ * 已消耗积分不退——沉没成本）
+ */
 export async function deleteChatConversationAction(id: string) {
   const ctx = await requireUserContext()
   const scope = getCurrentEnterpriseScope(ctx)
 
-  const result = await db
-    .delete(chatConversations)
-    .where(
-      and(
-        eq(chatConversations.id, id),
-        eq(chatConversations.enterpriseId, scope.enterpriseId),
-        eq(chatConversations.userId, ctx.user.id),
-      ),
-    )
-    .returning({ id: chatConversations.id })
+  const now = new Date()
+  const result = await db.transaction(async (tx) => {
+    const [conv] = await tx
+      .update(chatConversations)
+      .set({ deletedAt: now })
+      .where(
+        and(
+          eq(chatConversations.id, id),
+          eq(chatConversations.enterpriseId, scope.enterpriseId),
+          eq(chatConversations.userId, ctx.user.id),
+          isNull(chatConversations.deletedAt),
+        ),
+      )
+      .returning({ id: chatConversations.id })
+    if (!conv) return []
+
+    // 消息随会话整批软删（账单明细保留，供管理端统计与积分口径核对）
+    await tx
+      .update(chatMessages)
+      .set({ deletedAt: now })
+      .where(
+        and(
+          eq(chatMessages.conversationId, id),
+          isNull(chatMessages.deletedAt),
+        ),
+      )
+    return [conv]
+  })
 
   if (result.length === 0) {
     return { ok: false, error: "会话不存在或无权操作" }

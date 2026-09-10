@@ -7,24 +7,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
 import {
   TablePagination,
   parsePageParam,
 } from "@/components/shared/table-pagination"
-import {
-  ChatModelFormDialog,
-  ChatModelEditButton,
-  ChatModelToggleActiveButton,
-} from "@/components/superadmin/chat-model-form-dialog"
+import { ChatModelFormDialog } from "@/components/superadmin/chat-model-form-dialog"
+import { PresetChatModelsTable } from "@/components/superadmin/preset-chat-models-table"
 
 export const dynamic = "force-dynamic"
 
@@ -34,13 +22,6 @@ export const dynamic = "force-dynamic"
  * 供提示词模板关联使用（裂变/细化/重生成/提取/翻译）；
  * 全部启用中的平台预置对话模型对所有企业可见。
  */
-const CHAT_FORMAT_LABEL: Record<string, string> = {
-  openai: "OpenAI",
-  claude: "Claude",
-  gemini: "Gemini",
-  grok: "Grok",
-}
-
 export default async function PlatformChatModelsPage({
   searchParams,
 }: {
@@ -96,81 +77,7 @@ export default async function PlatformChatModelsPage({
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>显示名</TableHead>
-                <TableHead>接口</TableHead>
-                <TableHead>上下文 / 输出</TableHead>
-                <TableHead>价格（积分/百万tokens）</TableHead>
-                <TableHead>参数</TableHead>
-                <TableHead>并发 / 重试 / 超时</TableHead>
-                <TableHead>状态</TableHead>
-                <TableHead className="text-right">操作</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {chatModels.map((m) => (
-                <TableRow key={m.id}>
-                  <TableCell className="font-medium">{m.displayName}</TableCell>
-                  <TableCell className="text-sm">
-                    {CHAT_FORMAT_LABEL[m.formatType] ?? m.formatType}
-                    {m.supportsThinking ? (
-                      <Badge variant="outline" className="ml-1.5 text-[10px]">思考</Badge>
-                    ) : null}
-                    <div className="max-w-52 truncate text-xs text-muted-foreground">
-                      {m.apiEndpoint}
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-sm tabular-nums text-muted-foreground">
-                    {m.maxContextTokens >= 1000
-                      ? `${Math.round(m.maxContextTokens / 1000)}K`
-                      : m.maxContextTokens}{" "}
-                    / {m.maxOutputTokens}
-                  </TableCell>
-                  <TableCell className="text-sm tabular-nums text-muted-foreground">
-                    {m.inputPriceCenticredits <= 0 && m.outputPriceCenticredits <= 0
-                      ? "免费"
-                      : `${(m.inputPriceCenticredits / 100).toFixed(2)} / ${(m.outputPriceCenticredits / 100).toFixed(2)}`}
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {m.extraConfig?.temperature !== undefined
-                      ? `T=${m.extraConfig.temperature}`
-                      : "T=默认"}
-                    {m.extraConfig?.maxTokens
-                      ? ` · ${m.extraConfig.maxTokens} tokens`
-                      : ""}
-                  </TableCell>
-                  <TableCell className="text-sm tabular-nums text-muted-foreground">
-                    {m.maxConcurrent} / {m.maxRetries} / {m.apiTimeout}s
-                  </TableCell>
-                  <TableCell>
-                    {m.isActive ? (
-                      <Badge>启用</Badge>
-                    ) : (
-                      <Badge variant="outline">停用</Badge>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-1">
-                      <ChatModelEditButton model={m} />
-                      <ChatModelToggleActiveButton model={m} />
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {chatModels.length === 0 ? (
-                <TableRow>
-                  <TableCell
-                    colSpan={6}
-                    className="text-center text-muted-foreground"
-                  >
-                    暂无平台预置对话模型，点击右上角新建
-                  </TableCell>
-                </TableRow>
-              ) : null}
-            </TableBody>
-          </Table>
+          <PresetChatModelsTable chatModels={chatModels} />
         </CardContent>
         <TablePagination
           page={page}

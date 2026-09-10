@@ -50,7 +50,7 @@ export interface PlanFormValues {
   creditsPerCycle: number
   cycleDays: number
   maxMembers: number | null
-  sortOrder: number
+  sortOrder?: number
   isActive?: boolean
 }
 
@@ -61,13 +61,12 @@ const DEFAULT_VALUES: PlanFormValues = {
   creditsPerCycle: 10000,
   cycleDays: 30,
   maxMembers: null,
-  sortOrder: 0,
 }
 
 /**
  * 套餐新建/编辑弹窗（超管）：
- * 名称 + 勋章（预设图标网格 + 颜色）+ 周期积分 + 周期天数 + 人数上限 + 排序。
- * 顶部实时预览勋章药丸（侧边栏/弹窗中的实际观感）。
+ * 名称 + 勋章（预设图标网格 + 颜色）+ 周期积分 + 周期天数 + 人数上限。
+ * 顺序由套餐列表拖拽维护；顶部实时预览勋章药丸（侧边栏/弹窗中的实际观感）。
  */
 export function PlanFormDialog({
   plan,
@@ -107,7 +106,6 @@ export function PlanFormDialog({
           values.maxMembers == null || Number.isNaN(Number(values.maxMembers))
             ? null
             : Number(values.maxMembers),
-        sortOrder: Number(values.sortOrder) || 0,
       }
       const res = isEdit
         ? await updateSubscriptionPlanAction({ id: plan!.id, ...input })
@@ -269,17 +267,6 @@ export function PlanFormDialog({
                   )
                 }
                 placeholder="不限"
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="plan-sort">排序（小在前）</Label>
-              <Input
-                id="plan-sort"
-                type="number"
-                min={0}
-                max={9999}
-                value={values.sortOrder}
-                onChange={(e) => set("sortOrder", Number(e.target.value))}
               />
             </div>
           </div>

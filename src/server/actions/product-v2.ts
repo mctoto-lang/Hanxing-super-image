@@ -31,9 +31,11 @@ import {
   directionInScope,
   formatCardList,
   formatDirectionPool,
+  mergeRefineTemplates,
   normalizeSlotCounts,
   parseProductBrief,
 } from "@/lib/product/prompt"
+import { REFINE_FIXED_KEYS } from "@/lib/product/dictionaries"
 import type {
   AiBriefResult,
   AiDegradeReason,
@@ -79,37 +81,67 @@ export async function listProductDirectionsAction(
   const ctx = await requireUserContext()
   const denied = checkModuleAccess(ctx, "product")
   if (denied) return []
-  const rows = await db
-    .select({
-      id: productDirections.id,
-      key: productDirections.key,
-      name: productDirections.name,
-      description: productDirections.description,
-      promptTemplate: productDirections.promptTemplate,
-      supportsCount: productDirections.supportsCount,
-      maxCount: productDirections.maxCount,
-      sortOrder: productDirections.sortOrder,
-      isHidden: productDirections.isHidden,
-      isHero: productDirections.isHero,
-      appliesTo: productDirections.appliesTo,
-    })
-    .from(productDirections)
-    .where(eq(productDirections.isActive, true))
-    .orderBy(asc(productDirections.sortOrder))
-
-  return rows.filter((r) => directionInScope(r.appliesTo as string[] | null, scope)).map((r) => ({
+  const selectFields = {
+    id: productDirections.id,
+    key: productDirections.key,
+    name: productDirections.name,
+    description: productDirections.description,
+    promptTemplate: productDirections.promptTemplate,
+    supportsCount: productDirections.supportsCount,
+    maxCount: productDirections.maxCount,
+    sortOrder: productDirections.sortOrder,
+    isHidden: productDirections.isHidden,
+    isHero: productDirections.isHero,
+    appliesTo: productDirections.appliesTo,
+  }
+  /** DB 行 → 前端行（模板全文不传——组装在服务端，裁剪传输体积） */
+  const toRow = (r: {
+    id: string
+    key: string
+    name: string
+    description: string | null
+    promptTemplate: string
+    supportsCount: boolean
+    maxCount: number
+    sortOrder: number
+    isHidden: boolean
+    isHero: boolean | null
+    appliesTo: string[] | null
+  }): ProductDirectionRow => ({
     id: r.id,
     key: r.key,
     name: r.name,
     description: r.description,
-    // 前端不需要模板全文（组装在服务端），裁剪传输体积
     promptTemplate: "",
     supportsCount: r.supportsCount,
     maxCount: r.maxCount,
     sortOrder: r.sortOrder,
     isHidden: r.isHidden,
-    isHero: r.isHero,
-  }))
+    isHero: r.isHero ?? false,
+  })
+
+  // 精修：固定 4 项快捷优化项（key 白名单；不看 isActive，停用态也恒定展示），
+  // 按 REFINE_FIXED_KEYS 预设顺序返回
+  if (scope === "refine") {
+    const rows = await db
+      .select(selectFields)
+      .from(productDirections)
+      .where(inArray(productDirections.key, [...REFINE_FIXED_KEYS]))
+    const byKey = new Map(rows.map((r) => [r.key, toRow(r)]))
+    return REFINE_FIXED_KEYS.map((k) => byKey.get(k)).filter(
+      (r): r is ProductDirectionRow => r != null,
+    )
+  }
+
+  const rows = await db
+    .select(selectFields)
+    .from(productDirections)
+    .where(eq(productDirections.isActive, true))
+    .orderBy(asc(productDirections.sortOrder))
+
+  return rows
+    .filter((r) => directionInScope(r.appliesTo as string[] | null, scope))
+    .map(toRow)
 }
 
 /** 尺寸规范（可按平台过滤；suite/detail 通用） */
@@ -188,6 +220,7 @@ export async function listProductV2ModelsAction(): Promise<ProductModelRow[]> {
         eq(models.supportsReferenceImage, true),
       ),
     )
+    .orderBy(asc(models.sortOrder), asc(models.createdAt))
   const accessible = rows.filter(
     (m) => m.enterpriseId === null || m.enterpriseId === scope.enterpriseId,
   )
@@ -692,10 +725,15 @@ export async function generateProductV2Action(
     // 方向类：按 appliesTo 校验 + 组装
     const wantScope =
       d.mode === "refine" ? "refine" : d.mode
+    // 精修：固定项 key 白名单且不看 isActive（与展示口径一致，杜绝历史多余行被选用）
     const dirRows = await db
       .select()
       .from(productDirections)
-      .where(eq(productDirections.isActive, true))
+      .where(
+        wantScope === "refine"
+          ? inArray(productDirections.key, [...REFINE_FIXED_KEYS])
+          : eq(productDirections.isActive, true),
+      )
     const dirMap = new Map(
       dirRows
         .filter((r) =>
@@ -703,7 +741,45 @@ export async function generateProductV2Action(
         )
         .map((r) => [r.key, r]),
     )
-    if (d.mode === "suite" && d.cards?.length) {
+    if (d.mode === "refine") {
+      // 精修：全部选中优化项合并为 1 个任务——校验每一个选中项，重复
+      // key 静默去重（同一模板拼两遍无意义），按固定项预设顺序稳定排序，
+      // 各模板剥掉 {{additionalPrompt}} 后拼接为复合指令，
+      // 补充要求以尾段注入一次（严格模式：未填不注入）
+      const selected = [...new Set((d.directions ?? []).map((s) => s.key))]
+      const dirs = selected.map((key) => dirMap.get(key))
+      if (dirs.some((r) => r == null)) {
+        return { ok: false, error: "包含不可用的优化项" }
+      }
+      const sorted = dirs
+        .filter((r): r is NonNullable<typeof r> => r != null)
+        .sort(
+          (a, b) =>
+            (REFINE_FIXED_KEYS as readonly string[]).indexOf(a.key) -
+            (REFINE_FIXED_KEYS as readonly string[]).indexOf(b.key),
+        )
+      taskItems.push({
+        prompt: buildDirectionPrompt({
+          mode: "refine",
+          platformKey: d.platform ?? undefined,
+          languageKey: d.language ?? undefined,
+          promptTemplate: mergeRefineTemplates(
+            sorted.map((dir) => dir.promptTemplate),
+            d.additionalPrompt,
+          ),
+          directionKey: sorted[0]!.key,
+          baseVars,
+          additionalPrompt: d.additionalPrompt,
+          resolvedPlatform,
+          resolvedLanguage,
+        }),
+        templateInfo: {
+          mode: "refine",
+          batchTag,
+          directionKeys: sorted.map((dir) => dir.key),
+        },
+      })
+    } else if (d.mode === "suite" && d.cards?.length) {
       // 卡片确认流程：每卡 1 任务，prompt = 用户确认的卡片文本原样
       //（平台偏好与图内文字语言已在出卡阶段约束 AI；规范段是否使用由方向模板变量决定）
       for (const card of d.cards) {
@@ -724,7 +800,7 @@ export async function generateProductV2Action(
         })
       }
     } else {
-      // 方向选择路径（suite 旧路径 / detail / refine）
+      // 方向选择路径（suite 旧路径 / detail）
       for (const sel of d.directions ?? []) {
         const dir = dirMap.get(sel.key)
         if (!dir) return { ok: false, error: `方向 ${sel.key} 不可用` }
@@ -735,29 +811,6 @@ export async function generateProductV2Action(
             : dir.supportsCount
               ? Math.max(1, Math.min(dir.maxCount, sel.count ?? 1))
               : 1
-        if (d.mode === "refine") {
-          // 精修：所有优化项合并为 1 个任务（补充要求走 {{additionalPrompt}}
-          // 变量，模板未引用即丢弃——严格模式；平台/语言变量仅模板引用时生效）
-          taskItems.push({
-            prompt: buildDirectionPrompt({
-              mode: "refine",
-              platformKey: d.platform ?? undefined,
-              languageKey: d.language ?? undefined,
-              promptTemplate: dir.promptTemplate,
-              directionKey: dir.key,
-              baseVars,
-              additionalPrompt: d.additionalPrompt,
-              resolvedPlatform,
-              resolvedLanguage,
-            }),
-            templateInfo: {
-              mode: "refine",
-              batchTag,
-              directionKeys: (d.directions ?? []).map((s) => s.key),
-            },
-          })
-          break // 只取第一个方向做载体，prompt 已含全部
-        }
         for (let i = 0; i < count; i++) {
           taskItems.push({
             prompt: buildDirectionPrompt({

@@ -7,7 +7,6 @@ import {
   FileDown,
   LayoutGrid,
   Loader2,
-  X,
 } from "lucide-react"
 import { toast } from "sonner"
 import {
@@ -39,11 +38,9 @@ import type {
 } from "@/lib/mockup/types"
 import { cn, toImageSrc } from "@/lib/utils"
 import {
-  cancelMockupTaskAction,
   getMockupBatchStatusAction,
   retryBatchTaskAction,
 } from "@/server/actions/mockup"
-import { downloadImagesZip } from "./batch-detail"
 
 /** 相对时间：刚刚 / N 分钟前 / N 小时前 / 昨天 / N 天前 / 日期（跨年含年份） */
 function formatRelativeTime(value: string): string {
@@ -250,6 +247,48 @@ function isPreviewableImage(url: string): boolean {
   return !/\.psd(?:$|[?#])/i.test(url)
 }
 
+function safeZipEntryName(name: string): string {
+  return name.replace(/[\\/:*?"<>|]/g, "_").slice(0, 60)
+}
+
+/** 从结果 URL 推断下载扩展名（结果文件按实际格式存储：.png/.jpg/.psd） */
+function extFromUrl(url: string): string {
+  const m = /\.(png|jpe?g|psd)(?:$|[?#])/i.exec(url)
+  return m ? `.${m[1]!.toLowerCase().replace("jpeg", "jpg")}` : ".png"
+}
+
+/** 将图片 URL 列表打包为单个 ZIP 下载（命名：序号-名称，扩展名取自实际文件） */
+async function downloadImagesZip(
+  items: Array<{ url: string; name: string }>,
+  zipName: string,
+): Promise<void> {
+  if (items.length === 0) {
+    toast.warning("暂无已完成的结果图")
+    return
+  }
+  const { zipSync } = await import("fflate")
+  const files: Record<string, Uint8Array> = {}
+  for (const [i, it] of items.entries()) {
+    const res = await fetch(it.url)
+    if (!res.ok) continue
+    files[`${String(i + 1).padStart(3, "0")}-${safeZipEntryName(it.name)}${extFromUrl(it.url)}`] =
+      new Uint8Array(await res.arrayBuffer())
+  }
+  if (Object.keys(files).length === 0) {
+    toast.error("结果图拉取失败，请逐张下载")
+    return
+  }
+  const blob = new Blob([zipSync(files)], { type: "application/zip" })
+  const objUrl = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = objUrl
+  a.download = zipName
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(objUrl)
+}
+
 /** 模板渲染记录详情（穿戴式）：4 列缩略图网格 + 大图查看器 + 下载全部 ZIP */
 function CardDetailDialog({
   record,
@@ -395,7 +434,7 @@ function CardDetailDialog({
 
 /** 批量替换记录详情（穿戴式）：懒加载批次明细，进行中 5s 轮询刷新；
  * 顶部进度行（进度 + 进度条 + 下载全部 ZIP）+ 4 列缩略图网格
- *  （完成=点击看大图；进行中=动画格悬停可取消；失败=错误悬停 + 重试） */
+ *  （完成=点击看大图；进行中=动画格；失败=错误悬停 + 重试） */
 function BatchDetailDialog({
   batchId,
   onClose,
@@ -455,22 +494,6 @@ function BatchDetailDialog({
       ),
     [detail],
   )
-
-  const handleCancel = async (taskId: string) => {
-    if (!batchId || busyTaskId) return
-    setBusyTaskId(taskId)
-    try {
-      const res = await cancelMockupTaskAction(taskId)
-      if (!res.ok) {
-        toast.error(res.error ?? "取消失败")
-        return
-      }
-      toast.success("已取消渲染")
-      void load(batchId)
-    } finally {
-      setBusyTaskId(null)
-    }
-  }
 
   const handleRetry = async (taskId: string) => {
     if (!batchId || busyTaskId) return
@@ -666,19 +689,6 @@ function BatchDetailDialog({
                                   showMeta={false}
                                   className="absolute inset-0 [&_.igCanvas]:rounded-lg"
                                 />
-                                <button
-                                  type="button"
-                                  className="absolute top-1.5 right-1.5 flex items-center gap-1 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100"
-                                  disabled={busyTaskId === t.taskId}
-                                  onClick={() => void handleCancel(t.taskId)}
-                                >
-                                  {busyTaskId === t.taskId ? (
-                                    <Loader2 className="size-3 animate-spin" />
-                                  ) : (
-                                    <X className="size-3" />
-                                  )}
-                                  取消
-                                </button>
                               </div>
                             )}
                           </div>

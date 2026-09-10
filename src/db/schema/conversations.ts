@@ -32,6 +32,8 @@ export const conversations = pgTable(
     lastImageThumb: text("last_image_thumb"),
     /** 置顶时间（null = 未置顶），列表置顶排前 */
     pinnedAt: timestamp("pinned_at", { withTimezone: true }),
+    /** 软删除时间（null = 未删）：用户删会话只隐藏，管理端看板/生图日志/积分流水仍可见 */
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

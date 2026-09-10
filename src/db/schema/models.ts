@@ -26,6 +26,8 @@ export interface ModelExtraConfig {
   // Jimeng 族
   jimengResolution?: "1k" | "2k" | "4k"
   jimengN?: number
+  // OpenAI 格式：质量参数透传（管理员填入具体值；空 = 不传该字段）
+  quality?: string
   [key: string]: unknown
 }
 
@@ -60,6 +62,8 @@ export const models = pgTable(
     badgeText: varchar("badge_text", { length: 30 }),
     /** 勋章配色 key（见 src/lib/model-badges.ts 色板），可空 */
     badgeColor: varchar("badge_color", { length: 30 }),
+    /** 展示排序（超管拖拽维护；小在前，回退 createdAt） */
+    sortOrder: integer("sort_order").default(0).notNull(),
     apiEndpoint: text("api_endpoint").notNull(),
     apiKeyEncrypted: text("api_key_encrypted").notNull(),
     apiFormat: apiFormatEnum("api_format").default("openai").notNull(),
@@ -106,6 +110,8 @@ export const models = pgTable(
     // 按企业列模型
     index("model_ent").on(t.enterpriseId),
     index("model_active_create").on(t.isActive, t.visibleInCreate),
+    // 用户侧各模型列表统一 order by (sortOrder, createdAt)
+    index("model_sort").on(t.sortOrder, t.createdAt),
     // 唯一约束：含可空 enterprise_id 时 Postgres NULL≠NULL 会导致平台级（NULL）模型
     // 唯一性失效，故拆为两个 partial unique index 分别覆盖：
     // 企业私有模型——同企业内 (name, api_endpoint) 唯一

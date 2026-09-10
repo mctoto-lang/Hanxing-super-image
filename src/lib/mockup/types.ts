@@ -101,6 +101,13 @@ export interface MockupPageData {
   creditsBalance: number
   /** 已完成但未落地的 AI背景任务（浏览器中途关闭的兜底，页面加载时续做） */
   pendingAiApplies: Array<{ taskId: string; cardId: string; groupItemId: string }>
+  /** 进行中的 AI 生图任务（页面刷新后播种前端轮询：队列重试成功仍能自动套版） */
+  pendingAiTasks: Array<{
+    taskId: string
+    aiKind: "background" | "render"
+    cardId: string
+    groupItemId: string
+  }>
 }
 
 /** 模板管理-外部小模板列表项 */

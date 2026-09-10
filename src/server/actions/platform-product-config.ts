@@ -28,6 +28,10 @@ import {
   type UpdatePlatformInput,
   type UpdatePromptTemplateInput,
 } from "@/server/schemas/platform-product"
+import {
+  nextSortOrder,
+  redistributeSortOrder,
+} from "@/server/services/sort-order"
 import { revalidatePath } from "next/cache"
 
 /**
@@ -38,8 +42,14 @@ import { revalidatePath } from "next/cache"
  */
 
 function revalidateAll() {
-  revalidatePath("/platform/product-config")
+  // 模板/平台/语言等配置同时被商品、穿戴、样机三端消费，且表格组件
+  // 在 product-config 与 weartry-config 的子页面复用——按 layout 级
+  // 失效才能覆盖全部嵌套路由
+  revalidatePath("/platform/product-config", "layout")
+  revalidatePath("/platform/weartry-config", "layout")
+  revalidatePath("/platform/mockup-config")
   revalidatePath("/product")
+  revalidatePath("/weartry")
 }
 
 // ═══════════════ 上架平台 ═══════════════
@@ -59,12 +69,27 @@ export async function createPlatformConfigAction(input: CreatePlatformInput) {
     return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   }
   try {
-    await db.insert(productPlatforms).values(parsed.data)
+    await db.insert(productPlatforms).values({
+      ...parsed.data,
+      sortOrder: parsed.data.sortOrder ?? (await nextSortOrder(productPlatforms)),
+    })
   } catch (err) {
     if (err instanceof Error && err.message.includes("pp_key_unique")) {
       return { ok: false, error: "平台标识已存在" }
     }
     return { ok: false, error: "创建失败" }
+  }
+  revalidateAll()
+  return { ok: true, error: null }
+}
+
+/** 拖拽排序：按新顺序重写上架平台 sortOrder */
+export async function reorderPlatformsConfigAction(ids: string[]) {
+  await requireSuperAdmin()
+  try {
+    await redistributeSortOrder(productPlatforms, ids)
+  } catch {
+    return { ok: false, error: "排序保存失败" }
   }
   revalidateAll()
   return { ok: true, error: null }
@@ -119,12 +144,27 @@ export async function createLanguageConfigAction(input: CreateLanguageInput) {
     return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   }
   try {
-    await db.insert(productLanguages).values(parsed.data)
+    await db.insert(productLanguages).values({
+      ...parsed.data,
+      sortOrder: parsed.data.sortOrder ?? (await nextSortOrder(productLanguages)),
+    })
   } catch (err) {
     if (err instanceof Error && err.message.includes("plg_key_unique")) {
       return { ok: false, error: "语言标识已存在" }
     }
     return { ok: false, error: "创建失败" }
+  }
+  revalidateAll()
+  return { ok: true, error: null }
+}
+
+/** 拖拽排序：按新顺序重写语言 sortOrder */
+export async function reorderLanguagesConfigAction(ids: string[]) {
+  await requireSuperAdmin()
+  try {
+    await redistributeSortOrder(productLanguages, ids)
+  } catch {
+    return { ok: false, error: "排序保存失败" }
   }
   revalidateAll()
   return { ok: true, error: null }
@@ -179,12 +219,29 @@ export async function createPromptTemplateConfigAction(input: CreatePromptTempla
     return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   }
   try {
-    await db.insert(productPromptTemplates).values(parsed.data)
+    await db.insert(productPromptTemplates).values({
+      ...parsed.data,
+      sortOrder:
+        parsed.data.sortOrder ??
+        (await nextSortOrder(productPromptTemplates)),
+    })
   } catch (err) {
     if (err instanceof Error && err.message.includes("ppt_scene_unique")) {
       return { ok: false, error: "该场景的模板已存在" }
     }
     return { ok: false, error: "创建失败" }
+  }
+  revalidateAll()
+  return { ok: true, error: null }
+}
+
+/** 拖拽排序：按新顺序重写提示词模板 sortOrder（按展示组内拖动） */
+export async function reorderPromptTemplatesConfigAction(ids: string[]) {
+  await requireSuperAdmin()
+  try {
+    await redistributeSortOrder(productPromptTemplates, ids)
+  } catch {
+    return { ok: false, error: "排序保存失败" }
   }
   revalidateAll()
   return { ok: true, error: null }

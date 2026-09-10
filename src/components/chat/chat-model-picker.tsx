@@ -9,13 +9,20 @@ import {
 } from "@/components/ui/popover"
 import { cn, toImageSrc } from "@/lib/utils"
 import { ModelBadge } from "@/components/model-badge"
+import { TruncateTooltip } from "@/components/ui/truncate-tooltip"
 import { formatPricePerMillion } from "@/lib/ai/chat/chat-model-config"
 import type { ChatModelCard } from "@/components/chat/types"
 
 /**
  * 对话模型选择器（图标 + 名称 + 徽章 + 价格摘要 + 选中 ✓）
- * 与生图 ModelPickerPopover 同构，卡片多一行百万 token 价格摘要。
+ * 与生图 ModelPickerPopover 同构，卡片多一行「输入/输出 · 每百万 tokens」价格摘要。
  */
+
+/** 价格数字去掉尾部零：2.00 → 2、2.50 → 2.5 */
+function trimPrice(s: string): string {
+  return s.includes(".") ? s.replace(/0+$/, "").replace(/\.$/, "") : s
+}
+
 export function ChatModelPicker({
   models,
   value,
@@ -106,20 +113,31 @@ export function ChatModelPicker({
                   )}
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
-                      <p className="truncate text-sm font-medium">{m.displayName}</p>
+                      <TruncateTooltip
+                        text={m.displayName}
+                        className="truncate text-sm font-medium"
+                      />
                       {badge ? <ModelBadge text={badge} color={m.badgeColor} /> : null}
                     </div>
                     {desc ? (
-                      <p className="line-clamp-1 text-xs text-muted-foreground">{desc}</p>
+                      <TruncateTooltip
+                        text={desc}
+                        className="line-clamp-1 text-xs text-muted-foreground"
+                      />
                     ) : null}
-                    <p className="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground tabular-nums">
+                    <p
+                      className="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground tabular-nums"
+                      title="输入 / 输出 积分 · 每百万 tokens（M = 100 万）"
+                    >
                       <Coins className="size-3" />
                       {free ? (
                         <>免费</>
                       ) : (
                         <>
-                          {formatPricePerMillion(m.inputPriceCenticredits)} /{" "}
-                          {formatPricePerMillion(m.outputPriceCenticredits)} 积分·百万tokens
+                          {trimPrice(formatPricePerMillion(m.inputPriceCenticredits))}
+                          /
+                          {trimPrice(formatPricePerMillion(m.outputPriceCenticredits))}{" "}
+                          M
                         </>
                       )}
                     </p>

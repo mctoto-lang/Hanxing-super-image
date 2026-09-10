@@ -86,6 +86,7 @@ function DirectionForm({
   onDone,
   defaultScope,
   variant = "product",
+  promptOnly = false,
 }: {
   row: DirectionRow | null
   onDone: () => void
@@ -93,6 +94,8 @@ function DirectionForm({
   defaultScope?: ProductDirectionScope
   /** 配置中心归属（weartry 时作用域固定、不显示商品专属的平台/主图类控件） */
   variant?: DirectionConfigVariant
+  /** 固定项模式（产品精修快捷优化项）：名称等均锁定，仅可编辑提示词模板 */
+  promptOnly?: boolean
 }) {
   const conf = VARIANT_CONF[variant]
   const router = useRouter()
@@ -107,7 +110,6 @@ function DirectionForm({
   )
   const [supportsCount, setSupportsCount] = useState(row?.supportsCount ?? false)
   const [maxCount, setMaxCount] = useState(row?.maxCount ?? 1)
-  const [sortOrder, setSortOrder] = useState(row?.sortOrder ?? 99)
   const [isHidden, setIsHidden] = useState(row?.isHidden ?? false)
   const [isHero, setIsHero] = useState(row?.isHero ?? false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -115,26 +117,34 @@ function DirectionForm({
   const submit = async () => {
     setSubmitting(true)
     try {
-      const base = {
-        name,
-        description: description || undefined,
-        promptTemplate,
-        scope,
-        supportsCount,
-        maxCount,
-        sortOrder,
-        isHidden,
-        isHero,
+      let res: { ok: boolean; error: string | null }
+      if (row && promptOnly) {
+        res = await updateDirectionAction(row.id, { promptTemplate })
+      } else {
+        const base = {
+          name,
+          description: description || undefined,
+          promptTemplate,
+          scope,
+          supportsCount,
+          maxCount,
+          isHidden,
+          isHero,
+        }
+        res = row
+          ? await updateDirectionAction(row.id, base)
+          : await createDirectionAction(base)
       }
-      const res = row
-        ? await updateDirectionAction(row.id, base)
-        : await createDirectionAction(base)
       if (!res.ok) {
         toast.error(res.error ?? "保存失败")
         return
       }
       toast.success(
-        row ? "方向已更新" : "方向已创建（key 按名称拼音自动生成）",
+        row
+          ? promptOnly
+            ? "提示词模板已更新"
+            : "方向已更新"
+          : "方向已创建（key 按名称拼音自动生成）",
       )
       onDone()
       router.refresh()
@@ -147,17 +157,29 @@ function DirectionForm({
     <div className="space-y-3">
       <div className="space-y-1.5">
         <Label>方向名称</Label>
-        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="白底图" />
+        {promptOnly ? (
+          <p className="rounded-md border bg-muted/50 px-3 py-2 text-sm">
+            {row?.name}
+          </p>
+        ) : (
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="白底图" />
+        )}
       </div>
       <div className="space-y-1.5">
         <Label>描述（卡片副文案）</Label>
-        <Input
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder="纯白背景主图，平台核心展示位"
-        />
+        {promptOnly ? (
+          <p className="rounded-md border bg-muted/50 px-3 py-2 text-sm text-muted-foreground">
+            {row?.description || "—"}
+          </p>
+        ) : (
+          <Input
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="纯白背景主图，平台核心展示位"
+          />
+        )}
       </div>
-      {variant === "product" && (
+      {variant === "product" && !promptOnly && (
         <div className="space-y-1.5">
           <Label>方向类别</Label>
           <Select
@@ -201,7 +223,7 @@ function DirectionForm({
             : "模板即最终生图 prompt：未引用的变量不注入（严格模式），补充要求需引用 {{additionalPrompt}} 才生效；{{platformSegment}} 为主图类自动含平台主图规范，{{platformGeneralSegment}}/{{platformHeroSegment}} 为原始字段值"}
         </p>
       </div>
-      {conf.scopes.length > 1 && (
+      {conf.scopes.length > 1 && !promptOnly && (
         <div className="space-y-1.5">
           <Label>二级分类（适用子功能）</Label>
           <Select
@@ -224,46 +246,41 @@ function DirectionForm({
           </p>
         </div>
       )}
-      <div className="grid grid-cols-3 gap-3">
-        <label className="flex items-center gap-2 text-sm">
-          <Checkbox
-            checked={supportsCount}
-            onCheckedChange={(v) => setSupportsCount(Boolean(v))}
-          />
-          支持数量调节
-        </label>
-        <div className="space-y-1.5">
-          <Label>数量上限</Label>
-          <Input
-            type="number"
-            min={1}
-            max={4}
-            value={maxCount}
-            onChange={(e) => setMaxCount(Number(e.target.value) || 1)}
-          />
+      {!promptOnly && (
+        <div className="grid grid-cols-2 gap-3">
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={supportsCount}
+              onCheckedChange={(v) => setSupportsCount(Boolean(v))}
+            />
+            支持数量调节
+          </label>
+          <div className="space-y-1.5">
+            <Label>数量上限</Label>
+            <Input
+              type="number"
+              min={1}
+              max={4}
+              value={maxCount}
+              onChange={(e) => setMaxCount(Number(e.target.value) || 1)}
+            />
+          </div>
         </div>
+      )}
+      {!promptOnly && (
         <div className="space-y-1.5">
-          <Label>排序</Label>
-          <Input
-            type="number"
-            min={0}
-            value={sortOrder}
-            onChange={(e) => setSortOrder(Number(e.target.value) || 0)}
-          />
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={isHidden}
+              onCheckedChange={(v) => setIsHidden(Boolean(v))}
+            />
+            前端隐藏
+          </label>
+          <p className="text-xs text-muted-foreground">
+            隐藏后不出现在套图「自定义配置」手动列表；智能匹配与「其他」AI 补充仍可选中该方向
+          </p>
         </div>
-      </div>
-      <div className="space-y-1.5">
-        <label className="flex items-center gap-2 text-sm">
-          <Checkbox
-            checked={isHidden}
-            onCheckedChange={(v) => setIsHidden(Boolean(v))}
-          />
-          前端隐藏
-        </label>
-        <p className="text-xs text-muted-foreground">
-          隐藏后不出现在套图「自定义配置」手动列表；智能匹配与「其他」AI 补充仍可选中该方向
-        </p>
-      </div>
+      )}
       <div className="flex justify-end gap-2 pt-2">
         <Button variant="outline" onClick={onDone}>
           取消
@@ -314,7 +331,7 @@ export function DirectionFormDialog({
   )
 }
 
-/** 编辑方向 */
+/** 编辑方向（产品精修固定项自动进入 promptOnly 模式：仅可改提示词模板） */
 export function DirectionEditButton({
   row,
   variant = "product",
@@ -323,6 +340,8 @@ export function DirectionEditButton({
   variant?: DirectionConfigVariant
 }) {
   const [open, setOpen] = useState(false)
+  const promptOnly =
+    variant === "product" && (row.appliesTo ?? []).includes("refine")
   return (
     <>
       <Button variant="ghost" size="icon-xs" onClick={() => setOpen(true)}>
@@ -332,15 +351,19 @@ export function DirectionEditButton({
         <DialogContent className="sm:max-w-lg">
           <DialogTitle>编辑方向：{row.name}</DialogTitle>
           <DialogDescription>
-            key: {row.key}
-            {variant === "product" && row.isHero
-              ? " · 白底图类（生图注入平台主图规范）"
-              : ""}
+            {promptOnly
+              ? "快捷优化项固定，仅可修改使用的提示词模板"
+              : `key: ${row.key}${
+                  variant === "product" && row.isHero
+                    ? " · 白底图类（生图注入平台主图规范）"
+                    : ""
+                }`}
           </DialogDescription>
           <DirectionForm
             row={row}
             onDone={() => setOpen(false)}
             variant={variant}
+            promptOnly={promptOnly}
           />
         </DialogContent>
       </Dialog>

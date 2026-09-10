@@ -53,7 +53,6 @@ function SizeSpecForm({ row, onDone }: { row: SizeSpecRow | null; onDone: () => 
   const [ratioLabel, setRatioLabel] = useState(row?.ratioLabel ?? "")
   const [note, setNote] = useState(row?.note ?? "")
   const [appliesTo, setAppliesTo] = useState<string[]>(row?.appliesTo ?? ["detail"])
-  const [sortOrder, setSortOrder] = useState(row?.sortOrder ?? 99)
 
   const toggleScope = (scope: string) => {
     setAppliesTo((prev) =>
@@ -72,7 +71,6 @@ function SizeSpecForm({ row, onDone }: { row: SizeSpecRow | null; onDone: () => 
         ratioLabel: ratioLabel || undefined,
         note: note || undefined,
         appliesTo: appliesTo as ("suite" | "detail")[],
-        sortOrder,
       }
       const res = row
         ? await updateSizeSpecAction(row.id, base)
@@ -172,16 +170,6 @@ function SizeSpecForm({ row, onDone }: { row: SizeSpecRow | null; onDone: () => 
               {PRODUCT_MODE_LABELS[s]}
             </label>
           ))}
-        </div>
-        <div className="flex items-center gap-2">
-          <Label>排序</Label>
-          <Input
-            type="number"
-            min={0}
-            className="w-20"
-            value={sortOrder}
-            onChange={(e) => setSortOrder(Number(e.target.value) || 0)}
-          />
         </div>
       </div>
       <DialogFooter>

@@ -1,6 +1,6 @@
 "use server"
 
-import { and, desc, eq } from "drizzle-orm"
+import { and, desc, eq, isNull } from "drizzle-orm"
 import { db } from "@/db/client"
 import { generationTasks } from "@/db/schema"
 import {
@@ -26,6 +26,7 @@ export async function getTaskAction(taskId: string) {
         eq(generationTasks.id, taskId),
         eq(generationTasks.enterpriseId, scope.enterpriseId),
         eq(generationTasks.userId, ctx.user.id),
+        isNull(generationTasks.deletedAt),
       ),
     )
     .limit(1)
@@ -58,6 +59,7 @@ export async function listMyTasksAction(opts?: {
       and(
         eq(generationTasks.enterpriseId, scope.enterpriseId),
         eq(generationTasks.userId, ctx.user.id),
+        isNull(generationTasks.deletedAt),
       ),
     )
     .$dynamic()

@@ -79,7 +79,6 @@ function BannerForm({ row, onDone }: { row: BannerRow | null; onDone: () => void
   )
   const [startsAt, setStartsAt] = useState(toLocalInput(row?.startsAt))
   const [endsAt, setEndsAt] = useState(toLocalInput(row?.endsAt))
-  const [sortOrder, setSortOrder] = useState(row?.sortOrder ?? 0)
   const [isActive, setIsActive] = useState(row?.isActive ?? true)
 
   const submit = async () => {
@@ -94,7 +93,6 @@ function BannerForm({ row, onDone }: { row: BannerRow | null; onDone: () => void
         countdownEndsAt: fromLocalInput(countdownEndsAt),
         startsAt: fromLocalInput(startsAt),
         endsAt: fromLocalInput(endsAt),
-        sortOrder,
         isActive,
       }
       const res = row
@@ -173,16 +171,6 @@ function BannerForm({ row, onDone }: { row: BannerRow | null; onDone: () => void
               ))}
             </SelectContent>
           </Select>
-        </div>
-        <div className="space-y-1.5">
-          <Label>排序（小者优先）</Label>
-          <Input
-            type="number"
-            min={0}
-            max={9999}
-            value={sortOrder}
-            onChange={(e) => setSortOrder(Number(e.target.value) || 0)}
-          />
         </div>
       </div>
       <div className="grid grid-cols-3 gap-3">

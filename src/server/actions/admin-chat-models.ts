@@ -1,6 +1,6 @@
 "use server"
 
-import { and, eq, isNull, or, sql } from "drizzle-orm"
+import { and, asc, eq, isNull, or, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import { chatApiConfigs, type ChatModelExtraConfig } from "@/db/schema"
 import {
@@ -10,6 +10,7 @@ import {
 import { chatModelConfigSchema } from "@/server/schemas/admin"
 import { encrypt } from "@/lib/crypto"
 import { revalidatePath } from "next/cache"
+import { nextSortOrder } from "@/server/services/sort-order"
 import type { PresetChatModelRow } from "@/server/actions/platform-chat-models"
 
 /**
@@ -89,7 +90,7 @@ export async function listAdminChatModelsAction(
       .select(chatModelSelectFields)
       .from(chatApiConfigs)
       .where(where)
-      .orderBy(chatApiConfigs.createdAt)
+      .orderBy(asc(chatApiConfigs.sortOrder), asc(chatApiConfigs.createdAt))
       .limit(pageSize)
       .offset((page - 1) * pageSize),
     db.select({ total: sql<number>`count(*)::int` }).from(chatApiConfigs).where(where),
@@ -136,6 +137,8 @@ export async function createChatModelAction(
   }
 
   try {
+    // 追加到列表末尾（用户侧对话模型列表按 sortOrder 排序，企业新建默认 0 会跳到预置模型之前）
+    const sortOrder = await nextSortOrder(chatApiConfigs)
     await db.insert(chatApiConfigs).values({
       enterpriseId, // 企业私有对话模型
       name: d.name,
@@ -148,6 +151,7 @@ export async function createChatModelAction(
       apiKeyEncrypted: encrypt(d.apiKey),
       formatType: d.formatType,
       extraConfig: buildChatExtraConfig(d),
+      sortOrder,
       maxContextTokens: d.maxContextTokens,
       maxOutputTokens: d.maxOutputTokens,
       inputPriceCenticredits: d.inputPriceCenticredits,

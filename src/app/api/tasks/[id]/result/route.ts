@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { auth } from "@/lib/auth/config"
-import { and, eq } from "drizzle-orm"
+import { and, eq, isNull } from "drizzle-orm"
 import { db } from "@/db/client"
 import { generationTasks } from "@/db/schema"
 
@@ -33,6 +33,7 @@ export async function GET(
       and(
         eq(generationTasks.id, taskId),
         eq(generationTasks.userId, session.user.id),
+        isNull(generationTasks.deletedAt),
       ),
     )
     .limit(1)

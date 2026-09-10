@@ -158,6 +158,24 @@ export function buildDirectionPrompt(opts: {
   })
 }
 
+/**
+ * 精修多选合并：全部选中项模板剥掉 {{additionalPrompt}} 变量后按序换行拼接为
+ * 复合指令；用户补充要求以单个 {{additionalPrompt}} 尾段注入（严格模式：未填
+ * 不注入——fillVars 未引用变量即丢弃）。
+ */
+export function mergeRefineTemplates(
+  templates: string[],
+  additionalPrompt?: string | null,
+): string {
+  const segments = templates
+    .map((t) => t.replace(/\{\{\s*additionalPrompt\s*\}\}/g, "").trim())
+    .filter(Boolean)
+  const extra = additionalPrompt?.trim()
+  return [...segments, extra ? "{{additionalPrompt}}" : ""]
+    .filter(Boolean)
+    .join("\n")
+}
+
 /** 智能匹配可用模块池清单（喂 {{directionPool}} 变量的多行文本；
  *  行格式与池数据序列化，属数据格式化而非 prompt 拼接） */
 export function formatDirectionPool(

@@ -37,7 +37,6 @@ import type {
 } from "@/lib/mockup/types"
 import {
   applyMockupAiBackgroundAction,
-  cancelMockupTaskAction,
   deleteMockupCardAction,
   getMockupBackgroundStatusAction,
   getMockupStatusAction,
@@ -117,7 +116,6 @@ export function MockupClient({
   const [overlay, setOverlay] = React.useState<
     Map<string, MockupStatusUpdate>
   >(new Map())
-  const [cancelling, setCancelling] = React.useState<Set<string>>(new Set())
   const terminalSeen = React.useRef<Set<string>>(new Set())
 
   // 弹窗状态
@@ -162,6 +160,7 @@ export function MockupClient({
   }, [])
 
   // AI 生图任务轮询（AI背景完成 → 落地重渲染；AI渲染完成 → 刷新列表）
+  // 初始值播种服务端在途任务：生图失败队列重试窗口内刷新页面，重试成功仍能自动套版
   const [aiPolling, setAiPolling] = React.useState<
     Array<{
       taskId: string
@@ -169,7 +168,7 @@ export function MockupClient({
       cardId: string
       groupItemId: string
     }>
-  >([])
+  >(() => initialData.pendingAiTasks)
   // AI 生图中的方块 key 集合（提交后即时生效；服务端 aiGenerating 覆盖刷新场景）
   const aiGeneratingKeys = React.useMemo(
     () =>
@@ -533,30 +532,6 @@ export function MockupClient({
     }
   }
 
-  const handleCancelTask = async (taskId: string) => {
-    setCancelling((prev) => new Set(prev).add(taskId))
-    try {
-      const res = await cancelMockupTaskAction(taskId)
-      if (res.ok) {
-        toast.success(res.message ?? "取消请求已发送")
-      } else {
-        toast.error(res.error ?? res.message ?? "取消失败")
-        setCancelling((prev) => {
-          const s = new Set(prev)
-          s.delete(taskId)
-          return s
-        })
-      }
-    } catch {
-      toast.error("取消失败")
-      setCancelling((prev) => {
-        const s = new Set(prev)
-        s.delete(taskId)
-        return s
-      })
-    }
-  }
-
   const handleDeleteCard = async () => {
     if (!deleteCard) return
     const res = await deleteMockupCardAction(deleteCard.id)
@@ -855,17 +830,11 @@ export function MockupClient({
                             onCompare: () => setCompareTarget({ card, item }),
                           })
                         }}
-                        onCancel={
-                          t && (t.status === "queued" || t.status === "processing")
-                            ? () => void handleCancelTask(t.taskId)
-                            : undefined
-                        }
                         onRetry={
                           t?.status === "failed"
                             ? () => void handleRetryItem(card.id, item.id)
                             : undefined
                         }
-                        cancelling={t ? cancelling.has(t.taskId) : false}
                       />
                     )
                   })}

@@ -58,7 +58,7 @@ import { ImageViewer, downloadImageFile } from "@/components/ui/image-viewer"
  *        meta 行与图片、限高内滚，框内末尾提供「复制提示词」按钮）
  *      + meta 行：模型名称 | 比例 | 详细信息（竖线分隔；比例优先取图片
  *        实测值——auto 任务不再误显 1:1；多图实测比例不一致时不显示；
- *        悬停详细信息弹出「生成时间 / 消耗积分」两行）
+ *        悬停详细信息弹出「生成时间 / 生成耗时 / 消耗积分」）
  *   2. 图片网格（一行最多 4 张；多图比例不一致时统一为批内最高图比例的
  *      容器，较小图片 object-contain 居中、上下 bg-muted/50 半透明灰填充；
  *      悬浮图片右上角浮现「下载 / 放大」两个圆形按钮，放大打开放大查看器）
@@ -78,6 +78,8 @@ export interface TaskDetail {
   errorMessage: string | null
   creditsCharged: number | null
   createdAt: Date
+  /** 模型开始生成时间（耗时 = completedAt − startedAt；缺省无法计算耗时） */
+  startedAt: Date | null
   completedAt: Date | null
   modelDisplayName: string
   modelIconUrl: string | null
@@ -120,6 +122,16 @@ function formatRequestTime(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
     date.getDate(),
   )} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+/** 模型生成耗时：completedAt − startedAt；<60s 一位小数秒，否则 X分Y秒 */
+function formatGenerationDuration(ms: number): string {
+  if (ms < 0) return "-"
+  const seconds = ms / 1000
+  if (seconds < 60) return `${seconds.toFixed(1)}s`
+  // 先取整总秒数再拆分，避免 59.5~60s 四舍五入出「X分60秒」
+  const total = Math.round(seconds)
+  return `${Math.floor(total / 60)}分${total % 60}秒`
 }
 
 export function TaskDetailCard({
@@ -425,6 +437,15 @@ export function TaskDetailCard({
                   <p>
                     生成时间 {formatRequestTime(new Date(task.createdAt))}
                   </p>
+                  {task.startedAt && task.completedAt ? (
+                    <p>
+                      生成耗时{" "}
+                      {formatGenerationDuration(
+                        new Date(task.completedAt).getTime() -
+                          new Date(task.startedAt).getTime(),
+                      )}
+                    </p>
+                  ) : null}
                   <p>消耗积分 {task.creditsCharged ?? "-"}</p>
                 </TooltipContent>
               </Tooltip>
@@ -577,9 +598,10 @@ export function TaskDetailCard({
           </DropdownMenuContent>
         </DropdownMenu>
 
-        {/* 状态徽章：仅非完成态显示（进行中/失败仍提示；完成态不渲染） */}
+        {/* 状态徽章：仅非完成态显示（进行中/失败仍提示；完成态不渲染）；
+            h-8 与左侧操作按钮齐高 */}
         {task.status !== "completed" && (
-          <Badge variant={status.variant} className="ml-auto">
+          <Badge variant={status.variant} className="ml-auto h-8">
             {pending && <MorphingInfinity className="mr-1 size-3" />}
             {status.label}
           </Badge>

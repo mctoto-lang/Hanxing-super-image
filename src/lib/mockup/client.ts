@@ -629,18 +629,6 @@ export async function getRenderJobs(
   )
 }
 
-export async function cancelRenderJob(
-  cfg: MockupApiConfig,
-  jobId: string,
-  reason?: string,
-): Promise<{ jobId: string; status: ExternalRenderStatus; updated: boolean }> {
-  return apiFetch(cfg, `/v1/render-jobs/${jobId}/cancel`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(reason ? { reason } : {}),
-  })
-}
-
 /** 渲染结果下载体积上限（与存储层 downloadBuffered 一致，防异常响应耗尽内存） */
 const MAX_RESULT_BYTES = 50 * 1024 * 1024
 

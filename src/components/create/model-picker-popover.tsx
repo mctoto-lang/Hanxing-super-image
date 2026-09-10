@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/popover"
 import { cn, toImageSrc } from "@/lib/utils"
 import { ModelBadge } from "@/components/model-badge"
+import { TruncateTooltip } from "@/components/ui/truncate-tooltip"
 import type { CreateModel } from "@/components/create/types"
 
 /**
@@ -105,17 +106,19 @@ export function ModelPickerPopover({
                   )}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <p className="text-sm font-medium truncate">
-                        {m.displayName}
-                      </p>
+                      <TruncateTooltip
+                        text={m.displayName}
+                        className="text-sm font-medium truncate"
+                      />
                       {badge ? (
                         <ModelBadge text={badge} color={m.badgeColor} />
                       ) : null}
                     </div>
                     {desc ? (
-                      <p className="text-xs text-muted-foreground line-clamp-1">
-                        {desc}
-                      </p>
+                      <TruncateTooltip
+                        text={desc}
+                        className="text-xs text-muted-foreground line-clamp-1"
+                      />
                     ) : null}
                   </div>
                   {active && <Check className="size-4 text-primary shrink-0" />}

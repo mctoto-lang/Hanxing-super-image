@@ -1,6 +1,6 @@
 "use server"
 
-import { and, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm"
+import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import {
   cardImages,
@@ -2440,7 +2440,7 @@ export async function listChatApisAction(): Promise<ChatApiOption[]> {
         ),
       ),
     )
-    .orderBy(desc(chatApiConfigs.createdAt))
+    .orderBy(asc(chatApiConfigs.sortOrder), asc(chatApiConfigs.createdAt))
   return rows.map((r) => ({
     id: r.id,
     name: r.name,
@@ -2698,6 +2698,7 @@ export async function listWorkspaceModelsAction(): Promise<
     })
     .from(models)
     .where(and(eq(models.isActive, true), eq(models.visibleInWorkspace, true)))
+    .orderBy(asc(models.sortOrder), asc(models.createdAt))
   // 平台预置 + 本企业私有
   const accessible = rows.filter(
     (m) => m.enterpriseId === null || m.enterpriseId === scope.enterpriseId,
@@ -2735,7 +2736,12 @@ export async function getQueueStatusAction(): Promise<{
       status: generationTasks.status,
     })
     .from(generationTasks)
-    .where(eq(generationTasks.enterpriseId, scope.enterpriseId))
+    .where(
+      and(
+        eq(generationTasks.enterpriseId, scope.enterpriseId),
+        isNull(generationTasks.deletedAt),
+      ),
+    )
   let queued = 0
   let processing = 0
   for (const r of rows) {

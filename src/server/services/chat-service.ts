@@ -1,4 +1,4 @@
-import { and, desc, eq, lt, sql } from "drizzle-orm"
+import { and, asc, desc, eq, isNull, lt, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import {
   chatApiConfigs,
@@ -50,6 +50,7 @@ export async function listAccessibleChatModels(
     .select()
     .from(chatApiConfigs)
     .where(eq(chatApiConfigs.isActive, true))
+    .orderBy(asc(chatApiConfigs.sortOrder), asc(chatApiConfigs.createdAt))
 
   const enterpriseId = ctx.user.enterpriseId
   const scoped = rows.filter(
@@ -119,7 +120,7 @@ export async function createChatConversation(input: {
   return { id: row!.id, title: row!.title }
 }
 
-/** 按归属读取会话（enterpriseId + userId 双过滤） */
+/** 按归属读取会话（enterpriseId + userId 双过滤；软删会话视为不存在） */
 export async function getOwnedChatConversation(
   ctx: UserContext,
   conversationId: string,
@@ -132,6 +133,7 @@ export async function getOwnedChatConversation(
         eq(chatConversations.id, conversationId),
         eq(chatConversations.enterpriseId, ctx.user.enterpriseId!),
         eq(chatConversations.userId, ctx.user.id),
+        isNull(chatConversations.deletedAt),
       ),
     )
     .limit(1)
@@ -455,6 +457,28 @@ export async function finalizeChatMessage(input: {
     })
     .where(eq(chatMessages.id, messageId))
 
+  // 流进行中会话被软删：内容/用量先照常落库（管理端与计费依赖），
+  // 再把会话下未置位消息对齐 deletedAt（保持「随会话整批软删」
+  // 不变量——否则流中新建的 user/assistant 消息以未删态挂在已删
+  // 会话下），且不再回写会话级字段（lastMessageAt 等冻结）
+  const [deletedConv] = await db
+    .select({ deletedAt: chatConversations.deletedAt })
+    .from(chatConversations)
+    .where(eq(chatConversations.id, conversationId))
+    .limit(1)
+  if (deletedConv?.deletedAt) {
+    await db
+      .update(chatMessages)
+      .set({ deletedAt: deletedConv.deletedAt })
+      .where(
+        and(
+          eq(chatMessages.conversationId, conversationId),
+          isNull(chatMessages.deletedAt),
+        ),
+      )
+    return
+  }
+
   // contextTokens：上游 usage 的 input+output 即当前窗口真实占用；
   // 无 usage 时退化为字符估算，保证圆环始终有值
   const contextTokens =
@@ -537,6 +561,7 @@ export async function ensureConversationTitle(
       and(
         eq(chatConversations.id, conversationId),
         eq(chatConversations.title, "新对话"),
+        isNull(chatConversations.deletedAt),
       ),
     )
 }
@@ -590,7 +615,12 @@ export async function generateConversationTitle(input: {
     await db
       .update(chatConversations)
       .set({ title, updatedAt: new Date() })
-      .where(eq(chatConversations.id, input.conversationId))
+      .where(
+        and(
+          eq(chatConversations.id, input.conversationId),
+          isNull(chatConversations.deletedAt),
+        ),
+      )
   } catch (err) {
     console.warn(
       "[chat] AI 标题生成失败（保留截断标题）:",

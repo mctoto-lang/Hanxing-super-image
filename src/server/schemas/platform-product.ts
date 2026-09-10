@@ -28,7 +28,8 @@ export const createDirectionSchema = z.object({
   scope: directionScopeSchema,
   supportsCount: z.boolean(),
   maxCount: z.number().int().min(1).max(4),
-  sortOrder: z.number().int().min(0),
+  /** 顺序由列表拖拽维护；新建缺省 = 追加到末尾 */
+  sortOrder: z.number().int().min(0).optional(),
   /** 前端隐藏：不出现在套图自定义配置手动列表（智能匹配/其他补充不受影响） */
   isHidden: z.boolean().default(false),
   /** 白底图类（主图）：生图时注入所选平台的 主图规范段 */
@@ -45,7 +46,8 @@ export const createSizeSpecSchema = z.object({
   ratioLabel: z.string().max(30).optional(),
   note: z.string().max(500).optional(),
   appliesTo: z.array(sizeSpecScopeSchema).min(1, "请至少选择一个适用子功能"),
-  sortOrder: z.number().int().min(0),
+  /** 顺序由列表拖拽维护；新建缺省 = 追加到末尾 */
+  sortOrder: z.number().int().min(0).optional(),
 })
 
 export const updateSizeSpecSchema = createSizeSpecSchema.partial()
@@ -69,16 +71,18 @@ export const createPlatformSchema = z.object({
   label: z.string().trim().min(1, "请输入平台名称").max(100),
   heroPromptSegment: z.string().max(2000).optional(),
   generalPromptSegment: z.string().max(2000).optional(),
-  sortOrder: z.number().int().min(0),
+  /** 顺序由列表拖拽维护；新建缺省 = 追加到末尾 */
+  sortOrder: z.number().int().min(0).optional(),
 })
 export const updatePlatformSchema = createPlatformSchema.partial().omit({ key: true })
 
 export const createLanguageSchema = z.object({
-  key: keySlug.max(20, "语言标识最长 20 字符"),
+  key: keySlug.max(20, "语言标识最长 20"),
   label: z.string().trim().min(1, "请输入语言名称").max(100),
   outputName: z.string().trim().min(1, "请输入输出语言名").max(100),
   imageDirective: z.string().max(1000).optional(),
-  sortOrder: z.number().int().min(0),
+  /** 顺序由列表拖拽维护；新建缺省 = 追加到末尾 */
+  sortOrder: z.number().int().min(0).optional(),
 })
 export const updateLanguageSchema = createLanguageSchema.partial().omit({ key: true })
 
@@ -88,7 +92,8 @@ export const createPromptTemplateSchema = z.object({
   name: z.string().trim().min(1, "请输入模板名称").max(100),
   template: z.string().trim().min(1, "请输入提示词模板").max(8000),
   note: z.string().max(1000).optional(),
-  sortOrder: z.number().int().min(0),
+  /** 顺序由列表拖拽维护；新建缺省 = 追加到末尾 */
+  sortOrder: z.number().int().min(0).optional(),
 })
 export const updatePromptTemplateSchema = createPromptTemplateSchema.partial().omit({
   scene: true,

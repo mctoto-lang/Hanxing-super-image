@@ -18,6 +18,10 @@ import {
   clearEnterprisePlan,
   renewEnterprisePlan,
 } from "@/server/services/subscription-service"
+import {
+  nextSortOrder,
+  redistributeSortOrder,
+} from "@/server/services/sort-order"
 
 /**
  * 订阅套餐管理 Server Actions（超管专用）
@@ -60,7 +64,12 @@ export async function createSubscriptionPlanAction(
   try {
     const [plan] = await db
       .insert(subscriptionPlans)
-      .values(parsed.data)
+      .values({
+        ...parsed.data,
+        sortOrder:
+          parsed.data.sortOrder ??
+          (await nextSortOrder(subscriptionPlans)),
+      })
       .returning({ id: subscriptionPlans.id, name: subscriptionPlans.name })
     revalidatePath("/platform/plans")
     return { ok: true as const, error: null, id: plan.id, name: plan.name }
@@ -71,6 +80,18 @@ export async function createSubscriptionPlanAction(
       error: message.includes("unique") ? "套餐名称已存在" : message,
     }
   }
+}
+
+/** 拖拽排序：按新顺序重写套餐 sortOrder */
+export async function reorderSubscriptionPlansAction(ids: string[]) {
+  await requireSuperAdmin()
+  try {
+    await redistributeSortOrder(subscriptionPlans, ids)
+  } catch {
+    return { ok: false, error: "排序保存失败" }
+  }
+  revalidatePath("/platform/plans")
+  return { ok: true, error: null }
 }
 
 /** 编辑套餐（影响后续周期发放，已发放的不追溯） */

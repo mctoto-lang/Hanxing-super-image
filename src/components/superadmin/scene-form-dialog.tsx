@@ -48,7 +48,6 @@ function SceneForm({
   const [promptTemplate, setPromptTemplate] = useState(
     row?.promptTemplate ?? "",
   )
-  const [sortOrder, setSortOrder] = useState(row?.sortOrder ?? 99)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const submit = async () => {
@@ -58,7 +57,6 @@ function SceneForm({
         name,
         description: description || undefined,
         promptTemplate,
-        sortOrder,
       }
       const res = row
         ? await updateWeartrySceneAction(row.id, base)
@@ -114,15 +112,6 @@ function SceneForm({
           模板填充后作为 {"{{sceneSegment}}"} 注入「模特穿戴 ·
           穿戴生图」模板；未被引用的变量不注入（严格模式）
         </p>
-      </div>
-      <div className="space-y-1.5">
-        <Label>排序</Label>
-        <Input
-          type="number"
-          min={0}
-          value={sortOrder}
-          onChange={(e) => setSortOrder(Number(e.target.value) || 0)}
-        />
       </div>
       <div className="flex justify-end gap-2 pt-2">
         <Button variant="outline" onClick={onDone}>

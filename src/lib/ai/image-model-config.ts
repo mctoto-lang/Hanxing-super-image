@@ -26,6 +26,8 @@ interface BuildOpenAiRequestInput {
   imageSize: string
   referenceImages: string[]
   referenceImageField?: string
+  /** 质量参数透传（管理员配置的具体值；空 = 请求体不带该字段） */
+  quality?: string
 }
 
 interface BuildJimengRequestInput {
@@ -158,9 +160,13 @@ export function validateImageModelConfig(input: ImageModelConfigInput): void {
   }
   const config = parseExtraConfig(input.extraConfig)
 
-  // openai：标准格式无额外配置项（尺寸固定走 size 字段）
+  // openai：额外配置仅 quality（质量参数透传，值为管理员按上游文档填写的字符串）
   if (format === "openai") {
-    rejectUnsupportedFields(config, new Set())
+    rejectUnsupportedFields(config, new Set(["quality"]))
+    const quality = config.quality
+    if (quality !== undefined && typeof quality !== "string") {
+      throw new Error("quality 必须是字符串")
+    }
     return
   }
 
@@ -200,6 +206,7 @@ export function sizeToRatio(size: string): string {
  *
  * - 尺寸固定走 size 字段（"1024x1536"；智能比例传 "auto"）
  * - 参考图以 URL 链接数组传入 image 字段（字段名可由 referenceImageField 覆盖）
+ * - quality（可选）：管理员配置的质量参数原样透传（如 high/medium/low、hd/standard）
  */
 export function buildOpenAiRequestBody(
   input: BuildOpenAiRequestInput,
@@ -209,6 +216,9 @@ export function buildOpenAiRequestBody(
     model: input.model,
     prompt: input.prompt,
     size,
+  }
+  if (input.quality?.trim()) {
+    body.quality = input.quality.trim()
   }
   if (input.referenceImages.length > 0) {
     const field =

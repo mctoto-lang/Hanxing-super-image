@@ -1,6 +1,6 @@
 "use server"
 
-import { and, eq, isNull, sql } from "drizzle-orm"
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import {
   models,
@@ -12,6 +12,10 @@ import { requireSuperAdmin } from "@/lib/auth/session"
 import { modelConfigSchema } from "@/server/schemas/admin"
 import { validateImageModelConfig } from "@/lib/ai/image-model-config"
 import { encrypt } from "@/lib/crypto"
+import {
+  nextSortOrder,
+  redistributeSortOrder,
+} from "@/server/services/sort-order"
 import { revalidatePath } from "next/cache"
 
 /**
@@ -28,11 +32,15 @@ function buildExtraConfig(input: {
   apiFormat: "openai" | "jimeng"
   jimengResolution?: "1k" | "2k" | "4k"
   jimengN?: number
+  quality?: string
 }): ModelExtraConfig {
-  // openai 标准格式无额外配置项
-  if (input.apiFormat === "openai") return {}
-  // jimeng
   const cfg: ModelExtraConfig = {}
+  // openai：质量参数透传（空 = 不写 = 关闭）
+  if (input.apiFormat === "openai") {
+    if (input.quality?.trim()) cfg.quality = input.quality.trim()
+    return cfg
+  }
+  // jimeng
   if (input.jimengResolution) cfg.jimengResolution = input.jimengResolution
   if (input.jimengN) cfg.jimengN = input.jimengN
   return cfg
@@ -147,7 +155,7 @@ export async function listPresetModelsAction(
     })
     .from(models)
     .where(isNull(models.enterpriseId))
-    .orderBy(models.createdAt)
+    .orderBy(asc(models.sortOrder), asc(models.createdAt))
 
   return {
     items: rows.slice((page - 1) * pageSize, page * pageSize),
@@ -216,6 +224,7 @@ export async function createPresetModelAction(
         apiTimeout: d.apiTimeout,
         taskTimeout: d.taskTimeout,
         iconUrl: d.iconUrl || null,
+        sortOrder: await nextSortOrder(models),
       })
       .returning()
 
@@ -259,14 +268,14 @@ export async function updatePresetModelAction(
   }
 
   const apiFormat = d.apiFormat ?? existing.apiFormat
-  const extraConfig =
-    d.apiFormat || d.jimengResolution
-      ? buildExtraConfig({
-          apiFormat,
-          jimengResolution: d.jimengResolution,
-          jimengN: d.jimengN,
-        })
-      : existing.extraConfig
+  // 表单为全量提交（schema 的 apiFormat 必填），始终按扁平字段重建
+  // extraConfig——本次关闭的开关（如 quality）其旧值随之清除，无残留
+  const extraConfig = buildExtraConfig({
+    apiFormat,
+    jimengResolution: d.jimengResolution,
+    jimengN: d.jimengN,
+    quality: d.quality,
+  })
 
   try {
     validateImageModelConfig({ apiFormat, extraConfig })
@@ -338,6 +347,30 @@ export async function togglePresetModelActiveAction(
 
   await db.update(models).set({ isActive }).where(eq(models.id, modelId))
 
+  revalidatePath("/platform/models")
+  return { ok: true, error: null }
+}
+
+/** 拖拽排序：按新顺序重写平台预置模型 sortOrder（用户端模型列表同步生效） */
+export async function reorderPresetModelsAction(
+  ids: string[],
+): Promise<{ ok: true; error: null } | { ok: false; error: string }> {
+  await requireSuperAdmin()
+  if (ids.length === 0) return { ok: true, error: null }
+  // 归属校验：仅平台预置行可重排——enterpriseId 非空的 id 一律拒绝，
+  // 防止直接调用 action 改写企业私有模型的「预置排序」基准
+  const rows = await db
+    .select({ id: models.id })
+    .from(models)
+    .where(and(inArray(models.id, ids), isNull(models.enterpriseId)))
+  if (rows.length !== new Set(ids).size) {
+    return { ok: false, error: "仅可调整平台预置模型的顺序" }
+  }
+  try {
+    await redistributeSortOrder(models, ids)
+  } catch {
+    return { ok: false, error: "排序保存失败" }
+  }
   revalidatePath("/platform/models")
   return { ok: true, error: null }
 }

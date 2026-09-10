@@ -63,6 +63,8 @@ export const chatApiConfigs = pgTable(
     badgeText: varchar("badge_text", { length: 30 }),
     badgeColor: varchar("badge_color", { length: 30 }),
     iconUrl: text("icon_url"),
+    /** 展示排序（超管拖拽维护；小在前，回退 createdAt） */
+    sortOrder: integer("sort_order").default(0).notNull(),
     apiEndpoint: text("api_endpoint").notNull(),
     apiKeyEncrypted: text("api_key_encrypted").notNull(),
     formatType: varchar("format_type", { length: 30 }).default("openai").notNull(), // openai | claude | gemini | grok
@@ -97,6 +99,8 @@ export const chatApiConfigs = pgTable(
   },
   (t) => [
     index("cac_ent").on(t.enterpriseId),
+    // 用户侧对话模型列表统一 order by (sortOrder, createdAt)
+    index("cac_sort").on(t.sortOrder, t.createdAt),
     // 平台预置 / 企业私有 各自 (name, apiEndpoint) 唯一，与 model 表的拆分唯一索引同构
     uniqueIndex("chat_model_name_endpoint_platform_unique")
       .on(t.name, t.apiEndpoint)

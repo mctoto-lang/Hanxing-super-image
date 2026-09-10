@@ -11,6 +11,10 @@ import {
   type CreateSceneInput,
   type UpdateSceneInput,
 } from "@/server/schemas/platform-weartry"
+import {
+  nextSortOrder,
+  redistributeSortOrder,
+} from "@/server/services/sort-order"
 import { revalidatePath } from "next/cache"
 
 /**
@@ -70,12 +74,28 @@ export async function createWeartrySceneAction(input: CreateSceneInput) {
   }
   try {
     const key = parsed.data.key ?? (await generateUniqueSceneKey(parsed.data.name))
-    await db.insert(weartryScenes).values({ ...parsed.data, key })
+    await db.insert(weartryScenes).values({
+      ...parsed.data,
+      key,
+      sortOrder: parsed.data.sortOrder ?? (await nextSortOrder(weartryScenes)),
+    })
   } catch (err) {
     if (err instanceof Error && err.message.includes("ws_key_unique")) {
       return { ok: false, error: "场景标识已存在" }
     }
     return { ok: false, error: "创建失败" }
+  }
+  revalidateAll()
+  return { ok: true, error: null }
+}
+
+/** 拖拽排序：按新顺序重写穿戴场景 sortOrder */
+export async function reorderWeartryScenesAction(ids: string[]) {
+  await requireSuperAdmin()
+  try {
+    await redistributeSortOrder(weartryScenes, ids)
+  } catch {
+    return { ok: false, error: "排序保存失败" }
   }
   revalidateAll()
   return { ok: true, error: null }

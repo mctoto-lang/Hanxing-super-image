@@ -1,6 +1,6 @@
 "use server"
 
-import { and, desc, eq, sql } from "drizzle-orm"
+import { and, desc, eq, isNull, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import {
   generationTasks,
@@ -17,11 +17,12 @@ import { revalidatePath } from "next/cache"
 /**
  * 资产管理 Server Actions（手册 M4）
  *
- * 跨来源图片画廊（自由创作/批量生图/商品/穿戴/样机），按企业 + 用户隔离。
+ * 跨来源图片画廊（自由创作/批量生图/商品/穿戴/样机），个人维度：
+ * 仅显示当前用户自己生成的图片（企业管理员同样只看个人，无特权）。
  * 查询、收藏。
  */
 
-/** 列出当前企业的所有图片资产（含来源模型信息） */
+/** 列出当前用户生成的图片资产（含来源模型信息；企业内其他成员的图不展示） */
 export async function listAssetsAction(opts?: {
   limit?: number
   offset?: number
@@ -51,7 +52,9 @@ export async function listAssetsAction(opts?: {
 
   const conditions = [
     eq(generationTasks.enterpriseId, enterpriseId),
+    eq(generationTasks.userId, ctx.user.id),
     eq(generationTasks.status, "completed"),
+    isNull(generationTasks.deletedAt),
     sql`${generationTasks.resultImages} IS NOT NULL`,
   ]
   // onlyPinned: 进一步限定为当前用户收藏的（保留参数供未来使用）
@@ -91,6 +94,7 @@ export async function listPinnedTasksAction() {
       and(
         eq(pinnedTasks.enterpriseId, enterpriseId),
         eq(pinnedTasks.userId, ctx.user.id),
+        isNull(generationTasks.deletedAt),
       ),
     )
     .orderBy(desc(pinnedTasks.createdAt))
@@ -106,7 +110,7 @@ export async function pinTaskAction(input: {
   if (denied) return { ok: false, error: denied }
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
 
-  // 任务必须属于本企业
+  // 任务必须属于本人（个人画廊口径：他人任务不可收藏；软删任务不可收藏）
   const [task] = await db
     .select({ id: generationTasks.id })
     .from(generationTasks)
@@ -114,6 +118,8 @@ export async function pinTaskAction(input: {
       and(
         eq(generationTasks.id, input.taskId),
         eq(generationTasks.enterpriseId, enterpriseId),
+        eq(generationTasks.userId, ctx.user.id),
+        isNull(generationTasks.deletedAt),
       ),
     )
     .limit(1)

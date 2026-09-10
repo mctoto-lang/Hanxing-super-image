@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, lt, ne } from "drizzle-orm"
+import { and, desc, eq, inArray, isNull, lt, ne } from "drizzle-orm"
 import { db } from "@/db/client"
 import {
   apiCallLogs,
@@ -318,6 +318,8 @@ export async function recoverOrphanTasks(): Promise<number> {
         // 样机任务不走 Redis 队列（外部服务驱动，mockup-service 同步），
         // 不在回收范围内，否则会被误判孤儿并塞进图像队列
         ne(generationTasks.taskType, "mockup"),
+        // 软删任务不回收（用户已删，不得重新入队生成）
+        isNull(generationTasks.deletedAt),
       ),
     )
     .limit(200)
@@ -526,16 +528,16 @@ async function processOneTask(
   task: QueueTaskInput,
   enterpriseMaxConcurrent: number,
 ): Promise<void> {
-  // 防御：DB 无任务行（孤儿任务，常见于 DB 被重置但 Redis 未清）。
-  // 在发起 AI 请求前拦截，避免无意义生图调用 + api_call_log 外键违例 + 无限重试死循环。
+  // 防御：DB 无任务行（孤儿任务，常见于 DB 被重置但 Redis 未清）或已被用户
+  // 软删。在发起 AI 请求前拦截，避免无意义生图调用 + api_call_log 外键违例 + 无限重试死循环。
   const [taskRow] = await db
     .select()
     .from(generationTasks)
     .where(eq(generationTasks.id, task.taskId))
     .limit(1)
-  if (!taskRow) {
+  if (!taskRow || taskRow.deletedAt) {
     console.warn(
-      `[queue] 任务 ${task.taskId} 在 DB 中无对应行（孤儿任务），跳过处理并清理`,
+      `[queue] 任务 ${task.taskId} 在 DB 中无对应行或已被删除（孤儿任务），跳过处理并清理`,
     )
     await failTask(task.enterpriseId, task.taskId, false)
     return
@@ -602,15 +604,20 @@ async function processOneTask(
     }
   }, taskTimeoutMs)
 
-  // 删除止损：任务行被用户删除后不再转存/落库。每张转存前检查任务行仍存在；
-  // 已删则置标志并 abort（等待槽位/在途请求尽快失败，剩余张不再发起）
+  // 删除止损：任务行被用户删除（硬删或软删）后不再转存/落库。每张转存前
+  // 检查任务行仍存在；已删则置标志并 abort（等待槽位/在途请求尽快失败，剩余张不再发起）
   let taskDeleted = false
   const ensureTaskAlive = async (): Promise<void> => {
     if (taskDeleted) throw new Error("任务已被删除")
     const [row] = await db
       .select({ id: generationTasks.id })
       .from(generationTasks)
-      .where(eq(generationTasks.id, task.taskId))
+      .where(
+        and(
+          eq(generationTasks.id, task.taskId),
+          isNull(generationTasks.deletedAt),
+        ),
+      )
       .limit(1)
     if (!row) {
       taskDeleted = true
@@ -739,7 +746,8 @@ async function processOneTask(
       imageUrls: resultImages,
     })
 
-    // 回写会话缩略图（取第一张生成图）+ updatedAt，供左侧列表展示
+    // 回写会话缩略图（取第一张生成图）+ updatedAt，供左侧列表展示；
+    // 已软删会话不再回写（保持「删除即冻结」语义）
     if (task.conversationId && resultImages.length > 0) {
       await db
         .update(conversations)
@@ -747,7 +755,12 @@ async function processOneTask(
           lastImageThumb: resultImages[0]!,
           updatedAt: new Date(),
         })
-        .where(eq(conversations.id, task.conversationId))
+        .where(
+          and(
+            eq(conversations.id, task.conversationId),
+            isNull(conversations.deletedAt),
+          ),
+        )
     }
 
     await apiCallLog(model.id, task, startedAt, null, resultImages.length)
@@ -779,9 +792,9 @@ async function handleTaskFailure(
     .from(generationTasks)
     .where(eq(generationTasks.id, task.taskId))
     .limit(1)
-  if (!current) {
-    // 任务行已被删除：无退款对象，也不允许重试（否则已删任务被反复重新入队），
-    // 直接把 Redis 元数据收尾为终态
+  if (!current || current.deletedAt) {
+    // 任务行已被删除（硬删或软删）：无退款对象，也不允许重试（否则已删任务
+    // 被反复重新入队），直接把 Redis 元数据收尾为终态
     await failTask(task.enterpriseId, task.taskId, false)
     return
   }
@@ -848,7 +861,12 @@ async function handleTaskFailure(
           lastImageThumb: current!.resultImages![0]!,
           updatedAt: new Date(),
         })
-        .where(eq(conversations.id, task.conversationId))
+        .where(
+          and(
+            eq(conversations.id, task.conversationId),
+            isNull(conversations.deletedAt),
+          ),
+        )
     }
 
     await completeTask(task.enterpriseId, task.taskId)

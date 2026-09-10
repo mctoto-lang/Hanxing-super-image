@@ -6,7 +6,6 @@ import {
   mockupExternalAssets,
 } from "@/db/schema"
 import {
-  cancelRenderJob,
   completeAsset,
   createAssetUploadUrl,
   createRenderJob,
@@ -582,29 +581,6 @@ export async function syncMockupJobs(): Promise<{
   return {
     checked: syncResult.checked,
     finalized: orphans.length + syncResult.finalized,
-  }
-}
-
-/** 取消在途渲染任务（用户侧）：外部取消 + 本地等待同步收敛 */
-export async function cancelMockupRenderJob(
-  enterpriseId: string,
-  externalJobId: string,
-): Promise<{ cancelled: boolean; message: string }> {
-  const cfg = await loadMockupConfig(enterpriseId)
-  if (!cfg) return { cancelled: false, message: "渲染服务未配置" }
-  try {
-    const res = await cancelRenderJob(cfg, externalJobId, "用户取消")
-    return {
-      cancelled: res.updated,
-      message: res.updated ? "取消请求已发送" : "任务已处于终态",
-    }
-  } catch (err) {
-    const status = (err as { status?: number }).status
-    if (status === 409) return { cancelled: false, message: "任务已处于终态" }
-    return {
-      cancelled: false,
-      message: err instanceof Error ? err.message : "取消失败",
-    }
   }
 }
 

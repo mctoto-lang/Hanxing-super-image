@@ -40,7 +40,7 @@ const PREVIEW_W = 320
  * 框选多张、全选/清空（不可用时置灰）、「确认」按勾选顺序返回。
  *
  * 工具栏：批量选择 / 日期范围（两个 Tab 按上传·生成时间过滤）/
- * 上传（带进度动画；勾选模式支持一次多选文件，成功后自动追加勾选）。
+ * 上传（带进度动画；支持一次多选文件，勾选模式下成功后自动按顺序追加勾选）。
  * 缩略图悬停在弹窗左侧浮出完整比例预览（仅图片）。上传成功后均后台
  * 预导入外部素材（失败静默，提交路径有懒导入兜底）。
  */
@@ -171,21 +171,22 @@ export function ImageLibraryDialog({
     }
   }
 
-  /** 批量模式：一次上传多张（并发，按选择顺序追加勾选） */
+  /** 多图上传（并发）：勾选模式按顺序追加勾选；普通模式仅入库追加「我的上传」 */
   const handleUploadMany = async (files: File[]) => {
     const images = files.filter((f) => /^image\/(jpeg|png|webp)$/.test(f.type))
     if (images.length === 0) {
       toast.error("所选内容中没有图片文件（支持 jpg/png/webp）")
       return
     }
-    const room = maxSelect - selection.length
+    // 批量勾选模式受多选上限余量截取；普通模式全量上传
+    const room = batchMode ? maxSelect - selection.length : images.length
     if (room <= 0) {
       toast.warning(`最多选择 ${maxSelect} 张`)
       return
     }
     const batch = images.slice(0, room)
     if (images.length > room) {
-      toast.warning(`最多 ${maxSelect} 张，已截取前 ${room} 张`)
+      toast.warning(`最多 ${room} 张，已截取前 ${room} 张`)
     }
     setUploadPhase("uploading")
     setUploadPct(0)
@@ -217,7 +218,10 @@ export function ImageLibraryDialog({
     )
     const ok = uploaded.filter((m): m is MockupLibraryImage => m != null)
     if (ok.length > 0) {
-      setSelection((prev) => [...prev, ...ok.map((m) => m.imageUrl)])
+      // 勾选模式按上传顺序追加勾选；普通模式不动勾选状态
+      if (batchMode) {
+        setSelection((prev) => [...prev, ...ok.map((m) => m.imageUrl)])
+      }
       setTab("upload")
       toast.success(`上传成功 ${ok.length} 张${fail > 0 ? `，失败 ${fail} 张` : ""}`)
       finishUpload()
@@ -494,12 +498,12 @@ export function ImageLibraryDialog({
             <input
               ref={fileInputRef}
               type="file"
-              multiple={batchMode}
+              multiple
               accept="image/jpeg,image/png,image/webp"
               className="hidden"
               onChange={(e) => {
                 const files = Array.from(e.target.files ?? [])
-                if (batchMode) void handleUploadMany(files)
+                if (files.length > 1) void handleUploadMany(files)
                 else void handleUpload(files[0])
                 if (fileInputRef.current) fileInputRef.current.value = ""
               }}

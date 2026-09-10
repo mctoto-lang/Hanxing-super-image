@@ -15,9 +15,15 @@ import {
   SceneToggleActiveButton,
   type SceneRow,
 } from "@/components/superadmin/scene-form-dialog"
+import { DragHandle, useDragSort } from "@/hooks/use-drag-sort"
+import { reorderWeartryScenesAction } from "@/server/actions/platform-weartry"
 
-/** 预置场景配置列表（模特穿戴 tab「场景选择」数据源） */
+/** 预置场景配置列表（模特穿戴 tab「场景选择」数据源；行首手柄拖拽排序） */
 export function ScenesConfig({ scenes }: { scenes: SceneRow[] }) {
+  const { ordered, rowProps, handleProps } = useDragSort({
+    items: scenes,
+    commit: (ids) => reorderWeartryScenesAction(ids),
+  })
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-4">
@@ -32,7 +38,7 @@ export function ScenesConfig({ scenes }: { scenes: SceneRow[] }) {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>排序</TableHead>
+              <TableHead className="w-8" aria-label="拖动排序" />
               <TableHead>标识</TableHead>
               <TableHead>名称</TableHead>
               <TableHead className="hidden md:table-cell">注入提示词</TableHead>
@@ -41,16 +47,21 @@ export function ScenesConfig({ scenes }: { scenes: SceneRow[] }) {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {scenes.length === 0 ? (
+            {ordered.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
                   暂无场景，请点击右上角新增（或运行 pnpm seed:weartry）
                 </TableCell>
               </TableRow>
             ) : (
-              scenes.map((s) => (
-                <TableRow key={s.id} className={s.isActive ? "" : "opacity-50"}>
-                  <TableCell className="tabular-nums">{s.sortOrder}</TableCell>
+              ordered.map((s) => (
+                <TableRow
+                  key={s.id}
+                  {...rowProps(s.id, s.isActive ? "" : "opacity-50")}
+                >
+                  <TableCell className="w-8">
+                    <DragHandle handleProps={handleProps(s.id)} />
+                  </TableCell>
                   <TableCell className="font-mono text-xs">{s.key}</TableCell>
                   <TableCell>
                     <div className="font-medium">{s.name}</div>

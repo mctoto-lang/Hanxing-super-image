@@ -16,6 +16,20 @@ export const PRODUCT_MODE_LABELS: Record<ProductMode, string> = {
   refine: "产品精修",
 }
 
+/**
+ * 产品精修快捷优化项固定集（数组顺序即展示顺序，与种子脚本一致）。
+ *
+ * 固定项不可新增/停用/改名/改排序，仅可修改各项使用的提示词模板
+ * （platform-product 守卫 + product-v2 数据过滤三处共用本常量）。
+ */
+export const REFINE_FIXED_KEYS = [
+  "enhance_gloss",
+  "repair_scratches",
+  "enhance_clarity",
+  "color_correction",
+  "fix_perspective",
+] as const
+
 /** 上架平台（promptSegment 注入规则见各字段注释） */
 export interface PlatformDef {
   value: string

@@ -6,6 +6,7 @@ import {
   firstSellingPoint,
   formatCardList,
   formatDirectionPool,
+  mergeRefineTemplates,
   normalizeSlotCounts,
   parseProductBrief,
 } from "@/lib/product/prompt"
@@ -597,5 +598,35 @@ describe("V2.7 变量注册表与默认模板契约", () => {
     })
     expect(out.endsWith("加个日出氛围")).toBe(true)
     expect(out).not.toMatch(/\{\{\w+\}\}/)
+  })
+})
+
+describe("mergeRefineTemplates 精修多选合并", () => {
+  const t1 = "Enhance gloss. {{additionalPrompt}}"
+  const t2 = "Remove scratches. {{additionalPrompt}}"
+  const t3 = "Fix perspective."
+
+  it("多模板剥离 {{additionalPrompt}} 后换行拼接，补充要求以单个尾段注入", () => {
+    const merged = mergeRefineTemplates([t1, t2], "保留阴影")
+    expect(merged).toBe(
+      "Enhance gloss.\nRemove scratches.\n{{additionalPrompt}}",
+    )
+    // fillVars 注入一次即生效
+    expect(fillVars(merged, { additionalPrompt: "保留阴影" })).toBe(
+      "Enhance gloss.\nRemove scratches.\n保留阴影",
+    )
+  })
+
+  it("未填补充要求时不注入尾段（严格模式）", () => {
+    expect(mergeRefineTemplates([t1, t3], "")).toBe(
+      "Enhance gloss.\nFix perspective.",
+    )
+    expect(mergeRefineTemplates([t1], undefined)).toBe("Enhance gloss.")
+  })
+
+  it("单选时等价于原模板去变量 + 可选尾段", () => {
+    expect(mergeRefineTemplates([t1], "细节")).toBe(
+      "Enhance gloss.\n{{additionalPrompt}}",
+    )
   })
 })
