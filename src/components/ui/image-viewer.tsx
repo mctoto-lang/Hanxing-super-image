@@ -65,6 +65,8 @@ export interface ImageViewerInfo {
   model?: string
   prompt?: string
   createdAt?: Date | string
+  /** 生成耗时（毫秒）；null/缺省不显示该行（上传图/参考图等无生成概念） */
+  durationMs?: number | null
 }
 
 export interface ImageViewerProps {
@@ -117,7 +119,8 @@ const TOOL_BTN =
  * 全屏图片放大查看器（公共组件，多页面可复用）
  *
  * - 底部工具栏：向左/右旋转 90°、缩小/放大（含百分比指示）、下载、
- *   感叹号悬浮信息面板（模型 / 实际像素 / 提示词 + 复制 / 生成时间）
+ *   感叹号悬浮信息面板（模型 / 实际像素 / 提示词 + 复制 /
+ *   生成时间 / 生成耗时）
  * - 交互：按住图片自由拖动、滚轮以光标为中心缩放、双击切换 100%/放大、
  *   多图左右箭头与 ←/→ 键循环切换、Esc/遮罩/右上角 X 关闭
  */
@@ -532,6 +535,14 @@ export function ImageViewer({
                       {info?.createdAt ? formatViewerTime(info.createdAt) : "-"}
                     </span>
                   </div>
+                  {info?.durationMs != null && info.durationMs >= 0 && (
+                    <div className="flex gap-2">
+                      <span className="shrink-0 text-muted-foreground">
+                        生成耗时
+                      </span>
+                      <span>{(info.durationMs / 1000).toFixed(1)}s</span>
+                    </div>
+                  )}
                 </div>
                 <div className="mt-2 border-t pt-2">
                   <span className="text-xs text-muted-foreground">提示词</span>

@@ -4,7 +4,6 @@ import * as React from "react"
 import {
   AlertTriangle,
   Download,
-  FileDown,
   LayoutGrid,
   Loader2,
 } from "lucide-react"
@@ -20,6 +19,7 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { SmartImage } from "@/components/ui/smart-image"
 import { ImageGeneration } from "@/components/ui/image-generation"
+import { PsdPlaceholder } from "@/components/ui/psd-placeholder"
 import {
   downloadImageFile,
   ImageViewer,
@@ -36,7 +36,7 @@ import type {
   MockupBatchView,
   MockupCardHistoryView,
 } from "@/lib/mockup/types"
-import { cn, toImageSrc } from "@/lib/utils"
+import { cn, isPsdUrl, toImageSrc } from "@/lib/utils"
 import {
   getMockupBatchStatusAction,
   retryBatchTaskAction,
@@ -125,7 +125,10 @@ export function MockupHistoryPanel({
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
           {source === "card"
             ? cards.map((c) => {
-                const cover = c.images[0]!
+                // 封面取第一张可预览图（PSD 无法渲染）；全为 PSD 时显示文件占位
+                const cover =
+                  c.images.find((img) => isPreviewableImage(img.resultImage)) ??
+                  c.images[0]!
                 return (
                   <button
                     key={c.cardId}
@@ -134,11 +137,15 @@ export function MockupHistoryPanel({
                     className="group overflow-hidden rounded-xl border bg-card text-left transition-colors hover:border-primary/40 hover:shadow-sm"
                   >
                     <div className="relative aspect-square w-full overflow-hidden bg-muted">
-                      <SmartImage
-                        src={toImageSrc(cover.resultImage, { width: 480 })}
-                        alt={cover.displayName}
-                        className="size-full object-cover"
-                      />
+                      {isPreviewableImage(cover.resultImage) ? (
+                        <SmartImage
+                          src={toImageSrc(cover.resultImage, { width: 480 })}
+                          alt={cover.displayName}
+                          className="size-full object-cover"
+                        />
+                      ) : (
+                        <PsdPlaceholder iconClassName="size-8" />
+                      )}
                       {c.processing ? (
                         <span className="absolute inset-0 flex items-center justify-center bg-background/50">
                           <Loader2 className="size-8 animate-spin text-foreground/70" />
@@ -244,7 +251,7 @@ export function MockupHistoryPanel({
 
 /** PSD 等非图片格式结果：浏览器无法直接预览，网格内显示文件占位并点击下载 */
 function isPreviewableImage(url: string): boolean {
-  return !/\.psd(?:$|[?#])/i.test(url)
+  return !isPsdUrl(url)
 }
 
 function safeZipEntryName(name: string): string {
@@ -394,7 +401,7 @@ function CardDetailDialog({
                           ) : (
                             <button
                               type="button"
-                              className="flex aspect-square w-full flex-col items-center justify-center gap-1.5 text-muted-foreground transition-colors hover:text-foreground"
+                              className="aspect-square w-full text-muted-foreground transition-colors hover:text-foreground"
                               title="下载 PSD 源文件"
                               onClick={() =>
                                 downloadImageFile(
@@ -403,8 +410,10 @@ function CardDetailDialog({
                                 )
                               }
                             >
-                              <FileDown className="size-6" />
-                              <span className="text-[10px]">PSD · 点击下载</span>
+                              <PsdPlaceholder
+                                label="PSD · 点击下载"
+                                iconClassName="size-6"
+                              />
                             </button>
                           )}
                         </div>
@@ -640,7 +649,7 @@ function BatchDetailDialog({
                               ) : (
                                 <button
                                   type="button"
-                                  className="flex aspect-square w-full flex-col items-center justify-center gap-1.5 text-muted-foreground transition-colors hover:text-foreground"
+                                  className="aspect-square w-full text-muted-foreground transition-colors hover:text-foreground"
                                   title="下载 PSD 源文件"
                                   onClick={() =>
                                     downloadImageFile(
@@ -649,10 +658,10 @@ function BatchDetailDialog({
                                     )
                                   }
                                 >
-                                  <FileDown className="size-6" />
-                                  <span className="text-[10px]">
-                                    PSD · 点击下载
-                                  </span>
+                                  <PsdPlaceholder
+                                    label="PSD · 点击下载"
+                                    iconClassName="size-6"
+                                  />
                                 </button>
                               )
                             ) : t.status === "failed" ? (

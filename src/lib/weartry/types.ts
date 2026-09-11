@@ -43,6 +43,8 @@ export interface WeartryBatchTaskRow {
   model: string | null
   /** 生图提示词全文（查看器元信息） */
   prompt: string | null
+  /** 生成耗时（毫秒，查看器元信息）；未完成为 null */
+  durationMs: number | null
 }
 
 /** 批次（batchTag 聚合，前端展示） */

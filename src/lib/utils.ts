@@ -73,6 +73,33 @@ export function randomId(): string {
 }
 
 /**
+ * 是否为 PSD 文件 URL（样机渲染的 PSD 源文件结果）。浏览器无法渲染
+ * PSD，展示层应显示文件占位而非 <img>（SmartImage 会裂图）。
+ */
+export function isPsdUrl(url: string | null | undefined): boolean {
+  if (!url) return false
+  return /\.psd(?:$|[?#])/i.test(url)
+}
+
+/**
+ * 生成耗时（毫秒）：completedAt − startedAt；历史任务 startedAt 为空时
+ * 回退 completedAt − createdAt（含排队时间）。未完成 / 数据缺失 / 差值为负
+ * 返回 null（调用方不显示耗时）。
+ */
+export function generationDurationMs(input: {
+  createdAt: Date | string | null
+  startedAt?: Date | string | null
+  completedAt?: Date | string | null
+}): number | null {
+  if (!input.completedAt) return null
+  const end = new Date(input.completedAt).getTime()
+  const startTs = input.startedAt ?? input.createdAt
+  if (!startTs) return null
+  const ms = end - new Date(startTs).getTime()
+  return ms >= 0 ? ms : null
+}
+
+/**
  * 复制文本到剪贴板（成功返回 true）。
  * navigator.clipboard 仅安全上下文（HTTPS / localhost）可用，HTTP 线上为
  * undefined——复制按钮曾因此静默失效甚至假报「已复制」；execCommand('copy')

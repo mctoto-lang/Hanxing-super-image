@@ -45,7 +45,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { ImageGalleryDialog } from "@/components/workspace/image-gallery-dialog"
-import { cn, toImageSrc } from "@/lib/utils"
+import { cn, generationDurationMs, toImageSrc } from "@/lib/utils"
 import { SmartImage } from "@/components/ui/smart-image"
 import { toast } from "sonner"
 import { uploadReferenceImages } from "@/lib/workspace/upload"
@@ -592,6 +592,11 @@ export const FlipCard = memo(function FlipCard({
           model: viewerImage.modelName ?? undefined,
           prompt: viewerImage.generationPrompt || card.prompt,
           createdAt: viewerImage.createdAt,
+          durationMs: generationDurationMs({
+            createdAt: viewerImage.createdAt,
+            startedAt: viewerImage.generationStartedAt,
+            completedAt: viewerImage.generationCompletedAt,
+          }),
         }
     : undefined
   const refViewerUrl = referenceImages[refViewerIndex]
@@ -605,6 +610,11 @@ export const FlipCard = memo(function FlipCard({
           model: refViewerMatch.modelName ?? undefined,
           prompt: refViewerMatch.generationPrompt || card.prompt,
           createdAt: refViewerMatch.createdAt,
+          durationMs: generationDurationMs({
+            createdAt: refViewerMatch.createdAt,
+            startedAt: refViewerMatch.generationStartedAt,
+            completedAt: refViewerMatch.generationCompletedAt,
+          }),
         }
     : undefined
 

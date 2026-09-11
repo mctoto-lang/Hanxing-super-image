@@ -16,6 +16,8 @@ export interface GalleryItem {
   /** 对应 generation_task.source（create/workspace/product/weartry/mockup） */
   source: string
   createdAt: Date | string
+  /** 生成耗时（毫秒，查看器元信息）；缺省不显示 */
+  durationMs?: number | null
 }
 
 /** 用户收藏引用（pinned_task 行 → 任务） */

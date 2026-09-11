@@ -555,11 +555,13 @@ async function processOneTask(
   }
 
   // DB 侧补写 processing（条件更新防覆盖终态；此前 DB 从 queued 直接跳终态，
-  // 前端轮询无法区分「排队中」与「生成中」）
+  // 前端轮询无法区分「排队中」与「生成中」）。同时写入 startedAt：
+  // 生成耗时 = completedAt − startedAt（此前只写进带 TTL 的 Redis hash，
+  // DB 侧恒为 NULL，历史任务只能回退 completedAt − createdAt 含排队时间）
   if (taskRow.status === "queued") {
     await db
       .update(generationTasks)
-      .set({ status: "processing" })
+      .set({ status: "processing", startedAt: new Date() })
       .where(
         and(
           eq(generationTasks.id, task.taskId),

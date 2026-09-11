@@ -16,6 +16,7 @@ import {
 import { checkModelAccess, checkModuleAccess } from "@/lib/auth/permissions"
 import { deductUserCredits, refundFailedTask, refundUserCredits } from "@/server/services/credits-service"
 import { enqueue } from "@/lib/queue/task-queue"
+import { generationDurationMs } from "@/lib/utils"
 import { validateReferenceImageUrls } from "@/lib/storage/reference-url"
 import { aiActionRateLimiter } from "@/lib/rate-limit"
 import { callAiJson } from "@/server/services/ai-json"
@@ -771,6 +772,8 @@ function toBatchTaskRow(t: {
   errorMessage: string | null
   costPerImage: number | null
   createdAt: Date
+  startedAt: Date | null
+  completedAt: Date | null
   prompt: string | null
   modelDisplayName: string | null
 }): WeartryBatchTaskRow {
@@ -788,6 +791,7 @@ function toBatchTaskRow(t: {
     createdAt: t.createdAt,
     model: t.modelDisplayName,
     prompt: t.prompt,
+    durationMs: generationDurationMs(t),
   }
 }
 
@@ -835,6 +839,8 @@ export async function listWeartryBatchesAction(opts?: {
       errorMessage: generationTasks.errorMessage,
       costPerImage: generationTasks.costPerImage,
       createdAt: generationTasks.createdAt,
+      startedAt: generationTasks.startedAt,
+      completedAt: generationTasks.completedAt,
       prompt: generationTasks.prompt,
       modelDisplayName: models.displayName,
     })
@@ -900,6 +906,8 @@ export async function getWeartryBatchStatusAction(
       errorMessage: generationTasks.errorMessage,
       costPerImage: generationTasks.costPerImage,
       createdAt: generationTasks.createdAt,
+      startedAt: generationTasks.startedAt,
+      completedAt: generationTasks.completedAt,
       prompt: generationTasks.prompt,
       modelDisplayName: models.displayName,
     })
