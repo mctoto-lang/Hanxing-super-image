@@ -27,6 +27,7 @@ const MODULE_OPTIONS: { value: ModuleName; label: string }[] = [
   { value: "product", label: "商品图片" },
   { value: "weartry", label: "穿戴图片" },
   { value: "mockup", label: "样机渲染" },
+  { value: "temu", label: "Temu 数据" },
   { value: "settings", label: "个人设置" },
 ]
 

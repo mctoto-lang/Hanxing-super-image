@@ -24,6 +24,7 @@ const MODULE_NAV: Record<ModuleName, { title: string; url: string; icon: string 
   product: { title: "商品图片", url: "/product", icon: "product" },
   weartry: { title: "穿戴图片", url: "/weartry", icon: "shirt" },
   mockup: { title: "样机渲染", url: "/mockup", icon: "mockup" },
+  temu: { title: "Temu 数据", url: "/temu", icon: "temu" },
   settings: { title: "个人设置", url: "/settings", icon: "settings" },
 }
 
@@ -91,6 +92,15 @@ export function buildNavMain(ctx: UserContext): NavItem[] {
       title: MODULE_NAV.chat.title,
       url: MODULE_NAV.chat.url,
       icon: MODULE_NAV.chat.icon,
+    })
+  }
+
+  // Temu 数据：独立顶级导航项（数据面板，与图片生成分组平级）
+  if (accessible.has("temu")) {
+    groups.push({
+      title: MODULE_NAV.temu.title,
+      url: MODULE_NAV.temu.url,
+      icon: MODULE_NAV.temu.icon,
     })
   }
 

@@ -47,6 +47,7 @@ const MODULE_LABELS: Record<ModuleName, string> = {
   product: "商品图片",
   weartry: "穿戴图片",
   mockup: "样机渲染",
+  temu: "Temu 数据",
   settings: "设置",
 }
 

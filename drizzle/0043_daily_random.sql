@@ -1,0 +1,26 @@
+ALTER TABLE "temu_product_flow" ADD COLUMN "goods_image_url" text;--> statement-breakpoint
+ALTER TABLE "temu_product_flow" ADD COLUMN "product_spu_id" varchar(32);--> statement-breakpoint
+ALTER TABLE "temu_product_flow" ADD COLUMN "expose_num" integer;--> statement-breakpoint
+ALTER TABLE "temu_product_flow" ADD COLUMN "click_num" integer;--> statement-breakpoint
+ALTER TABLE "temu_product_flow" ADD COLUMN "pay_goods_num" integer;--> statement-breakpoint
+ALTER TABLE "temu_product_flow" ADD COLUMN "pay_order_num" integer;--> statement-breakpoint
+ALTER TABLE "temu_product_flow" ADD COLUMN "buyer_num" integer;--> statement-breakpoint
+ALTER TABLE "temu_product_flow" ADD COLUMN "add_to_cart_user_num" integer;--> statement-breakpoint
+ALTER TABLE "temu_product_flow" ADD COLUMN "goods_detail_visit_num" integer;--> statement-breakpoint
+ALTER TABLE "temu_product_flow" ADD COLUMN "search_expose_num" integer;--> statement-breakpoint
+ALTER TABLE "temu_product_flow" ADD COLUMN "search_click_num" integer;--> statement-breakpoint
+ALTER TABLE "temu_product_flow" ADD COLUMN "recommend_expose_num" integer;--> statement-breakpoint
+ALTER TABLE "temu_product_flow" ADD COLUMN "recommend_click_num" integer;--> statement-breakpoint
+ALTER TABLE "temu_product" ADD COLUMN "cat1_name" varchar(120);--> statement-breakpoint
+ALTER TABLE "temu_product" ADD COLUMN "skc_status" integer;--> statement-breakpoint
+ALTER TABLE "temu_product" ADD COLUMN "product_sn" varchar(64);--> statement-breakpoint
+ALTER TABLE "temu_product" ADD COLUMN "total_sales_volume" integer;--> statement-breakpoint
+ALTER TABLE "temu_product" ADD COLUMN "last7_days_sales_volume" integer;--> statement-breakpoint
+ALTER TABLE "temu_product" ADD COLUMN "main_image_url" text;--> statement-breakpoint
+ALTER TABLE "temu_product" ADD COLUMN "buyer_name" varchar(100);--> statement-breakpoint
+ALTER TABLE "temu_product" ADD COLUMN "skc_created_at" bigint;--> statement-breakpoint
+ALTER TABLE "temu_product" ADD COLUMN "price_verified_at" bigint;--> statement-breakpoint
+ALTER TABLE "temu_product" ADD COLUMN "first_purchase_at" bigint;--> statement-breakpoint
+ALTER TABLE "temu_product" ADD COLUMN "added_site_at" bigint;--> statement-breakpoint
+CREATE INDEX "gt_temu_flow_expose" ON "temu_product_flow" USING btree ("store_id","expose_num");--> statement-breakpoint
+CREATE INDEX "gt_temu_product_sn" ON "temu_product" USING btree ("store_id","product_sn");

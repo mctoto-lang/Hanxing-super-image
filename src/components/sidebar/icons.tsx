@@ -12,6 +12,7 @@ import {
   Settings,
   ShieldCheck,
   Shirt,
+  Store,
   Building2,
   type LucideIcon,
 } from "lucide-react"
@@ -30,6 +31,7 @@ export const lucideIconMap: Record<string, LucideIcon> = {
   product: Package,
   weartry: Shirt,
   mockup: Box,
+  temu: Store,
   settings: Settings,
   shield: ShieldCheck,
   building: Building2,

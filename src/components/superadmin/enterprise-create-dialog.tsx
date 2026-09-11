@@ -26,6 +26,7 @@ const MODULE_OPTIONS = [
   { value: "workspace", label: "批量生图" },
   { value: "product", label: "商品图片" },
   { value: "mockup", label: "样机渲染" },
+  { value: "temu", label: "Temu 数据" },
 ] as const
 
 export function EnterpriseCreateDialog() {
