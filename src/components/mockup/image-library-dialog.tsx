@@ -116,11 +116,15 @@ export function ImageLibraryDialog({
     }
   }, [])
 
+  // 打开弹窗或切到「生成图资产」Tab 时自动重拉（5s 节流防频繁切换抖动）：
+  // 若只在列表为空时加载，渲染出新图后重开弹窗看到的仍是旧列表
+  const generatedLoadedAtRef = React.useRef(0)
   React.useEffect(() => {
-    if (open && tab === "generated" && generated.length === 0 && !generatedLoading) {
-      void loadGenerated()
-    }
-  }, [open, tab, generated.length, generatedLoading, loadGenerated])
+    if (!open || tab !== "generated" || generatedLoading) return
+    if (Date.now() - generatedLoadedAtRef.current < 5_000) return
+    generatedLoadedAtRef.current = Date.now()
+    void loadGenerated()
+  }, [open, tab, generatedLoading, loadGenerated])
 
   /** 上传成功后后台预导入外部素材（fire-and-forget，失败静默） */
   const prewarm = (url: string) => {

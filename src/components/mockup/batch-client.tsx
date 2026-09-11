@@ -158,9 +158,9 @@ export function MockupBatchClient({
   const [materialBinding, setMaterialBinding] = React.useState<string | null>(null)
   const [manageOpen, setManageOpen] = React.useState(false)
   const [submitting, setSubmitting] = React.useState(false)
-  // 渲染导出格式（提交时选择；默认 PNG）
+  // 渲染导出格式（提交时选择；默认 JPG，选择不持久化）
   const [outputFormat, setOutputFormat] =
-    React.useState<MockupOutputFormat>("png")
+    React.useState<MockupOutputFormat>("jpeg")
   const [designAssets, setDesignAssets] = React.useState<
     Array<{ id: string; imageUrl: string; fileName: string | null }>
   >([])

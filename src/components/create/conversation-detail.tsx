@@ -66,7 +66,9 @@ export function ConversationDetail({
 
   // 输入框展开状态：滚回底部自动展开；上滑收起；点击紧凑条手动展开
   const [expanded, setExpanded] = useState(true)
-  // 预填内容（重新编辑），nonce 变化触发 CreatePromptInput 应用
+  // 预填内容（重新编辑），nonce 变化触发 CreatePromptInput 应用；
+  // 应用完成即清空（一次性消费）——收纳会卸载输入框组件，若 prefill
+  // 残留，展开重挂载时旧预填会重放并覆盖用户修改，故消费后立即置 null
   const [prefill, setPrefill] = useState<{
     text: string
     referenceImages?: string[]
@@ -135,23 +137,53 @@ export function ConversationDetail({
     setExpanded(true)
   }, [tasks.length])
 
-  /** 点击紧凑条：展开 + 滚到底部 + 聚焦输入框 */
-  function handleCollapsedClick() {
-    setExpanded(true)
-    scrollToBottom()
+  /**
+   * 滚到底部后再展开输入框（点击紧凑条 / 重新编辑共用）。
+   * 不能 setExpanded(true) 与平滑滚动同时做：展开会立即挂载输入框（zoom
+   * 动画），而滚动途中的 scroll 监听判定「不在底部」会立刻把它收回，
+   * 到底后再展开——表现为先闪大一下、缩回、再展开。展开时机统一交给
+   * 「已停在底部」的判定：正常滚动由 scroll 监听（near=true）触发；贴底
+   * 零位移（scrollTo 无事件）等边缘情况由延迟兜底补展开。
+   */
+  function scrollToBottomThenExpand() {
+    const el = scrollRef.current
+    const dist = el
+      ? el.scrollHeight - el.scrollTop - el.clientHeight
+      : 0
     setFocusNonce((n) => n + 1)
+    if (dist < nearBottomThreshold) {
+      // 已贴底：零位移滚动不触发 scroll 事件，直接展开
+      setExpanded(true)
+      return
+    }
+    scrollToBottom()
+    window.setTimeout(() => {
+      // 已由滚动到位时的 scroll 监听展开（输入框已挂载）则跳过
+      if (footerRef.current?.querySelector("textarea")) return
+      const el2 = scrollRef.current
+      if (
+        el2 &&
+        el2.scrollHeight - el2.scrollTop - el2.clientHeight <
+          nearBottomThreshold
+      ) {
+        setExpanded(true)
+      }
+    }, 500)
   }
 
-  /** 「重新编辑」：填入提示词 + 参考图并展开输入框 */
+  /** 点击紧凑条：滚到底部后展开输入框（顺序见 scrollToBottomThenExpand） */
+  function handleCollapsedClick() {
+    scrollToBottomThenExpand()
+  }
+
+  /** 「重新编辑」：填入提示词 + 参考图，滚到底部后展开输入框 */
   function handleEditTask(payload: EditTaskPayload) {
     setPrefill({
       text: payload.prompt,
       referenceImages: payload.referenceImages,
       nonce: Date.now(),
     })
-    setExpanded(true)
-    scrollToBottom()
-    setFocusNonce((n) => n + 1)
+    scrollToBottomThenExpand()
   }
 
   // 日期分组：与上一条不同天才渲染分组标签
@@ -221,6 +253,7 @@ export function ConversationDetail({
               enterpriseCredits={enterpriseCredits}
               conversationId={conversationId}
               prefill={prefill}
+              onPrefillApplied={() => setPrefill(null)}
               focusNonce={focusNonce}
             />
           </div>

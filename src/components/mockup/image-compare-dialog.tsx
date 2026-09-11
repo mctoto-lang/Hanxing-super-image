@@ -9,6 +9,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { ImageCompareSlider } from "@/components/ui/image-compare-slider"
+import { downloadImageFile } from "@/components/ui/image-viewer"
 import { SmartImage } from "@/components/ui/smart-image"
 import type { MockupAiImageView } from "@/lib/mockup/types"
 import { cn, toImageSrc } from "@/lib/utils"
@@ -148,19 +149,25 @@ export function ImageCompareDialog({
           </div>
         </div>
 
-        {/* 右上角：下载当前比对图 + 关闭（同图片放大组件样式） */}
+        {/* 右上角：下载当前比对图 + 关闭（同图片放大组件样式）。
+            经 downloadImageFile 走同源代理 blob 下载：COS 跨域裸 <a download>
+            的 download 属性会被浏览器忽略（降级为新标签打开原图），且大文件
+            无进度/重试 */}
         <div className="absolute right-4 top-4 z-10 flex gap-2">
-          <a
-            href={toImageSrc(current.imageUrl)}
-            target="_blank"
-            rel="noreferrer"
-            download
+          <button
+            type="button"
+            onClick={() =>
+              void downloadImageFile(
+                current.imageUrl,
+                `hanxing-compare-${Date.now()}`,
+              )
+            }
             aria-label="下载比对图"
             title="下载比对图"
             className="flex size-9 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur transition-colors hover:bg-black/70"
           >
             <Download className="size-5" />
-          </a>
+          </button>
           <button
             type="button"
             onClick={() => onOpenChange(false)}

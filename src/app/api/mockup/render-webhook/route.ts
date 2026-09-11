@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto"
 import { and, eq, inArray, sql } from "drizzle-orm"
+import { revalidatePath } from "next/cache"
 import { NextResponse } from "next/server"
 import { db } from "@/db/client"
 import { generationTasks } from "@/db/schema"
@@ -69,12 +70,17 @@ export async function POST(request: Request) {
     )
     .limit(5)
 
+  let anyCompleted = false
   for (const t of tasks) {
     try {
-      await syncMockupTask(t.id, { externalJobId: jobCode, enterpriseId })
+      const r = await syncMockupTask(t.id, { externalJobId: jobCode, enterpriseId })
+      if (r.status === "completed") anyCompleted = true
     } catch {
       // 单任务同步失败忽略：worker/前端轮询兜底
     }
   }
+  // 新完成的渲染图属于资产页可见范围：失效其缓存（mockup 完成链路
+  // 此前从不 revalidate /assets，用户切到资产管理看不到新渲染图）
+  if (anyCompleted) revalidatePath("/assets")
   return NextResponse.json({ ok: true, matched: tasks.length })
 }

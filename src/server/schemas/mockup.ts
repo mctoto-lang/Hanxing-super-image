@@ -97,8 +97,8 @@ export const prewarmMockupAssetsSchema = z.object({
 /** 渲染：传一个或多个卡片（顶部批量渲染 = 全部卡片 ID） */
 export const renderMockupCardsSchema = z.object({
   cardIds: z.array(z.string().uuid()).min(1).max(50),
-  /** 导出格式（PS-API output.format；jpeg=JPG 图片、psd=保留图层的 PSD 源文件） */
-  outputFormat: z.enum(["png", "jpeg", "psd"]).default("png"),
+  /** 导出格式（PS-API output.format；jpeg=JPG 图片、psd=保留图层的 PSD 源文件；默认 JPG） */
+  outputFormat: z.enum(["png", "jpeg", "psd"]).default("jpeg"),
 })
 export type RenderMockupCardsInput = z.infer<typeof renderMockupCardsSchema>
 
@@ -134,8 +134,8 @@ export const submitMockupBatchSchema = z
     ),
     /** 任务标签（来源文件名等，长度须等于任务数；可省略） */
     labels: z.array(z.string().max(255)).max(MOCKUP_BATCH_MAX_TASKS).optional(),
-    /** 导出格式（PS-API output.format；jpeg=JPG 图片、psd=保留图层的 PSD 源文件） */
-    outputFormat: z.enum(["png", "jpeg", "psd"]).default("png"),
+    /** 导出格式（PS-API output.format；jpeg=JPG 图片、psd=保留图层的 PSD 源文件；默认 JPG） */
+    outputFormat: z.enum(["png", "jpeg", "psd"]).default("jpeg"),
   })
   .refine(
     (d) =>

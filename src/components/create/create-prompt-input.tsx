@@ -61,6 +61,7 @@ export function CreatePromptInput({
   conversationId,
   onConversationCreated,
   prefill,
+  onPrefillApplied,
   focusNonce,
 }: {
   models: CreateModel[]
@@ -72,6 +73,9 @@ export function CreatePromptInput({
   onConversationCreated?: (id: string) => void
   /** 预填内容（使用提示词 / 重新编辑），nonce 变化时应用 */
   prefill?: { text: string; referenceImages?: string[]; nonce: number } | null
+  /** 预填应用完成回调（父级据此清空 prefill：预填只消费一次，
+   *  组件重挂载（收纳→展开）时不再重放旧预填，改走草稿恢复保住用户修改） */
+  onPrefillApplied?: () => void
   /** 变化时聚焦输入框（展开收起条后聚焦用） */
   focusNonce?: number
 }) {
@@ -150,9 +154,12 @@ export function CreatePromptInput({
     scheduleDraftSave({ modelId, imageSize, imageCount, referenceImages })
   }, [modelId, imageSize, imageCount, referenceImages, scheduleDraftSave])
 
-  // 预填应用（使用提示词 / 重新编辑）。textarea 用 key+defaultValue 重挂载写入
-  // 初始文本（对组件重挂载鲁棒），这里只负责参考图回填；同步预填内容到草稿，
-  // 使后续重挂载（切换会话再回来）显示的仍是最近一次预填文本。
+  // 预填应用（使用提示词 / 重新编辑），一次性消费：应用后回调父级清空
+  // prefill。否则收纳（卸载）→ 展开（重挂载）时本 effect 会重放旧预填，
+  // 把用户修改连本带利覆盖回去（textarea 重挂 defaultValue + 草稿同步双杀）。
+  // 清空后重挂载走上方草稿恢复分支，显示的是用户修改后的文本。
+  // textarea 用 key+defaultValue 重挂载写入初始文本（对组件重挂载鲁棒），
+  // 这里只负责参考图回填；同步预填内容到草稿作为恢复兜底。
   useEffect(() => {
     if (!prefill) return
     if (prefill.referenceImages) {
@@ -165,7 +172,8 @@ export function CreatePromptInput({
         ? { referenceImages: prefill.referenceImages }
         : {}),
     })
-  }, [prefill, scheduleDraftSave])
+    onPrefillApplied?.()
+  }, [prefill, scheduleDraftSave, onPrefillApplied])
 
   // 外部触发聚焦（紧凑条展开后）
   useEffect(() => {

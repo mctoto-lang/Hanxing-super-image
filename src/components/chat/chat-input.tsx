@@ -122,9 +122,14 @@ export function ChatInput({
 
   // 防抖草稿
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 防抖窗口内尚未落盘的文本（卸载时兜底落盘，见下方 cleanup）
+  const pendingDraftRef = useRef<string | null>(null)
   const scheduleDraftSave = useCallback((text: string) => {
     if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
+    pendingDraftRef.current = text
     draftTimerRef.current = setTimeout(() => {
+      draftTimerRef.current = null
+      pendingDraftRef.current = null
       try {
         localStorage.setItem(TEXT_DRAFT_KEY, text)
       } catch {
@@ -132,9 +137,21 @@ export function ChatInput({
       }
     }, 400)
   }, [])
+  // 卸载落盘：上滑收纳会卸载本组件，防抖窗口（400ms）内最后一段输入
+  // 若不落盘会在重挂载后"消失"（对齐生图输入框 use-input-draft 的行为）
   useEffect(() => {
     return () => {
-      if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
+      if (draftTimerRef.current) {
+        clearTimeout(draftTimerRef.current)
+        const pending = pendingDraftRef.current
+        if (pending != null) {
+          try {
+            localStorage.setItem(TEXT_DRAFT_KEY, pending)
+          } catch {
+            // 存储满/隐私模式静默失败
+          }
+        }
+      }
     }
   }, [])
 

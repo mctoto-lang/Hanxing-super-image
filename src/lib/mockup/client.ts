@@ -526,7 +526,7 @@ export async function createRenderJob(
       templateVersionId: opts.templateVersionId,
       input: opts.input,
       output: {
-        format: opts.outputFormat ?? "png",
+        format: opts.outputFormat ?? "jpeg",
         ...(opts.outputQuality ? { quality: opts.outputQuality } : {}),
       },
     }),
@@ -595,7 +595,7 @@ export async function createRenderJobsBatch(
           templateVersionId: j.templateVersionId,
           input: j.input,
           output: {
-            format: j.outputFormat ?? "png",
+            format: j.outputFormat ?? "jpeg",
             ...(j.outputQuality ? { quality: j.outputQuality } : {}),
           },
         })),

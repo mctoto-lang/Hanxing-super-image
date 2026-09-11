@@ -84,6 +84,95 @@ function extractTenantSegment(pathname: string, cfg: StorageConfig): string | nu
   return null
 }
 
+/**
+ * 目标是否为自有存储（本站 /uploads 或配置的 COS 桶/访问域名）：
+ * 对象键为 UUID、写后不变，可声明 1 年 immutable 长缓存；
+ * 外部可信域名（allowedDownloadHosts）的内容可能变化，仅 24h。
+ */
+function isOwnStorageHost(url: URL, cfg: StorageConfig): boolean {
+  const appUrl = new URL(env.NEXT_PUBLIC_APP_URL)
+  if (url.host === appUrl.host) return true
+  if (cfg.cosBaseUrl) {
+    try {
+      if (url.host === new URL(cfg.cosBaseUrl).host) return true
+    } catch {
+      // ignore
+    }
+  }
+  return (
+    Boolean(cfg.cosBucket) &&
+    Boolean(cfg.cosRegion) &&
+    url.hostname === `${cfg.cosBucket}.cos.${cfg.cosRegion}.myqcloud.com`
+  )
+}
+
+/** 响应头阶段超时：防上游服务挂起（保留原 15s） */
+const HEADER_TIMEOUT_MS = 15_000
+/** body 流式阶段空闲超时：连续无数据才中止（防上游断流挂死） */
+const IDLE_TIMEOUT_MS = 30_000
+/** body 流式阶段总上限：慢涓流兜底，避免连接永动 */
+const TOTAL_TIMEOUT_MS = 10 * 60_000
+
+/**
+ * 流式空闲看门狗：每个 chunk 的读取期间重置空闲计时，连续 IDLE_TIMEOUT
+ * 无数据（或总时长超上限）时中止上游连接并向下游报错。
+ *
+ * 取代原先的 AbortSignal.timeout(15s) 总超时——它会掐断大文件（30MB+
+ * 渲染原图/PSD）在慢链路下的整段传输，浏览器端表现为下载原图反复失败。
+ * 计时只在 pull 内等待下一 chunk 时进行：下游背压（客户端收得慢）暂停在
+ * pull 之间，不会触发误中止。Node 侧仍零缓冲逐 chunk 透传。
+ */
+function withIdleWatchdog(
+  body: ReadableStream<Uint8Array>,
+  upstream: AbortController,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader()
+  let idleTimer: ReturnType<typeof setTimeout> | null = null
+  let totalTimer: ReturnType<typeof setTimeout> | null = null
+  let finished = false
+
+  const clearTimers = () => {
+    if (idleTimer) clearTimeout(idleTimer)
+    if (totalTimer) clearTimeout(totalTimer)
+    idleTimer = totalTimer = null
+  }
+  const abort = () => {
+    clearTimers()
+    upstream.abort()
+  }
+  totalTimer = setTimeout(abort, TOTAL_TIMEOUT_MS)
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (finished) return
+      if (idleTimer) clearTimeout(idleTimer)
+      idleTimer = setTimeout(abort, IDLE_TIMEOUT_MS)
+      let chunk: ReadableStreamReadResult<Uint8Array>
+      try {
+        chunk = await reader.read()
+      } catch {
+        // 上游已被中止（看门狗/对端断开）
+        finished = true
+        clearTimers()
+        controller.error(new Error("upstream aborted"))
+        return
+      }
+      if (chunk.done) {
+        finished = true
+        clearTimers()
+        controller.close()
+        return
+      }
+      controller.enqueue(chunk.value)
+    },
+    cancel(reason) {
+      finished = true
+      clearTimers()
+      void reader.cancel(reason).catch(() => {})
+    },
+  })
+}
+
 export async function GET(request: Request) {
   // 显式登录校验（proxy 中间件已挡未登录，这里 fail-closed 返回 401 而非依赖重定向）
   const session = await auth()
@@ -133,6 +222,8 @@ export async function GET(request: Request) {
     return new NextResponse("forbidden (tenant)", { status: 403 })
   }
 
+  const upstream = new AbortController()
+  const headerTimer = setTimeout(() => upstream.abort(), HEADER_TIMEOUT_MS)
   try {
     // 本站 /uploads URL 附短时效令牌（服务端回源 fetch 无会话 cookie）；
     // 先签名再做 COS 内网域名改写（改写后已非本站 URL，签名无效）
@@ -140,10 +231,8 @@ export async function GET(request: Request) {
       new URL(signUploadToken(targetUrl.toString())),
       cfg,
     )
-    const resp = await fetch(fetchUrl, {
-      // 防止后端服务挂起；透传期间 timeout 信号中止会掐断响应流
-      signal: AbortSignal.timeout(15_000),
-    })
+    const resp = await fetch(fetchUrl, { signal: upstream.signal })
+    clearTimeout(headerTimer)
     if (!resp.ok) {
       return new NextResponse(`upstream ${resp.status}`, {
         status: resp.status,
@@ -152,7 +241,11 @@ export async function GET(request: Request) {
     const contentType = resp.headers.get("content-type") ?? "image/png"
     const headers = new Headers({
       "Content-Type": contentType,
-      "Cache-Control": "public, max-age=86400, immutable",
+      // 自有存储对象不可变（UUID 键），整机长缓存、重复下载/刷新不再
+      // 回源；外部可信域名维持 24h
+      "Cache-Control": isOwnStorageHost(targetUrl, cfg)
+        ? "public, max-age=31536000, immutable"
+        : "public, max-age=86400",
     })
     // SVG 经代理透传时强制下载：防止在应用同源上下文直接导航执行脚本
     if (contentType.includes("image/svg+xml")) {
@@ -161,9 +254,13 @@ export async function GET(request: Request) {
     const contentLength = resp.headers.get("content-length")
     if (contentLength) headers.set("Content-Length", contentLength)
     // 流式透传响应体（不做整包 arrayBuffer 缓冲，100 图并发时避免
-    // Node 进程内存峰值 = 并发数 × 原图体积）
-    return new NextResponse(resp.body, { headers })
+    // Node 进程内存峰值 = 并发数 × 原图体积）；空闲看门狗见函数注释
+    return new NextResponse(
+      resp.body ? withIdleWatchdog(resp.body, upstream) : null,
+      { headers },
+    )
   } catch {
+    clearTimeout(headerTimer)
     return new NextResponse("fetch failed", { status: 502 })
   }
 }

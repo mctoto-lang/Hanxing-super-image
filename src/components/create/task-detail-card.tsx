@@ -37,7 +37,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { copyText, toImageSrc } from "@/lib/utils"
+import { copyText, generationDurationMs, toImageSrc } from "@/lib/utils"
 import { SmartImage } from "@/components/ui/smart-image"
 import { ImageGeneration } from "@/components/ui/image-generation"
 import { parseImageSize, sizeToRatioLabel } from "@/lib/image-sizes"
@@ -58,7 +58,7 @@ import { ImageViewer, downloadImageFile } from "@/components/ui/image-viewer"
  *        meta 行与图片、限高内滚，框内末尾提供「复制提示词」按钮）
  *      + meta 行：模型名称 | 比例 | 详细信息（竖线分隔；比例优先取图片
  *        实测值——auto 任务不再误显 1:1；多图实测比例不一致时不显示；
- *        悬停详细信息弹出「生成时间 / 生成耗时 / 消耗积分」）
+ *        悬停详细信息单行弹出「生成时间 | 生成耗时 | 消耗积分」）
  *   2. 图片网格（一行最多 4 张；多图比例不一致时统一为批内最高图比例的
  *      容器，较小图片 object-contain 居中、上下 bg-muted/50 半透明灰填充；
  *      悬浮图片右上角浮现「下载 / 放大」两个圆形按钮，放大打开放大查看器）
@@ -78,7 +78,7 @@ export interface TaskDetail {
   errorMessage: string | null
   creditsCharged: number | null
   createdAt: Date
-  /** 模型开始生成时间（耗时 = completedAt − startedAt；缺省无法计算耗时） */
+  /** 模型开始生成时间（耗时 = completedAt − startedAt；为空回退 createdAt 计算，含排队时间） */
   startedAt: Date | null
   completedAt: Date | null
   modelDisplayName: string
@@ -179,6 +179,9 @@ export function TaskDetailCard({
     ? 0
     : Math.max(0, Math.min(task.imageCount, 32) - images.length)
   const status = STATUS_MAP[task.status]
+  // 生成耗时（毫秒）：completedAt − startedAt，历史任务 startedAt 为空时
+  // 回退 completedAt − createdAt（含排队时间）；未完成为 null 不显示
+  const durationMs = generationDurationMs(task)
   const { width, height } = parseImageSize(task.imageSize)
   const refImages = task.referenceImages ?? []
   const refThumb = refImages[0] ?? null
@@ -433,20 +436,18 @@ export function TaskDetailCard({
                   <Info className="size-3" />
                   详细信息
                 </TooltipTrigger>
-                <TooltipContent side="top" className="space-y-1 text-left text-xs">
-                  <p>
-                    生成时间 {formatRequestTime(new Date(task.createdAt))}
-                  </p>
-                  {task.startedAt && task.completedAt ? (
-                    <p>
-                      生成耗时{" "}
-                      {formatGenerationDuration(
-                        new Date(task.completedAt).getTime() -
-                          new Date(task.startedAt).getTime(),
-                      )}
-                    </p>
-                  ) : null}
-                  <p>消耗积分 {task.creditsCharged ?? "-"}</p>
+                <TooltipContent side="top" className="text-xs">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span>生成时间 {formatRequestTime(new Date(task.createdAt))}</span>
+                    {durationMs != null ? (
+                      <>
+                        <span className="h-3 w-px bg-border" aria-hidden />
+                        <span>生成耗时 {formatGenerationDuration(durationMs)}</span>
+                      </>
+                    ) : null}
+                    <span className="h-3 w-px bg-border" aria-hidden />
+                    <span>消耗积分 {task.creditsCharged ?? "-"}</span>
+                  </span>
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
@@ -650,6 +651,7 @@ export function TaskDetailCard({
           model: task.modelDisplayName,
           prompt: task.prompt,
           createdAt: task.createdAt,
+          durationMs,
         }}
       />
 

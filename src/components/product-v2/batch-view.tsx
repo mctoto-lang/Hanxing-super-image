@@ -58,6 +58,7 @@ export function BatchView({
         downloadImageFile(
           t.imageUrl,
           `${String(i + 1).padStart(2, "0")}-${t.directionName || t.id}`,
+          { silent: true },
         )
         // 逐张间隔触发，避免浏览器拦截批量下载
         await new Promise((resolve) => setTimeout(resolve, 300))
@@ -186,6 +187,7 @@ export function BatchView({
                 model: viewerTask.model ?? undefined,
                 prompt: viewerTask.prompt ?? undefined,
                 createdAt: viewerTask.createdAt,
+                durationMs: viewerTask.durationMs ?? undefined,
               }
             : undefined
         }

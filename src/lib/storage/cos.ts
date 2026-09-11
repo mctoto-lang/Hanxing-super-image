@@ -30,6 +30,14 @@ const DOWNLOAD_TIMEOUT_MS = 30_000
 /** 预签名 PUT URL 有效期 10 分钟 */
 const PRESIGN_EXPIRES = 600
 
+/**
+ * 不可变对象的浏览器长缓存声明（UUID 键、内容写后不改）。
+ * saveFromBuffer 服务端上传直接使用；客户端预签名直传不把它放进签名
+ * （SDK 签名行为差异会致 403），由 upload-image.ts 单方面发送同一字面量，
+ * COS 同样存为对象元数据。
+ */
+export const COS_IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
+
 export interface CosAdapter extends StorageAdapter {
   /** 生成预签名 PUT URL，供浏览器直传到指定 category 的桶/前缀 */
   presignPut(
@@ -183,6 +191,9 @@ export function createCosAdapter(cfg: StorageConfig): CosAdapter {
         Body: buffer,
         ContentLength: buffer.length,
         ContentType: contentTypeFromExt(ext),
+        // UUID 键对象不可变：声明长缓存，浏览器对原图/缩略的重复访问
+        // 直接走本地缓存，不再回源拉流（省 COS 流量与首屏耗时）
+        CacheControl: COS_IMMUTABLE_CACHE_CONTROL,
         // SVG（模型图标）强制下载：直接导航到 COS URL 变下载而非执行
         // 脚本（防存储型 XSS），<img> 渲染不受 Content-Disposition 影响
         ...(ext === "svg" ? { ContentDisposition: "attachment" } : {}),
@@ -252,6 +263,10 @@ export function createCosAdapter(cfg: StorageConfig): CosAdapter {
       // 签名绑定了 Content-Type 与申报的 Content-Length：浏览器对 File body
       // 自动携带匹配的 Content-Length；绕过本端点直传的客户端必须精确匹配
       // 申报体积，否则签名校验失败——预签名端点的体积上限由建议变为强制。
+      // 注意：Cache-Control 不放进签名——SDK 对自定义 Header 的签名行为
+      // 无法在所有网关/CDN 链路下保证逐字一致，签名一旦失配会导致全部
+      // 直传 403；未签名的头由客户端照样发送（upload-image.ts），COS 同样
+      // 会将其存为对象元数据，缓存效果不变。
       const presignedUrl = cos.getObjectUrl({
         Method: "PUT",
         Bucket: target.bucket,

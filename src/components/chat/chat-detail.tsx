@@ -206,10 +206,38 @@ export function ChatDetail({
     return () => ro.disconnect()
   }, [])
 
+  /**
+   * 点击紧凑条：滚到底部后再展开输入框。
+   * 不能 setExpanded(true) 与平滑滚动同时做：展开会立即挂载输入框（zoom
+   * 动画），而滚动途中的 scroll 监听判定「不在底部」会立刻把它收回，
+   * 到底后再展开——表现为先闪大一下、缩回、再展开。展开时机交给「已停在
+   * 底部」的判定：正常滚动由 scroll 监听（near=true）触发；贴底零位移
+   * （scrollTo 无事件）等边缘情况由延迟兜底补展开。
+   */
   function handleCollapsedClick() {
-    setExpanded(true)
-    scrollToBottom()
+    const el = scrollRef.current
+    const dist = el
+      ? el.scrollHeight - el.scrollTop - el.clientHeight
+      : 0
     setFocusNonce((n) => n + 1)
+    if (dist < nearBottomThreshold) {
+      // 已贴底：零位移滚动不触发 scroll 事件，直接展开
+      setExpanded(true)
+      return
+    }
+    scrollToBottom()
+    window.setTimeout(() => {
+      // 已由滚动到位时的 scroll 监听展开（输入框已挂载）则跳过
+      if (footerRef.current?.querySelector("textarea")) return
+      const el2 = scrollRef.current
+      if (
+        el2 &&
+        el2.scrollHeight - el2.scrollTop - el2.clientHeight <
+          nearBottomThreshold
+      ) {
+        setExpanded(true)
+      }
+    }, 500)
   }
 
   // 最后一条 assistant 气泡挂重新生成（且当前无流进行中）

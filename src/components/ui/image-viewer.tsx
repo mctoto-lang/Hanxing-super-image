@@ -51,13 +51,80 @@ function formatViewerTime(date: Date | string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-/** 下载原图：走 /api/image/proxy（防 SSRF；同源代理使 a.download 属性生效） */
-export function downloadImageFile(url: string, name: string) {
-  const a = document.createElement("a")
-  a.href = getStorageProxyUrl(url)
-  a.download = `${name}.png`
-  a.target = "_blank"
-  a.click()
+/** 同源 XHR 拉 blob（带进度回调；比 fetch+reader 少一套流式样板） */
+function fetchBlobWithProgress(
+  url: string,
+  onProgress: (pct: number) => void,
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open("GET", url)
+    xhr.responseType = "blob"
+    xhr.onprogress = (e) => {
+      if (e.lengthComputable && e.total > 0) {
+        onProgress(Math.min(100, Math.round((e.loaded / e.total) * 100)))
+      }
+    }
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response as Blob)
+      else reject(new Error(`HTTP ${xhr.status}`))
+    }
+    xhr.onerror = () => reject(new Error("网络错误"))
+    xhr.onabort = () => reject(new Error("已取消"))
+    xhr.send()
+  })
+}
+
+/**
+ * 下载原图：走 /api/image/proxy（防 SSRF；同源请求使下载不受跨域限制）。
+ * XHR → blob 后经 objectURL 触发下载：大文件（30MB+ 渲染原图/PSD）有进度
+ * 提示、失败自动重试一次并明确报错——原先 a[href] 直导航在慢链路下会被
+ * 服务端超时掐断且无任何提示，表现为反复下载失败。代理响应为 immutable
+ * 长缓存，成功后重复下载直接命中浏览器缓存、不再回源。
+ * 文件名后缀取 URL 真实扩展名（样机 PSD/JPG 结果与内容一致），无法识别
+ * 时回退 .png（保持既有行为）。silent=true（批量逐张下载）不弹 toast。
+ */
+export async function downloadImageFile(
+  url: string,
+  name: string,
+  opts?: { silent?: boolean },
+): Promise<void> {
+  const ext =
+    /\.(png|jpe?g|webp|gif|psd)(?:$|[?#])/i.exec(url)?.[1]?.toLowerCase() ??
+    "png"
+  const fileName = `${name}.${ext === "jpeg" ? "jpg" : ext}`
+  const proxyUrl = getStorageProxyUrl(url)
+  const toastId = opts?.silent ? undefined : toast.loading(`正在下载 ${fileName}…`)
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const blob = await fetchBlobWithProgress(proxyUrl, (pct) => {
+        if (toastId != null) {
+          toast.loading(`正在下载 ${fileName}… ${pct}%`, { id: toastId })
+        }
+      })
+      const objUrl = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = objUrl
+      a.download = fileName
+      a.click()
+      window.setTimeout(() => URL.revokeObjectURL(objUrl), 60_000)
+      if (toastId != null) toast.success(`已下载 ${fileName}`, { id: toastId })
+      return
+    } catch (err) {
+      if (attempt >= 2) {
+        if (toastId != null) {
+          toast.error(
+            `下载失败：${err instanceof Error ? err.message : "未知错误"}`,
+            { id: toastId },
+          )
+        }
+      } else {
+        // 失败退避后再重试，避免大文件失败瞬间给代理双倍回源压力
+        await new Promise((resolve) => setTimeout(resolve, 800))
+      }
+    }
+  }
 }
 
 /** 感叹号悬浮面板展示的元信息 */

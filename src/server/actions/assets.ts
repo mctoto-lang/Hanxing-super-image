@@ -45,6 +45,8 @@ export async function listAssetsAction(opts?: {
       userId: generationTasks.userId,
       modelDisplayName: models.displayName,
       createdAt: generationTasks.createdAt,
+      startedAt: generationTasks.startedAt,
+      completedAt: generationTasks.completedAt,
     })
     .from(generationTasks)
     .leftJoin(models, eq(generationTasks.modelId, models.id))
@@ -62,8 +64,13 @@ export async function listAssetsAction(opts?: {
 
   query = query.where(and(...conditions))
 
+  // 按完成时间倒序（新图在上；NULLS LAST 防御缺 completedAt 的脏数据）：
+  // 按提交时间排序会让先提交后完成的慢任务排在感知更新的图下面
   return await query
-    .orderBy(desc(generationTasks.createdAt))
+    .orderBy(
+      sql`${generationTasks.completedAt} DESC NULLS LAST`,
+      desc(generationTasks.createdAt),
+    )
     .limit(limit)
     .offset(offset)
 }

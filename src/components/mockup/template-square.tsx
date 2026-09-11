@@ -2,18 +2,17 @@
 
 import * as React from "react"
 import { createPortal } from "react-dom"
-import { useTheme } from "next-themes"
 import {
   AlertTriangle,
   Image as ImageIcon,
   RotateCcw,
   Sparkle,
 } from "lucide-react"
-import { BeamWrapper } from "@/components/create/beam-wrapper"
 import { ImageGeneration } from "@/components/ui/image-generation"
+import { PsdPlaceholder } from "@/components/ui/psd-placeholder"
 import { SmartImage } from "@/components/ui/smart-image"
 import type { MockupSquareTaskView } from "@/lib/mockup/types"
-import { cn, toImageSrc } from "@/lib/utils"
+import { cn, isPsdUrl, toImageSrc } from "@/lib/utils"
 
 /** 悬停预览宽（w-60）与安全边距 */
 const PREVIEW_WIDTH = 240
@@ -27,7 +26,7 @@ interface TemplateSquareProps {
   task: MockupSquareTaskView | null
   /** 轮询实时覆盖（含最新 stage/progress） */
   live?: MockupSquareTaskView | null
-  /** 存在 AI 生成结果（AI背景/AI渲染）→ 流光边框（批量生图卡片同款） */
+  /** 存在 AI 生成结果（AI背景/AI渲染）→ 静态蓝色描边 + 右上角星标 */
   hasAi?: boolean
   /** 该方块有进行中的 AI 生图任务 → 纯加载动画（无任何文字/进度） */
   aiGenerating?: boolean
@@ -41,9 +40,9 @@ interface TemplateSquareProps {
  *
  * 六态：占位（未渲染）/ 排队 / 渲染中（ig- 纯动画，无任何文字/进度）/
  * AI 生图中（ig- 纯动画，无文字）/ 完成（悬停浮出完整大图；有 AI 结果时
- * 右上角 AI 星标 + 外圈流光边框闪烁，即批量生图卡片生成态同款
- * BeamWrapper；渲染 busy 态两者均不显示）/ 失败
- * （原因 + 已退款 + 重试）。
+ * 右上角 AI 星标 + 静态蓝色细描边——原 border-beam 流光动画在多卡片页
+ * 持续重绘造成卡顿，已改为零动画开销的静态标识；渲染 busy 态两者均不
+ * 显示）/ 失败（原因 + 已退款 + 重试）。
  * 点击打开操作菜单（替换图层/AI背景/AI渲染/查看原图/查看对比，见父级）；
  * 渲染中/AI生图中点击无效（不可操作）。
  *
@@ -61,11 +60,8 @@ export function TemplateSquare({
 }: TemplateSquareProps) {
   const t = live ?? task
   const busy = t?.status === "queued" || t?.status === "processing"
-  // border-beam 的 theme=auto 按浏览器 prefers-color-scheme 猜主题，与应用
-  // 的 class 深色模式不同步 → 显式传应用真实主题；深色底上光束再乘
-  // strength 增强（包内对不透明度有 0-1 钳制，不会过曝）
-  const { resolvedTheme } = useTheme()
-  const dark = resolvedTheme === "dark"
+  // 有 AI 结果且不在渲染 busy 态 → 静态描边标识（与 Sparkle 星标同色系）
+  const aiMarked = Boolean(hasAi) && !busy
 
   const wrapRef = React.useRef<HTMLDivElement>(null)
   const [preview, setPreview] = React.useState<{
@@ -92,7 +88,9 @@ export function TemplateSquare({
     })
   }
 
-  const canPreview = t?.status === "completed" && Boolean(t.resultImage)
+  // PSD 结果浏览器无法渲染：悬停不弹预览、方块内显示文件占位
+  const isPsd = isPsdUrl(t?.resultImage)
+  const canPreview = t?.status === "completed" && Boolean(t.resultImage) && !isPsd
 
   return (
     <div
@@ -101,45 +99,34 @@ export function TemplateSquare({
       onMouseEnter={canPreview ? showPreview : undefined}
       onMouseLeave={canPreview ? () => setPreview(null) : undefined}
     >
-      {/* 有 AI 结果 → 流光边框（批量生图卡片生成态同款 border-beam
-          colorful；BeamWrapper 客户端挂载后生效，屏外动画自动暂停）。
-          渲染 busy 态不激活（动画只保留动画本身），完成态才闪烁。
-          外扩结构：补偿层(-m-px) 在 BeamWrapper 外、垫层(p-px) 在内 ——
-          BorderBeam 把光环画在自己的根元素边缘，必须让根元素真正变大，
-          光环才会落在缩略图边框外侧约 1px（紧贴边框、朝外发光，不被浅
-          色缩略图内容吃掉）；外层负 margin 保持整体布局尺寸不变。
-          strength 深浅色均加强，保证外部闪烁明显 */}
-      <div className="-m-px">
-        <BeamWrapper
-          active={hasAi && !busy}
-          colorVariant="colorful"
-          size="sm"
-          borderRadius={9}
-          theme={dark ? "dark" : "light"}
-          strength={dark ? 2.2 : 1.5}
-        >
-          <div className="p-px">
-            <button
-              type="button"
-              onClick={(e) => {
-                // 渲染中/AI生图中处于不可操作状态，点击不弹出菜单
-                if (busy || aiGenerating) return
-                onOpen(e.currentTarget.getBoundingClientRect())
-              }}
-              className={cn(
-                "relative flex aspect-square w-20 shrink-0 flex-col items-center justify-center gap-1 overflow-hidden rounded-lg border bg-muted/40 transition",
-                busy || aiGenerating
-                  ? "cursor-not-allowed"
-                  : "hover:border-primary",
-              )}
-            >
-        {/* 完成态：结果图（始终显示渲染原图，AI 结果经对比查看） */}
+      <button
+        type="button"
+        onClick={(e) => {
+          // 渲染中/AI生图中处于不可操作状态，点击不弹出菜单
+          if (busy || aiGenerating) return
+          onOpen(e.currentTarget.getBoundingClientRect())
+        }}
+        className={cn(
+          "relative flex aspect-square w-20 shrink-0 flex-col items-center justify-center gap-1 overflow-hidden rounded-lg border bg-muted/40 transition",
+          busy || aiGenerating ? "cursor-not-allowed" : "hover:border-primary",
+          aiMarked && "ring-2 ring-[#60A5FA]/60",
+        )}
+      >
+        {/* 完成态：结果图（始终显示渲染原图，AI 结果经对比查看）；
+            PSD 源文件无法渲染 → 文件占位（点击仍弹操作菜单） */}
         {t?.status === "completed" && t.resultImage ? (
-          <SmartImage
-            src={toImageSrc(t.resultImage, { width: 200 })}
-            alt={displayName}
-            className="absolute inset-0 size-full object-cover"
-          />
+          isPsd ? (
+            <PsdPlaceholder
+              iconClassName="size-7"
+              className="absolute inset-0 bg-muted/60"
+            />
+          ) : (
+            <SmartImage
+              src={toImageSrc(t.resultImage, { width: 200 })}
+              alt={displayName}
+              className="absolute inset-0 size-full object-cover"
+            />
+          )
         ) : null}
 
         {/* 占位（未渲染过） */}
@@ -176,7 +163,7 @@ export function TemplateSquare({
         ) : null}
 
         {/* AI 结果：方块内右上角蓝色 Sparkle 单星图标（实心、无底衬），
-            配合外圈流光环；渲染 busy 态不显示（动画只保留动画本身） */}
+            配合静态蓝色描边；渲染 busy 态不显示 */}
         {hasAi && !busy ? (
           <Sparkle
             className="pointer-events-none absolute right-1 top-1 z-20 size-[14px] text-[#60A5FA]"
@@ -195,10 +182,7 @@ export function TemplateSquare({
             <span className="text-[9px] text-muted-foreground">已退款</span>
           </>
         ) : null}
-        </button>
-          </div>
-        </BeamWrapper>
-      </div>
+      </button>
 
       {/* 悬停操作：重试（失败） */}
       <div className="absolute right-1 top-1 z-10 hidden gap-1 group-hover/sq:flex">

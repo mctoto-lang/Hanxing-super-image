@@ -5,7 +5,7 @@ import { Download, Heart, Search } from "lucide-react"
 import type { DateRange } from "react-day-picker"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { ImageViewer } from "@/components/ui/image-viewer"
+import { ImageViewer, downloadImageFile } from "@/components/ui/image-viewer"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -15,6 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { PsdPlaceholder } from "@/components/ui/psd-placeholder"
 import { Skeleton } from "@/components/ui/skeleton"
 import { SmartImage } from "@/components/ui/smart-image"
 import { HistoryDateRangePicker } from "@/components/product-v2/history-date-range-picker"
@@ -29,7 +30,7 @@ import {
   SOURCE_LABELS,
   sourceFilterLabel,
 } from "@/lib/assets/gallery-filter"
-import { cn, toImageSrc } from "@/lib/utils"
+import { cn, isPsdUrl, toImageSrc } from "@/lib/utils"
 import { getStorageProxyUrl } from "@/lib/storage/proxy"
 import { pinTaskAction, unpinTaskAction } from "@/server/actions/assets"
 import { useRouter } from "next/navigation"
@@ -108,6 +109,26 @@ export function ImageGallery({
     )
   }, [pinnedTasks])
 
+  // 切回标签页/窗口时刷新列表（30s 节流）：本页数据是服务端首屏快照，
+  // 其他页面（样机渲染等）新完成的图不刷新就一直看不到
+  const lastFocusRefreshRef = React.useRef(0)
+  React.useEffect(() => {
+    // 节流起点 = 挂载时刻（effect 内赋值，渲染期保持纯净）
+    lastFocusRefreshRef.current = Date.now()
+    const maybeRefresh = () => {
+      if (document.visibilityState !== "visible") return
+      if (Date.now() - lastFocusRefreshRef.current < 30_000) return
+      lastFocusRefreshRef.current = Date.now()
+      router.refresh()
+    }
+    window.addEventListener("focus", maybeRefresh)
+    document.addEventListener("visibilitychange", maybeRefresh)
+    return () => {
+      window.removeEventListener("focus", maybeRefresh)
+      document.removeEventListener("visibilitychange", maybeRefresh)
+    }
+  }, [router])
+
   // 收藏动画：popCount 作 Heart 重挂载 key（重放弹跳），
   // ringIds 控制光环类并在动画结束后移除（下次点击才能重放）
   const [popCount, setPopCount] = React.useState<Record<string, number>>({})
@@ -169,8 +190,16 @@ export function ImageGallery({
     return cols
   }, [flatCards, columnCount])
 
-  const viewerCard = flatCards.length
-    ? flatCards[Math.min(viewerIndex, flatCards.length - 1)]
+  // 放大查看器翻页序列：排除 PSD（浏览器无法渲染，卡片点击直接下载）
+  const previewableCards = React.useMemo(
+    () => flatCards.filter((c) => !isPsdUrl(c.url)),
+    [flatCards],
+  )
+
+  const viewerCard = previewableCards.length
+    ? previewableCards[
+        Math.min(viewerIndex, previewableCards.length - 1)
+      ]
     : undefined
 
   if (items.length === 0) {
@@ -226,7 +255,7 @@ export function ImageGallery({
 
   /** 从 URL 取真实图片扩展名（下载文件名不再固定 .png） */
   function extFromImageUrl(url: string): string {
-    const m = url.match(/\.(jpe?g|png|webp|gif)(?:\?|#|$)/i)
+    const m = url.match(/\.(jpe?g|png|webp|gif|psd)(?:\?|#|$)/i)
     return m ? m[1]!.toLowerCase().replace("jpeg", "jpg") : "png"
   }
 
@@ -314,21 +343,39 @@ export function ImageGallery({
               {column.map((card) => {
                 const isPinned = Boolean(pinnedMap[card.item.taskId])
                 const pop = popCount[card.item.taskId] ?? 0
+                // PSD 源文件无法预览：卡片显示文件占位，点击直接下载
+                const psd = isPsdUrl(card.url)
                 return (
                   <div
                     key={card.key}
-                    className="group relative cursor-zoom-in overflow-hidden rounded-lg border bg-card"
+                    className={cn(
+                      "group relative overflow-hidden rounded-lg border bg-card",
+                      psd ? "cursor-pointer" : "cursor-zoom-in",
+                    )}
                     onClick={() => {
-                      setViewerIndex(card.flatIndex)
+                      if (psd) {
+                        downloadImageFile(
+                          card.url,
+                          `hanxing-${Date.now()}-${card.flatIndex}`,
+                        )
+                        return
+                      }
+                      setViewerIndex(previewableCards.indexOf(card))
                       setViewerOpen(true)
                     }}
                   >
-                    {/* COS 直连（toImageSrc 带缩略参数），不经应用服务器中转；
-                        过期对象由 SmartImage 显示占位 */}
-                    <CardImage
-                      src={toImageSrc(card.url, { width: 480 })}
-                      alt={card.item.prompt.slice(0, 50)}
-                    />
+                    {psd ? (
+                      <div className="aspect-square w-full bg-muted/40">
+                        <PsdPlaceholder iconClassName="size-10" />
+                      </div>
+                    ) : (
+                      /* COS 直连（toImageSrc 带缩略参数），不经应用服务器中转；
+                          过期对象由 SmartImage 显示占位 */
+                      <CardImage
+                        src={toImageSrc(card.url, { width: 480 })}
+                        alt={card.item.prompt.slice(0, 50)}
+                      />
+                    )}
                     <div className="absolute inset-0 flex flex-col justify-between bg-gradient-to-t from-black/80 via-transparent to-black/40 p-2 opacity-0 transition-opacity group-hover:opacity-100">
                       <div className="flex justify-end gap-1">
                         <Button
@@ -396,7 +443,7 @@ export function ImageGallery({
       <ImageViewer
         open={viewerOpen}
         onOpenChange={setViewerOpen}
-        images={flatCards.map((c) => c.url)}
+        images={previewableCards.map((c) => c.url)}
         index={viewerIndex}
         onIndexChange={setViewerIndex}
         info={
@@ -405,6 +452,7 @@ export function ImageGallery({
                 model: viewerCard.item.modelDisplayName,
                 prompt: viewerCard.item.prompt,
                 createdAt: viewerCard.item.createdAt,
+                durationMs: viewerCard.item.durationMs ?? undefined,
               }
             : undefined
         }

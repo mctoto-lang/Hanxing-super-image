@@ -25,7 +25,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Textarea } from "@/components/ui/textarea"
-import { ImageViewer } from "@/components/ui/image-viewer"
+import { ImageViewer, downloadImageFile } from "@/components/ui/image-viewer"
 import type { MockupBindingSetting } from "@/db/schema"
 import type {
   MockupCardItemView,
@@ -53,6 +53,7 @@ import {
   type MockupOutputFormat,
 } from "./output-format-select"
 import { HistoryDateRangePicker } from "@/components/product-v2/history-date-range-picker"
+import { isPsdUrl } from "@/lib/utils"
 import {
   Select,
   SelectContent,
@@ -142,9 +143,9 @@ export function MockupClient({
   const [showHistory, setShowHistory] = React.useState(false)
   const history = useMockupHistory("card")
 
-  // 渲染导出格式（提交时选择；默认 PNG）
+  // 渲染导出格式（提交时选择；默认 JPG，选择不持久化）
   const [outputFormat, setOutputFormat] =
-    React.useState<MockupOutputFormat>("png")
+    React.useState<MockupOutputFormat>("jpeg")
 
   // 方块操作菜单（点击方块弹出）
   const [menuTarget, setMenuTarget] = React.useState<
@@ -825,8 +826,18 @@ export function MockupClient({
                               setAiRenderPrompt("")
                               setAiRenderTarget({ card, item })
                             },
-                            onViewOriginal: () =>
-                              eff?.resultImage && setViewerImage(eff.resultImage),
+                            onViewOriginal: () => {
+                              if (!eff?.resultImage) return
+                              // PSD 源文件浏览器无法预览：直接下载
+                              if (isPsdUrl(eff.resultImage)) {
+                                downloadImageFile(
+                                  eff.resultImage,
+                                  `hanxing-${Date.now()}`,
+                                )
+                                return
+                              }
+                              setViewerImage(eff.resultImage)
+                            },
                             onCompare: () => setCompareTarget({ card, item }),
                           })
                         }}

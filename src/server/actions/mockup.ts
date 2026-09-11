@@ -1957,6 +1957,7 @@ export async function listGeneratedAssetsAction(limit = 200): Promise<{
       id: generationTasks.id,
       resultImages: generationTasks.resultImages,
       createdAt: generationTasks.createdAt,
+      completedAt: generationTasks.completedAt,
     })
     .from(generationTasks)
     .where(
@@ -1968,7 +1969,13 @@ export async function listGeneratedAssetsAction(limit = 200): Promise<{
         sql`${generationTasks.resultImages} IS NOT NULL`,
       ),
     )
-    .orderBy(desc(generationTasks.createdAt))
+    // 按完成时间倒序（新图在上）：图片是按完成时间产出的，若按提交时间
+    // （createdAt）排序，先提交后完成的慢任务（如样机渲染）会排在更晚
+    // 产出、用户感知更新的图下面；批量提交的同秒任务也可借此稳定排序
+    .orderBy(
+      sql`${generationTasks.completedAt} DESC NULLS LAST`,
+      desc(generationTasks.createdAt),
+    )
     .limit(Math.min(Math.max(limit, 1), 300))
 
   const images: MockupLibraryImage[] = []
@@ -1978,7 +1985,7 @@ export async function listGeneratedAssetsAction(limit = 200): Promise<{
         id: `${row.id}:${idx}`,
         imageUrl: url,
         fileName: null,
-        createdAt: row.createdAt.toISOString(),
+        createdAt: (row.completedAt ?? row.createdAt).toISOString(),
         taskId: row.id,
       })
       if (images.length >= limit) break
@@ -2240,7 +2247,7 @@ async function renderInternal(
               templateName: item.displayName,
               batchTag,
               input: item.input,
-              outputFormat: opts?.outputFormat ?? "png",
+              outputFormat: opts?.outputFormat ?? "jpeg",
             },
           })
           .returning({ id: generationTasks.id })
@@ -2463,6 +2470,13 @@ export async function getMockupStatusAction(): Promise<{
       errorMessage: task.errorMessage,
       resultImage: task.resultImages?.[0] ?? null,
     })
+  }
+  // 刚从在途转为完成的渲染图 → 失效资产页缓存（此前 mockup 完成链路
+  // 从不 revalidate /assets，用户随后导航到资产管理看到的还是旧列表）。
+  // active 只含 queued/processing，completed 只会在收敛的那一轮出现，
+  // 不会反复触发
+  if (rows.some((t) => t.status === "completed")) {
+    revalidatePath("/assets")
   }
   return { ok: true, updates }
 }

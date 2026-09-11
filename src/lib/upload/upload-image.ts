@@ -40,13 +40,16 @@ export async function uploadImage(file: File): Promise<string> {
   if (!presignResp.ok) throw await errText(presignResp, "presign failed")
   const presign = (await presignResp.json()) as PresignResponse
 
-  // 2. COS 直传
+  // 2. COS 直传。Cache-Control 不参与预签名（见 cos.ts presignPut 注释），
+  //    客户端照样发送即可——COS 将其存为对象元数据，缓存效果相同；
+  //    字面量与 cos.ts 的 COS_IMMUTABLE_CACHE_CONTROL 保持一致
   if (presign.mode === "cos" && presign.presignedUrl && presign.finalUrl) {
     const putResp = await fetch(presign.presignedUrl, {
       method: "PUT",
       body: file,
       headers: {
         "Content-Type": presign.contentType ?? file.type,
+        "Cache-Control": "public, max-age=31536000, immutable",
       },
     })
     if (!putResp.ok) {
