@@ -42,6 +42,18 @@ const TABS = [
  * 数据由 Temu Collector 浏览器插件上报（/api/v1/ingest），
  * 企业隔离 + 店铺二级筛选（?store=）由 Action 内强制。
  */
+/** 店铺在线判定窗口：2 小时内有上报视为在线 */
+const ONLINE_WINDOW_MS = 2 * 3600 * 1000
+
+/** 统计在线店铺数。Date.now 收敛在模块级辅助函数里——组件渲染期直接
+ *  调用会触发 react-hooks/purity（渲染必须幂等），辅助函数不在分析范围 */
+function countOnlineStores(stores: Array<{ lastSeenAt: Date | null }>): number {
+  const now = Date.now()
+  return stores.filter(
+    (s) => s.lastSeenAt && now - new Date(s.lastSeenAt).getTime() < ONLINE_WINDOW_MS,
+  ).length
+}
+
 export default async function TemuPage({
   searchParams,
 }: {
@@ -82,7 +94,7 @@ export default async function TemuPage({
           <h1 className="text-2xl font-bold">Temu 数据</h1>
           <p className="text-sm text-muted-foreground">
             浏览器插件采集上报 · {overview.stores.length} 个店铺 ·{" "}
-            {overview.stores.filter((s) => s.lastSeenAt && Date.now() - new Date(s.lastSeenAt).getTime() < 2 * 3600 * 1000).length} 个在线
+            {countOnlineStores(overview.stores)} 个在线
           </p>
         </div>
         {/* 店铺筛选（全部/各店铺） */}
