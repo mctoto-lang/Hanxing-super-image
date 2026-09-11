@@ -73,6 +73,9 @@ export function MockupGenerationConfigButton({
 }) {
   const [open, setOpen] = React.useState(false)
   const [models, setModels] = React.useState<PickableModel[]>([])
+  // 列表是否已成功加载过：判定「模型已失效」的前提——否则刷新后列表
+  // 未加载时也会误报失效
+  const [modelsLoaded, setModelsLoaded] = React.useState(false)
   const [loading, setLoading] = React.useState(false)
   const [modelId, setModelId] = React.useState<string | null>(null)
   const [size, setSize] = React.useState<string | null>(null)
@@ -82,6 +85,7 @@ export function MockupGenerationConfigButton({
     try {
       const list = (await listMockupModelsAction()) as PickableModel[]
       setModels(list)
+      setModelsLoaded(true)
       return list
     } catch {
       toast.error("模型列表获取失败")
@@ -90,6 +94,12 @@ export function MockupGenerationConfigButton({
       setLoading(false)
     }
   }, [])
+
+  // 挂载即加载：刷新后 localStorage 恢复的配置需要模型列表才能解析出
+  // 按钮摘要中的模型名（列表就绪前摘要只显示尺寸，不判定失效）
+  React.useEffect(() => {
+    void loadModels()
+  }, [loadModels])
 
   React.useEffect(() => {
     if (!open) return
@@ -137,11 +147,16 @@ export function MockupGenerationConfigButton({
     setOpen(false)
   }
 
-  const summary = selectedModel
-    ? `${selectedModel.displayName} · ${value?.imageSize ?? ""}`
-    : value
-      ? "模型已失效，点击重选"
-      : ""
+  // 摘要按已应用的 value 推导（不依赖弹窗内草稿 modelId——未打开过弹窗时
+  // 草稿为 null，曾因此刷新后误报失效）；列表未就绪前只显示尺寸，不判定失效
+  const summaryModel = models.find((m) => m.id === value?.modelId) ?? null
+  const summary = !value
+    ? ""
+    : summaryModel
+      ? `${summaryModel.displayName} · ${value.imageSize}`
+      : modelsLoaded
+        ? "模型已失效，点击重选"
+        : `已配置 · ${value.imageSize}`
 
   return (
     <>
