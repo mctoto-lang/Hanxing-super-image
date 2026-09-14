@@ -170,18 +170,25 @@ export function ImageGallery({
     return cards
   }, [filteredItems])
 
-  // 瀑布流列数跟随容器宽度（SSR 先按 2 列，挂载后立即修正）
+  // 瀑布流列数跟随容器宽度（SSR 先按 2 列，挂载后立即修正）。
+  // 容器随空状态条件卸载/重挂载，effect 必须跟着 hasCards 重跑，
+  // 否则重挂载的新节点无人测量、旧 observer 盯着已移除节点，列数卡死
+  const hasCards = flatCards.length > 0
   const masonryRef = React.useRef<HTMLDivElement | null>(null)
   const [columnCount, setColumnCount] = React.useState(2)
   React.useEffect(() => {
+    if (!hasCards) return
     const el = masonryRef.current
     if (!el) return
-    const compute = () => setColumnCount(columnsForWidth(el.clientWidth))
+    const compute = () => {
+      const width = el.clientWidth
+      if (width > 0) setColumnCount(columnsForWidth(width))
+    }
     compute()
     const ro = new ResizeObserver(compute)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [])
+  }, [hasCards])
 
   // 按索引轮询分列：卡片保持时间倒序，最新的横向排在第一行
   const columnLists = React.useMemo(() => {
