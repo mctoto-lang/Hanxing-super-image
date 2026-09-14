@@ -49,11 +49,20 @@ export const modelConfigSchema = z.object({
   displayName: z.string().min(1, "请输入显示名").max(200),
   apiEndpoint: z.string().min(1, "请输入 API 地址").max(500),
   apiKey: z.string().optional(), // 创建时必填（action 内校验），编辑留空=不修改
-  apiFormat: z.enum(["openai", "jimeng"]),
+  apiFormat: z.enum(["openai", "jimeng", "gemini"]),
   jimengResolution: z.enum(["1k", "2k", "4k"]).optional(),
   jimengN: z.number().int().min(1).max(8).optional(),
   /** OpenAI 格式质量参数透传（管理员填入具体值；空 = 不传） */
   quality: z.string().trim().max(50).optional(),
+  /** gemini 格式：以比例参数代替尺寸参数（openai/jimeng 格式忽略） */
+  useRatioParam: z.boolean().default(false),
+  /** gemini 格式：比例参数字段名（空 = aspect_ratio） */
+  ratioParamField: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "比例字段名仅限字母、数字与下划线，且不能以数字开头")
+    .max(50)
+    .optional(),
   costPerImage: z.number().int().min(0).default(1),
   description: z.string().max(300).optional(),
   badgeText: z.string().max(30).optional(),

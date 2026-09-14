@@ -25,7 +25,7 @@ export interface CreateModel {
   supportsSmartSize: boolean
   supportsReferenceImage: boolean
   maxReferenceImages: number
-  apiFormat: "openai" | "jimeng"
+  apiFormat: "openai" | "jimeng" | "gemini"
   extraConfig: ModelExtraConfig | null
   iconUrl: string | null
   /** listAvailableModelsAction 多查的字段，权限校验用 */

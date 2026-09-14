@@ -27,6 +27,7 @@ import { formatPricePerMillion } from "@/lib/ai/chat/chat-model-config"
 const FORMAT_LABEL: Record<string, string> = {
   openai: "OpenAI",
   jimeng: "即梦",
+  gemini: "Gemini",
 }
 
 const CHAT_FORMAT_LABEL: Record<string, string> = {

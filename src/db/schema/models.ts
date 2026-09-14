@@ -19,7 +19,8 @@ import { enterprises } from "./enterprise"
  *
  * - enterpriseId NULL = 平台级共享模型（所有企业可见）；
  *   非 NULL = 企业私有模型。
- * - apiFormat: openai | jimeng（openai = OpenAI 标准生图格式）。
+ * - apiFormat: openai | jimeng | gemini（openai = OpenAI 标准生图格式；
+ *   gemini = Gemini 系中转，请求形状同 openai，尺寸参数可切比例）。
  * - 可见性合并：旧项目 visible_in_generate + visible_in_canvas → 单一 visibleInCreate（D13）。
  */
 export interface ModelExtraConfig {
@@ -79,6 +80,10 @@ export const models = pgTable(
     supportsSmartSize: boolean("supports_smart_size")
       .default(false)
       .notNull(),
+    /** gemini 格式：生图请求以比例参数代替尺寸参数（openai/jimeng 格式忽略） */
+    useRatioParam: boolean("use_ratio_param").default(false).notNull(),
+    /** gemini 格式：比例参数字段名（空 = aspect_ratio） */
+    ratioParamField: varchar("ratio_param_field", { length: 50 }),
     visibleInCreate: boolean("visible_in_create").default(true).notNull(),
     visibleInWorkspace: boolean("visible_in_workspace")
       .default(false)

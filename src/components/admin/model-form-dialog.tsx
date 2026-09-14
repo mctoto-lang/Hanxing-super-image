@@ -43,7 +43,7 @@ export interface ModelRow {
   name: string
   displayName: string
   apiEndpoint: string
-  apiFormat: "openai" | "jimeng"
+  apiFormat: "openai" | "jimeng" | "gemini"
   extraConfig: ModelExtraConfig | null
   costPerImage: number
   description: string | null
@@ -52,6 +52,8 @@ export interface ModelRow {
   sizePresets: ModelSizePreset[] | null
   supportsImageCount: boolean
   supportsSmartSize: boolean
+  useRatioParam: boolean
+  ratioParamField: string | null
   visibleInCreate: boolean
   visibleInWorkspace: boolean
   visibleInProduct: boolean
@@ -76,11 +78,13 @@ interface FormState {
   badgeColor: string
   apiEndpoint: string
   apiKey: string
-  apiFormat: "openai" | "jimeng"
+  apiFormat: "openai" | "jimeng" | "gemini"
   jimengResolution: "" | "1k" | "2k" | "4k"
   jimengN: number
   qualityEnabled: boolean
   quality: string
+  useRatioParam: boolean
+  ratioParamField: string
   costPerImage: number
   sizePresets: ModelSizePreset[]
   supportsImageCount: boolean
@@ -114,6 +118,8 @@ function emptyState(): FormState {
     jimengN: 1,
     qualityEnabled: false,
     quality: "",
+    useRatioParam: false,
+    ratioParamField: "",
     costPerImage: 1,
     sizePresets: DEFAULT_SIZE_PRESETS.map((p) => ({ ...p })),
     supportsImageCount: false,
@@ -150,6 +156,8 @@ function fromModel(m: ModelRow): FormState {
     jimengN: ec.jimengN ?? 1,
     qualityEnabled: Boolean(ec.quality),
     quality: (ec.quality as string) ?? "",
+    useRatioParam: m.useRatioParam,
+    ratioParamField: m.ratioParamField ?? "",
     costPerImage: m.costPerImage,
     sizePresets: m.sizePresets
       ? m.sizePresets.map((p) => ({ ...p }))
@@ -229,12 +237,26 @@ export function ModelFormDialog({
       input.jimengResolution = state.jimengResolution || undefined
       input.jimengN = state.jimengN
     }
-    if (state.apiFormat === "openai") {
+    if (state.apiFormat === "openai" || state.apiFormat === "gemini") {
       if (state.qualityEnabled && !state.quality.trim()) {
         toast.error("已开启质量参数，请填入具体质量值")
         return
       }
       input.quality = state.qualityEnabled ? state.quality.trim() : undefined
+    }
+    if (state.apiFormat === "gemini") {
+      if (state.ratioParamField && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(state.ratioParamField)) {
+        toast.error("比例字段名仅限字母、数字与下划线，且不能以数字开头")
+        return
+      }
+      input.useRatioParam = state.useRatioParam
+      input.ratioParamField = state.useRatioParam
+        ? state.ratioParamField.trim() || undefined
+        : undefined
+    } else {
+      // 比例传参仅 gemini 格式生效，其余格式提交复位值（防格式切换残留）
+      input.useRatioParam = false
+      input.ratioParamField = undefined
     }
     if (state.apiKey) input.apiKey = state.apiKey
 
@@ -353,22 +375,36 @@ export function ModelFormDialog({
               <Label>接口格式</Label>
               <Select
                 value={state.apiFormat}
-                onValueChange={(v) => up("apiFormat", (v ?? "openai") as "openai" | "jimeng")}
+                onValueChange={(v) =>
+                  up("apiFormat", (v ?? "openai") as "openai" | "jimeng" | "gemini")
+                }
               >
                 <SelectTrigger className="w-full">
                   <SelectValue>
-                    {state.apiFormat === "jimeng" ? "即梦" : "OpenAI 标准生图"}
+                    {state.apiFormat === "jimeng"
+                      ? "即梦"
+                      : state.apiFormat === "gemini"
+                        ? "Gemini（OpenAI 兼容中转）"
+                        : "OpenAI 标准生图"}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="openai">OpenAI 标准生图</SelectItem>
                   <SelectItem value="jimeng">即梦</SelectItem>
+                  <SelectItem value="gemini">Gemini（OpenAI 兼容中转）</SelectItem>
                 </SelectContent>
               </Select>
               {state.apiFormat === "openai" && (
                 <p className="text-xs text-muted-foreground">
                   请求 POST {"{接口地址}"}/images/generations，尺寸走 size 字段，
                   参考图以 URL 链接传入 image 字段（接口地址配到 /v1 结尾）
+                </p>
+              )}
+              {state.apiFormat === "gemini" && (
+                <p className="text-xs text-muted-foreground">
+                  请求形状同 OpenAI 标准生图（POST {"{接口地址}"}/images/generations、
+                  Bearer 鉴权），供 Gemini 系中转模型使用；可在下方配置生图时
+                  传比例参数代替尺寸参数
                 </p>
               )}
             </div>
@@ -428,7 +464,7 @@ export function ModelFormDialog({
             </div>
           )}
 
-          {state.apiFormat === "openai" && (
+          {state.apiFormat !== "jimeng" && (
             <div className="space-y-3 rounded-md border p-3">
               <label className="flex items-center justify-between">
                 <span className="text-sm font-medium">
@@ -460,6 +496,36 @@ export function ModelFormDialog({
                     <option value="hd" />
                     <option value="standard" />
                   </datalist>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Gemini 专属：生图传尺寸还是传比例 */}
+          {state.apiFormat === "gemini" && (
+            <div className="space-y-3 rounded-md border p-3">
+              <label className="flex items-center justify-between">
+                <span className="text-sm font-medium">
+                  传比例参数（代替尺寸）
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                    开启后生图请求传所选比例（由尺寸预设归约，如 1024x1024 →
+                    1:1），不再传 size；关闭则与 OpenAI 格式一致传 size
+                  </span>
+                </span>
+                <Switch
+                  checked={state.useRatioParam}
+                  onCheckedChange={(v) => up("useRatioParam", v)}
+                />
+              </label>
+              {state.useRatioParam && (
+                <div className="grid gap-2">
+                  <Label htmlFor="ratioParamField">比例字段名</Label>
+                  <Input
+                    id="ratioParamField"
+                    value={state.ratioParamField}
+                    onChange={(e) => up("ratioParamField", e.target.value)}
+                    placeholder="留空默认 aspect_ratio，按中转站文档填写"
+                  />
                 </div>
               )}
             </div>

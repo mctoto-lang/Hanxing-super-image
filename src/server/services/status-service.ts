@@ -104,8 +104,8 @@ function toImageTarget(row: ImageModelRow): ProbeTarget | null {
     apiKey = ""
   }
   const base = row.apiEndpoint.replace(/\/+$/, "")
-  // openai 格式探测 {base}/v1/models；jimeng 等私有格式探测 origin 可达性
-  return row.apiFormat === "openai"
+  // openai / gemini 格式探测 {base}/v1/models；jimeng 等私有格式探测 origin 可达性
+  return row.apiFormat === "openai" || row.apiFormat === "gemini"
     ? {
         origin,
         probeUrl: openAiModelsUrl(base),

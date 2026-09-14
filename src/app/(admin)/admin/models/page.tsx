@@ -31,6 +31,7 @@ export const dynamic = "force-dynamic"
 const FORMAT_LABEL: Record<string, string> = {
   openai: "OpenAI 标准生图",
   jimeng: "即梦",
+  gemini: "Gemini",
 }
 
 export default async function AdminModelsPage({

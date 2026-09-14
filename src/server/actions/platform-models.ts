@@ -29,14 +29,14 @@ import { revalidatePath } from "next/cache"
 
 /** 把扁平字段组装为 extraConfig（按 apiFormat 白名单） */
 function buildExtraConfig(input: {
-  apiFormat: "openai" | "jimeng"
+  apiFormat: "openai" | "jimeng" | "gemini"
   jimengResolution?: "1k" | "2k" | "4k"
   jimengN?: number
   quality?: string
 }): ModelExtraConfig {
   const cfg: ModelExtraConfig = {}
-  // openai：质量参数透传（空 = 不写 = 关闭）
-  if (input.apiFormat === "openai") {
+  // openai / gemini：质量参数透传（空 = 不写 = 关闭）
+  if (input.apiFormat === "openai" || input.apiFormat === "gemini") {
     if (input.quality?.trim()) cfg.quality = input.quality.trim()
     return cfg
   }
@@ -79,7 +79,7 @@ export interface PresetModelRow {
   name: string
   displayName: string
   apiEndpoint: string
-  apiFormat: "openai" | "jimeng"
+  apiFormat: "openai" | "jimeng" | "gemini"
   extraConfig: ModelExtraConfig | null
   costPerImage: number
   description: string | null
@@ -88,6 +88,8 @@ export interface PresetModelRow {
   sizePresets: ModelSizePreset[] | null
   supportsImageCount: boolean
   supportsSmartSize: boolean
+  useRatioParam: boolean
+  ratioParamField: string | null
   visibleInCreate: boolean
   visibleInWorkspace: boolean
   visibleInProduct: boolean
@@ -138,6 +140,8 @@ export async function listPresetModelsAction(
       sizePresets: models.sizePresets,
       supportsImageCount: models.supportsImageCount,
       supportsSmartSize: models.supportsSmartSize,
+      useRatioParam: models.useRatioParam,
+      ratioParamField: models.ratioParamField,
       visibleInCreate: models.visibleInCreate,
       visibleInWorkspace: models.visibleInWorkspace,
       visibleInProduct: models.visibleInProduct,
@@ -211,6 +215,12 @@ export async function createPresetModelAction(
         sizePresets: d.sizePresets.length > 0 ? d.sizePresets : null,
         supportsImageCount: d.supportsImageCount,
         supportsSmartSize: d.supportsSmartSize,
+        // 比例传参仅 gemini 格式生效，其余格式强制复位（防格式切换残留）
+        useRatioParam: d.apiFormat === "gemini" && d.useRatioParam,
+        ratioParamField:
+          d.apiFormat === "gemini" && d.ratioParamField
+            ? d.ratioParamField
+            : null,
         visibleInCreate: d.visibleInCreate,
         visibleInWorkspace: d.visibleInWorkspace,
         visibleInProduct: d.visibleInProduct,
@@ -301,6 +311,12 @@ export async function updatePresetModelAction(
     set.supportsImageCount = d.supportsImageCount
   if (d.supportsSmartSize !== undefined)
     set.supportsSmartSize = d.supportsSmartSize
+  // 比例传参仅 gemini 格式生效，其余格式强制复位（防格式切换残留）
+  if (d.useRatioParam !== undefined)
+    set.useRatioParam = apiFormat === "gemini" && d.useRatioParam
+  if (d.ratioParamField !== undefined)
+    set.ratioParamField =
+      apiFormat === "gemini" && d.ratioParamField ? d.ratioParamField : null
   if (d.visibleInCreate !== undefined) set.visibleInCreate = d.visibleInCreate
   if (d.visibleInWorkspace !== undefined)
     set.visibleInWorkspace = d.visibleInWorkspace

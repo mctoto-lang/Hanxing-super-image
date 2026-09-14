@@ -22,7 +22,7 @@ export interface WeartryModelRow {
   supportsReferenceImage: boolean
   maxReferenceImages: number
   costPerImage: number
-  apiFormat: "openai" | "jimeng"
+  apiFormat: "openai" | "jimeng" | "gemini"
 }
 
 /** 单个生成任务（批次内，前端展示；复用商品页 BatchView，保留其兼容字段） */

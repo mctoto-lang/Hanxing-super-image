@@ -50,8 +50,8 @@ export const creditTxTypeEnum = pgEnum("credit_tx_type", [
 ])
 export type CreditTxType = (typeof creditTxTypeEnum.enumValues)[number]
 
-/** AI 模型 API 格式（openai = OpenAI 标准生图，jimeng = 即梦） */
-export const apiFormatEnum = pgEnum("api_format", ["openai", "jimeng"])
+/** AI 模型 API 格式（openai = OpenAI 标准生图，jimeng = 即梦，gemini = Gemini 系中转：请求形状同 openai，尺寸参数可切换为比例） */
+export const apiFormatEnum = pgEnum("api_format", ["openai", "jimeng", "gemini"])
 
 /** 任务状态 */
 export const taskStatusEnum = pgEnum("task_status", [

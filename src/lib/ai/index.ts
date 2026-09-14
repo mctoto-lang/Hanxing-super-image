@@ -1,7 +1,8 @@
 /**
  * AI 统一调度入口（手册 §5.6）
  *
- * 按 model.apiFormat 分发到 OpenAI 标准生图 / 即梦适配器。
+ * 按 model.apiFormat 分发：openai / gemini 共用 OpenAI 标准生图适配器
+ * （gemini 请求形状相同，仅尺寸参数可切换为比例），jimeng 用即梦适配器。
  * 调用方（队列消费者）注入 downloadAndUpload 回调（storage 抽象）。
  */
 import { decrypt } from "@/lib/crypto"
@@ -71,7 +72,8 @@ export async function callImageApi(opts: {
     signUploadToken(u),
   )
 
-  if (model.apiFormat === "openai") {
+  // openai / gemini 共用 OpenAI 适配器；gemini 可把尺寸参数切换为比例参数
+  if (model.apiFormat === "openai" || model.apiFormat === "gemini") {
     return await callOpenAiImageApi({
       model: {
         name: model.name,
@@ -82,6 +84,9 @@ export async function callImageApi(opts: {
           typeof extraConfig.quality === "string"
             ? extraConfig.quality
             : undefined,
+        useRatioParam:
+          model.apiFormat === "gemini" && model.useRatioParam === true,
+        ratioParamField: model.ratioParamField ?? undefined,
       },
       task: { prompt, imageSize, imageCount, indexes, referenceImages: referenceImagesForUpstream },
       apiKey,

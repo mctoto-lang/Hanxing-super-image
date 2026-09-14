@@ -1,12 +1,14 @@
 /**
- * OpenAI 标准生图适配器
+ * OpenAI 标准生图适配器（openai / gemini 格式共用）
  *
  * POST {apiEndpoint}/v1/images/generations（apiEndpoint 配到 /v1 结尾，
  * 如 https://api.openai.com/v1），Bearer 鉴权，同步 JSON 响应。
  *
  * - 请求体：{ model, prompt, size, image: [参考图URL...], quality? }
- *   尺寸固定走 size 字段；参考图以 URL 链接数组传入（默认字段 image，
- *   可由模型 referenceImageField 覆盖）；quality 为管理员配置的可选透传参数。
+ *   尺寸默认走 size 字段；gemini 格式可配置 useRatioParam 改为比例参数
+ *   （默认字段 aspect_ratio，值由尺寸 gcd 归约）；参考图以 URL 链接数组
+ *   传入（默认字段 image，可由模型 referenceImageField 覆盖）；
+ *   quality 为管理员配置的可选透传参数。
  * - 每张图一个独立工作单元（等待并发槽位 → fetch → 解析 → 转存），
  *   张与张之间互不阻塞、各自独立超时；单张失败不影响其他张，
  *   支持 indexes 子集重试补张。
@@ -25,6 +27,10 @@ export interface OpenAiImageModel {
   referenceImageField?: string | null
   /** 质量参数透传（管理员配置；空 = 请求体不带 quality 字段） */
   quality?: string | null
+  /** gemini 格式：以比例参数代替尺寸参数（openai 格式忽略） */
+  useRatioParam?: boolean
+  /** gemini 格式：比例参数字段名（空 = aspect_ratio） */
+  ratioParamField?: string | null
 }
 
 export interface OpenAiImageTask {
@@ -161,6 +167,8 @@ export async function callOpenAiImageApi(opts: {
           referenceImages,
           referenceImageField: model.referenceImageField ?? undefined,
           quality: model.quality ?? undefined,
+          useRatioParam: model.useRatioParam,
+          ratioParamField: model.ratioParamField ?? undefined,
         })
 
         const response = await fetch(endpoint, {

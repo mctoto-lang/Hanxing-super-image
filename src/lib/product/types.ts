@@ -41,7 +41,7 @@ export interface ProductModelRow {
   supportsReferenceImage: boolean
   maxReferenceImages: number
   costPerImage: number
-  apiFormat: "openai" | "jimeng"
+  apiFormat: "openai" | "jimeng" | "gemini"
 }
 
 /** 上架平台下拉项（DB 化配置） */

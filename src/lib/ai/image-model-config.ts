@@ -1,17 +1,20 @@
 /**
  * 图片模型请求体构造（纯函数库，零副作用，零外部依赖）
  *
- * 接口格式：openai（OpenAI 标准生图 /v1/images/generations）| jimeng（即梦）。
+ * 接口格式：openai（OpenAI 标准生图 /v1/images/generations）| jimeng（即梦）|
+ * gemini（Gemini 系中转：请求形状同 openai，尺寸参数可切换为比例）。
  * GRS 格式已下线。
  */
 
-export type ImageApiFormat = "openai" | "jimeng"
+export type ImageApiFormat = "openai" | "jimeng" | "gemini"
 
 export const DEFAULT_IMAGE_API_FORMAT: ImageApiFormat = "openai"
 /** 即梦参考图字段缺省名 */
 export const DEFAULT_REFERENCE_IMAGE_FIELD = "images"
 /** OpenAI 生图参考图字段缺省名（参考图以 URL 链接数组传入 image 字段） */
 export const DEFAULT_OPENAI_REFERENCE_IMAGE_FIELD = "image"
+/** gemini 格式比例参数字段缺省名（管理员可按中转站约定覆盖） */
+export const DEFAULT_RATIO_FIELD = "aspect_ratio"
 /** imageSize 兜底（历史任务缺尺寸时，避免请求体缺字段） */
 export const DEFAULT_IMAGE_SIZE = "1024x1024"
 
@@ -28,6 +31,10 @@ interface BuildOpenAiRequestInput {
   referenceImageField?: string
   /** 质量参数透传（管理员配置的具体值；空 = 请求体不带该字段） */
   quality?: string
+  /** gemini 格式：以比例参数代替尺寸参数（1024x1024 → 1:1；auto 原样传） */
+  useRatioParam?: boolean
+  /** gemini 格式：比例参数字段名（空 = aspect_ratio） */
+  ratioParamField?: string | null
 }
 
 interface BuildJimengRequestInput {
@@ -48,7 +55,7 @@ interface GenerationCapabilities {
   sizePresets?: unknown
 }
 
-const FORMATS = new Set<ImageApiFormat>(["openai", "jimeng"])
+const FORMATS = new Set<ImageApiFormat>(["openai", "jimeng", "gemini"])
 
 function parseExtraConfig(value: unknown): Record<string, unknown> {
   if (value === undefined || value === null || value === "") return {}
@@ -156,12 +163,12 @@ export function validateGenerationCapabilities(
 export function validateImageModelConfig(input: ImageModelConfigInput): void {
   const format = input.apiFormat
   if (!FORMATS.has(format as ImageApiFormat)) {
-    throw new Error("图片模型仅支持 openai 和 jimeng 接口格式")
+    throw new Error("图片模型仅支持 openai、jimeng 和 gemini 接口格式")
   }
   const config = parseExtraConfig(input.extraConfig)
 
-  // openai：额外配置仅 quality（质量参数透传，值为管理员按上游文档填写的字符串）
-  if (format === "openai") {
+  // openai / gemini：额外配置仅 quality（质量参数透传，值为管理员按上游文档填写的字符串）
+  if (format === "openai" || format === "gemini") {
     rejectUnsupportedFields(config, new Set(["quality"]))
     const quality = config.quality
     if (quality !== undefined && typeof quality !== "string") {
@@ -204,7 +211,9 @@ export function sizeToRatio(size: string): string {
 /**
  * OpenAI 标准生图请求体：POST {base}/v1/images/generations
  *
- * - 尺寸固定走 size 字段（"1024x1536"；智能比例传 "auto"）
+ * - 尺寸默认走 size 字段（"1024x1536"；智能比例传 "auto"）
+ * - gemini 格式可配置 useRatioParam：改为比例参数（默认字段 aspect_ratio，
+ *   值由尺寸 gcd 归约，如 1024x1024 → 1:1），此时请求体不再携带 size
  * - 参考图以 URL 链接数组传入 image 字段（字段名可由 referenceImageField 覆盖）
  * - quality（可选）：管理员配置的质量参数原样透传（如 high/medium/low、hd/standard）
  */
@@ -215,7 +224,12 @@ export function buildOpenAiRequestBody(
   const body: Record<string, unknown> = {
     model: input.model,
     prompt: input.prompt,
-    size,
+  }
+  if (input.useRatioParam) {
+    const field = input.ratioParamField?.trim() || DEFAULT_RATIO_FIELD
+    body[field] = sizeToRatio(size)
+  } else {
+    body.size = size
   }
   if (input.quality?.trim()) {
     body.quality = input.quality.trim()
