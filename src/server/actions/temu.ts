@@ -10,6 +10,7 @@ import {
   temuSalesOverviews,
   temuProducts,
   temuProductFlows,
+  temuProductAds,
   temuActivities,
 } from "@/db/schema"
 import {
@@ -165,6 +166,9 @@ export interface TemuProductRow {
   last7DaysSalesVolume: number | null
   mainImageUrl: string | null
   buyerName: string | null
+  /** 上新生命周期状态文案（价格申报中等） */
+  lifecycleStatus: string | null
+  siteName: string | null
   skcCreatedAt: number | null
   addedSiteAt: number | null
   mallName: string | null
@@ -210,6 +214,8 @@ export async function getTemuProductsAction(
         last7DaysSalesVolume: temuProducts.last7DaysSalesVolume,
         mainImageUrl: temuProducts.mainImageUrl,
         buyerName: temuProducts.buyerName,
+        lifecycleStatus: temuProducts.lifecycleStatus,
+        siteName: temuProducts.siteName,
         skcCreatedAt: temuProducts.skcCreatedAt,
         addedSiteAt: temuProducts.addedSiteAt,
         mallName: sql<string | null>`${temuProducts.mallMeta}->'mallNames'->>0`,
@@ -233,6 +239,8 @@ export interface TemuFlowRow {
   goodsImageUrl: string | null
   source: string
   capturedAt: Date
+  /** 货号（goodsId 关联 temu_product 回填，统一商品 ID） */
+  productSn: string | null
   exposeNum: number | null
   clickNum: number | null
   payGoodsNum: number | null
@@ -283,6 +291,13 @@ export async function getTemuFlowAction(storeId?: string): Promise<{
       goodsImageUrl: temuProductFlows.goodsImageUrl,
       source: temuProductFlows.source,
       capturedAt: temuProductFlows.capturedAt,
+      productSn: sql<string | null>`(
+        select tp.product_sn from temu_product tp
+        where tp.store_id = ${temuProductFlows.storeId}
+          and tp.goods_id = ${temuProductFlows.goodsId}
+          and tp.product_sn is not null
+        limit 1
+      )`,
       exposeNum: temuProductFlows.exposeNum,
       clickNum: temuProductFlows.clickNum,
       payGoodsNum: temuProductFlows.payGoodsNum,
@@ -351,7 +366,7 @@ export async function getTemuActivityAction(storeId?: string): Promise<TemuActiv
     .limit(50)
 }
 
-/** 销售总览明细（各店铺各自最新一批 SKC 快照） */
+/** 销售总览明细（各店铺各自最新一批 SKC 快照：销量 + 库存） */
 export async function getTemuSalesOverviewAction(storeId?: string) {
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
@@ -374,6 +389,12 @@ export async function getTemuSalesOverviewAction(storeId?: string) {
       productName: temuSalesOverviews.productName,
       category: temuSalesOverviews.category,
       supplierId: temuSalesOverviews.supplierId,
+      productSn: temuSalesOverviews.productSn,
+      todaySalesVolume: temuSalesOverviews.todaySalesVolume,
+      last7DaysSalesVolume: temuSalesOverviews.last7DaysSalesVolume,
+      last30DaysSalesVolume: temuSalesOverviews.last30DaysSalesVolume,
+      warehouseAvailableStock: temuSalesOverviews.warehouseAvailableStock,
+      shippedStock: temuSalesOverviews.shippedStock,
       capturedAt: temuSalesOverviews.capturedAt,
     })
     .from(temuSalesOverviews)
@@ -387,6 +408,76 @@ export async function getTemuSalesOverviewAction(storeId?: string) {
         ),
       ),
     )
+    .orderBy(desc(temuSalesOverviews.todaySalesVolume))
+    .limit(100)
+}
+
+export interface TemuAdsRow {
+  id: string
+  goodsId: string | null
+  skcId: string | null
+  /** 货号（上报缺失时 goodsId 关联 temu_product 回填） */
+  productSn: string | null
+  productName: string | null
+  capturedAt: Date
+  spend: number | null
+  impressions: number | null
+  clicks: number | null
+  orders: number | null
+  gmv: number | null
+  mallName: string | null
+}
+
+/** 商品推广（ads.temu.com 商品级报表：各店铺各自最新一批快照） */
+export async function getTemuAdsAction(storeId?: string): Promise<TemuAdsRow[]> {
+  const ctx = await requireEnterpriseContext()
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  const storeIds = await resolveStoreIds(enterpriseId, storeId)
+  if (storeIds.length === 0) return []
+  const latestPerStore = await db
+    .selectDistinctOn([temuProductAds.storeId], {
+      storeId: temuProductAds.storeId,
+      capturedAt: temuProductAds.capturedAt,
+    })
+    .from(temuProductAds)
+    .where(inArray(temuProductAds.storeId, storeIds))
+    .orderBy(temuProductAds.storeId, desc(temuProductAds.capturedAt))
+  if (latestPerStore.length === 0) return []
+  return db
+    .select({
+      id: temuProductAds.id,
+      goodsId: temuProductAds.goodsId,
+      skcId: temuProductAds.skcId,
+      productSn: sql<string | null>`coalesce(
+        ${temuProductAds.productSn},
+        (select tp.product_sn from temu_product tp
+          where tp.store_id = ${temuProductAds.storeId}
+            and tp.goods_id is not null
+            and tp.goods_id = ${temuProductAds.goodsId}
+            and tp.product_sn is not null
+          limit 1)
+      )`,
+      productName: temuProductAds.productName,
+      capturedAt: temuProductAds.capturedAt,
+      spend: temuProductAds.spend,
+      impressions: temuProductAds.impressions,
+      clicks: temuProductAds.clicks,
+      orders: temuProductAds.orders,
+      gmv: temuProductAds.gmv,
+      mallName: sql<string | null>`${temuProductAds.mallMeta}->'mallNames'->>0`,
+    })
+    .from(temuProductAds)
+    .where(
+      or(
+        ...latestPerStore.map((p) =>
+          and(
+            eq(temuProductAds.storeId, p.storeId),
+            eq(temuProductAds.capturedAt, p.capturedAt),
+          ),
+        ),
+      ),
+    )
+    .orderBy(desc(temuProductAds.spend))
     .limit(100)
 }
 

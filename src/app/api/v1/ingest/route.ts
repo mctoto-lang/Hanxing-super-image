@@ -8,6 +8,7 @@ import {
   temuSalesOverviews,
   temuProducts,
   temuProductFlows,
+  temuProductAds,
   temuActivities,
   temuIngestLogs,
   type TemuMallMeta,
@@ -72,6 +73,27 @@ const ratio = (v: unknown): number | null =>
 const str = (v: unknown, max = 300): string | null => {
   if (typeof v !== "string" || !v) return null
   return v.slice(0, max)
+}
+
+/** 上新生命周期 selectStatus 码 → 文案（2026-09-11 卖家中心实地核对；未收录码保留数字语义） */
+const LIFECYCLE_STATUS_TEXT: Record<string, string> = {
+  "7": "价格申报中",
+  "9": "价格已作废",
+  "11": "已创建首单",
+  "12": "已发布到站点",
+}
+const lifecycleStatusOf = (v: unknown): string | null => {
+  if (v == null) return null
+  const key = String(v)
+  return LIFECYCLE_STATUS_TEXT[key] ?? (typeof v === "number" ? `状态码${v}` : str(v, 64))
+}
+
+/** 站点数组（addedSiteList，可达 90+）拼接截断；完整清单在 raw/lifecycleDetail */
+const siteNamesOf = (v: unknown): string | null => {
+  if (!Array.isArray(v) || v.length === 0) return null
+  const joined = v.filter((x): x is string => typeof x === "string").join(",")
+  if (!joined) return null
+  return joined.length > 60 ? joined.slice(0, 57) + `…等${v.length}站` : joined
 }
 
 export async function POST(request: Request) {
@@ -208,6 +230,12 @@ async function handleItem(storeId: string, item: IngestItem): Promise<boolean> {
             productName: str(it.productName, 500),
             category: str(it.category, 120),
             supplierId: str(it.supplierId, 32),
+            productSn: str(it.productSn, 64),
+            todaySalesVolume: num(it.todaySalesVolume),
+            last7DaysSalesVolume: num(it.last7DaysSalesVolume),
+            last30DaysSalesVolume: num(it.last30DaysSalesVolume),
+            warehouseAvailableStock: num(it.warehouseAvailableStock),
+            shippedStock: num(it.shippedStock),
             priceDetail: null,
             overview: n,
             mallMeta,
@@ -248,6 +276,9 @@ async function handleItem(storeId: string, item: IngestItem): Promise<boolean> {
             last7DaysSalesVolume: num(it.last7DaysSalesVolume),
             mainImageUrl: str(it.mainImageUrl, 1000),
             buyerName: str(it.buyerName, 100),
+            lifecycleStatus: lifecycleStatusOf(it.lifecycleStatus),
+            siteCode: str(it.siteCode, 32),
+            siteName: siteNamesOf(it.siteNames),
             skcCreatedAt: num(it.skcCreatedTime),
             priceVerifiedAt: num(it.priceVerificationTime),
             firstPurchaseAt: num(it.firstPurchaseTime),
@@ -275,6 +306,9 @@ async function handleItem(storeId: string, item: IngestItem): Promise<boolean> {
               last7DaysSalesVolume: num(it.last7DaysSalesVolume),
               mainImageUrl: str(it.mainImageUrl, 1000),
               buyerName: str(it.buyerName, 100),
+              lifecycleStatus: lifecycleStatusOf(it.lifecycleStatus),
+              siteCode: str(it.siteCode, 32),
+              siteName: siteNamesOf(it.siteNames),
               skcCreatedAt: num(it.skcCreatedTime),
               priceVerifiedAt: num(it.priceVerificationTime),
               firstPurchaseAt: num(it.firstPurchaseTime),
@@ -323,6 +357,38 @@ async function handleItem(storeId: string, item: IngestItem): Promise<boolean> {
         )
         .onConflictDoNothing()
         .returning({ id: temuProductFlows.id })
+      return inserted.length > 0
+    }
+
+    case "ads-product-report": {
+      // 商品推广（ads.temu.com 商品级报表）：逐条内容哈希去重，快照式累积
+      const items = Array.isArray(n.items) ? (n.items as Record<string, unknown>[]) : []
+      if (items.length === 0) return false
+      const values = items
+        .slice(0, 200)
+        .map((it) => ({
+          storeId,
+          goodsId: str(it.goodsId, 32),
+          skcId: str(it.skcId, 32),
+          productSn: str(it.productSn, 64),
+          productName: str(it.productName, 500),
+          capturedAt,
+          spend: ratio(it.spend),
+          impressions: num(it.impressions),
+          clicks: num(it.clicks),
+          orders: num(it.orders),
+          gmv: ratio(it.gmv),
+          metrics: it,
+          mallMeta,
+          contentHash: contentHashOf(it),
+        }))
+        .filter((v) => v.goodsId || v.skcId)
+      if (values.length === 0) return false
+      const inserted = await db
+        .insert(temuProductAds)
+        .values(values)
+        .onConflictDoNothing()
+        .returning({ id: temuProductAds.id })
       return inserted.length > 0
     }
 

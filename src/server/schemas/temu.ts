@@ -43,7 +43,7 @@ export type IngestBody = z.infer<typeof ingestBodySchema>
 
 // ---------- 面板查询（URL 驱动参数） ----------
 
-export const temuTabSchema = z.enum(["overview", "products", "flow", "activity", "stores"])
+export const temuTabSchema = z.enum(["overview", "products", "flow", "ads", "activity", "stores"])
 export type TemuTab = z.infer<typeof temuTabSchema>
 
 export const temuListQuerySchema = z.object({

@@ -124,6 +124,14 @@ export const temuSalesOverviews = pgTable(
     productName: text("product_name"),
     category: varchar("category", { length: 120 }),
     supplierId: varchar("supplier_id", { length: 32 }),
+    /** 货号（extCode，统一商品 ID） */
+    productSn: varchar("product_sn", { length: 64 }),
+    // —— SKC 级销量与库存（销售管理 listOverall：今日/7日/30日、仓内可用、已发货）——
+    todaySalesVolume: integer("today_sales_volume"),
+    last7DaysSalesVolume: integer("last7_days_sales_volume"),
+    last30DaysSalesVolume: integer("last30_days_sales_volume"),
+    warehouseAvailableStock: integer("warehouse_available_stock"),
+    shippedStock: integer("shipped_stock"),
     /** SKU 价格明细（skuQuantityDetailList 原始数组） */
     priceDetail: jsonb("price_detail"),
     /** 顶层售罄/库存计数等其余字段 */
@@ -175,6 +183,11 @@ export const temuProducts = pgTable(
     mainImageUrl: text("main_image_url"),
     /** 对接买手/运营（生命周期源 nickContact） */
     buyerName: varchar("buyer_name", { length: 100 }),
+    /** 上新生命周期状态文案（如 价格申报中；生命周期源 skcList 展开） */
+    lifecycleStatus: varchar("lifecycle_status", { length: 64 }),
+    /** 站点信息（生命周期源） */
+    siteCode: varchar("site_code", { length: 32 }),
+    siteName: varchar("site_name", { length: 64 }),
     /** 生命周期时间线摘要（epoch ms） */
     skcCreatedAt: bigint("skc_created_at", { mode: "number" }),
     priceVerifiedAt: bigint("price_verified_at", { mode: "number" }),
@@ -238,6 +251,42 @@ export const temuProductFlows = pgTable(
     uniqueIndex("gt_temu_flow_dedup").on(t.storeId, t.goodsId, t.source, t.contentHash),
     index("gt_temu_flow_time").on(t.storeId, t.source, t.capturedAt),
     index("gt_temu_flow_expose").on(t.storeId, t.exposeNum),
+  ],
+)
+
+/** 商品推广（ads.temu.com 商品级报表快照：花费/曝光/点击/成交；长尾指标进 metrics） */
+export const temuProductAds = pgTable(
+  "temu_product_ads",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => temuStores.id, { onDelete: "cascade" }),
+    /** 推广商品标识（goodsId / skcId 至少其一，与 temu_product 关联补货号） */
+    goodsId: varchar("goods_id", { length: 32 }),
+    skcId: varchar("skc_id", { length: 32 }),
+    /** 货号（extCode，统一商品 ID；接口未携带时由 goodsId 关联 temu_product 回填） */
+    productSn: varchar("product_sn", { length: 64 }),
+    productName: text("product_name"),
+    capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
+    /** 花费（金额单位以 ads 接口原始口径为准） */
+    spend: doublePrecision("spend"),
+    impressions: integer("impressions"),
+    clicks: integer("clicks"),
+    orders: integer("orders"),
+    gmv: doublePrecision("gmv"),
+    /** 其余报表维度（CTR/CPC/转化率等整体存档） */
+    metrics: jsonb("metrics").$type<Record<string, unknown>>(),
+    mallMeta: jsonb("mall_meta").$type<TemuMallMeta | null>(),
+    contentHash: varchar("content_hash", { length: 40 }).notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    uniqueIndex("gt_temu_ads_dedup").on(t.storeId, t.contentHash),
+    index("gt_temu_ads_time").on(t.storeId, t.capturedAt),
+    index("gt_temu_ads_goods").on(t.storeId, t.goodsId),
   ],
 )
 

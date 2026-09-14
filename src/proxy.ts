@@ -21,6 +21,7 @@ const PUBLIC_PATHS = [
   "/api/cron", // 定时任务端点：机器对机器，由路由内 CRON_SECRET Bearer 鉴权
   "/api/v1/ingest", // Temu Collector 插件上报：机器对机器，由路由内店铺 token 鉴权
   "/api/v1/ingest-file",
+  "/api/v1/rules", // 插件远程规则热更新：公开只读（无敏感数据，返回空集即不覆盖本地规则）
 ]
 
 function isPublic(pathname: string): boolean {

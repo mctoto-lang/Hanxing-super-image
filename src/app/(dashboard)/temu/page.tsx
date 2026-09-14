@@ -2,6 +2,7 @@ import Link from "next/link"
 import {
   Activity,
   BarChart3,
+  Megaphone,
   Package,
   Store as StoreIcon,
   Gauge,
@@ -12,6 +13,8 @@ import {
   getTemuProductsAction,
   getTemuFlowAction,
   getTemuActivityAction,
+  getTemuAdsAction,
+  getTemuSalesOverviewAction,
 } from "@/server/actions/temu"
 import { temuListQuerySchema } from "@/server/schemas/temu"
 import { cn } from "@/lib/utils"
@@ -32,6 +35,7 @@ const TABS = [
   { value: "overview", label: "销售概览", icon: Gauge },
   { value: "products", label: "商品", icon: Package },
   { value: "flow", label: "流量分析", icon: BarChart3 },
+  { value: "ads", label: "推广", icon: Megaphone },
   { value: "activity", label: "活动", icon: Activity },
   { value: "stores", label: "店铺", icon: StoreIcon },
 ] as const
@@ -140,6 +144,7 @@ export default async function TemuPage({
       {query.tab === "overview" && <OverviewTab storeId={query.store} />}
       {query.tab === "products" && <ProductsTab query={query} />}
       {query.tab === "flow" && <FlowTab storeId={query.store} />}
+      {query.tab === "ads" && <AdsTab storeId={query.store} />}
       {query.tab === "activity" && <ActivityTab storeId={query.store} />}
       {query.tab === "stores" &&
         (isAdmin ? (
@@ -154,7 +159,10 @@ export default async function TemuPage({
 // ---------- 销售概览 ----------
 
 async function OverviewTab({ storeId }: { storeId?: string }) {
-  const o = await getTemuOverviewAction(storeId)
+  const [o, salesRows] = await Promise.all([
+    getTemuOverviewAction(storeId),
+    getTemuSalesOverviewAction(storeId),
+  ])
   const kpis: { label: string; value: number | null | string }[] = [
     { label: "今日销量", value: o.latest.saleVolume ?? "—" },
     { label: "7 天销量", value: o.latest.sevenDaysSaleVolume ?? "—" },
@@ -185,6 +193,54 @@ async function OverviewTab({ storeId }: { storeId?: string }) {
         </CardHeader>
         <CardContent>
           <TemuSalesTrend data={o.trend.map((t) => ({ day: t.date, value: t.saleVolume ?? 0 }))} />
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">SKC 销售与库存明细（销售管理，最新一批，{salesRows.length} 条）</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>SKC ID</TableHead>
+                <TableHead>商品名</TableHead>
+                <TableHead>货号</TableHead>
+                <TableHead>类目</TableHead>
+                <TableHead>今日销量</TableHead>
+                <TableHead>7日销量</TableHead>
+                <TableHead>30日销量</TableHead>
+                <TableHead>仓内可用</TableHead>
+                <TableHead>已发货库存</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {salesRows.slice(0, 30).map((r) => (
+                <TableRow key={r.id}>
+                  <TableCell className="font-mono text-xs">{r.skcId}</TableCell>
+                  <TableCell className="max-w-56 truncate" title={r.productName ?? ""}>
+                    {r.productName ?? "—"}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">{r.productSn ?? "—"}</TableCell>
+                  <TableCell className="max-w-24 truncate" title={r.category ?? ""}>
+                    {r.category ?? "—"}
+                  </TableCell>
+                  <TableCell className="tabular-nums">{r.todaySalesVolume ?? "—"}</TableCell>
+                  <TableCell className="tabular-nums">{r.last7DaysSalesVolume ?? "—"}</TableCell>
+                  <TableCell className="tabular-nums">{r.last30DaysSalesVolume ?? "—"}</TableCell>
+                  <TableCell className="tabular-nums">{r.warehouseAvailableStock ?? "—"}</TableCell>
+                  <TableCell className="tabular-nums">{r.shippedStock ?? "—"}</TableCell>
+                </TableRow>
+              ))}
+              {salesRows.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={9} className="h-20 text-center text-sm text-muted-foreground">
+                    暂无数据：插件在「销售管理」页翻页采集后自动出现
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
         </CardContent>
       </Card>
     </div>
@@ -228,10 +284,13 @@ async function ProductsTab({ query }: { query: { store?: string; q?: string; pag
               <TableHead>SKC ID</TableHead>
               <TableHead>商品名</TableHead>
               <TableHead>货号</TableHead>
+              <TableHead>在售</TableHead>
               <TableHead>类目</TableHead>
               <TableHead>供货价(分)</TableHead>
               <TableHead>总销量</TableHead>
               <TableHead>近7天</TableHead>
+              <TableHead>生命周期状态</TableHead>
+              <TableHead>站点</TableHead>
               <TableHead>选品</TableHead>
               <TableHead>下架</TableHead>
               <TableHead>买手</TableHead>
@@ -259,12 +318,25 @@ async function ProductsTab({ query }: { query: { store?: string; q?: string; pag
                   {r.productName ?? "—"}
                 </TableCell>
                 <TableCell className="font-mono text-xs">{r.productSn ?? "—"}</TableCell>
+                <TableCell>
+                  {r.skcStatus === 11 ? (
+                    <span className="rounded-sm bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+                      在售
+                    </span>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">{r.skcStatus ?? "—"}</span>
+                  )}
+                </TableCell>
                 <TableCell className="max-w-28 truncate" title={r.leafCategoryName ?? r.cat1Name ?? ""}>
                   {r.leafCategoryName ?? r.cat1Name ?? r.category ?? "—"}
                 </TableCell>
                 <TableCell className="tabular-nums">{r.supplierPrice ?? "—"}</TableCell>
                 <TableCell className="tabular-nums">{r.totalSalesVolume ?? "—"}</TableCell>
                 <TableCell className="tabular-nums">{r.last7DaysSalesVolume ?? "—"}</TableCell>
+                <TableCell className="max-w-28 truncate" title={r.lifecycleStatus ?? ""}>
+                  {r.lifecycleStatus ?? "—"}
+                </TableCell>
+                <TableCell className="text-xs">{r.siteName ?? "—"}</TableCell>
                 <TableCell>{r.hasSkcSelected ? "✓" : "—"}</TableCell>
                 <TableCell>{r.removeStatus ? "已下架" : "正常"}</TableCell>
                 <TableCell>{r.buyerName ?? "—"}</TableCell>
@@ -275,7 +347,7 @@ async function ProductsTab({ query }: { query: { store?: string; q?: string; pag
             ))}
             {rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={12} className="h-20 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={15} className="h-20 text-center text-sm text-muted-foreground">
                   暂无数据：插件完成一轮采集上报后自动出现
                 </TableCell>
               </TableRow>
@@ -335,6 +407,7 @@ async function FlowTab({ storeId }: { storeId?: string }) {
           <TableHeader>
             <TableRow>
               <TableHead>商品</TableHead>
+              <TableHead>货号</TableHead>
               <TableHead>曝光</TableHead>
               <TableHead>点击</TableHead>
               <TableHead>商详访问</TableHead>
@@ -351,6 +424,7 @@ async function FlowTab({ storeId }: { storeId?: string }) {
                 <TableCell className="max-w-64 truncate" title={r.goodsName ?? ""}>
                   {r.goodsName ?? r.goodsId}
                 </TableCell>
+                <TableCell className="font-mono text-xs">{r.productSn ?? "—"}</TableCell>
                 <TableCell className="tabular-nums">{r.exposeNum ?? "—"}</TableCell>
                 <TableCell className="tabular-nums">{r.clickNum ?? "—"}</TableCell>
                 <TableCell className="tabular-nums">{r.goodsDetailVisitNum ?? "—"}</TableCell>
@@ -363,7 +437,7 @@ async function FlowTab({ storeId }: { storeId?: string }) {
             ))}
             {rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={9} className="h-20 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={10} className="h-20 text-center text-sm text-muted-foreground">
                   暂无数据
                 </TableCell>
               </TableRow>
@@ -373,6 +447,62 @@ async function FlowTab({ storeId }: { storeId?: string }) {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+// ---------- 商品推广（ads.temu.com） ----------
+
+async function AdsTab({ storeId }: { storeId?: string }) {
+  const rows = await getTemuAdsAction(storeId)
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">商品推广报表（ads.temu.com，最新一批，{rows.length} 条）</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>商品</TableHead>
+              <TableHead>货号</TableHead>
+              <TableHead>花费</TableHead>
+              <TableHead>曝光</TableHead>
+              <TableHead>点击</TableHead>
+              <TableHead>成交订单</TableHead>
+              <TableHead>GMV</TableHead>
+              <TableHead>店铺</TableHead>
+              <TableHead>采集时间</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((r) => (
+              <TableRow key={r.id}>
+                <TableCell className="max-w-56 truncate" title={r.productName ?? ""}>
+                  {r.productName ?? r.goodsId ?? r.skcId}
+                </TableCell>
+                <TableCell className="font-mono text-xs">{r.productSn ?? "—"}</TableCell>
+                <TableCell className="tabular-nums">{r.spend ?? "—"}</TableCell>
+                <TableCell className="tabular-nums">{r.impressions ?? "—"}</TableCell>
+                <TableCell className="tabular-nums">{r.clicks ?? "—"}</TableCell>
+                <TableCell className="tabular-nums">{r.orders ?? "—"}</TableCell>
+                <TableCell className="tabular-nums">{r.gmv ?? "—"}</TableCell>
+                <TableCell className="text-xs text-muted-foreground">{r.mallName ?? "—"}</TableCell>
+                <TableCell className="text-xs text-muted-foreground">
+                  {new Date(r.capturedAt).toLocaleString("zh-CN", { hour12: false })}
+                </TableCell>
+              </TableRow>
+            ))}
+            {rows.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={9} className="h-20 text-center text-sm text-muted-foreground">
+                  暂无数据：插件在 ads.temu.com 推广报表页采集后自动出现
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
   )
 }
 
