@@ -32,6 +32,7 @@ export const lucideIconMap: Record<string, LucideIcon> = {
   weartry: Shirt,
   mockup: Box,
   temu: Store,
+  store: Store,
   settings: Settings,
   shield: ShieldCheck,
   building: Building2,

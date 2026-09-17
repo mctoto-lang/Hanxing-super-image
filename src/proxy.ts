@@ -48,8 +48,12 @@ export default auth(async (req) => {
   // 公开路径放行
   if (isPublic(pathname)) return NextResponse.next()
 
-  // 未登录 → 登录页
+  // 未登录 → API 路径直接 401（插件/机器客户端，跟随重定向会拿到登录页 HTML），
+  // 页面路径重定向到 /login
   if (!session?.user) {
+    if (pathname.startsWith("/api")) {
+      return NextResponse.json({ error: "unauthorized" }, { status: 401 })
+    }
     const url = req.nextUrl.clone()
     url.pathname = "/login"
     url.searchParams.set("callbackUrl", pathname)

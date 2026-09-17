@@ -1,0 +1,1 @@
+ALTER TABLE "temu_sales_overview" ADD COLUMN "available_sale_days" double precision;

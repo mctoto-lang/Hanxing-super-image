@@ -51,6 +51,8 @@ export const temuListQuerySchema = z.object({
   /** 店铺筛选（空字符串 = 全部店铺） */
   store: z.string().uuid().optional(),
   q: z.string().max(100).optional(),
+  /** 在售筛选（商品信息页：on=在售 skcStatus=11，off=不在售） */
+  sale: z.enum(["on", "off"]).optional(),
   page: z.coerce.number().int().min(1).max(500).default(1),
 })
 export type TemuListQuery = z.infer<typeof temuListQuerySchema>
@@ -63,6 +65,15 @@ export const createTemuStoreSchema = z.object({
   mallName: z.string().max(100).optional(),
 })
 export type CreateTemuStoreInput = z.infer<typeof createTemuStoreSchema>
+
+/** 编辑店铺（名称 / mall 绑定）：mallId 是插件多店巡检归属跟随的依据 */
+export const updateTemuStoreSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1).max(100).optional(),
+  mallId: z.string().max(32).nullable().optional(),
+  mallName: z.string().max(100).nullable().optional(),
+})
+export type UpdateTemuStoreInput = z.infer<typeof updateTemuStoreSchema>
 
 export const resetTemuStoreTokenSchema = z.object({
   id: z.string().uuid(),

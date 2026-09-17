@@ -21,6 +21,8 @@ const ROUTE_TITLES: { prefix: string; title: string }[] = [
   { prefix: "/workspace", title: "批量生图" },
   { prefix: "/product", title: "商品图片" },
   { prefix: "/mockup", title: "样机渲染" },
+  // 店铺数据
+  { prefix: "/temu", title: "Temu 数据" },
   // 模板管理
   { prefix: "/templates", title: "提示词模板" },
   // 企业管理（admin）

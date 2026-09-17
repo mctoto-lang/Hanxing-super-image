@@ -95,12 +95,13 @@ export function buildNavMain(ctx: UserContext): NavItem[] {
     })
   }
 
-  // Temu 数据：独立顶级导航项（数据面板，与图片生成分组平级）
+  // 店铺数据：AI 对话下方的数据面板分组（Temu 数据为第一个子项，后续平台按需追加）
   if (accessible.has("temu")) {
     groups.push({
-      title: MODULE_NAV.temu.title,
+      title: "店铺数据",
       url: MODULE_NAV.temu.url,
-      icon: MODULE_NAV.temu.icon,
+      icon: "store",
+      items: [{ title: MODULE_NAV.temu.title, url: MODULE_NAV.temu.url }],
     })
   }
 
