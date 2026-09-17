@@ -36,6 +36,10 @@ services:
       REDIS_URL: ${REDIS_URL}
       AUTH_SECRET: ${AUTH_SECRET}
       AUTH_TRUST_HOST: ${AUTH_TRUST_HOST:-true}
+      # 显式钉死 Auth.js 基准地址：Next 16 proxy 层与 api/auth 路由层各自解析 URL，
+      # 不钉死时其中一层会落到内部监听地址（0.0.0.0:3000），产生两套互斥 cookie
+      # 与错误重定向。生产必填，如 http://159.75.118.182:8888
+      AUTH_URL: ${AUTH_URL:-}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       SUPERADMIN_USERNAME: ${SUPERADMIN_USERNAME:-superadmin}
       SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:-}
