@@ -130,6 +130,12 @@ function deltaPct(today: number | null, yesterday: number | null): number | null
   return Math.round(((today - yesterday) / yesterday) * 1000) / 10
 }
 
+/** 跨店求和：null 不计入；双方皆 null 保持 null（图表留空，单店视图与原行为一致） */
+function sumMetric(a: number | null | undefined, b: number | null): number | null {
+  if (a == null && b == null) return null
+  return (a ?? 0) + (b ?? 0)
+}
+
 export async function getTemuOverviewAction(storeId?: string): Promise<TemuOverview> {
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
@@ -157,6 +163,7 @@ export async function getTemuOverviewAction(storeId?: string): Promise<TemuOverv
       .limit(1),
     db
       .select({
+        storeId: temuMetricSnapshots.storeId,
         saleVolume: temuMetricSnapshots.saleVolume,
         sevenDaysSaleVolume: temuMetricSnapshots.sevenDaysSaleVolume,
         thirtyDaysSaleVolume: temuMetricSnapshots.thirtyDaysSaleVolume,
@@ -190,11 +197,32 @@ export async function getTemuOverviewAction(storeId?: string): Promise<TemuOverv
       ),
   ])
 
-  // 每日取最后一条快照（按天分组覆盖）
-  const byDay = new Map<string, { saleVolume: number | null; sevenDays: number | null; thirtyDays: number | null }>()
+  // 每天每店取最后一条快照（升序遍历同键覆盖），再跨店累加成当日合计——
+  // 直接按天覆盖会把"当天最后采集的那家店"的值当成全企业数据（多店视图错单店值）
+  const lastOfDayStore = new Map<
+    string,
+    { saleVolume: number | null; sevenDays: number | null; thirtyDays: number | null }
+  >()
   for (const r of trendRows) {
     const d = new Date(r.capturedAt).toLocaleDateString("sv-SE") // YYYY-MM-DD（本地时区）
-    byDay.set(d, { saleVolume: r.saleVolume, sevenDays: r.sevenDaysSaleVolume, thirtyDays: r.thirtyDaysSaleVolume })
+    lastOfDayStore.set(`${d}|${r.storeId}`, {
+      saleVolume: r.saleVolume,
+      sevenDays: r.sevenDaysSaleVolume,
+      thirtyDays: r.thirtyDaysSaleVolume,
+    })
+  }
+  const byDay = new Map<
+    string,
+    { saleVolume: number | null; sevenDays: number | null; thirtyDays: number | null }
+  >()
+  for (const [key, v] of lastOfDayStore) {
+    const d = key.slice(0, key.indexOf("|"))
+    const cur = byDay.get(d)
+    byDay.set(d, {
+      saleVolume: sumMetric(cur?.saleVolume, v.saleVolume),
+      sevenDays: sumMetric(cur?.sevenDays, v.sevenDays),
+      thirtyDays: sumMetric(cur?.thirtyDays, v.thirtyDays),
+    })
   }
 
   const todayStr = new Date().toLocaleDateString("sv-SE")
