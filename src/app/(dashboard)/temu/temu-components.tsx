@@ -50,6 +50,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import {
+  createTemuStoreAction,
   updateTemuStoreAction,
   resetTemuStoreTokenAction,
   toggleTemuStoreAction,
@@ -894,6 +895,7 @@ export function TemuStoreManager({
   const [result, setResult] = React.useState<ActionResult | null>(null)
   const [editing, setEditing] = React.useState<{ id: string; name: string; mallId: string; mallName: string } | null>(null)
   const [confirming, setConfirming] = React.useState<string | null>(null)
+  const [adding, setAdding] = React.useState<{ name: string; mallId: string; mallName: string } | null>(null)
   const [pending, startTransition] = React.useTransition()
 
   return (
@@ -921,6 +923,20 @@ export function TemuStoreManager({
           </div>
         </div>
       )}
+
+      {/* 手动新增店铺：首个店铺的唯一入口（发现收录依赖已有店铺作上报通道） */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4">
+        <div>
+          <h3 className="text-sm font-semibold">店铺列表</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            首个店铺在此手动添加，生成上报 Token 后插件自动同步；
+            之后的店铺由插件发现账号下的店铺列表，在下方一键收录。
+          </p>
+        </div>
+        <Button size="sm" disabled={pending} onClick={() => setAdding({ name: "", mallId: "", mallName: "" })}>
+          新增店铺
+        </Button>
+      </div>
 
       {/* 插件发现的店铺（数据内嵌 supplierId 自动登记）→ 首次确认收录 */}
       <div className="rounded-xl border p-4">
@@ -1009,6 +1025,67 @@ export function TemuStoreManager({
                     )
                     setResult(r)
                     if (r.ok) setEditing(null)
+                  })
+                }
+              >
+                保存
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 新增店铺弹层：建店即生成 deviceToken（成功后一次性明文展示） */}
+      {adding && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-xl bg-background p-6 shadow-lg">
+            <h3 className="text-lg font-semibold">新增店铺</h3>
+            <div className="mt-4 space-y-3">
+              <div>
+                <label className="text-sm text-muted-foreground">店铺名称（必填）</label>
+                <Input
+                  value={adding.name}
+                  onChange={(e) => setAdding({ ...adding, name: e.target.value })}
+                  placeholder="如 RoseBlanche 主店"
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <label className="text-sm text-muted-foreground">
+                  Temu mallId（可选，多店巡检归属依据，可稍后编辑绑定）
+                </label>
+                <Input
+                  value={adding.mallId}
+                  onChange={(e) => setAdding({ ...adding, mallId: e.target.value })}
+                  placeholder="如 634418211196072（留空 = 暂不绑定）"
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <label className="text-sm text-muted-foreground">Temu 店铺名（可选）</label>
+                <Input
+                  value={adding.mallName}
+                  onChange={(e) => setAdding({ ...adding, mallName: e.target.value })}
+                  className="mt-1"
+                />
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setAdding(null)}>取消</Button>
+              <Button
+                disabled={pending || !adding.name.trim()}
+                onClick={() =>
+                  startTransition(async () => {
+                    const r = await wrap(async () => {
+                      const created = await createTemuStoreAction({
+                        name: adding.name.trim(),
+                        mallId: adding.mallId.trim() || undefined,
+                        mallName: adding.mallName.trim() || undefined,
+                      })
+                      setTokenShown({ name: created.store.name, token: created.deviceToken })
+                    })
+                    setResult(r)
+                    if (r.ok) setAdding(null)
                   })
                 }
               >
