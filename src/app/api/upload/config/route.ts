@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server"
 import { requireUserContext } from "@/lib/auth/session"
+import { apiError, withRouteHandler } from "@/lib/api/route-helpers"
 import { getStorage } from "@/lib/storage"
 import { safeImageExt } from "@/lib/storage/ext"
 import { sanitizeSvg } from "@/lib/storage/svg"
+import { ALLOWED_IMAGE_TYPES } from "@/lib/upload/limits"
 
 /**
  * 配置图上传端点（模型图标 / logo / 模板图，手册 §3、§10.5）
@@ -24,19 +26,16 @@ import { sanitizeSvg } from "@/lib/storage/svg"
  */
 const MAX_SIZE = 2 * 1024 * 1024 // 2MB
 const ALLOWED_TYPES = [
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-  "image/gif",
+  ...ALLOWED_IMAGE_TYPES,
   "image/svg+xml",
 ]
 
-export async function POST(request: Request) {
+export const POST = withRouteHandler(async (request: Request) => {
   let ctx
   try {
     ctx = await requireUserContext()
   } catch {
-    return new NextResponse("unauthorized", { status: 401 })
+    return apiError("unauthorized", 401)
   }
 
   // 仅超管 / 企业管理员可上传配置图
@@ -46,7 +45,7 @@ export async function POST(request: Request) {
     (ctx.user.enterpriseRole === "owner" ||
       ctx.user.enterpriseRole === "admin")
   if (!isSuperAdmin && !isEntAdmin) {
-    return new NextResponse("forbidden", { status: 403 })
+    return apiError("forbidden", 403)
   }
 
   // 超管无企业 → 用 "_platform" 占位前缀；企业管理员用本企业 id
@@ -55,14 +54,14 @@ export async function POST(request: Request) {
   const formData = await request.formData()
   const file = formData.get("file")
   if (!(file instanceof File)) {
-    return new NextResponse("no file", { status: 400 })
+    return apiError("no file", 400)
   }
 
   if (!ALLOWED_TYPES.includes(file.type)) {
-    return new NextResponse("only images allowed", { status: 415 })
+    return apiError("only images allowed", 415)
   }
   if (file.size > MAX_SIZE) {
-    return new NextResponse("file too large (max 2MB)", { status: 413 })
+    return apiError("file too large (max 2MB)", 413)
   }
 
   let buffer = Buffer.from(await file.arrayBuffer())
@@ -75,7 +74,7 @@ export async function POST(request: Request) {
     const text = buffer.toString("utf8")
     const sanitized = sanitizeSvg(text)
     if (!/<svg[\s>]/i.test(sanitized)) {
-      return new NextResponse("invalid svg", { status: 415 })
+      return apiError("invalid svg", 415)
     }
     buffer = Buffer.from(sanitized, "utf8")
   }
@@ -84,4 +83,4 @@ export async function POST(request: Request) {
   const url = await storage.saveFromBuffer(buffer, enterpriseId, ext, "config")
 
   return NextResponse.json({ url })
-}
+})

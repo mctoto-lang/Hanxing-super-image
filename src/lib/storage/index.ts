@@ -70,14 +70,30 @@ function isCosConfigured(cfg: StorageConfig): boolean {
  * 获取当前存储适配器（异步读 system_setting）。
  *
  * provider=cos 且凭证/双桶配齐 → COS 适配器；否则回退本地。
- * 每次调用都重新读配置，保证超管改动即时生效（上传/回拉为低频操作，可接受）。
+ * 适配器带 60s TTL 缓存 + COS SDK 实例复用：getStorage 是 worker 热路径
+ * （每个生图任务、每张图转存都调用），每次重建 SDK 实例开销大。
+ * 配置改动由 saveStorageSettingAction 显式失效（resetStorageAdapterCache），
+ * 其余场景最迟 60s 生效（与图片代理的存储配置缓存同策略）。
  */
+let adapterCache: { at: number; adapter: StorageAdapter } | null = null
+const ADAPTER_CACHE_TTL_MS = 60_000
+
 export async function getStorage(): Promise<StorageAdapter> {
-  const cfg = await loadStorageConfig()
-  if (cfg.provider === "cos" && isCosConfigured(cfg)) {
-    return createCosAdapter(cfg)
+  if (adapterCache && Date.now() - adapterCache.at < ADAPTER_CACHE_TTL_MS) {
+    return adapterCache.adapter
   }
-  return localAdapter
+  const cfg = await loadStorageConfig()
+  const adapter =
+    cfg.provider === "cos" && isCosConfigured(cfg)
+      ? createCosAdapter(cfg)
+      : localAdapter
+  adapterCache = { at: Date.now(), adapter }
+  return adapter
+}
+
+/** 失效适配器缓存（存储配置保存后调用，改动即时生效） */
+export function resetStorageAdapterCache(): void {
+  adapterCache = null
 }
 
 export type { ImageCategory, StorageConfig } from "@/lib/storage/config"

@@ -12,6 +12,8 @@ import {
   requireUserContext,
   getCurrentEnterpriseScope,
 } from "@/lib/auth/session"
+import { generationDurationMs } from "@/lib/utils"
+import type { GalleryItem } from "@/lib/assets/gallery-filter"
 import { revalidatePath } from "next/cache"
 
 /**
@@ -105,6 +107,32 @@ export async function listPinnedTasksAction() {
       ),
     )
     .orderBy(desc(pinnedTasks.createdAt))
+}
+
+/**
+ * 分页拉取资产（图库无限滚动追加，P1-2：突破原先一次性 200 条上限）。
+ * 多取 1 条判断 hasMore；返回映射后的画廊条目。
+ */
+export async function fetchAssetsPageAction(opts: {
+  offset: number
+  limit?: number
+}): Promise<{ items: GalleryItem[]; hasMore: boolean }> {
+  const limit = opts.limit ?? 60
+  const rows = await listAssetsAction({ limit: limit + 1, offset: opts.offset })
+  const hasMore = rows.length > limit
+  return {
+    items: rows.slice(0, limit).map((a) => ({
+      taskId: a.id,
+      prompt: a.prompt,
+      images: (a.resultImages as string[] | null) ?? [],
+      modelDisplayName: a.modelDisplayName ?? "样机渲染",
+      source: a.source,
+      // 展示/筛选用完成时间（图片实际产出时刻），缺省回退提交时间
+      createdAt: a.completedAt ?? a.createdAt,
+      durationMs: generationDurationMs(a),
+    })),
+    hasMore,
+  }
 }
 
 /** 收藏任务 */

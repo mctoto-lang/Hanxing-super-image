@@ -1,6 +1,6 @@
 "use server"
 
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm"
+import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import {
   conversations,
@@ -244,6 +244,41 @@ export async function listConversationTasksAction(conversationId: string) {
 }
 
 /**
+ * 会话任务状态轻量轮询：仅取 id + status（join 会话表内联归属校验，单查询）。
+ *
+ * 创作页有 pending 任务时每 4s 调一次——只拉状态签名与本地对比，发生变化才
+ * router.refresh() 拉全量，替代原先无条件整页 SSR 重跑（多任务生成期间每轮
+ * 重跑页面级聚合查询，DB 压力显著）。
+ */
+export async function getConversationTaskStatusesAction(
+  conversationId: string,
+): Promise<{ id: string; status: string }[]> {
+  const ctx = await requireUserContext()
+  const scope = getCurrentEnterpriseScope(ctx)
+
+  return db
+    .select({ id: generationTasks.id, status: generationTasks.status })
+    .from(generationTasks)
+    .innerJoin(
+      conversations,
+      eq(generationTasks.conversationId, conversations.id),
+    )
+    .where(
+      and(
+        eq(conversations.id, conversationId),
+        eq(conversations.enterpriseId, scope.enterpriseId),
+        eq(conversations.userId, ctx.user.id),
+        isNull(conversations.deletedAt),
+        isNull(generationTasks.deletedAt),
+      ),
+    )
+    // 与 listConversationTasksAction 同口径取最新 50 条：无 orderBy 时
+    // 会话任务超过 50 条后两集合错位，轮询误判"有变化"每 4s 整页刷新
+    .orderBy(desc(generationTasks.createdAt))
+    .limit(50)
+}
+
+/**
  * 删除单次生成结果（软删 task，管理端日志仍可见；不退积分）。
  *
  * 仅限创作页（source=create）的任务：product/weartry/mockup 模块没有
@@ -278,6 +313,36 @@ export async function deleteTaskAction(taskId: string) {
 
   if (result.length === 0) {
     return { ok: false, error: "任务不存在或无权操作" }
+  }
+  revalidatePath("/create")
+  return { ok: true, error: null }
+}
+
+/**
+ * 撤销删除（恢复软删任务）：删除 toast 的「撤销」动作调用（Gmail 式
+ * 事后挽回，替代确认弹窗打断）。权限/归属校验与 deleteTaskAction 对齐；
+ * 仅可恢复软删行（deletedAt 非空）。删除时一并清除的收藏不恢复。
+ */
+export async function restoreTaskAction(taskId: string) {
+  const ctx = await requireUserContext()
+  const scope = getCurrentEnterpriseScope(ctx)
+
+  const [task] = await db
+    .update(generationTasks)
+    .set({ deletedAt: null })
+    .where(
+      and(
+        eq(generationTasks.id, taskId),
+        eq(generationTasks.source, "create"),
+        eq(generationTasks.enterpriseId, scope.enterpriseId),
+        eq(generationTasks.userId, ctx.user.id),
+        isNotNull(generationTasks.deletedAt),
+      ),
+    )
+    .returning({ id: generationTasks.id })
+
+  if (!task) {
+    return { ok: false, error: "任务不存在或无法恢复" }
   }
   revalidatePath("/create")
   return { ok: true, error: null }

@@ -7,3 +7,13 @@
 export const MAX_IMAGE_UPLOAD_BYTES = 20 * 1024 * 1024
 /** 413 响应体 / 前端 toast 使用的可读文案 */
 export const MAX_IMAGE_UPLOAD_MESSAGE = "单张图片最大 20MB"
+
+/** 允许的位图 MIME 类型（参考图 / 头像 / 预签名直传统一）。
+ *  不含 SVG：位图场景用不到；需要 SVG 的配置图走 /api/upload/config
+ *  （sanitizeSvg 清洗后放行）。 */
+export const ALLOWED_IMAGE_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+] as const

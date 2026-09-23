@@ -22,11 +22,51 @@ async function errText(res: Response, fallback: string): Promise<Error> {
   return new Error(text || `${fallback}: ${res.status}`)
 }
 
+/** XHR 上传（fetch 无上传进度事件，需逐文件进度条时用）；成功时返回响应体文本 */
+function xhrSend(
+  url: string,
+  init: {
+    method: string
+    body: File | FormData
+    headers?: Record<string, string>
+    onProgress?: (percent: number) => void
+  },
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open(init.method, url)
+    for (const [key, value] of Object.entries(init.headers ?? {})) {
+      xhr.setRequestHeader(key, value)
+    }
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && init.onProgress) {
+        init.onProgress(Math.round((e.loaded / e.total) * 100))
+      }
+    }
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(xhr.responseText ?? "")
+      } else {
+        const text = xhr.responseText?.trim()
+        reject(new Error(text || `上传失败: ${xhr.status}`))
+      }
+    }
+    xhr.onerror = () => reject(new Error("网络错误，上传失败"))
+    xhr.send(init.body)
+  })
+}
+
 /**
  * 上传单张图片，返回可访问 URL。
  * @throws 上传失败时抛错（尽量携带服务端返回的具体原因），调用方负责 toast 提示。
  */
-export async function uploadImage(file: File): Promise<string> {
+export async function uploadImage(
+  file: File,
+  opts?: {
+    /** 上传进度回调（0-100；presign 完成即 ≥10） */
+    onProgress?: (percent: number) => void
+  },
+): Promise<string> {
   // 1. 请求预签名（含服务端格式/大小校验）
   const presignResp = await fetch("/api/upload/presign", {
     method: "POST",
@@ -44,28 +84,30 @@ export async function uploadImage(file: File): Promise<string> {
   //    客户端照样发送即可——COS 将其存为对象元数据，缓存效果相同；
   //    字面量与 cos.ts 的 COS_IMMUTABLE_CACHE_CONTROL 保持一致
   if (presign.mode === "cos" && presign.presignedUrl && presign.finalUrl) {
-    const putResp = await fetch(presign.presignedUrl, {
+    opts?.onProgress?.(10)
+    await xhrSend(presign.presignedUrl, {
       method: "PUT",
       body: file,
       headers: {
         "Content-Type": presign.contentType ?? file.type,
         "Cache-Control": "public, max-age=31536000, immutable",
       },
+      // presign 已完成 10%，PUT 进度映射到 10-100
+      onProgress: (percent) => opts?.onProgress?.(10 + Math.round(percent * 0.9)),
     })
-    if (!putResp.ok) {
-      throw await errText(putResp, "cos upload failed")
-    }
+    opts?.onProgress?.(100)
     return presign.finalUrl
   }
 
   // 3. 本地回退：服务器转存
   const formData = new FormData()
   formData.append("file", file)
-  const uploadResp = await fetch("/api/upload", {
+  const text = await xhrSend("/api/upload", {
     method: "POST",
     body: formData,
+    onProgress: opts?.onProgress,
   })
-  if (!uploadResp.ok) throw await errText(uploadResp, "upload failed")
-  const data = (await uploadResp.json()) as { url: string }
+  opts?.onProgress?.(100)
+  const data = JSON.parse(text) as { url: string }
   return data.url
 }

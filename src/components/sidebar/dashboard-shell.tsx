@@ -7,6 +7,8 @@ import { HeaderTitle } from "@/components/sidebar/dashboard-header-title"
 import { OnlineMembers } from "@/components/sidebar/online-members"
 import { AdBanner } from "@/components/banner/ad-banner"
 import { GrokBallCursor } from "@/components/grok-ball/grok-ball-cursor"
+import { TaskNotificationCenter } from "@/components/shared/task-notification-center"
+import { CommandPalette } from "@/components/shared/command-palette"
 import { getDisplayBanner } from "@/server/actions/platform-banners"
 import { getEnterprisePlanInfo } from "@/server/services/subscription-service"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
@@ -44,12 +46,28 @@ export async function DashboardShell({
 
   const inner = contentScroll === "inner"
 
+  // 导航构建一次：侧边栏与命令面板共用（面板条目 = 子项展平 + 分组名）
+  const navMain = buildNavMain(ctx)
+  const paletteItems = navMain.flatMap((group) =>
+    group.items?.length
+      ? group.items.map((sub) => ({
+          title: sub.title,
+          url: sub.url,
+          group: group.title,
+        }))
+      : [{ title: group.title, url: group.url, group: "常用" }],
+  )
+
   return (
     <>
       {/* 广告横幅：悬浮于视口顶部（fixed 覆盖显示，不占布局空间） */}
       <AdBanner banner={banner} />
       {/* 鼠标跟随表情圆球：单击切换 32 种表情，聊天时自动联动（偏好走 localStorage） */}
       <GrokBallCursor />
+      {/* 全局任务通知：跨页轮询已提交的生成任务，完成时 toast / 系统通知 */}
+      <TaskNotificationCenter />
+      {/* 命令面板：Ctrl/⌘ + K 快速跳转 */}
+      <CommandPalette items={paletteItems} />
       <SidebarProvider
         className={cn(inner && "h-svh max-h-svh overflow-hidden")}
       >
@@ -70,7 +88,7 @@ export async function DashboardShell({
               ? null
               : ctx.user.creditsBalance
           }
-          navMain={buildNavMain(ctx)}
+          navMain={navMain}
         />
         <SidebarInset className={cn(inner && "min-h-0 overflow-hidden")}>
           <header className="flex h-16 shrink-0 items-center gap-2 border-b px-4">

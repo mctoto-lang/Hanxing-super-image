@@ -12,6 +12,8 @@ import {
   type EditTaskPayload,
 } from "@/components/create/task-detail-card"
 import type { CreateModel } from "@/components/create/types"
+import { getConversationTaskStatusesAction } from "@/server/actions/conversations"
+import { usePolling } from "@/hooks/use-polling"
 
 /**
  * 右侧会话详情（自由创作页 §6 v6）
@@ -27,7 +29,7 @@ import type { CreateModel } from "@/components/create/types"
  *   即滚到最底 = 最后一张卡片按钮下方恰好容纳一个完整展开生图框；
  *   留白不随展开/收起跳变，从根源上消除滚动触底的展开↔收起循环闪烁。
  * - 收纳触发阈值 = 展开态高度 + 24px + 24px：卡片按钮贴近输入框顶部时才收起。
- * - 有 pending task 时 4s 轮询 router.refresh()。
+ * - 有 pending task 时 4s 轮询任务状态签名，仅在变化时 router.refresh() 拉全量。
  */
 
 /** 日期分组标签：今天 / 昨天 / 前天 / 2026年8月19日 */
@@ -80,12 +82,35 @@ export function ConversationDetail({
   const hasPending = tasks.some(
     (t) => t.status === "queued" || t.status === "processing",
   )
-
+  // 最新任务快照 ref：轮询对比用，避免 tasks 引用变化重建 interval
+  const tasksRef = useRef(tasks)
   useEffect(() => {
-    if (!hasPending) return
-    const timer = setInterval(() => router.refresh(), 4000)
-    return () => clearInterval(timer)
-  }, [hasPending, router])
+    tasksRef.current = tasks
+  }, [tasks])
+
+  // 轻量状态轮询：只拉 id+status 签名，与本地对比后仅在变化时整页刷新
+  // 拉全量（替代原先每 4s 无条件 router.refresh() 重跑整棵 RSC 树）。
+  // 4s × 300 = 20 分钟上限：任务最长生命周期之后不再无限轮询
+  usePolling(
+    hasPending,
+    4000,
+    async () => {
+      try {
+        const statuses = await getConversationTaskStatusesAction(conversationId)
+        const cur = tasksRef.current
+        const changed =
+          statuses.length !== cur.length ||
+          statuses.some((s) => {
+            const local = cur.find((t) => t.id === s.id)
+            return !local || local.status !== s.status
+          })
+        if (changed) router.refresh()
+      } catch {
+        // 网络抖动等瞬态失败：忽略，下一轮重试
+      }
+    },
+    { maxTicks: 300 },
+  )
 
   // 收纳触发阈值：展开态高度 + 24px 间隔 + 24px 余量。
   // 即卡片按钮上滑到距输入框顶部约 24px 内保持展开，离开则收起。

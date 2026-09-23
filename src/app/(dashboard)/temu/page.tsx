@@ -18,9 +18,11 @@ import {
   getTemuAdsEffectAction,
   getTemuFlowFunnelAction,
   getDiscoveredMallsAction,
+  type TemuOverview,
   type TemuFlowFunnel,
 } from "@/server/actions/temu"
 import { temuListQuerySchema } from "@/server/schemas/temu"
+import { NoPermission } from "@/components/shared/no-permission"
 import { cn } from "@/lib/utils"
 import {
   Card,
@@ -49,7 +51,7 @@ import {
   TemuProductsSaleFilter,
   ProductNameCell,
   FlowExposeCell,
-} from "./temu-components"
+} from "@/components/temu"
 
 export const dynamic = "force-dynamic"
 
@@ -76,9 +78,10 @@ export default async function TemuPage({
   const ctx = await requireUserContext()
   if (!ctx.accessibleModules.includes("temu")) {
     return (
-      <div className="p-8 text-center text-sm text-muted-foreground">
-        当前企业未开通 Temu 数据模块，请联系平台管理员在企业管理中启用。
-      </div>
+      <NoPermission
+        module="店铺数据"
+        description="当前企业未开通 Temu 数据模块，请联系平台管理员在企业管理中启用。"
+      />
     )
   }
 
@@ -137,7 +140,9 @@ export default async function TemuPage({
 
       {/* tab 内容高度链容器：商品信息页靠它实现表格内部滚动（外层滚动条隐藏） */}
       <div className="flex min-h-0 flex-1 flex-col">
-        {query.tab === "overview" && <OverviewTab storeId={query.store} />}
+        {query.tab === "overview" && (
+          <OverviewTab overview={overview} storeId={query.store} />
+        )}
         {query.tab === "products" && <ProductsTab query={query} />}
         {query.tab === "flow" && <FlowTab storeId={query.store} />}
         {query.tab === "ads" && <AdsTab storeId={query.store} />}
@@ -161,15 +166,21 @@ function fmtMetric(value: number | null, unit: "count" | "yuan") {
   return value.toLocaleString("zh-CN")
 }
 
-async function OverviewTab({ storeId }: { storeId?: string }) {
-  const [o, categoryShare, salesTop, adsEffect, funnel] = await Promise.all([
-    getTemuOverviewAction(storeId),
+async function OverviewTab({
+  overview,
+  storeId,
+}: {
+  overview: TemuOverview
+  storeId?: string
+}) {
+  // overview 复用页面级已查结果（店铺选择栏也要用），不在此重复执行整组聚合查询
+  const [categoryShare, salesTop, adsEffect, funnel] = await Promise.all([
     getTemuCategoryShareAction(storeId),
     getTemuSalesTopAction(storeId),
     getTemuAdsEffectAction(storeId),
     getTemuFlowFunnelAction(storeId),
   ])
-  const c = o.cards
+  const c = overview.cards
   const lead = (delta: number | null) =>
     delta == null
       ? null
@@ -208,7 +219,7 @@ async function OverviewTab({ storeId }: { storeId?: string }) {
 
       {/* Row2 趋势图：dashboard-01 ChartAreaInteractive 模板原版（desktop=七日销量，mobile=今日销量） */}
       <ChartAreaInteractive
-        data={o.trend.map((t) => ({
+        data={overview.trend.map((t) => ({
           date: t.date,
           desktop: t.sevenDays,
           mobile: t.saleVolume,
@@ -323,7 +334,7 @@ async function ProductsTab({
           </form>
         </div>
       </CardHeader>
-      <CardContent className="min-h-0 flex-1 overflow-y-auto scrollbar-hide [&_td]:px-4 [&_th]:px-4">
+      <CardContent className="min-h-0 flex-1 overflow-x-auto overflow-y-auto scrollbar-hide [&_td]:px-4 [&_th]:px-4">
         <ProductsInfiniteTable
           store={query.store}
           q={query.q}
@@ -384,9 +395,9 @@ async function FlowTab({ storeId }: { storeId?: string }) {
         <CardHeader>
           <CardTitle className="text-base">商品流量明细（最新一批 {rows.length} 条 · 采集口径今日）</CardTitle>
         </CardHeader>
-        <CardContent className="min-h-0 flex-1 overflow-y-auto scrollbar-hide [&_td]:px-4 [&_th]:px-4">
+        <CardContent className="min-h-0 flex-1 overflow-x-auto overflow-y-auto scrollbar-hide [&_td]:px-4 [&_th]:px-4">
           {/* 原生 table：Table 组件的 overflow-x-auto 包装层会让 sticky 表头贴不到本滚动区 */}
-          <table className="w-full caption-bottom text-sm">
+          <table className="w-max min-w-full caption-bottom text-sm">
             <TableHeader className="sticky top-0 z-10 bg-background">
               <TableRow>
                 <TableHead>主图</TableHead>
@@ -515,9 +526,9 @@ async function AdsTab({ storeId }: { storeId?: string }) {
         <CardHeader>
           <CardTitle className="text-base">商品推广报表（今日批次 {rows.length} 条 · 当日未采集时为空）</CardTitle>
         </CardHeader>
-        <CardContent className="min-h-0 flex-1 overflow-y-auto scrollbar-hide [&_td]:px-4 [&_th]:px-4">
+        <CardContent className="min-h-0 flex-1 overflow-x-auto overflow-y-auto scrollbar-hide [&_td]:px-4 [&_th]:px-4">
           {/* 原生 table：避免 Table 组件 overflow 包装层拦截 sticky 表头 */}
-          <table className="w-full caption-bottom text-sm">
+          <table className="w-max min-w-full caption-bottom text-sm">
             <TableHeader className="sticky top-0 z-10 bg-background">
               <TableRow>
                 <TableHead>主图</TableHead>

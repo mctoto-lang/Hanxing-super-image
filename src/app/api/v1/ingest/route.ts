@@ -16,6 +16,8 @@ import {
 // 新表直接从模块文件导入：turbopack 对 * barrel 的陈旧缓存会解析为 undefined
 import { temuDiscoveredMalls, temuAdsDailies, temuSkuSalesDailies, temuSkuMaps } from "@/db/schema/temu"
 import { ingestItemSchema, ingestBodySchema } from "@/server/schemas/temu"
+import { invalidateTemuCache } from "@/server/services/temu-cache"
+import { temuDayOfTs } from "@/server/services/temu-time"
 
 export const dynamic = "force-dynamic"
 
@@ -232,6 +234,9 @@ async function handleIngest(request: Request) {
     ),
   ])
 
+  // 有数据入库即失效面板读缓存（30s TTL 兜底，多副本进程各自失效）
+  if (accepted > 0) invalidateTemuCache(store.enterpriseId)
+
   return NextResponse.json({ ok: true, accepted, total: body.items.length }, { headers: CORS_HEADERS })
 }
 
@@ -305,8 +310,12 @@ async function handleItem(storeId: string, item: IngestItem): Promise<boolean> {
             last30DaysSalesVolume: num(it.last30DaysSalesVolume),
             warehouseAvailableStock: num(it.warehouseAvailableStock),
             shippedStock: num(it.shippedStock),
-            // 可售天数：可售天数（页面同名列）优先，仓内可售天数兜底（部分行前者为 null）
-            availableSaleDays: ratio(it.availableSaleDays) ?? ratio(it.warehouseAvailableSaleDays),
+            // 可售天数三级兜底：可售天数（页面同名列）→ 库存可售天数（2026-09-23
+            // 实测前两者大面积为 null 时它常有值）→ 仓内可售天数
+            availableSaleDays:
+              ratio(it.availableSaleDays) ??
+              ratio(it.availableSaleDaysFromInventory) ??
+              ratio(it.warehouseAvailableSaleDays),
             priceDetail: null,
             overview: n,
             mallMeta,
@@ -318,23 +327,47 @@ async function handleItem(storeId: string, item: IngestItem): Promise<boolean> {
       // 商品标识聚合：销售管理页每日看遍全部在售 SKC，是 skcId↔goodsId↔货号 映射最全的
       // 来源——回填标识枢纽表 temu_product（只补空不覆盖，products-list 等源的详情优先），
       // 供 goods-only 数据源（流量/广告）反查 SKC；
-      // 行内 SKU 明细（skuIds）同时落 SKU↔SKC 映射表，供 SKU 日销量序列按 SKC 聚合
+      // 行内 SKU 明细（skuIds）同时落 SKU↔SKC 映射表，供 SKU 日销量序列按 SKC 聚合。
+      // 批量落库：原实现逐 SKC 两次串行往返，单批 200 SKC 即 400 次往返——先在内存按
+      // skcId 归并（首个非空值优先，与原"insert 后 coalesce 不覆盖"语义一致），再各一条批量语句
+      const backfill = new Map<
+        string,
+        { goodsId: string | null; productName: string | null; productSn: string | null; skuIds: string[] }
+      >()
       for (const it of items.slice(0, 200)) {
         const skcId = String(it.skcId ?? "").slice(0, 32)
         if (!skcId) continue
         const goodsId = str(it.goodsId, 32)
         const productSn = str(it.productSn, 64)
         if (!goodsId && !productSn && !it.productName) continue
-        await db
-          .insert(temuProducts)
-          .values({
-            storeId,
-            productSkcId: skcId,
+        const skuIds = Array.isArray(it.skuIds)
+          ? it.skuIds.map((v) => str(v, 32)).filter((v): v is string => !!v)
+          : []
+        const prev = backfill.get(skcId)
+        if (prev) {
+          prev.skuIds = [...new Set([...prev.skuIds, ...skuIds])]
+        } else {
+          backfill.set(skcId, {
             goodsId,
             productName: str(it.productName, 500),
             productSn,
-            mallMeta,
+            skuIds,
           })
+        }
+      }
+      if (backfill.size > 0) {
+        await db
+          .insert(temuProducts)
+          .values(
+            [...backfill.entries()].map(([skcId, v]) => ({
+              storeId,
+              productSkcId: skcId,
+              goodsId: v.goodsId,
+              productName: v.productName,
+              productSn: v.productSn,
+              mallMeta,
+            })),
+          )
           .onConflictDoUpdate({
             target: [temuProducts.storeId, temuProducts.productSkcId],
             set: {
@@ -344,15 +377,19 @@ async function handleItem(storeId: string, item: IngestItem): Promise<boolean> {
               lastSeenAt: sql`now()`,
             },
           })
-        // SKU↔SKC 映射（skuQuantityDetailList.productSkuId，与趋势接口 prodSkuId 同空间）
-        const skuIds = Array.isArray(it.skuIds)
-          ? it.skuIds.map((v) => str(v, 32)).filter((v): v is string => !!v)
-          : []
-        if (skuIds.length > 0) {
-          await db
-            .insert(temuSkuMaps)
-            .values(skuIds.slice(0, 50).map((skuId) => ({ storeId, skuId, skcId })))
-            .onConflictDoNothing()
+        // SKU↔SKC 映射（skuQuantityDetailList.productSkuId，与趋势接口 prodSkuId 同空间）。
+        // 唯一索引 (store, skuId) 只认首个映射：批内同 skuId 去重，保持先见先得
+        const mapValues: { storeId: string; skuId: string; skcId: string }[] = []
+        const seenSku = new Set<string>()
+        for (const [skcId, v] of backfill) {
+          for (const skuId of v.skuIds.slice(0, 50)) {
+            if (seenSku.has(skuId)) continue
+            seenSku.add(skuId)
+            mapValues.push({ storeId, skuId, skcId })
+          }
+        }
+        if (mapValues.length > 0) {
+          await db.insert(temuSkuMaps).values(mapValues).onConflictDoNothing()
         }
       }
       return inserted.length > 0
@@ -388,80 +425,99 @@ async function handleItem(storeId: string, item: IngestItem): Promise<boolean> {
     case "newon-lifecycle": {
       const items = Array.isArray(n.items) ? (n.items as Record<string, unknown>[]) : []
       if (items.length === 0) return false
-      // 两源字段空间不同：冲突更新只写本源提供的字段。此前全字段覆盖会把
-      // 另一源先采集的字段整体置 null（在售状态 skcStatus 被生命周期上报抹掉、
-      // 生命周期状态被商品列表上报抹掉），商品信息页字段大面积丢失即由此而来
-      const identity = (it: Record<string, unknown>) => ({
-        productId: str(it.productId, 32),
-        goodsId: str(it.goodsId, 32),
-        productName: str(it.productName, 500),
-        productSn: str(it.productSn, 64),
-        removeStatus: num(it.removeStatus),
-        mainImageUrl: str(it.mainImageUrl, 1000),
-      })
-      // products-list 独有：类目 / 在售状态 / 销量
-      const productsSet = (it: Record<string, unknown>) => ({
-        category: str(it.category, 120),
-        cat1Name: str(it.cat1Name, 120),
-        skcStatus: num(it.skcStatus),
-        totalSalesVolume: num(it.totalSalesVolume),
-        last7DaysSalesVolume: num(it.last7DaysSalesVolume),
-      })
-      // newon-lifecycle 独有：申报价 / 生命周期状态 / 站点 / 买手 / 时间线
-      const lifecycleSet = (it: Record<string, unknown>, raw: unknown) => ({
-        supplierId: str(it.supplierId, 32),
-        supplierPrice: priceCents(it.supplierPrice),
-        leafCategoryName: str(it.leafCategoryName, 120),
-        flowGrowStatus: num(it.flowGrowStatus),
-        hasSkcSelected: it.hasSkcSelected === true,
-        buyerName: str(it.buyerName, 100),
-        lifecycleStatus: lifecycleStatusOf(it.lifecycleStatus),
-        siteCode: str(it.siteCode, 32),
-        siteName: siteNamesOf(it.siteNames),
-        skcCreatedAt: num(it.skcCreatedTime),
-        priceVerifiedAt: num(it.priceVerificationTime),
-        firstPurchaseAt: num(it.firstPurchaseTime),
-        addedSiteAt: num(it.addedToSiteTime),
-        lifecycleDetail: raw ?? null,
-      })
+      // 两源字段空间不同：冲突更新只写本源提供的字段（见下方 setClause 的
+      // excluded 列清单）。此前全字段覆盖会把另一源先采集的字段整体置 null
+      //（在售状态 skcStatus 被生命周期上报抹掉、生命周期状态被商品列表上报
+      // 抹掉），商品信息页字段大面积丢失即由此而来。
+      // 单条多行 upsert 批量落库（原逐条 upsert 100 SKC = 100 次往返）。
+      // 批内按 skcId 去重取后见值：原实现先插先见行、后见 upsert 覆盖本源
+      // set 字段——对 set 覆盖字段后见先得语义一致；本源不覆盖的字段取后见
+      // 插入值，与先见插入仅在「同批重复 SKC 且非本源字段不同」时有差异（实际不发生）
+      const bySkc = new Map<string, typeof temuProducts.$inferInsert>()
       for (const it of items.slice(0, 100)) {
         const skcId = String(it.productSkcId ?? "").slice(0, 32)
         if (!skcId) continue
-        const base = identity(it)
-        const set =
+        bySkc.set(skcId, {
+          storeId,
+          productSkcId: skcId,
+          productId: str(it.productId, 32),
+          goodsId: str(it.goodsId, 32),
+          productName: str(it.productName, 500),
+          productSn: str(it.productSn, 64),
+          removeStatus: num(it.removeStatus),
+          mainImageUrl: str(it.mainImageUrl, 1000),
+          category: str(it.category, 120),
+          leafCategoryName: str(it.leafCategoryName, 120),
+          cat1Name: str(it.cat1Name, 120),
+          supplierId: str(it.supplierId, 32),
+          supplierPrice: priceCents(it.supplierPrice),
+          flowGrowStatus: num(it.flowGrowStatus),
+          hasSkcSelected: it.hasSkcSelected === true,
+          skcStatus: num(it.skcStatus),
+          totalSalesVolume: num(it.totalSalesVolume),
+          last7DaysSalesVolume: num(it.last7DaysSalesVolume),
+          buyerName: str(it.buyerName, 100),
+          lifecycleStatus: lifecycleStatusOf(it.lifecycleStatus),
+          siteCode: str(it.siteCode, 32),
+          siteName: siteNamesOf(it.siteNames),
+          skcCreatedAt: num(it.skcCreatedTime),
+          priceVerifiedAt: num(it.priceVerificationTime),
+          firstPurchaseAt: num(it.firstPurchaseTime),
+          addedSiteAt: num(it.addedToSiteTime),
+          lifecycleDetail: item.raw ?? null,
+          mallMeta,
+        })
+      }
+      if (bySkc.size > 0) {
+        // 冲突更新集对整批一致（同一 item.source）；原实现逐条把本源字段写成
+        // 该行的字面值，批量后等价改写为 excluded.<col>（引用本行待插入值）
+        const setClause =
           item.source === "products-list"
-            ? { ...base, ...productsSet(it), mallMeta, lastSeenAt: sql`now()` }
-            : { ...base, ...lifecycleSet(it, item.raw), mallMeta, lastSeenAt: sql`now()` }
+            ? {
+                productId: sql`excluded.product_id`,
+                goodsId: sql`excluded.goods_id`,
+                productName: sql`excluded.product_name`,
+                productSn: sql`excluded.product_sn`,
+                removeStatus: sql`excluded.remove_status`,
+                mainImageUrl: sql`excluded.main_image_url`,
+                category: sql`excluded.category`,
+                cat1Name: sql`excluded.cat1_name`,
+                skcStatus: sql`excluded.skc_status`,
+                totalSalesVolume: sql`excluded.total_sales_volume`,
+                last7DaysSalesVolume: sql`excluded.last7_days_sales_volume`,
+                mallMeta: sql`excluded.mall_meta`,
+                lastSeenAt: sql`now()`,
+              }
+            : {
+                productId: sql`excluded.product_id`,
+                goodsId: sql`excluded.goods_id`,
+                productName: sql`excluded.product_name`,
+                productSn: sql`excluded.product_sn`,
+                removeStatus: sql`excluded.remove_status`,
+                mainImageUrl: sql`excluded.main_image_url`,
+                supplierId: sql`excluded.supplier_id`,
+                supplierPrice: sql`excluded.supplier_price`,
+                leafCategoryName: sql`excluded.leaf_category_name`,
+                flowGrowStatus: sql`excluded.flow_grow_status`,
+                hasSkcSelected: sql`excluded.has_skc_selected`,
+                buyerName: sql`excluded.buyer_name`,
+                lifecycleStatus: sql`excluded.lifecycle_status`,
+                siteCode: sql`excluded.site_code`,
+                siteName: sql`excluded.site_name`,
+                skcCreatedAt: sql`excluded.skc_created_at`,
+                priceVerifiedAt: sql`excluded.price_verified_at`,
+                firstPurchaseAt: sql`excluded.first_purchase_at`,
+                addedSiteAt: sql`excluded.added_site_at`,
+                lifecycleDetail: sql`excluded.lifecycle_detail`,
+                mallMeta: sql`excluded.mall_meta`,
+                lastSeenAt: sql`now()`,
+              }
         await db
           .insert(temuProducts)
-          .values({
-            storeId,
-            productSkcId: skcId,
-            ...base,
-            category: str(it.category, 120),
-            leafCategoryName: str(it.leafCategoryName, 120),
-            cat1Name: str(it.cat1Name, 120),
-            supplierId: str(it.supplierId, 32),
-            supplierPrice: priceCents(it.supplierPrice),
-            flowGrowStatus: num(it.flowGrowStatus),
-            hasSkcSelected: it.hasSkcSelected === true,
-            skcStatus: num(it.skcStatus),
-            totalSalesVolume: num(it.totalSalesVolume),
-            last7DaysSalesVolume: num(it.last7DaysSalesVolume),
-            buyerName: str(it.buyerName, 100),
-            lifecycleStatus: lifecycleStatusOf(it.lifecycleStatus),
-            siteCode: str(it.siteCode, 32),
-            siteName: siteNamesOf(it.siteNames),
-            skcCreatedAt: num(it.skcCreatedTime),
-            priceVerifiedAt: num(it.priceVerificationTime),
-            firstPurchaseAt: num(it.firstPurchaseTime),
-            addedSiteAt: num(it.addedToSiteTime),
-            lifecycleDetail: item.raw ?? null,
-            mallMeta,
-          })
+          .values([...bySkc.values()])
           .onConflictDoUpdate({
             target: [temuProducts.storeId, temuProducts.productSkcId],
-            set,
+            set: setClause,
           })
       }
       return true
@@ -566,7 +622,9 @@ async function handleItem(storeId: string, item: IngestItem): Promise<boolean> {
       for (const it of items.slice(0, 500)) {
         const ts = num(it.ts)
         if (!ts) continue
-        const day = new Date(ts).toLocaleDateString("sv-SE")
+        // 北京时间分日：Temu 报表的日界是 CST，服务器容器多为 UTC——
+        // 用服务器本地时区会把 CST 00-08 点的小时行算进前一天
+        const day = temuDayOfTs(ts)
         const acc = byDay.get(day) || { adSpend: 0, impressions: null, clicks: null, orders: null, gmv: null }
         acc.adSpend += cents(it.adSpend)
         acc.impressions = (acc.impressions ?? 0) + (numOrNull(it.impressions) ?? 0)
@@ -576,18 +634,21 @@ async function handleItem(storeId: string, item: IngestItem): Promise<boolean> {
         acc.gmv = (acc.gmv ?? 0) + cents(it.gmv)
         byDay.set(day, acc)
       }
-      for (const [day, acc] of byDay) {
+      if (byDay.size > 0) {
+        // 单条多行 upsert（原逐日一条，多日查询时 N 次往返；Map 按日去重，无批内冲突键）
         await db
           .insert(temuAdsDailies)
-          .values({
-            storeId,
-            date: day,
-            adSpend: Math.round(acc.adSpend * 100) / 100,
-            impressions: acc.impressions,
-            clicks: acc.clicks,
-            orders: acc.orders,
-            gmv: acc.gmv != null ? Math.round(acc.gmv * 100) / 100 : null,
-          })
+          .values(
+            [...byDay.entries()].map(([day, acc]) => ({
+              storeId,
+              date: day,
+              adSpend: Math.round(acc.adSpend * 100) / 100,
+              impressions: acc.impressions,
+              clicks: acc.clicks,
+              orders: acc.orders,
+              gmv: acc.gmv != null ? Math.round(acc.gmv * 100) / 100 : null,
+            })),
+          )
           .onConflictDoUpdate({
             target: [temuAdsDailies.storeId, temuAdsDailies.date],
             set: {

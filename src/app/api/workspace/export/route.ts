@@ -11,6 +11,7 @@ import {
 } from "@/lib/workspace/helpers"
 import { isPlatformStorageUrl } from "@/lib/storage/reference-url"
 import { signUploadToken } from "@/lib/storage/upload-token"
+import { transferSemaphore } from "@/lib/storage/semaphore"
 
 /**
  * 工作台导出下载（手册 M5，1:1 对齐旧项目 /api/workspace/export-ticket 消费端）
@@ -146,6 +147,9 @@ async function exportZip(request: Request): Promise<NextResponse> {
     const filename = `${taskName}-${idx}.${format}`
     fetchTasks.push(
       (async () => {
+        // 与 AI 上游转存共享信号量：几百卡全量并发抓原图会同时占满
+        // 入方向带宽并堆高内存峰值（每张数 MB 全在 Promise.all 里同时存活）
+        await transferSemaphore.acquire()
         try {
           // 本站 /uploads URL 附短时效令牌（服务端 fetch 无会话 cookie）
           const resp = await fetch(signUploadToken(img.imageUrl!), {
@@ -156,6 +160,8 @@ async function exportZip(request: Request): Promise<NextResponse> {
           return { filename, data: buf }
         } catch {
           return null
+        } finally {
+          transferSemaphore.release()
         }
       })(),
     )

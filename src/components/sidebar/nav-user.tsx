@@ -78,8 +78,8 @@ export function NavUser({
   const [accountTab, setAccountTab] = React.useState<"profile" | "subscription">(
     "profile",
   )
-  // 表情圆球开关（localStorage 偏好，挂载后读取避免 SSR 不一致）
-  const [grokBallOn, setGrokBallOn] = React.useState(true)
+  // 表情圆球开关（localStorage 偏好，默认关闭；挂载后读取避免 SSR 不一致）
+  const [grokBallOn, setGrokBallOn] = React.useState(false)
 
   React.useEffect(() => {
     setGrokBallOn(readGrokBallEnabled())

@@ -2,13 +2,14 @@
 
 import { and, asc, eq, isNull, or } from "drizzle-orm"
 import { db } from "@/db/client"
-import { models, type ModelExtraConfig } from "@/db/schema"
+import { models } from "@/db/schema"
 import {
   requireEnterpriseAdmin,
   getCurrentEnterpriseScope,
 } from "@/lib/auth/session"
 import { modelConfigSchema } from "@/server/schemas/admin"
 import { validateImageModelConfig } from "@/lib/ai/image-model-config"
+import { buildExtraConfig } from "@/server/services/model-form-helpers"
 import { encrypt } from "@/lib/crypto"
 import { revalidatePath } from "next/cache"
 import { nextSortOrder } from "@/server/services/sort-order"
@@ -21,25 +22,6 @@ import { nextSortOrder } from "@/server/services/sort-order"
  * - API Key 落库前 AES-256-GCM 加密；编辑时留空=不修改。
  * - 删除=软删除（is_active=false），保留历史任务外键完整性。
  */
-
-/** 把扁平字段组装为 extraConfig（按 apiFormat 白名单） */
-function buildExtraConfig(input: {
-  apiFormat: "openai" | "jimeng" | "gemini"
-  jimengResolution?: "1k" | "2k" | "4k"
-  jimengN?: number
-  quality?: string
-}): ModelExtraConfig {
-  const cfg: ModelExtraConfig = {}
-  // openai / gemini：质量参数透传（空 = 不写 = 关闭）
-  if (input.apiFormat === "openai" || input.apiFormat === "gemini") {
-    if (input.quality?.trim()) cfg.quality = input.quality.trim()
-    return cfg
-  }
-  // jimeng
-  if (input.jimengResolution) cfg.jimengResolution = input.jimengResolution
-  if (input.jimengN) cfg.jimengN = input.jimengN
-  return cfg
-}
 
 /**
  * 列出平台预置模型（按企业 visiblePresetModels 过滤）+ 本企业私有模型（不含解密 Key）

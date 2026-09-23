@@ -1,12 +1,13 @@
 "use client"
 
 import * as React from "react"
-import { Download, Heart, Search } from "lucide-react"
+import { Check, CheckSquare, Download, Heart, Search } from "lucide-react"
 import type { DateRange } from "react-day-picker"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ImageViewer, downloadImageFile } from "@/components/ui/image-viewer"
 import { Input } from "@/components/ui/input"
+import { MorphingInfinity } from "@/components/ui/morphing-infinity"
 import {
   Select,
   SelectContent,
@@ -31,8 +32,11 @@ import {
   sourceFilterLabel,
 } from "@/lib/assets/gallery-filter"
 import { cn, isPsdUrl, toImageSrc } from "@/lib/utils"
-import { getStorageProxyUrl } from "@/lib/storage/proxy"
-import { pinTaskAction, unpinTaskAction } from "@/server/actions/assets"
+import {
+  fetchAssetsPageAction,
+  pinTaskAction,
+  unpinTaskAction,
+} from "@/server/actions/assets"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
@@ -88,15 +92,74 @@ function CardImage({ src, alt }: { src: string; alt: string }) {
 export function ImageGallery({
   items,
   pinnedTasks,
+  initialHasMore = false,
 }: {
   items: GalleryItem[]
   pinnedTasks: PinnedTaskRef[]
+  /** 服务端还有更多任务（首屏多取 1 条探测）；为 false 时不再分页拉取 */
+  initialHasMore?: boolean
 }) {
   const router = useRouter()
 
   const [sourceFilter, setSourceFilter] = React.useState<SourceFilter>("all")
   const [search, setSearch] = React.useState("")
   const [dateRange, setDateRange] = React.useState<DateRange | undefined>()
+
+  // —— 服务端分页追加（P1-2：突破原先一次性 200 条上限）——
+  // items 是服务端首屏快照（router.refresh 时整体替换），extraItems 是
+  // 客户端追加页；两者按 taskId 去重合并。筛选仍为客户端过滤（作用于已
+  // 加载部分，滚动到底继续加载）
+  const ASSETS_PAGE_SIZE = 60
+  const [extraItems, setExtraItems] = React.useState<GalleryItem[]>([])
+  const [serverHasMore, setServerHasMore] = React.useState(initialHasMore)
+  const [loadingMoreTasks, setLoadingMoreTasks] = React.useState(false)
+  const loadingMoreRef = React.useRef(false)
+  // 已加载任务总数（分页 offset）与服务端 hasMore 的 ref 镜像：
+  // 避免零依赖 loadMoreTasks 闭包读到过期值
+  const loadedCountRef = React.useRef(0)
+  const serverHasMoreRef = React.useRef(serverHasMore)
+
+  const allItems = React.useMemo(() => {
+    const seen = new Set<string>()
+    const merged: GalleryItem[] = []
+    for (const it of [...items, ...extraItems]) {
+      if (seen.has(it.taskId)) continue
+      seen.add(it.taskId)
+      merged.push(it)
+    }
+    return merged
+  }, [items, extraItems])
+
+  React.useEffect(() => {
+    loadedCountRef.current = allItems.length
+    serverHasMoreRef.current = serverHasMore
+  }, [allItems.length, serverHasMore])
+
+  const loadMoreTasks = React.useCallback(async () => {
+    if (loadingMoreRef.current || !serverHasMoreRef.current) return
+    loadingMoreRef.current = true
+    setLoadingMoreTasks(true)
+    try {
+      const res = await fetchAssetsPageAction({
+        offset: loadedCountRef.current,
+        limit: ASSETS_PAGE_SIZE,
+      })
+      setExtraItems((prev) => [...prev, ...res.items])
+      setServerHasMore(res.hasMore)
+    } catch {
+      toast.error("加载更多失败，请稍后重试")
+    } finally {
+      loadingMoreRef.current = false
+      setLoadingMoreTasks(false)
+    }
+  }, [])
+
+  // —— 多选批量模式（P1-2）——
+  const [selectMode, setSelectMode] = React.useState(false)
+  const [selectedKeys, setSelectedKeys] = React.useState<ReadonlySet<string>>(
+    new Set(),
+  )
+  const [batchDownloading, setBatchDownloading] = React.useState(false)
 
   // taskId → pinnedId；乐观更新（收藏请求落地前用 PIN_PENDING 占位），
   // router.refresh() 后由 useEffect 与服务端数据重新对齐
@@ -145,13 +208,13 @@ export function ImageGallery({
 
   const filteredItems = React.useMemo(
     () =>
-      filterGalleryItems(items, {
+      filterGalleryItems(allItems, {
         sourceFilter,
         keyword: search,
         range: dateRange,
         pinnedMap,
       }),
-    [items, sourceFilter, search, dateRange, pinnedMap],
+    [allItems, sourceFilter, search, dateRange, pinnedMap],
   )
 
   // 任务 × 图片展开为扁平卡片（同时是放大查看器的翻页序列）
@@ -169,6 +232,49 @@ export function ImageGallery({
     }
     return cards
   }, [filteredItems])
+
+  // 渐进渲染：首屏只渲染前 N 张卡片，滚动到底部哨兵再逐批露出（200 任务 ×
+  // 多图可展开出上千卡片，全量渲染 DOM 与图片请求都会拖垮首屏）。
+  // 卡片按键序追加，flatIndex 与查看器索引保持稳定
+  const CARD_STEP = 60
+  const [visibleCards, setVisibleCards] = React.useState(CARD_STEP)
+  const hasMoreCards = flatCards.length > visibleCards
+  const visibleFlatCards = React.useMemo(
+    () => flatCards.slice(0, visibleCards),
+    [flatCards, visibleCards],
+  )
+  // 筛选条件变化回到首屏数量；数据刷新/追加下一页不触发——
+  // 否则收藏刷新、焦点节流刷新、滚动加载都会把已展开的列表塌回 60 张
+  React.useEffect(() => {
+    setVisibleCards(CARD_STEP)
+  }, [sourceFilter, search, dateRange])
+
+  const loadMoreCards = React.useCallback(() => {
+    setVisibleCards((prev) => Math.min(prev + CARD_STEP, flatCards.length))
+  }, [flatCards.length])
+
+  // 渐进渲染哨兵：root 指向瀑布流滚动容器（视口 root 的预取余量会被嵌套容器裁剪）。
+  // 已加载卡片露完但服务端还有更多任务时，继续拉下一页（P1-2 服务端分页）
+  const sentinelRef = React.useRef<HTMLDivElement | null>(null)
+  const masonryScrollRef = React.useRef<HTMLDivElement | null>(null)
+  React.useEffect(() => {
+    if (!hasMoreCards && !serverHasMore) return
+    const el = sentinelRef.current
+    if (!el) return
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((e) => e.isIntersecting)) return
+        if (hasMoreCards) loadMoreCards()
+        else void loadMoreTasks()
+      },
+      {
+        root: masonryScrollRef.current ?? null,
+        rootMargin: "600px 0px",
+      },
+    )
+    io.observe(el)
+    return () => io.disconnect()
+  }, [hasMoreCards, serverHasMore, loadMoreCards, loadMoreTasks])
 
   // 瀑布流列数跟随容器宽度（SSR 先按 2 列，挂载后立即修正）。
   // 容器随空状态条件卸载/重挂载，effect 必须跟着 hasCards 重跑，
@@ -190,12 +296,12 @@ export function ImageGallery({
     return () => ro.disconnect()
   }, [hasCards])
 
-  // 按索引轮询分列：卡片保持时间倒序，最新的横向排在第一行
+  // 按索引轮询分列：卡片保持时间倒序，最新的横向排在第一行（只分已露出的卡片）
   const columnLists = React.useMemo(() => {
     const cols: GalleryCard[][] = Array.from({ length: columnCount }, () => [])
-    flatCards.forEach((card, i) => cols[i % columnCount]!.push(card))
+    visibleFlatCards.forEach((card, i) => cols[i % columnCount]!.push(card))
     return cols
-  }, [flatCards, columnCount])
+  }, [visibleFlatCards, columnCount])
 
   // 放大查看器翻页序列：排除 PSD（浏览器无法渲染，卡片点击直接下载）
   const previewableCards = React.useMemo(
@@ -209,7 +315,7 @@ export function ImageGallery({
       ]
     : undefined
 
-  if (items.length === 0) {
+  if (allItems.length === 0) {
     return (
       <div className="flex h-64 items-center justify-center rounded-lg border border-dashed text-muted-foreground">
         暂无生成图片，去创作页生成吧
@@ -260,19 +366,55 @@ export function ImageGallery({
     }
   }
 
-  /** 从 URL 取真实图片扩展名（下载文件名不再固定 .png） */
-  function extFromImageUrl(url: string): string {
-    const m = url.match(/\.(jpe?g|png|webp|gif|psd)(?:\?|#|$)/i)
-    return m ? m[1]!.toLowerCase().replace("jpeg", "jpg") : "png"
+  function handleDownload(url: string, idx: number, stamp: number) {
+    // 统一下载器：代理 XHR + 进度 toast + 失败自动重试（与创作页/查看器一致）
+    void downloadImageFile(url, `hanxing-${stamp}-${idx}`)
   }
 
-  function handleDownload(url: string, idx: number, stamp: number) {
-    // 通过代理 URL 下载（防 SSRF）
-    const a = document.createElement("a")
-    a.href = getStorageProxyUrl(url)
-    a.download = `hanxing-${stamp}-${idx}.${extFromImageUrl(url)}`
-    a.target = "_blank"
-    a.click()
+  /** 多选：单击卡片切换选中（批量模式下点击不再打开查看器） */
+  function toggleSelected(key: string) {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  /** 全选/取消已加载的全部卡片（仅当前已渲染批次，滚动可继续加载） */
+  function toggleSelectAllVisible() {
+    setSelectedKeys((prev) => {
+      const allSelected = visibleFlatCards.every((c) => prev.has(c.key))
+      if (allSelected) return new Set()
+      return new Set(visibleFlatCards.map((c) => c.key))
+    })
+  }
+
+  /** 批量下载所选：顺序走统一下载器（静默），单个 loading toast + 汇总 */
+  async function handleBatchDownload(stamp: number) {
+    const targets = flatCards.filter((c) => selectedKeys.has(c.key))
+    if (targets.length === 0 || batchDownloading) return
+    setBatchDownloading(true)
+    const toastId = toast.loading(`正在下载 ${targets.length} 张图片…`)
+    let ok = 0
+    for (let i = 0; i < targets.length; i++) {
+      try {
+        await downloadImageFile(targets[i].url, `hanxing-${stamp}-${i + 1}`, {
+          silent: true,
+        })
+        ok++
+      } catch {
+        // 单张失败继续其余，结束后汇总提示
+      }
+    }
+    setBatchDownloading(false)
+    if (ok === targets.length) {
+      toast.success(`已下载全部 ${ok} 张`, { id: toastId })
+    } else {
+      toast.error(`已下载 ${ok}/${targets.length} 张，请重试失败项`, {
+        id: toastId,
+      })
+    }
   }
 
   return (
@@ -315,6 +457,19 @@ export function ImageGallery({
           onChange={setDateRange}
           size="sm"
         />
+        {/* 批量选择（P1-2：多选 + 浮动操作栏批量下载） */}
+        <Button
+          variant={selectMode ? "default" : "outline"}
+          size="sm"
+          className="h-7 text-xs"
+          onClick={() => {
+            setSelectMode((v) => !v)
+            setSelectedKeys(new Set())
+          }}
+        >
+          <CheckSquare className="size-3.5" />
+          {selectMode ? "取消选择" : "批量选择"}
+        </Button>
         <span className="ml-auto shrink-0 text-xs text-muted-foreground">
           共 {flatCards.length} 张
         </span>
@@ -340,7 +495,7 @@ export function ImageGallery({
       ) : (
         /* 仅瀑布流区域滚动：外层滚动容器，内层 JS 分列瀑布流
            （按容器宽度分列、轮询分配，最新图片排在最上方） */
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div ref={masonryScrollRef} className="min-h-0 flex-1 overflow-y-auto">
           <div ref={masonryRef} className="flex items-start gap-3">
           {columnLists.map((column, colIdx) => (
             <div
@@ -352,14 +507,22 @@ export function ImageGallery({
                 const pop = popCount[card.item.taskId] ?? 0
                 // PSD 源文件无法预览：卡片显示文件占位，点击直接下载
                 const psd = isPsdUrl(card.url)
+                const selected = selectMode && selectedKeys.has(card.key)
                 return (
                   <div
                     key={card.key}
                     className={cn(
                       "group relative overflow-hidden rounded-lg border bg-card",
                       psd ? "cursor-pointer" : "cursor-zoom-in",
+                      selectMode && "cursor-pointer",
+                      selected && "ring-2 ring-primary",
                     )}
                     onClick={() => {
+                      // 批量选择模式：点击切换选中，不打开查看器
+                      if (selectMode) {
+                        toggleSelected(card.key)
+                        return
+                      }
                       if (psd) {
                         downloadImageFile(
                           card.url,
@@ -383,7 +546,22 @@ export function ImageGallery({
                         alt={card.item.prompt.slice(0, 50)}
                       />
                     )}
-                    <div className="absolute inset-0 flex flex-col justify-between bg-gradient-to-t from-black/80 via-transparent to-black/40 p-2 opacity-0 transition-opacity group-hover:opacity-100">
+                    {/* 批量选择模式：左上角常显选中圈 */}
+                    {selectMode && (
+                      <div
+                        className={cn(
+                          "absolute left-2 top-2 z-10 flex size-5 items-center justify-center rounded-full border-2 shadow-sm",
+                          selected
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-white/80 bg-black/40",
+                        )}
+                        aria-hidden
+                      >
+                        {selected ? <Check className="size-3" /> : null}
+                      </div>
+                    )}
+                    {/* 触屏设备（无 hover）常显操作层，保证下载/收藏可达 */}
+                    <div className="absolute inset-0 flex flex-col justify-between bg-gradient-to-t from-black/80 via-transparent to-black/40 p-2 opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100">
                       <div className="flex justify-end gap-1">
                         <Button
                           size="icon"
@@ -443,6 +621,59 @@ export function ImageGallery({
               })}
             </div>
           ))}
+          </div>
+          {/* 渐进渲染/分页哨兵：滚到底部先露下一批已加载卡片，
+              露完且服务端还有更多任务时拉下一页（P1-2） */}
+          {(hasMoreCards || serverHasMore) && (
+            <div ref={sentinelRef} className="py-6 text-center text-xs text-muted-foreground">
+              {loadingMoreTasks ? "正在加载更多…" : "加载更多…"}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 批量选择浮动操作栏（选中 > 0 时出现，底部居中悬浮） */}
+      {selectMode && (
+        <div className="pointer-events-none fixed inset-x-0 bottom-6 z-40 flex justify-center px-4">
+          <div className="pointer-events-auto flex flex-wrap items-center gap-2 rounded-full border bg-background/95 py-1.5 pl-4 pr-2 shadow-lg backdrop-blur">
+            <span className="text-sm tabular-nums">
+              已选 {selectedKeys.size} 张
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              disabled={visibleFlatCards.length === 0}
+              onClick={toggleSelectAllVisible}
+            >
+              {visibleFlatCards.every((c) => selectedKeys.has(c.key))
+                ? "取消全选"
+                : "全选已载"}
+            </Button>
+            <Button
+              size="sm"
+              className="h-7 text-xs"
+              disabled={selectedKeys.size === 0 || batchDownloading}
+              onClick={() => void handleBatchDownload(Date.now())}
+            >
+              {batchDownloading ? (
+                <MorphingInfinity className="size-3.5" />
+              ) : (
+                <Download className="size-3.5" />
+              )}
+              {batchDownloading ? "下载中…" : "下载所选"}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 text-xs"
+              onClick={() => {
+                setSelectMode(false)
+                setSelectedKeys(new Set())
+              }}
+            >
+              退出
+            </Button>
           </div>
         </div>
       )}

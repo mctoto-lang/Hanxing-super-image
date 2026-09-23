@@ -11,6 +11,7 @@ import {
 import { requireSuperAdmin } from "@/lib/auth/session"
 import { modelConfigSchema } from "@/server/schemas/admin"
 import { validateImageModelConfig } from "@/lib/ai/image-model-config"
+import { buildExtraConfig } from "@/server/services/model-form-helpers"
 import { encrypt } from "@/lib/crypto"
 import {
   nextSortOrder,
@@ -27,25 +28,6 @@ import { revalidatePath } from "next/cache"
  * - costPerImage 由超管在此定义，企业用户生图按此扣个人配额。
  */
 
-/** 把扁平字段组装为 extraConfig（按 apiFormat 白名单） */
-function buildExtraConfig(input: {
-  apiFormat: "openai" | "jimeng" | "gemini"
-  jimengResolution?: "1k" | "2k" | "4k"
-  jimengN?: number
-  quality?: string
-}): ModelExtraConfig {
-  const cfg: ModelExtraConfig = {}
-  // openai / gemini：质量参数透传（空 = 不写 = 关闭）
-  if (input.apiFormat === "openai" || input.apiFormat === "gemini") {
-    if (input.quality?.trim()) cfg.quality = input.quality.trim()
-    return cfg
-  }
-  // jimeng
-  if (input.jimengResolution) cfg.jimengResolution = input.jimengResolution
-  if (input.jimengN) cfg.jimengN = input.jimengN
-  return cfg
-}
-
 /**
  * 把平台预置模型 id 幂等地追加到所有「白名单模式」企业（visiblePresetModels 非空）。
  *
@@ -54,22 +36,16 @@ function buildExtraConfig(input: {
  * （listAvailableModelsAction 的 visiblePresetModels 判断）拦截。
  */
 async function syncPresetModelToWhitelists(modelId: string) {
-  const affected = await db
-    .select({
-      id: enterprises.id,
-      visible: enterprises.visiblePresetModels,
-    })
-    .from(enterprises)
-    .where(sql`jsonb_array_length(${enterprises.visiblePresetModels}) > 0`)
-
-  for (const ent of affected) {
-    const list = (ent.visible as string[] | null) ?? []
-    if (list.includes(modelId)) continue // 幂等：已包含则跳过
-    await db
-      .update(enterprises)
-      .set({ visiblePresetModels: [...list, modelId], updatedAt: new Date() })
-      .where(eq(enterprises.id, ent.id))
-  }
+  // 单条 UPDATE 完成全部追加（原实现逐企业一次往返，企业数量无上限）：
+  // `||` 拼接 jsonb 数组、`@>` 包含判断保持「已包含则跳过」的幂等语义
+  const appended = JSON.stringify([modelId])
+  await db.execute(sql`
+    UPDATE ${enterprises}
+    SET visible_preset_models = visible_preset_models || ${appended}::jsonb,
+        updated_at = now()
+    WHERE jsonb_array_length(visible_preset_models) > 0
+      AND NOT (visible_preset_models @> ${appended}::jsonb)
+  `)
 }
 
 /** 列表项类型（与 listPresetModelsAction 返回一致） */

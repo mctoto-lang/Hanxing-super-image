@@ -26,11 +26,18 @@ import {
   Replace,
   Languages,
   LibraryBig,
+  ListTodo,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { MorphingInfinity } from "@/components/ui/morphing-infinity"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
 import {
   Dialog,
   DialogContent,
@@ -619,6 +626,8 @@ export function WorkspaceClient({
   // ─── 对话框状态 ───
   const router = useRouter()
   const [showNewTask, setShowNewTask] = useState(false)
+  // 移动端任务抽屉（<md 侧栏隐藏，工具栏按钮唤出）
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [showGenerationConfigDialog, setShowGenerationConfigDialog] =
     useState(false)
   const [showBatchReplacePromptDialog, setShowBatchReplacePromptDialog] =
@@ -1759,90 +1768,98 @@ export function WorkspaceClient({
 
   // ─── 渲染 ───
 
+  // 任务侧栏内容：桌面 aside 与移动端抽屉复用同一节点（P1-3）
+  const taskSidebar = (
+    <>
+      <div className="px-3 py-2.5 space-y-2 shrink-0">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+          <Input
+            placeholder="搜索任务..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-8 h-8 text-xs"
+          />
+        </div>
+
+        <Button
+          size="sm"
+          className="w-full h-8 gap-1.5 text-xs rounded-md"
+          onClick={() => setShowNewTask(true)}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          新建任务
+        </Button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-3 py-1 pb-2 space-y-0.5 scrollbar-hide">
+        {loadingTasks && tasks.length === 0 ? (
+          <TaskSidebarSkeleton />
+        ) : tasks.length === 0 ? (
+          <div className="text-center text-muted-foreground text-xs py-8 px-4">
+            暂无任务，点击「新建任务」开始
+          </div>
+        ) : (
+          <>
+            {pinnedTasks.map((task) => (
+              <TaskCard
+                key={task.id}
+                task={task}
+                isActive={task.id === activeTaskId}
+                isPinned={task.isPinned}
+                onClick={() => handleTaskSelect(task)}
+                onPin={handlePinTask}
+                onDelete={handleRequestDeleteTask}
+                onRename={handleTaskRename}
+              />
+            ))}
+            {recentTasks.length > 0 && (
+              <p className="px-1 pt-1 pb-0.5 text-xs text-muted-foreground">
+                最近
+              </p>
+            )}
+            {recentTasks.map((task) => (
+              <TaskCard
+                key={task.id}
+                task={task}
+                isActive={task.id === activeTaskId}
+                isPinned={task.isPinned}
+                onClick={() => handleTaskSelect(task)}
+                onPin={handlePinTask}
+                onDelete={handleRequestDeleteTask}
+                onRename={handleTaskRename}
+              />
+            ))}
+            {hasMoreTasks && (
+              <button
+                onClick={() => {
+                  const next = taskPage + 1
+                  setTaskPage(next)
+                  void fetchTasks(next, true)
+                }}
+                className="w-full text-xs text-muted-foreground hover:text-foreground py-2 flex items-center justify-center gap-1"
+              >
+                <ChevronDown className="h-3.5 w-3.5" />
+                加载更多
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </>
+  )
+
   return (
     // 绝对定位贴满 header 以下的工作区（相对 SidebarInset 的 relative），
     // 避开 dashboard-shell 的 p-4 包裹层：左栏贴住导航栏与顶栏，分割线贯穿到底。
-    // 不用 gap：主区需紧贴左栏 border-r，保证工具栏 border-b 与竖线在左上角相接
+    // 不用 gap：主区需紧贴左栏 border-r，保证工具栏 border-b 与竖线在左上角相接。
+    // <md：左栏隐藏，改为工具栏「任务列表」按钮唤出抽屉（P1-3）
     <div className="absolute inset-x-0 top-16 bottom-0 flex">
       <aside
-        className="flex flex-col border-r border-border bg-sidebar/20 shrink-0"
+        className="hidden md:flex flex-col border-r border-border bg-sidebar/20 shrink-0"
         style={{ width: SIDEBAR_WIDTH }}
       >
-        <div className="px-3 py-2.5 space-y-2 shrink-0">
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
-            <Input
-              placeholder="搜索任务..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-8 h-8 text-xs"
-            />
-          </div>
-
-          <Button
-            size="sm"
-            className="w-full h-8 gap-1.5 text-xs rounded-md"
-            onClick={() => setShowNewTask(true)}
-          >
-            <Plus className="h-3.5 w-3.5" />
-            新建任务
-          </Button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto px-3 py-1 pb-2 space-y-0.5 scrollbar-hide">
-          {loadingTasks && tasks.length === 0 ? (
-            <TaskSidebarSkeleton />
-          ) : tasks.length === 0 ? (
-            <div className="text-center text-muted-foreground text-xs py-8 px-4">
-              暂无任务，点击「新建任务」开始
-            </div>
-          ) : (
-            <>
-              {pinnedTasks.map((task) => (
-                <TaskCard
-                  key={task.id}
-                  task={task}
-                  isActive={task.id === activeTaskId}
-                  isPinned={task.isPinned}
-                  onClick={() => handleTaskSelect(task)}
-                  onPin={handlePinTask}
-                  onDelete={handleRequestDeleteTask}
-                  onRename={handleTaskRename}
-                />
-              ))}
-              {recentTasks.length > 0 && (
-                <p className="px-1 pt-1 pb-0.5 text-xs text-muted-foreground">
-                  最近
-                </p>
-              )}
-              {recentTasks.map((task) => (
-                <TaskCard
-                  key={task.id}
-                  task={task}
-                  isActive={task.id === activeTaskId}
-                  isPinned={task.isPinned}
-                  onClick={() => handleTaskSelect(task)}
-                  onPin={handlePinTask}
-                  onDelete={handleRequestDeleteTask}
-                  onRename={handleTaskRename}
-                />
-              ))}
-              {hasMoreTasks && (
-                <button
-                  onClick={() => {
-                    const next = taskPage + 1
-                    setTaskPage(next)
-                    void fetchTasks(next, true)
-                  }}
-                  className="w-full text-xs text-muted-foreground hover:text-foreground py-2 flex items-center justify-center gap-1"
-                >
-                  <ChevronDown className="h-3.5 w-3.5" />
-                  加载更多
-                </button>
-              )}
-            </>
-          )}
-        </div>
+        {taskSidebar}
       </aside>
 
       <main className="relative flex-1 min-w-0 flex flex-col overflow-hidden">
@@ -1856,9 +1873,20 @@ export function WorkspaceClient({
                   <Plus className="h-4 w-4" />
                   新建任务
                 </Button>
+                {/* 移动端：<md 侧栏隐藏，从此处唤出任务抽屉 */}
                 <Button
                   variant="outline"
                   size="sm"
+                  className="md:hidden"
+                  onClick={() => setMobileSidebarOpen(true)}
+                >
+                  <ListTodo className="h-4 w-4" />
+                  任务列表
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="max-md:hidden"
                   onClick={() => router.push("/templates")}
                 >
                   <LibraryBig className="h-4 w-4" />
@@ -1871,6 +1899,16 @@ export function WorkspaceClient({
           <>
             {/* 工具栏 */}
             <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border bg-background/80 backdrop-blur-sm shrink-0 flex-wrap">
+              {/* 移动端任务列表唤出（<md 侧栏隐藏时显示） */}
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1 rounded-md md:hidden"
+                onClick={() => setMobileSidebarOpen(true)}
+              >
+                <ListTodo className="h-3.5 w-3.5" />
+                任务
+              </Button>
               <Button
                 size="sm"
                 className="h-7 text-xs gap-1 rounded-md bg-blue-600 text-white hover:bg-blue-700"
@@ -2226,6 +2264,19 @@ export function WorkspaceClient({
           </>
         )}
       </main>
+
+      {/* 移动端任务抽屉（<md 侧栏隐藏，工具栏/空态按钮唤出；P1-3） */}
+      <Sheet open={mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
+        <SheetContent
+          side="left"
+          className="w-[280px] gap-0 p-0 sm:max-w-[280px]"
+        >
+          <SheetHeader className="sr-only">
+            <SheetTitle>任务列表</SheetTitle>
+          </SheetHeader>
+          <div className="flex h-full flex-col">{taskSidebar}</div>
+        </SheetContent>
+      </Sheet>
 
       {/* ─── 工具面板（浮动，与批量模式互斥） ─── */}
       {toolPanelOpen && (

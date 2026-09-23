@@ -18,14 +18,6 @@ import { Badge } from "@/components/ui/badge"
 import { MorphingInfinity } from "@/components/ui/morphing-infinity"
 import { Button } from "@/components/ui/button"
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
-import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -41,7 +33,7 @@ import { copyText, generationDurationMs, toImageSrc } from "@/lib/utils"
 import { SmartImage } from "@/components/ui/smart-image"
 import { ImageGeneration } from "@/components/ui/image-generation"
 import { parseImageSize, sizeToRatioLabel } from "@/lib/image-sizes"
-import { deleteTaskAction } from "@/server/actions/conversations"
+import { deleteTaskAction, restoreTaskAction } from "@/server/actions/conversations"
 import { submitTaskAction } from "@/server/actions/create"
 import { toast } from "sonner"
 import { ImageViewer, downloadImageFile } from "@/components/ui/image-viewer"
@@ -146,9 +138,8 @@ export function TaskDetailCard({
   onEditTask?: (payload: EditTaskPayload) => void
 }) {
   const router = useRouter()
-  const [confirmDelete, setConfirmDelete] = React.useState(false)
-  const [deleting, setDeleting] = React.useState(false)
   const [regenerating, setRegenerating] = React.useState(false)
+  const [downloadingAll, setDownloadingAll] = React.useState(false)
   // 第一张参考图是否已过期（缩略图加载失败）
   const [refExpired, setRefExpired] = React.useState(false)
   // 悬停被 2 行截断的提示词时，上方浮现完整提示词矩形框（受控 Tooltip）
@@ -242,12 +233,25 @@ export function TaskDetailCard({
     : null
 
   async function handleDelete() {
-    setDeleting(true)
     const res = await deleteTaskAction(task.id)
-    setDeleting(false)
-    setConfirmDelete(false)
     if (res.ok) {
-      toast.success("已删除")
+      // Gmail 式事后撤销（P2-2）：软删后 6 秒内可一键恢复，
+      // 替代原先的二次确认弹窗打断
+      toast.success("已删除该批次结果", {
+        duration: 6000,
+        action: {
+          label: "撤销",
+          onClick: async () => {
+            const r = await restoreTaskAction(task.id)
+            if (r.ok) {
+              toast.success("已恢复")
+              router.refresh()
+            } else {
+              toast.error(r.error ?? "恢复失败")
+            }
+          },
+        },
+      })
       router.refresh()
     } else {
       toast.error(res.error ?? "删除失败")
@@ -329,6 +333,33 @@ export function TaskDetailCard({
       toast.success("已复制到剪贴板")
     } else {
       toast.error("复制失败，请手动选择复制")
+    }
+  }
+
+  /** 下载全部：顺序走统一下载器（静默模式），单个 loading toast + 汇总结果 */
+  async function handleDownloadAll(stamp: number) {
+    if (images.length === 0 || downloadingAll) return
+    setDownloadingAll(true)
+    const toastId = toast.loading(`正在下载 ${images.length} 张图片…`)
+    let ok = 0
+    for (let i = 0; i < images.length; i++) {
+      try {
+        await downloadImageFile(images[i], `hanxing-${stamp}-${i + 1}`, {
+          silent: true,
+        })
+        ok++
+      } catch {
+        // 单张失败继续其余，结束后汇总提示
+      }
+    }
+    setDownloadingAll(false)
+    if (ok === images.length) {
+      toast.success(`已下载全部 ${ok} 张`, { id: toastId })
+    } else {
+      toast.error(
+        `已下载 ${ok}/${images.length} 张，失败的图片可单独点击重试`,
+        { id: toastId },
+      )
     }
   }
 
@@ -482,8 +513,9 @@ export function TaskDetailCard({
                 loading="lazy"
                 onLoad={(e) => handleImageLoad(i, e)}
               />
-              {/* 悬浮右上角操作：下载 / 放大（打开放大查看器） */}
-              <div className="absolute right-1 top-1 z-10 flex gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+              {/* 悬浮右上角操作：下载 / 放大（打开放大查看器）；
+                  触屏设备（无 hover）常显，保证可达 */}
+              <div className="absolute right-1 top-1 z-10 flex gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
                 <button
                   type="button"
                   title="下载"
@@ -512,7 +544,12 @@ export function TaskDetailCard({
             <div
               key={`failed-${i}`}
               className="flex flex-col items-center justify-center gap-1.5 rounded-md border border-dashed bg-muted/40 text-muted-foreground"
-              style={{ aspectRatio: "1 / 1" }}
+              // 与批内基准比例对齐（未测出基准时退回 1:1），避免网格参差
+              style={{
+                aspectRatio: baseline
+                  ? `${baseline.w} / ${baseline.h}`
+                  : "1 / 1",
+              }}
             >
               <AlertCircle className="size-5 text-destructive/70" />
               <span className="text-xs">生成失败</span>
@@ -573,6 +610,25 @@ export function TaskDetailCard({
           重新生成
         </Button>
 
+        {/* 下载全部（单图批次不显示，直接悬浮单张下载即可） */}
+        {images.length > 1 && (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 gap-1.5 rounded-md border-border/60 bg-card/80 px-3 text-xs shadow-sm hover:bg-accent"
+            onClick={() => void handleDownloadAll(Date.now())}
+            disabled={downloadingAll}
+          >
+            {downloadingAll ? (
+              <MorphingInfinity className="size-3.5" />
+            ) : (
+              <Download className="size-3.5" />
+            )}
+            下载全部
+          </Button>
+        )}
+
         <DropdownMenu>
           <DropdownMenuTrigger
             className="inline-flex size-8 items-center justify-center rounded-md border border-border/60 bg-card/80 text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground"
@@ -591,7 +647,7 @@ export function TaskDetailCard({
             <DropdownMenuItem
               variant="destructive"
               className="h-8 rounded-lg"
-              onClick={() => setConfirmDelete(true)}
+              onClick={() => void handleDelete()}
             >
               <Trash2 className="size-4" />
               删除该批次结果
@@ -608,37 +664,6 @@ export function TaskDetailCard({
           </Badge>
         )}
       </div>
-
-      {/* 删除确认弹窗 */}
-      <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>删除该批次结果？</DialogTitle>
-            <DialogDescription>
-              将永久删除这次生成的图片和记录。积分不退还（已消费算沉没成本）。
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setConfirmDelete(false)}
-              disabled={deleting}
-            >
-              取消
-            </Button>
-            <Button variant="destructive" onClick={handleDelete} disabled={deleting}>
-              {deleting ? (
-                <>
-                  <MorphingInfinity className="mr-1 size-4" />
-                  删除中
-                </>
-              ) : (
-                "确认删除"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* 放大查看器：图片格悬浮「放大」按钮打开（旋转/缩放/拖拽/下载/信息面板） */}
       <ImageViewer

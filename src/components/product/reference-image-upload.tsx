@@ -96,7 +96,7 @@ export function ReferenceImageUpload({
             )}
             <input
               type="file"
-              accept="image/png,image/jpeg,image/webp"
+              accept="image/png,image/jpeg,image/webp,image/gif"
               multiple
               className="hidden"
               onChange={(e) => handleFiles(e.target.files)}
@@ -105,7 +105,7 @@ export function ReferenceImageUpload({
         )}
       </div>
       <p className="text-xs text-muted-foreground">
-        支持 PNG/JPEG/WebP，单张 ≤ 10MB，最多 {maxImages} 张
+        支持 PNG/JPEG/WebP/GIF，单张 ≤ 20MB，最多 {maxImages} 张
       </p>
     </div>
   )

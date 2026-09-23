@@ -28,22 +28,24 @@ import { submitTaskAction } from "@/server/actions/create"
 import { toast } from "sonner"
 import { cn, toImageSrc } from "@/lib/utils"
 import { uploadImage } from "@/lib/upload/upload-image"
+import { validateReferenceImage } from "@/lib/upload/reference-image"
+import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import { resolveSizePresets } from "@/lib/image-sizes"
 import { SmartImage } from "@/components/ui/smart-image"
 import type { CreateModel } from "@/components/create/types"
 import { loadInputDraft, useInputDraft } from "@/components/create/use-input-draft"
 import { useTaskPolling } from "@/components/create/use-task-polling"
-
-/** 单张参考图大小上限 */
-const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
+import { trackTask } from "@/lib/tasks/global-task-notifier"
 
 /**
  * 生图输入框（自由创作页 §6 v2）
  *
  * 基于 ai-chat-input 的 ChatGPT 风格组合式 PromptInput 封装：
  * - 提示词输入（Enter 提交 / Shift+Enter 换行）
- * - @ 参考图上传（左上方圆形按钮，点击直接打开文件选择框；缩略图显示在后方）
- * - 模型选择（ModelPickerPopover，卡片列表）
+ * - @ 参考图上传：点击选择 / 拖拽到输入卡 / 粘贴剪贴板截图三通道，
+ *   并行上传、缩略图底部进度条；校验与服务端统一（20MB / PNG/JPEG/WEBP/GIF / 8192px）
+ * - 模型选择（ModelPickerPopover，卡片列表）；切换到不支持参考图的模型时
+ *   若已有参考图需确认（防误清）
  * - 尺寸/数量（SizePickerPopover 合并面板：比例横排 + 智能 + 数量 + 自定义尺寸）
  * - 积分进度环（CreditsRing，位于尺寸选择器右侧）
  * - 外层 colorful border-beam 光效（悬停/聚焦/生成中激活）
@@ -86,7 +88,16 @@ export function CreatePromptInput({
   const [imageSize, setImageSize] = useState("1024x1024")
   const [imageCount, setImageCount] = useState(1)
   const [referenceImages, setReferenceImages] = useState<string[]>([])
-  const [uploading, setUploading] = useState(false)
+  // 上传中的参考图（本地 blob 预览 + 进度），全部完成后即清空
+  const [pendingUploads, setPendingUploads] = useState<
+    { id: string; name: string; preview: string; progress: number }[]
+  >([])
+  const uploading = pendingUploads.length > 0
+  // 待确认的模型切换（P0-2：新模型不支持参考图且已有参考图时先确认再清空）
+  const [pendingModelId, setPendingModelId] = useState<string | null>(null)
+  // 拖拽文件悬停在输入卡上（depth 计数避免经过子元素时闪烁）
+  const [dragOver, setDragOver] = useState(false)
+  const dragDepthRef = useRef(0)
 
   // 任务状态
   const [status, setStatus] = useState<PromptInputStatus>("ready")
@@ -220,10 +231,16 @@ export function CreatePromptInput({
     }
   }, [selectedModel, imageSize, supportsAuto, sizePresets])
 
-  function handleModelChange(id: string) {
+  /** 应用模型切换：尺寸/数量兼容性重置；参考图按新模型上限截断保留 */
+  function applyModelChange(id: string) {
     const next = models.find((m) => m.id === id)
     setModelId(id)
-    setReferenceImages([])
+    const nextMax = next?.maxReferenceImages ?? 0
+    // 新模型支持参考图但上限更低：截断保留前 N 张而非全清
+    if (nextMax > 0 && referenceImages.length > nextMax) {
+      setReferenceImages((prev) => prev.slice(0, nextMax))
+      toast.warning(`当前模型最多支持 ${nextMax} 张参考图，已保留前 ${nextMax} 张`)
+    }
     // 切换模型后，若新模型不支持数量选择则重置为 1
     if (!next?.supportsImageCount) setImageCount(1)
     // 若当前是「智能(auto)」但新模型不支持智能比例，则回退到首个预设
@@ -233,67 +250,123 @@ export function CreatePromptInput({
     }
   }
 
-  // 参考图文件选择 + 验证 + 上传
-  async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? [])
-    e.target.value = "" // 重置以便重复选择同一文件
-    if (files.length === 0) return
+  function handleModelChange(id: string) {
+    if (id === modelId) return
+    const next = models.find((m) => m.id === id)
+    if (!next) return
+    const nextSupportsRef =
+      next.supportsReferenceImage && next.maxReferenceImages > 0
+    // 新模型不支持参考图且已有参考图：先确认再清空，避免误切丢图
+    if (!nextSupportsRef && referenceImages.length > 0) {
+      setPendingModelId(id)
+      return
+    }
+    applyModelChange(id)
+  }
 
-    const remaining = maxRef - referenceImages.length
+  // 参考图统一入口（文件选择 / 拖拽 / 粘贴）：校验 → 并行上传 → 追加
+  async function handleFiles(files: File[]) {
+    if (files.length === 0) return
+    if (!supportsRef) {
+      toast.error("当前模型未开启参考图")
+      return
+    }
+    const remaining =
+      maxRef - referenceImages.length - pendingUploads.length
     if (remaining <= 0) {
       toast.error(`最多上传 ${maxRef} 张参考图`)
       return
     }
-
-    // 逐文件验证格式 + 大小（与服务端 /api/upload 白名单一致）
-    const validFiles: File[] = []
-    for (const file of files) {
-      const ext = file.name.toLowerCase()
-      const isAllowedType =
-        file.type === "image/png" ||
-        file.type === "image/jpeg" ||
-        file.type === "image/webp" ||
-        file.type === "image/gif" ||
-        ext.endsWith(".png") ||
-        ext.endsWith(".jpg") ||
-        ext.endsWith(".jpeg") ||
-        ext.endsWith(".webp") ||
-        ext.endsWith(".gif")
-      if (!isAllowedType) {
-        toast.error(`${file.name}：格式不支持，仅支持 PNG / JPEG / WEBP / GIF`)
-        continue
-      }
-      if (file.size > MAX_FILE_SIZE) {
-        toast.error(`${file.name}：大小超过 10MB`)
-        continue
-      }
-      validFiles.push(file)
-    }
-
-    if (validFiles.length === 0) return
-
-    // 限制到剩余配额
-    const toUpload = validFiles.slice(0, remaining)
-    if (validFiles.length > remaining) {
+    const toUpload = files.slice(0, remaining)
+    if (files.length > remaining) {
       toast.warning(`仅上传前 ${remaining} 张，已达参考图上限 ${maxRef}`)
     }
 
-    // 逐文件上传
-    setUploading(true)
-    const newUrls: string[] = []
-    for (const file of toUpload) {
-      try {
-        const url = await uploadImage(file)
-        newUrls.push(url)
-      } catch {
-        toast.error(`${file.name}：上传失败`)
-      }
-    }
-    setUploading(false)
+    const entries = toUpload.map((file) => ({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      file,
+      preview: URL.createObjectURL(file),
+    }))
+    setPendingUploads((prev) => [
+      ...prev,
+      ...entries.map(({ id, file, preview }) => ({
+        id,
+        name: file.name,
+        preview,
+        progress: 0,
+      })),
+    ])
 
-    if (newUrls.length > 0) {
-      setReferenceImages((prev) => [...prev, ...newUrls])
-    }
+    // 并行上传（Promise.allSettled），单张失败不影响其余
+    await Promise.allSettled(
+      entries.map(async ({ id, file, preview }) => {
+        try {
+          const error = await validateReferenceImage(file)
+          if (error) throw new Error(`${file.name}：${error}`)
+          const url = await uploadImage(file, {
+            onProgress: (percent) =>
+              setPendingUploads((prev) =>
+                prev.map((p) =>
+                  p.id === id ? { ...p, progress: percent } : p,
+                ),
+              ),
+          })
+          setReferenceImages((prev) => [...prev, url])
+        } catch (e) {
+          toast.error(
+            e instanceof Error ? e.message : `${file.name}：上传失败`,
+          )
+        } finally {
+          URL.revokeObjectURL(preview)
+          setPendingUploads((prev) => prev.filter((p) => p.id !== id))
+        }
+      }),
+    )
+  }
+
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? [])
+    e.target.value = "" // 重置以便重复选择同一文件
+    if (files.length === 0) return
+    void handleFiles(files)
+  }
+
+  // 粘贴截图/图片文件（文本粘贴不拦截）
+  function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const files = Array.from(e.clipboardData?.files ?? []).filter((f) =>
+      f.type.startsWith("image/"),
+    )
+    if (files.length === 0) return
+    e.preventDefault()
+    void handleFiles(files)
+  }
+
+  // 拖拽悬停仅对文件类型生效（拖选页面文字不误触发）
+  function dragHasFiles(e: React.DragEvent): boolean {
+    return Array.from(e.dataTransfer?.types ?? []).includes("Files")
+  }
+
+  function handleDragEnter(e: React.DragEvent) {
+    if (!dragHasFiles(e)) return
+    e.preventDefault()
+    dragDepthRef.current += 1
+    setDragOver(true)
+  }
+
+  function handleDragLeave(e: React.DragEvent) {
+    if (!dragHasFiles(e)) return
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+    if (dragDepthRef.current === 0) setDragOver(false)
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    if (!dragHasFiles(e)) return
+    e.preventDefault()
+    dragDepthRef.current = 0
+    setDragOver(false)
+    const files = Array.from(e.dataTransfer.files)
+    if (files.length === 0) return
+    void handleFiles(files)
   }
 
   function removeReferenceImage(index: number) {
@@ -341,6 +414,13 @@ export function CreatePromptInput({
           `已提交，消耗 ${res.cost} 积分（并发上限 ${res.effectiveMaxConcurrent}）`,
         )
         setActiveTaskId(res.taskId ?? null)
+        // 登记到全局任务通知中心：切到其他模块也能收到完成提醒
+        if (res.taskId) {
+          trackTask({
+            taskId: res.taskId,
+            conversationId: res.conversationId ?? conversationId ?? null,
+          })
+        }
         setReferenceImages([])
         // 文本已被 form.reset() 清空，草稿同步清空
         flushDraftSave({ text: "" })
@@ -372,23 +452,20 @@ export function CreatePromptInput({
       ],
   )
 
-  // 提交后轮询任务结果（有次数上限；会话过期立即停止，见 use-task-polling.ts）
+  // 提交后轮询任务结果：仅驱动输入框 UI 状态（生成中→就绪）。
+  // 完成/失败的 toast 与系统通知统一由 TaskNotificationCenter 发出，
+  // 本地不再提示，避免双弹；会话级刷新由 conversation-detail 轮询负责
   useTaskPolling({
     taskId: activeTaskId,
     onCompleted: () => {
-      toast.success("生成完成")
       setStatus("ready")
       setActiveTaskId(null)
-      router.refresh()
     },
-    onFailed: (errorMessage) => {
-      toast.error(errorMessage?.slice(0, 80) ?? "生成失败")
+    onFailed: () => {
       setStatus("ready")
       setActiveTaskId(null)
-      router.refresh()
     },
-    onStopped: (message) => {
-      toast.error(message)
+    onStopped: () => {
       setStatus("ready")
       setActiveTaskId(null)
     },
@@ -421,6 +498,16 @@ export function CreatePromptInput({
   const beamActive = beamHovered || beamFocused || isGenerating
 
   return (
+    <>
+    {/* 拖拽上传热区：整个输入卡（含边框光效区域） */}
+    <div
+      onDragEnter={handleDragEnter}
+      onDragOver={(e) => {
+        if (dragHasFiles(e)) e.preventDefault()
+      }}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
     <BeamWrapper
       active={beamActive}
       colorVariant="colorful"
@@ -434,7 +521,10 @@ export function CreatePromptInput({
       <PromptInput
         onSubmit={handlePromptSubmit}
         status={status}
-        className="rounded-3xl"
+        className={cn(
+          "rounded-3xl transition-shadow",
+          dragOver && "ring-2 ring-primary ring-offset-2 ring-offset-background",
+        )}
       >
         {/* 左上方：@ 参考图按钮 + 缩略图（@ 按钮始终渲染，Tooltip 提示状态） */}
         <div className="flex items-center gap-2 px-4 pt-3">
@@ -485,7 +575,7 @@ export function CreatePromptInput({
                   <button
                     type="button"
                     onClick={() => removeReferenceImage(i)}
-                    className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 transition-opacity group-hover:opacity-100"
+                    className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100"
                   >
                     <X className="size-3.5 text-white" />
                   </button>
@@ -504,6 +594,28 @@ export function CreatePromptInput({
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
+          ))}
+
+          {/* 上传中的参考图（本地预览 + 底部进度条，完成后替换为正式缩略图） */}
+          {pendingUploads.map((p) => (
+            <div
+              key={p.id}
+              title={p.name}
+              className="relative size-8 shrink-0 overflow-hidden rounded-md border"
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={p.preview}
+                alt=""
+                className="size-full object-cover opacity-50"
+              />
+              <div className="absolute inset-x-0 bottom-0 h-1 bg-black/40">
+                <div
+                  className="h-full bg-primary transition-all duration-300"
+                  style={{ width: `${p.progress}%` }}
+                />
+              </div>
+            </div>
           ))}
 
           {/* 隐藏的文件选择 input */}
@@ -525,7 +637,8 @@ export function CreatePromptInput({
             ref={textareaRef}
             defaultValue={initialText ? initialText.text : (prefill?.text ?? "")}
             onChange={(e) => scheduleDraftSave({ text: e.target.value })}
-            placeholder={'输入文字"@"上传参考图片，描述你想生成的图片。'}
+            onPaste={handlePaste}
+            placeholder={"描述你想生成的图片，可 @ 上传 / 拖拽 / 粘贴参考图"}
             maxLength={4000}
             disabled={submitting}
           />
@@ -581,5 +694,28 @@ export function CreatePromptInput({
         </PromptInputFooter>
       </PromptInput>
     </BeamWrapper>
+    </div>
+
+    {/* P0-2：切换到不支持参考图的模型时确认清空 */}
+    <ConfirmDialog
+      open={pendingModelId !== null}
+      onOpenChange={(open) => {
+        if (!open) setPendingModelId(null)
+      }}
+      title="切换模型将清空参考图"
+      description={`「${
+        models.find((m) => m.id === pendingModelId)?.displayName ?? "该模型"
+      }」不支持参考图，切换后将清空已上传的 ${referenceImages.length} 张参考图。是否继续？`}
+      confirmText="切换并清空"
+      destructive
+      onConfirm={() => {
+        const id = pendingModelId
+        setPendingModelId(null)
+        if (!id) return
+        setReferenceImages([])
+        applyModelChange(id)
+      }}
+    />
+    </>
   )
 }

@@ -12,6 +12,7 @@ import {
   type StorageConfig,
 } from "@/lib/storage/config"
 import { verifyCosConfig } from "@/lib/storage/cos"
+import { resetStorageAdapterCache } from "@/lib/storage"
 import { revalidatePath } from "next/cache"
 
 /**
@@ -143,6 +144,8 @@ export async function saveStorageSettingAction(
     } as unknown as SystemSettingValue,
     "存储后端配置（local/cos）",
   )
+  // 适配器缓存失效，新配置即时生效（不等 60s TTL 自然过期）
+  resetStorageAdapterCache()
   revalidatePath("/platform/system")
   return { ok: true, tested }
 }

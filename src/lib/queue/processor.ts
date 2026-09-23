@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, lt, ne } from "drizzle-orm"
+import { and, desc, eq, inArray, isNull, lt, ne, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import {
   apiCallLogs,
@@ -184,26 +184,38 @@ async function ensureCardSelection(
     }
   }
 
-  for (const [cardId, pick] of pickByCard) {
-    const now = new Date()
-    await db
-      .update(cardImages)
-      .set({ isSelected: false, updatedAt: now })
-      .where(
-        and(
-          eq(cardImages.cardId, cardId),
-          eq(cardImages.enterpriseId, enterpriseId),
-        ),
-      )
-    await db
+  // 批量落库（原实现每卡 3 次串行往返，批任务完成时按卡数放大）：
+  // ① 清全部相关卡的 isSelected → ② 选中各卡挑选图（与①顺序保证）+ ③ 回填
+  // promptCards.selectedImageId（VALUES 关联单语句），共 3 次往返
+  const now = new Date()
+  const cardIdList = [...pickByCard.keys()]
+  await db
+    .update(cardImages)
+    .set({ isSelected: false, updatedAt: now })
+    .where(
+      and(
+        eq(cardImages.enterpriseId, enterpriseId),
+        inArray(cardImages.cardId, cardIdList),
+      ),
+    )
+  const values = sql.join(
+    [...pickByCard.entries()].map(
+      ([cardId, pick]) => sql`(${cardId}::uuid, ${pick.id}::uuid)`,
+    ),
+    sql`, `,
+  )
+  await Promise.all([
+    db
       .update(cardImages)
       .set({ isSelected: true, updatedAt: now })
-      .where(eq(cardImages.id, pick.id))
-    await db
-      .update(promptCards)
-      .set({ selectedImageId: pick.id, updatedAt: now })
-      .where(eq(promptCards.id, cardId))
-  }
+      .where(inArray(cardImages.id, [...pickByCard.values()].map((p) => p.id))),
+    db.execute(sql`
+      UPDATE ${promptCards}
+      SET selected_image_id = data.img, updated_at = now()
+      FROM (VALUES ${values}) AS data(card, img)
+      WHERE ${promptCards}.id = data.card AND ${promptCards}.enterprise_id = ${enterpriseId}
+    `),
+  ])
 }
 
 /**
@@ -492,9 +504,14 @@ export async function processQueueContinuous(opts: {
           const started = Date.now()
           const p = runTaskSafely(task, ent.maxConcurrent)
             .then((ok) => {
-              console.log(
-                `[queue] 任务 ${task.taskId} ${ok ? "完成" : "失败"}（耗时 ${Date.now() - started}ms）`,
-              )
+              // 每任务完成不逐条打日志（高吞吐下淹没关键输出）；失败路径
+              // 已由 runTaskSafely 内 console.error 记录，慢任务在此提示
+              const elapsed = Date.now() - started
+              if (!ok || elapsed > 30_000) {
+                console.log(
+                  `[queue] 任务 ${task.taskId} ${ok ? "慢完成" : "失败"}（耗时 ${elapsed}ms）`,
+                )
+              }
             })
             .finally(() => taskSet.delete(p))
           taskSet.add(p)

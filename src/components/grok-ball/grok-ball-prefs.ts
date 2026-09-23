@@ -11,8 +11,9 @@ export const GROK_BALL_EMOTION_KEY = "grok-ball:emotion"
 /** 默认待机放空 */
 export const DEFAULT_GROK_BALL_EMOTION = "02"
 
+/** 默认关闭（办公场景干扰；用户在侧边栏头像菜单中开启后写入 "1"） */
 export function readGrokBallEnabled(): boolean {
-  return localStorage.getItem(GROK_BALL_ENABLED_KEY) !== "0"
+  return localStorage.getItem(GROK_BALL_ENABLED_KEY) === "1"
 }
 
 export function writeGrokBallEnabled(enabled: boolean): void {

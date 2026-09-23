@@ -8,6 +8,7 @@ import { toast } from "sonner"
 import { ChatConversationList } from "@/components/chat/chat-conversation-list"
 import { ChatDetail } from "@/components/chat/chat-detail"
 import { ChatInput } from "@/components/chat/chat-input"
+import { WorkspaceSplit } from "@/components/shared/workspace-split"
 import { useChatStream } from "@/components/chat/use-chat-stream"
 import type {
   ChatConversationListItem,
@@ -227,54 +228,51 @@ export function ChatApp({
   )
 
   return (
-    <div className="flex h-full overflow-hidden">
-      {/* 左侧：对话历史栏（固定 280px） */}
-      <aside className="w-[280px] shrink-0 border-r bg-sidebar/30">
+    <WorkspaceSplit
+      sidebar={
         <ChatConversationList
           conversations={conversations}
           selectedId={selectedConversation?.id ?? null}
           onSelect={navigateTo}
         />
-      </aside>
-
-      {/* 右侧：内容区 */}
-      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {selectedConversation ? (
-          <ChatDetail
-            conversationId={selectedConversation.id}
-            messages={messages}
-            models={models}
-            modelId={modelId}
-            onModelChange={setModelId}
-            thinkingLevel={thinkingLevel}
-            onThinkingLevelChange={setThinkingLevel}
-            contextTokens={contextTokens}
-            live={stream}
-            isStreaming={isStreaming}
-            onSubmit={handleSubmit}
-            onStop={stop}
-            onRegenerate={handleRegenerate}
-            userAvatarUrl={userAvatarUrl}
-          />
-        ) : (
-          <div className="flex flex-1 items-center justify-center overflow-auto p-6">
-            <div className="w-full max-w-2xl space-y-6">
-              <div className="text-center">
-                <div className="mb-3 inline-flex size-12 items-center justify-center rounded-2xl bg-primary/10">
-                  <Bot className="size-6 text-primary" />
-                </div>
-                <h1 className="text-xl font-semibold">开始你的对话</h1>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {hasModels
-                    ? "选择模型，向 AI 提问任何问题"
-                    : "暂无可用对话模型，请联系管理员配置"}
-                </p>
+      }
+      mobileTitle={selectedConversation?.title ?? "开始你的对话"}
+    >
+      {selectedConversation ? (
+        <ChatDetail
+          conversationId={selectedConversation.id}
+          messages={messages}
+          models={models}
+          modelId={modelId}
+          onModelChange={setModelId}
+          thinkingLevel={thinkingLevel}
+          onThinkingLevelChange={setThinkingLevel}
+          contextTokens={contextTokens}
+          live={stream}
+          isStreaming={isStreaming}
+          onSubmit={handleSubmit}
+          onStop={stop}
+          onRegenerate={handleRegenerate}
+          userAvatarUrl={userAvatarUrl}
+        />
+      ) : (
+        <div className="flex flex-1 items-center justify-center overflow-auto p-6">
+          <div className="w-full max-w-2xl space-y-6">
+            <div className="text-center">
+              <div className="mb-3 inline-flex size-12 items-center justify-center rounded-2xl bg-primary/10">
+                <Bot className="size-6 text-primary" />
               </div>
-              {welcomeInput}
+              <h1 className="text-xl font-semibold">开始你的对话</h1>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {hasModels
+                  ? "选择模型，向 AI 提问任何问题"
+                  : "暂无可用对话模型，请联系管理员配置"}
+              </p>
             </div>
+            {welcomeInput}
           </div>
-        )}
-      </main>
-    </div>
+        </div>
+      )}
+    </WorkspaceSplit>
   )
 }

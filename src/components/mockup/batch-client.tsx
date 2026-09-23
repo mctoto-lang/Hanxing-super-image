@@ -28,6 +28,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { SmartImage } from "@/components/ui/smart-image"
+import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import { HistoryDateRangePicker } from "@/components/product-v2/history-date-range-picker"
 import type { MockupBindingDef } from "@/db/schema"
 import type {
@@ -158,6 +159,8 @@ export function MockupBatchClient({
   const [materialBinding, setMaterialBinding] = React.useState<string | null>(null)
   const [manageOpen, setManageOpen] = React.useState(false)
   const [submitting, setSubmitting] = React.useState(false)
+  /** 批量渲染提交确认弹窗（替代原生 window.confirm） */
+  const [confirmOpen, setConfirmOpen] = React.useState(false)
   // 渲染导出格式（提交时选择；默认 JPG，选择不持久化）
   const [outputFormat, setOutputFormat] =
     React.useState<MockupOutputFormat>("jpeg")
@@ -490,17 +493,19 @@ export function MockupBatchClient({
 
     const totalCost = taskCount * initialData.costPerRender
     if (initialData.creditsBalance < totalCost) {
-      toast.error(`个人配额不足，需要 ${totalCost}，当前 ${initialData.creditsBalance}`)
+      toast.error(`个人配额不足，需要 ${totalCost}，当前余额 ${initialData.creditsBalance}`)
       return
     }
-    if (
-      !window.confirm(
-        `共 ${taskCount} 张 · ${totalCost} 积分（当前余额 ${initialData.creditsBalance}）\n确认提交批量替换？`,
-      )
-    ) {
-      return
-    }
+    // 校验全部通过 → 弹统一确认框（ConfirmDialog），确认后执行 doSubmit
+    setConfirmOpen(true)
+  }
 
+  const doSubmit = async () => {
+    // handleSubmit 已完成全部校验；此处守卫仅为类型收窄（弹窗期间模板可能被重选）
+    if (!selectedTemplate) {
+      toast.error("请先选择模板")
+      return
+    }
     setSubmitting(true)
     try {
       // 1. 轮换素材（图片库 URL，选图时已上传并预导入外部渲染素材）
@@ -1090,6 +1095,20 @@ export function MockupBatchClient({
         onChanged={() => {
           void loadTemplates()
           router.refresh()
+        }}
+      />
+
+      {/* 批量渲染提交确认（费用与张数明确展示，替代原生 confirm） */}
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="确认提交批量渲染"
+        description={`共 ${taskCount} 张 · ${taskCount * initialData.costPerRender} 积分（当前余额 ${initialData.creditsBalance}）`}
+        confirmText="提交"
+        pending={submitting}
+        onConfirm={() => {
+          setConfirmOpen(false)
+          void doSubmit()
         }}
       />
     </div>

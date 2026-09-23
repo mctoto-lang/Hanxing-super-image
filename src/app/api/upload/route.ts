@@ -1,9 +1,14 @@
 import { NextResponse } from "next/server"
 import { auth } from "@/lib/auth/config"
 import { requireUserContext, getCurrentEnterpriseScope } from "@/lib/auth/session"
+import { apiError, withRouteHandler } from "@/lib/api/route-helpers"
 import { getStorage } from "@/lib/storage"
 import { safeImageExt } from "@/lib/storage/ext"
-import { MAX_IMAGE_UPLOAD_BYTES, MAX_IMAGE_UPLOAD_MESSAGE } from "@/lib/upload/limits"
+import {
+  ALLOWED_IMAGE_TYPES,
+  MAX_IMAGE_UPLOAD_BYTES,
+  MAX_IMAGE_UPLOAD_MESSAGE,
+} from "@/lib/upload/limits"
 
 /**
  * 文件上传端点（参考图，手册 §3）
@@ -11,30 +16,28 @@ import { MAX_IMAGE_UPLOAD_BYTES, MAX_IMAGE_UPLOAD_MESSAGE } from "@/lib/upload/l
  * 限制：仅登录用户、仅图片、单文件 ≤ 20MB。
  * 路径遵循 §10.5 多租户规范：uploads/<enterpriseId>/image/...
  */
-const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"]
-
-export async function POST(request: Request) {
+export const POST = withRouteHandler(async (request: Request) => {
   const session = await auth()
   if (!session?.user?.id) {
-    return new NextResponse("unauthorized", { status: 401 })
+    return apiError("unauthorized", 401)
   }
   const ctx = await requireUserContext()
   if (!ctx.enterprise) {
-    return new NextResponse("no enterprise", { status: 403 })
+    return apiError("no enterprise", 403)
   }
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
 
   const formData = await request.formData()
   const file = formData.get("file")
   if (!(file instanceof File)) {
-    return new NextResponse("no file", { status: 400 })
+    return apiError("no file", 400)
   }
 
-  if (!ALLOWED_TYPES.includes(file.type)) {
-    return new NextResponse("only images allowed", { status: 415 })
+  if (!ALLOWED_IMAGE_TYPES.includes(file.type as (typeof ALLOWED_IMAGE_TYPES)[number])) {
+    return apiError("only images allowed", 415)
   }
   if (file.size > MAX_IMAGE_UPLOAD_BYTES) {
-    return new NextResponse(MAX_IMAGE_UPLOAD_MESSAGE, { status: 413 })
+    return apiError(MAX_IMAGE_UPLOAD_MESSAGE, 413)
   }
 
   const buffer = Buffer.from(await file.arrayBuffer())
@@ -43,4 +46,4 @@ export async function POST(request: Request) {
   const url = await storage.saveFromBuffer(buffer, enterpriseId, ext, "reference")
 
   return NextResponse.json({ url })
-}
+})

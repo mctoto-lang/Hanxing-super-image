@@ -7,6 +7,7 @@ import {
   getChatConversationAction,
 } from "@/server/actions/chat"
 import { ChatApp } from "@/components/chat/chat-app"
+import { NoPermission } from "@/components/shared/no-permission"
 import type {
   ChatConversationListItem,
   ChatMessageItem,
@@ -27,7 +28,7 @@ export default async function ChatPage({
 }) {
   const ctx = await requireEnterpriseContext()
   if (!ctx.canAccess("chat")) {
-    throw new Error("FORBIDDEN: 无权访问该模块（chat）")
+    return <NoPermission module="AI 对话" />
   }
 
   const [models, conversations, sp] = await Promise.all([

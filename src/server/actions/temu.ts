@@ -30,6 +30,8 @@ import {
   toggleTemuStoreSchema,
   deleteTemuStoreSchema,
 } from "@/server/schemas/temu"
+import { temuCached, invalidateTemuCache } from "@/server/services/temu-cache"
+import { TEMU_TZ, temuDayStr, temuStartOfToday, temuYesterdayStr } from "@/server/services/temu-time"
 
 /**
  * Temu 数据面板 Server Actions（手册 §6：查询 requireEnterpriseContext，
@@ -47,11 +49,9 @@ export interface TemuStoreBrief {
   lastSeenAt: Date | null
 }
 
-/** 店铺列表（面板店铺筛选与管理页共用；按拖拽排序 sortOrder → 创建时间） */
-export async function getTemuStoresAction(): Promise<TemuStoreBrief[]> {
-  const ctx = await requireEnterpriseContext()
-  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
-  const rows = await db
+/** 店铺列表查询（action 与 overview 内部共用：省去重复鉴权与二次查询） */
+function listStores(enterpriseId: string): Promise<TemuStoreBrief[]> {
+  return db
     .select({
       id: temuStores.id,
       name: temuStores.name,
@@ -63,7 +63,13 @@ export async function getTemuStoresAction(): Promise<TemuStoreBrief[]> {
     .from(temuStores)
     .where(eq(temuStores.enterpriseId, enterpriseId))
     .orderBy(asc(temuStores.sortOrder), asc(temuStores.createdAt))
-  return rows
+}
+
+/** 店铺列表（面板店铺筛选与管理页共用；按拖拽排序 sortOrder → 创建时间） */
+export async function getTemuStoresAction(): Promise<TemuStoreBrief[]> {
+  const ctx = await requireEnterpriseContext()
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  return listStores(enterpriseId)
 }
 
 /** 店铺拖拽排序（管理页行拖动，ids 为新顺序；企业隔离逐店校验） */
@@ -71,12 +77,21 @@ export async function reorderTemuStoresAction(input: { ids: string[] }) {
   const ctx = await requireEnterpriseAdmin()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
   const ids = (Array.isArray(input.ids) ? input.ids : []).map(String).slice(0, 100)
-  for (let i = 0; i < ids.length; i++) {
-    await db
-      .update(temuStores)
-      .set({ sortOrder: i, updatedAt: sql`now()` })
-      .where(and(eq(temuStores.id, ids[i]), eq(temuStores.enterpriseId, enterpriseId)))
+  if (ids.length > 0) {
+    // 单条 UPDATE ... FROM (VALUES) 批量写入全部新序（替代逐店 N 次往返）；
+    // WHERE enterprise_id 保持企业隔离——他店 id 不命中即静默跳过（与原逐条行为一致）
+    const values = sql.join(
+      ids.map((id, i) => sql`(${id}::uuid, ${i}::int)`),
+      sql`, `,
+    )
+    await db.execute(sql`
+      UPDATE ${temuStores}
+      SET sort_order = data.seq, updated_at = now()
+      FROM (VALUES ${values}) AS data(id, seq)
+      WHERE ${temuStores}.id = data.id AND ${temuStores}.enterprise_id = ${enterpriseId}
+    `)
   }
+  invalidateTemuCache(enterpriseId)
   revalidatePath("/temu")
   return { ok: true }
 }
@@ -130,18 +145,19 @@ function deltaPct(today: number | null, yesterday: number | null): number | null
   return Math.round(((today - yesterday) / yesterday) * 1000) / 10
 }
 
-/** 跨店求和：null 不计入；双方皆 null 保持 null（图表留空，单店视图与原行为一致） */
-function sumMetric(a: number | null | undefined, b: number | null): number | null {
-  if (a == null && b == null) return null
-  return (a ?? 0) + (b ?? 0)
-}
-
 export async function getTemuOverviewAction(storeId?: string): Promise<TemuOverview> {
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  return temuCached(`${enterpriseId}:${storeId ?? "all"}:overview`, () =>
+    loadTemuOverview(enterpriseId, storeId),
+  )
+}
+
+async function loadTemuOverview(enterpriseId: string, storeId?: string): Promise<TemuOverview> {
   const storeIds = await resolveStoreIds(enterpriseId, storeId)
+  const stores = await listStores(enterpriseId)
   const empty: TemuOverview = {
-    latest: {}, trend: [], productCount: 0, soldout: {}, stores: await getTemuStoresAction(),
+    latest: {}, trend: [], productCount: 0, soldout: {}, stores,
     cards: {
       todaySales: { value: null, delta: null },
       sevenDaySales: { value: null, delta: null },
@@ -153,31 +169,45 @@ export async function getTemuOverviewAction(storeId?: string): Promise<TemuOverv
 
   // 趋势窗口 90 天：卡片只用今昨两日，图表支持 7/30/90 天切换
   const since = new Date(Date.now() - 90 * 86400 * 1000)
+  // 日界取北京时间（Temu 卖家中心口径；服务器容器时区不参与分日）
+  const tz = TEMU_TZ
 
-  const [latestRows, trendRows, productCountRows, soldoutRows, adsRows] = await Promise.all([
+  const [latestRows, trendAgg, productCountRows, soldoutRows, adsRows] = await Promise.all([
     db
       .select()
       .from(temuMetricSnapshots)
       .where(and(inArray(temuMetricSnapshots.storeId, storeIds), eq(temuMetricSnapshots.source, "dashboard-stats")))
       .orderBy(desc(temuMetricSnapshots.capturedAt))
       .limit(1),
-    db
-      .select({
-        storeId: temuMetricSnapshots.storeId,
-        saleVolume: temuMetricSnapshots.saleVolume,
-        sevenDaysSaleVolume: temuMetricSnapshots.sevenDaysSaleVolume,
-        thirtyDaysSaleVolume: temuMetricSnapshots.thirtyDaysSaleVolume,
-        capturedAt: temuMetricSnapshots.capturedAt,
-      })
-      .from(temuMetricSnapshots)
-      .where(
-        and(
-          inArray(temuMetricSnapshots.storeId, storeIds),
-          eq(temuMetricSnapshots.source, "dashboard-stats"),
-          gte(temuMetricSnapshots.capturedAt, since),
-        ),
-      )
-      .orderBy(temuMetricSnapshots.capturedAt),
+    // SQL 侧按日聚合：分日分店取最后一条快照（DISTINCT ON），再跨店求和成当日合计。
+    // 原实现拉 90 天全部快照行到内存分桶——行数随采集频次无上限增长；
+    // sum 忽略 null、全 null 得 null，与原 sumMetric 口径一致
+    db.execute<{
+      day: string
+      saleVolume: number | null
+      sevenDays: number | null
+      thirtyDays: number | null
+    }>(sql`
+      SELECT day::text AS day,
+             sum(sale_volume)::int AS "saleVolume",
+             sum(seven_days_sale_volume)::int AS "sevenDays",
+             sum(thirty_days_sale_volume)::int AS "thirtyDays"
+      FROM (
+        SELECT DISTINCT ON (day, store_id) day, store_id, captured_at,
+               sale_volume, seven_days_sale_volume, thirty_days_sale_volume
+        FROM (
+          SELECT (captured_at AT TIME ZONE ${tz})::date AS day, store_id, captured_at,
+                 sale_volume, seven_days_sale_volume, thirty_days_sale_volume
+          FROM ${temuMetricSnapshots}
+          WHERE store_id IN (${sql.join(storeIds.map((id) => sql`${id}::uuid`), sql`, `)})
+            AND source = 'dashboard-stats'
+            AND captured_at >= ${since.toISOString()}::timestamptz
+        ) s
+        ORDER BY day, store_id, captured_at DESC
+      ) d
+      GROUP BY day
+      ORDER BY day
+    `),
     db.select({ c: count() }).from(temuProducts).where(inArray(temuProducts.storeId, storeIds)),
     db
       .select()
@@ -197,36 +227,20 @@ export async function getTemuOverviewAction(storeId?: string): Promise<TemuOverv
       ),
   ])
 
-  // 每天每店取最后一条快照（升序遍历同键覆盖），再跨店累加成当日合计——
-  // 直接按天覆盖会把"当天最后采集的那家店"的值当成全企业数据（多店视图错单店值）
-  const lastOfDayStore = new Map<
-    string,
-    { saleVolume: number | null; sevenDays: number | null; thirtyDays: number | null }
-  >()
-  for (const r of trendRows) {
-    const d = new Date(r.capturedAt).toLocaleDateString("sv-SE") // YYYY-MM-DD（本地时区）
-    lastOfDayStore.set(`${d}|${r.storeId}`, {
-      saleVolume: r.saleVolume,
-      sevenDays: r.sevenDaysSaleVolume,
-      thirtyDays: r.thirtyDaysSaleVolume,
-    })
-  }
   const byDay = new Map<
     string,
     { saleVolume: number | null; sevenDays: number | null; thirtyDays: number | null }
   >()
-  for (const [key, v] of lastOfDayStore) {
-    const d = key.slice(0, key.indexOf("|"))
-    const cur = byDay.get(d)
-    byDay.set(d, {
-      saleVolume: sumMetric(cur?.saleVolume, v.saleVolume),
-      sevenDays: sumMetric(cur?.sevenDays, v.sevenDays),
-      thirtyDays: sumMetric(cur?.thirtyDays, v.thirtyDays),
+  for (const r of trendAgg) {
+    byDay.set(r.day, {
+      saleVolume: r.saleVolume,
+      sevenDays: r.sevenDays,
+      thirtyDays: r.thirtyDays,
     })
   }
 
-  const todayStr = new Date().toLocaleDateString("sv-SE")
-  const yesterdayStr = new Date(Date.now() - 86400 * 1000).toLocaleDateString("sv-SE")
+  const todayStr = temuDayStr()
+  const yesterdayStr = temuYesterdayStr()
   const todaySnap = byDay.get(todayStr)
   const yesterdaySnap = byDay.get(yesterdayStr)
   const adToday = adsRows.filter((r) => String(r.date) === todayStr).reduce((s, r) => s + (r.adSpend ?? 0), 0)
@@ -266,7 +280,7 @@ export async function getTemuOverviewAction(storeId?: string): Promise<TemuOverv
           increaseSellOutNum: soldout.increaseSellOutNum,
         }
       : {},
-    stores: await getTemuStoresAction(),
+    stores,
     cards: {
       // 日期严格隔离：四卡只认今日快照，今日未采集一律归 0，不回落到旧数据
       todaySales: {
@@ -325,6 +339,19 @@ export async function getTemuProductsAction(
 ): Promise<{ rows: TemuProductRow[]; total: number }> {
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  return temuCached(
+    `${enterpriseId}:products:${storeId ?? "all"}:${q ?? ""}:${sale ?? ""}:${page}`,
+    () => loadTemuProducts(enterpriseId, storeId, q, page, sale),
+  )
+}
+
+async function loadTemuProducts(
+  enterpriseId: string,
+  storeId: string | undefined,
+  q: string | undefined,
+  page: number,
+  sale?: "on" | "off",
+): Promise<{ rows: TemuProductRow[]; total: number }> {
   const storeIds = await resolveStoreIds(enterpriseId, storeId)
   if (storeIds.length === 0) return { rows: [], total: 0 }
 
@@ -452,11 +479,22 @@ export interface TemuFlowCards {
 export async function getTemuFlowAction(
   storeId?: string,
 ): Promise<{ rows: TemuFlowRow[]; cards: TemuFlowCards }> {
-  const emptyCards: TemuFlowCards = { todayVisitors: null, todayBuyers: null, todayConversionRate: null }
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  return temuCached(`${enterpriseId}:${storeId ?? "all"}:flow`, () =>
+    loadTemuFlow(enterpriseId, storeId),
+  )
+}
+
+async function loadTemuFlow(
+  enterpriseId: string,
+  storeId?: string,
+): Promise<{ rows: TemuFlowRow[]; cards: TemuFlowCards }> {
+  const emptyCards: TemuFlowCards = { todayVisitors: null, todayBuyers: null, todayConversionRate: null }
   const storeIds = await resolveStoreIds(enterpriseId, storeId)
   if (storeIds.length === 0) return { rows: [], cards: emptyCards }
+
+  const tagCond = await fluxTodayTagCond(storeIds)
 
   // 流量分析为"今日"口径：每商品各店取最新一行（当日捕获），避免按页上报时
   // 只剩最后一页、以及旧行"当时的今日值"混入
@@ -491,6 +529,7 @@ export async function getTemuFlowAction(
         inArray(temuProductFlows.storeId, storeIds),
         eq(temuProductFlows.source, "flux-analysis-goods"),
         gte(temuProductFlows.capturedAt, startOfToday()),
+        tagCond,
       ),
     )
     .orderBy(
@@ -635,11 +674,10 @@ export async function getTemuFlowAction(
 
 // ---------- 销售概览统计（类目占比 / TOP 榜 / 广告效果 / 转化漏斗） ----------
 
-/** 当日零点（服务器本地时区）：日口径指标只认当日捕获的行 */
+/** 当日零点（北京时间）：日口径指标只认当日捕获的行——Temu 日界是 CST，
+ *  服务器容器多为 UTC，用本地零点会把 CST 00-08 点的采集排除在"今日"外 */
 function startOfToday(): Date {
-  const d = new Date()
-  d.setHours(0, 0, 0, 0)
-  return d
+  return temuStartOfToday()
 }
 
 // 插件按"页"上报销售总览（每页一个 capturedAt），且插件与库侧对未变化的页做
@@ -658,6 +696,12 @@ export interface TemuCategoryShare {
 export async function getTemuCategoryShareAction(storeId?: string): Promise<TemuCategoryShare[]> {
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  return temuCached(`${enterpriseId}:${storeId ?? "all"}:cat-share`, () =>
+    loadTemuCategoryShare(enterpriseId, storeId),
+  )
+}
+
+async function loadTemuCategoryShare(enterpriseId: string, storeId?: string): Promise<TemuCategoryShare[]> {
   const storeIds = await resolveStoreIds(enterpriseId, storeId)
   if (storeIds.length === 0) return []
   const latestSq = db
@@ -716,6 +760,12 @@ export interface TemuSalesTopRow {
 export async function getTemuSalesTopAction(storeId?: string): Promise<TemuSalesTopRow[]> {
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  return temuCached(`${enterpriseId}:${storeId ?? "all"}:sales-top`, () =>
+    loadTemuSalesTop(enterpriseId, storeId),
+  )
+}
+
+async function loadTemuSalesTop(enterpriseId: string, storeId?: string): Promise<TemuSalesTopRow[]> {
   const storeIds = await resolveStoreIds(enterpriseId, storeId)
   if (storeIds.length === 0) return []
   const latestSq = db
@@ -796,8 +846,19 @@ export async function getTemuProductSalesInfoAction(
 ): Promise<TemuProductSalesInfo> {
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  // 键含 SKC 清单（排序后拼接）：同页刷新命中，翻页换清单不串
+  const ids = (skcIds || []).map(String).filter(Boolean).slice(0, 50).sort()
+  return temuCached(`${enterpriseId}:sales-info:${storeId ?? "all"}:${ids.join(",")}`, () =>
+    loadTemuProductSalesInfo(enterpriseId, storeId, ids),
+  )
+}
+
+async function loadTemuProductSalesInfo(
+  enterpriseId: string,
+  storeId: string | undefined,
+  ids: string[],
+): Promise<TemuProductSalesInfo> {
   const storeIds = await resolveStoreIds(enterpriseId, storeId)
-  const ids = (skcIds || []).map(String).filter(Boolean).slice(0, 50)
   if (storeIds.length === 0 || ids.length === 0) return { latest: {}, series: {} }
 
   const since = new Date(Date.now() - 31 * 86400 * 1000)
@@ -896,7 +957,7 @@ export async function getTemuProductSalesInfoAction(
   // 无直采数据 SKC 的回落
   const dayStoreLatest = new Map<string, { ts: number; vol: number }>()
   for (const r of historyRows) {
-    const day = new Date(r.capturedAt).toLocaleDateString("sv-SE")
+    const day = new Date(r.capturedAt).toLocaleDateString("sv-SE", { timeZone: TEMU_TZ })
     const key = `${r.skcId}|${day}|${r.storeId}`
     const prev = dayStoreLatest.get(key)
     const ts = r.capturedAt.getTime()
@@ -937,9 +998,15 @@ export interface TemuAdsEffect {
 export async function getTemuAdsEffectAction(storeId?: string): Promise<TemuAdsEffect> {
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  return temuCached(`${enterpriseId}:${storeId ?? "all"}:ads-effect`, () =>
+    loadTemuAdsEffect(enterpriseId, storeId),
+  )
+}
+
+async function loadTemuAdsEffect(enterpriseId: string, storeId?: string): Promise<TemuAdsEffect> {
   const storeIds = await resolveStoreIds(enterpriseId, storeId)
   if (storeIds.length === 0) return { days: [], last7: { adSpend: 0, gmv: 0, orders: 0, roi: null } }
-  const dayStr = (d: Date) => d.toLocaleDateString("sv-SE")
+  const dayStr = (d: Date) => d.toLocaleDateString("sv-SE", { timeZone: TEMU_TZ })
   const window = Array.from({ length: 7 }, (_, i) => {
     const d = new Date()
     d.setDate(d.getDate() - (6 - i))
@@ -979,14 +1046,44 @@ export interface TemuFlowFunnel {
   payGoodsNum: number
 }
 
+/**
+ * flux 批次口径过滤（规则 v13+）：流量分析页加载即发默认"昨日"查询（请求体
+ * timeDimension=1），sweeper preClick 切"今日"后再发今日查询（=2），两批都命中
+ * flux-analysis-goods 规则入库。今日行带有标签时只认 2——否则"今天没流量"的
+ * 商品会拿昨日数值冒充今日展示、漏斗求和虚高；旧版插件上报的行无标签，保持
+ * 原行为（全部参与）。
+ */
+async function fluxTodayTagCond(storeIds: string[]) {
+  const [tagged] = await db
+    .select({ n: count() })
+    .from(temuProductFlows)
+    .where(
+      and(
+        inArray(temuProductFlows.storeId, storeIds),
+        eq(temuProductFlows.source, "flux-analysis-goods"),
+        gte(temuProductFlows.capturedAt, startOfToday()),
+        sql`(${temuProductFlows.metrics}->>'timeDimension') is not null`,
+      ),
+    )
+  if (!tagged || tagged.n === 0) return undefined
+  return sql`(${temuProductFlows.metrics}->>'timeDimension') = '2'`
+}
+
 /** 转化漏斗：当日流量批次（flux-analysis-goods）每商品最新行全量求和 曝光→点击→商详→加购→支付 */
 export async function getTemuFlowFunnelAction(storeId?: string): Promise<TemuFlowFunnel | null> {
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  return temuCached(`${enterpriseId}:${storeId ?? "all"}:flow-funnel`, () =>
+    loadTemuFlowFunnel(enterpriseId, storeId),
+  )
+}
+
+async function loadTemuFlowFunnel(enterpriseId: string, storeId?: string): Promise<TemuFlowFunnel | null> {
   const storeIds = await resolveStoreIds(enterpriseId, storeId)
   if (storeIds.length === 0) return null
   // 流量分析为"今日"口径：只认当日捕获的行（旧行是当时的"今日"数值，混入会
-  // 重复计算），每商品各店取最新一行再全量求和
+  // 重复计算），每商品各店取最新一行再全量求和；有批次标签时只认今日批次（同上）
+  const tagCond = await fluxTodayTagCond(storeIds)
   const latestSq = db
     .selectDistinctOn([temuProductFlows.storeId, temuProductFlows.goodsId], {
       exposeNum: temuProductFlows.exposeNum,
@@ -1001,6 +1098,7 @@ export async function getTemuFlowFunnelAction(storeId?: string): Promise<TemuFlo
         inArray(temuProductFlows.storeId, storeIds),
         eq(temuProductFlows.source, "flux-analysis-goods"),
         gte(temuProductFlows.capturedAt, startOfToday()),
+        tagCond,
       ),
     )
     .orderBy(
@@ -1073,9 +1171,18 @@ export interface TemuAdsCards {
 export async function getTemuAdsAction(
   storeId?: string,
 ): Promise<{ rows: TemuAdsRow[]; cards: TemuAdsCards }> {
-  const emptyCards: TemuAdsCards = { totalSpend: null, salesAmount: null, roas: null, costPerOrder: null }
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  return temuCached(`${enterpriseId}:${storeId ?? "all"}:ads`, () =>
+    loadTemuAds(enterpriseId, storeId),
+  )
+}
+
+async function loadTemuAds(
+  enterpriseId: string,
+  storeId?: string,
+): Promise<{ rows: TemuAdsRow[]; cards: TemuAdsCards }> {
+  const emptyCards: TemuAdsCards = { totalSpend: null, salesAmount: null, roas: null, costPerOrder: null }
   const storeIds = await resolveStoreIds(enterpriseId, storeId)
   if (storeIds.length === 0) return { rows: [], cards: emptyCards }
   // 日期严格隔离：本轮批次 = 当日捕获的行（今日未采集 → 空表），
@@ -1239,6 +1346,7 @@ export async function createTemuStoreAction(input: {
       mallName: data.mallName || null,
     })
     .returning({ id: temuStores.id, name: temuStores.name })
+  invalidateTemuCache(enterpriseId)
   revalidatePath("/temu")
   return { ok: true, store: row, deviceToken }
 }
@@ -1278,6 +1386,7 @@ export async function confirmDiscoveredStoreAction(input: { mallId: string }) {
       mallName,
     })
     .returning({ id: temuStores.id, name: temuStores.name })
+  invalidateTemuCache(enterpriseId)
   revalidatePath("/temu")
   return { ok: true, store: row, deviceToken }
 }
@@ -1293,6 +1402,7 @@ export async function resetTemuStoreTokenAction(input: { id: string }): Promise<
     .where(and(eq(temuStores.id, id), eq(temuStores.enterpriseId, enterpriseId)))
     .returning({ id: temuStores.id })
   if (rows.length === 0) throw new Error("店铺不存在")
+  invalidateTemuCache(enterpriseId)
   revalidatePath("/temu")
   return { ok: true, deviceToken }
 }
@@ -1318,6 +1428,7 @@ export async function updateTemuStoreAction(input: {
     .where(and(eq(temuStores.id, id), eq(temuStores.enterpriseId, enterpriseId)))
     .returning({ id: temuStores.id })
   if (rows.length === 0) throw new Error("店铺不存在")
+  invalidateTemuCache(enterpriseId)
   revalidatePath("/temu")
   return { ok: true }
 }
@@ -1332,6 +1443,7 @@ export async function toggleTemuStoreAction(input: { id: string; enabled: boolea
     .where(and(eq(temuStores.id, id), eq(temuStores.enterpriseId, enterpriseId)))
     .returning({ id: temuStores.id })
   if (rows.length === 0) throw new Error("店铺不存在")
+  invalidateTemuCache(enterpriseId)
   revalidatePath("/temu")
   return { ok: true }
 }
@@ -1345,6 +1457,7 @@ export async function deleteTemuStoreAction(input: { id: string }) {
     .where(and(eq(temuStores.id, id), eq(temuStores.enterpriseId, enterpriseId)))
     .returning({ id: temuStores.id })
   if (rows.length === 0) throw new Error("店铺不存在")
+  invalidateTemuCache(enterpriseId)
   revalidatePath("/temu")
   return { ok: true }
 }
@@ -1397,6 +1510,7 @@ export async function clearTemuStoreDataAction(input: { id: string }) {
       await tx.delete(temuIngestLogs).where(eq(temuIngestLogs.storeId, id)).returning({ id: temuIngestLogs.id })
     ).length
   })
+  invalidateTemuCache(enterpriseId)
   revalidatePath("/temu")
   return { ok: true, counts }
 }

@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server"
 import { auth } from "@/lib/auth/config"
 import { requireUserContext, getCurrentEnterpriseScope } from "@/lib/auth/session"
+import { apiError, withRouteHandler } from "@/lib/api/route-helpers"
 import { loadStorageConfig } from "@/lib/storage/config"
 import { createCosAdapter } from "@/lib/storage/cos"
 import { safeImageExt } from "@/lib/storage/ext"
-import { MAX_IMAGE_UPLOAD_BYTES, MAX_IMAGE_UPLOAD_MESSAGE } from "@/lib/upload/limits"
+import {
+  ALLOWED_IMAGE_TYPES,
+  MAX_IMAGE_UPLOAD_BYTES,
+  MAX_IMAGE_UPLOAD_MESSAGE,
+} from "@/lib/upload/limits"
 
 /**
  * 参考图上传预签名端点（客户端直传 COS，手册 §3）
@@ -15,22 +20,20 @@ import { MAX_IMAGE_UPLOAD_BYTES, MAX_IMAGE_UPLOAD_MESSAGE } from "@/lib/upload/l
  *
  * 鉴权 / 校验与 /api/upload 一致：仅登录用户、仅图片、单文件 ≤ 20MB。
  */
-const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"]
-
 interface PresignBody {
   filename?: string
   contentType?: string
   size?: number
 }
 
-export async function POST(request: Request) {
+export const POST = withRouteHandler(async (request: Request) => {
   const session = await auth()
   if (!session?.user?.id) {
-    return new NextResponse("unauthorized", { status: 401 })
+    return apiError("unauthorized", 401)
   }
   const ctx = await requireUserContext()
   if (!ctx.enterprise) {
-    return new NextResponse("no enterprise", { status: 403 })
+    return apiError("no enterprise", 403)
   }
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
 
@@ -38,14 +41,14 @@ export async function POST(request: Request) {
   const contentType = body.contentType ?? ""
   const size = Number(body.size ?? 0)
 
-  if (!ALLOWED_TYPES.includes(contentType)) {
-    return new NextResponse("only images allowed", { status: 415 })
+  if (!ALLOWED_IMAGE_TYPES.includes(contentType as (typeof ALLOWED_IMAGE_TYPES)[number])) {
+    return apiError("only images allowed", 415)
   }
   if (size <= 0) {
-    return new NextResponse("invalid size", { status: 400 })
+    return apiError("invalid size", 400)
   }
   if (size > MAX_IMAGE_UPLOAD_BYTES) {
-    return new NextResponse(MAX_IMAGE_UPLOAD_MESSAGE, { status: 413 })
+    return apiError(MAX_IMAGE_UPLOAD_MESSAGE, 413)
   }
 
   const ext = safeImageExt(body.filename)
@@ -80,4 +83,4 @@ export async function POST(request: Request) {
 
   // provider=local 或 COS 未配齐 → 前端走 POST /api/upload
   return NextResponse.json({ mode: "local" as const })
-}
+})
