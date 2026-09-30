@@ -48,6 +48,7 @@ const MODULE_LABELS: Record<ModuleName, string> = {
   weartry: "穿戴图片",
   mockup: "样机渲染",
   temu: "Temu 数据",
+  agent: "AI Agent",
   settings: "设置",
 }
 

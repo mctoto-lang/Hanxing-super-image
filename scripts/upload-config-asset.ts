@@ -27,9 +27,13 @@ void (async () => {
     process.exit(1)
   }
 
-  const ext = filePath.split(".").pop()?.toLowerCase() ?? ""
-  if (!["png", "jpg", "jpeg", "webp", "gif"].includes(ext)) {
-    console.error(`不支持的扩展名: .${ext}（仅 png/jpg/jpeg/webp/gif）`)
+  // 扩展名经白名单映射重建（值只可能是白名单字面量之一，CLI 参数无法
+  // 携带任意字符进入下游的落盘文件名）
+  const EXT_ALLOWLIST = { png: "png", jpg: "jpg", jpeg: "jpeg", webp: "webp", gif: "gif" } as const
+  const rawExt = filePath.split(".").pop()?.toLowerCase() ?? ""
+  const ext = EXT_ALLOWLIST[rawExt as keyof typeof EXT_ALLOWLIST]
+  if (!ext) {
+    console.error(`不支持的扩展名: .${rawExt}（仅 png/jpg/jpeg/webp/gif）`)
     process.exit(1)
   }
 

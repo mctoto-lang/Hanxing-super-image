@@ -25,6 +25,7 @@ const MODULE_NAV: Record<ModuleName, { title: string; url: string; icon: string 
   weartry: { title: "穿戴图片", url: "/weartry", icon: "shirt" },
   mockup: { title: "样机渲染", url: "/mockup", icon: "mockup" },
   temu: { title: "Temu 数据", url: "/temu", icon: "temu" },
+  agent: { title: "AI Agent", url: "/agent", icon: "bot" },
   settings: { title: "个人设置", url: "/settings", icon: "settings" },
 }
 
@@ -65,6 +66,7 @@ const PLATFORM_NAV: { title: string; url: string }[] = [
   { title: "平台用户", url: "/platform/users" },
   { title: "预置模型", url: "/platform/models" },
   { title: "对话模型", url: "/platform/chat-models" },
+  { title: "Agent 工坊配置", url: "/platform/agent-config" },
   { title: "商品图片配置", url: "/platform/product-config" },
   { title: "穿戴图片管理", url: "/platform/weartry-config" },
   { title: "样机提示词", url: "/platform/mockup-config" },
@@ -92,6 +94,15 @@ export function buildNavMain(ctx: UserContext): NavItem[] {
       title: MODULE_NAV.chat.title,
       url: MODULE_NAV.chat.url,
       icon: MODULE_NAV.chat.icon,
+    })
+  }
+
+  // AI Agent：独立顶级导航项（工作流画布，多智能体协作）
+  if (accessible.has("agent")) {
+    groups.push({
+      title: MODULE_NAV.agent.title,
+      url: MODULE_NAV.agent.url,
+      icon: MODULE_NAV.agent.icon,
     })
   }
 

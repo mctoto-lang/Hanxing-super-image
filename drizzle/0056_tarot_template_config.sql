@@ -1,0 +1,1 @@
+ALTER TABLE "agent_direction_config" ADD COLUMN "template_config" jsonb;

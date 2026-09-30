@@ -4,7 +4,8 @@
  * The readable runtime and geometry live in grok-ball.js. Importing this file
  * loads that same runtime, then exposes its public contract to TypeScript.
  *
- * Vendored unchanged from https://github.com/tycoding/grok-ball (MIT).
+ * Vendored from https://github.com/tycoding/grok-ball (MIT);
+ * 本地扩展：SHAPES 追加 square（圆角方形）身形，其余原样。
  * 模块顶层会读取 window.GrokBall，只能在客户端（useEffect 内动态 import）使用。
  */
 import './grok-ball.js';
@@ -18,7 +19,7 @@ export type BuiltInEmotionId =
 
 export type EmotionId = BuiltInEmotionId | (string & {});
 export type EmotionGroupKey = 'life' | 'emotion' | 'agent' | 'custom';
-export type BodyShape = 'blob' | 'wedge' | 'gem';
+export type BodyShape = 'blob' | 'wedge' | 'gem' | 'square';
 
 export interface EmotionGroup {
   key: EmotionGroupKey;

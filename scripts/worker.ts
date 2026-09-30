@@ -35,6 +35,7 @@ void (async () => {
   // 动态 import：确保上面 loadEnvFile 在 env.ts 校验之前完成
   const { processQueueContinuous } = await import("@/lib/queue/processor")
   const { processChatQueueOnce } = await import("@/lib/queue/chat-processor")
+  const { processAgentQueueOnce } = await import("@/lib/queue/agent-processor")
   const { syncMockupJobs } = await import("@/server/services/mockup-service")
   const { sampleAllServices } = await import("@/server/services/status-service")
 
@@ -133,6 +134,7 @@ void (async () => {
   await Promise.all([
     processQueueContinuous({ isRunning: () => running }),
     runLoop("chat", processChatQueueOnce),
+    runLoop("agent", processAgentQueueOnce),
     runLoop("mockup", async () => {
       const r = await syncMockupJobs()
       return [{ processed: r.finalized, failed: 0 }]

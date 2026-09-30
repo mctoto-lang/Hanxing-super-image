@@ -13,10 +13,19 @@ import {
  * - 掩码保留旧值 / 全新密钥 / local 切换回退语义不变。
  */
 
+// 测试专用占位值（不是任何真实环境的凭据，本套测试从不发起 COS 请求）
+const FIXTURE_LEGACY_ID = "tenant-old"
+const FIXTURE_LEGACY_SECRET = "old-token-value"
+const FIXTURE_NEW_ID = "tenant-new"
+const FIXTURE_NEW_SECRET = "new-token"
+/** 历史粘贴脏值形态：首尾换行/制表符包裹的占位密钥（trim 语义测试用） */
+const FIXTURE_NEW_SECRET_UNTRIMMED = "\n" + FIXTURE_NEW_SECRET + "\t"
+const FIXTURE_PAIRED_SECRET = "brand-new-token"
+
 const current: StorageConfig = {
   provider: "cos",
-  cosSecretId: "AKIDold",
-  cosSecretKey: "old-secret-key",
+  cosSecretId: FIXTURE_LEGACY_ID,
+  cosSecretKey: FIXTURE_LEGACY_SECRET,
   cosRegion: "ap-guangzhou",
   cosBucket: "old-1250000000",
   cosBaseUrl: "",
@@ -33,8 +42,8 @@ describe("normalizeStorageSubmission 字段规范化", () => {
     const r = normalizeStorageSubmission(
       {
         ...current,
-        cosSecretId: "  AKIDnew  ",
-        cosSecretKey: "\nnew-key\t",
+        cosSecretId: `  ${FIXTURE_NEW_ID}  `,
+        cosSecretKey: FIXTURE_NEW_SECRET_UNTRIMMED,
         cosRegion: " ap-shanghai ",
         cosBucket: " hanxing-1250000000 ",
         cosBaseUrl: " https://img.example.com ",
@@ -45,13 +54,13 @@ describe("normalizeStorageSubmission 字段规范化", () => {
     expect(r).toMatchObject({
       ok: true,
       value: {
-        cosSecretId: "AKIDnew",
+        cosSecretId: FIXTURE_NEW_ID,
         cosRegion: "ap-shanghai",
         cosBucket: "hanxing-1250000000",
         cosBaseUrl: "https://img.example.com",
         refPrefix: "ref/",
       },
-      effectiveSecretKey: "new-key",
+      effectiveSecretKey: FIXTURE_NEW_SECRET,
     })
   })
 
@@ -96,7 +105,7 @@ describe("normalizeStorageSubmission 密钥对成对更换拦截", () => {
     const r = normalizeStorageSubmission(
       {
         ...current,
-        cosSecretId: "AKIDnew",
+        cosSecretId: FIXTURE_NEW_ID,
         cosSecretKey: maskStorageSecret(current.cosSecretKey),
       },
       current,
@@ -111,35 +120,35 @@ describe("normalizeStorageSubmission 密钥对成对更换拦截", () => {
     const r = normalizeStorageSubmission(
       {
         ...current,
-        cosSecretId: "AKIDold", // 与 current 一致
+        cosSecretId: FIXTURE_LEGACY_ID, // 与 current 一致
         cosSecretKey: maskStorageSecret(current.cosSecretKey),
       },
       current,
     )
-    expect(r).toMatchObject({ ok: true, effectiveSecretKey: "old-secret-key" })
+    expect(r).toMatchObject({ ok: true, effectiveSecretKey: FIXTURE_LEGACY_SECRET })
 
     // 历史落库的 SecretId 带尾随空白，提交 trim 后值相同 → 同样视为未变更
     const r2 = normalizeStorageSubmission(
       {
         ...current,
-        cosSecretId: "AKIDold",
+        cosSecretId: FIXTURE_LEGACY_ID,
         cosSecretKey: maskStorageSecret(current.cosSecretKey),
       },
-      { ...current, cosSecretId: "AKIDold " },
+      { ...current, cosSecretId: `${FIXTURE_LEGACY_ID} ` },
     )
-    expect(r2).toMatchObject({ ok: true, effectiveSecretKey: "old-secret-key" })
+    expect(r2).toMatchObject({ ok: true, effectiveSecretKey: FIXTURE_LEGACY_SECRET })
   })
 
   it("SecretId 与 SecretKey 成对更换 → 放行", () => {
     const r = normalizeStorageSubmission(
       {
         ...current,
-        cosSecretId: "AKIDnew",
-        cosSecretKey: "brand-new-key",
+        cosSecretId: FIXTURE_NEW_ID,
+        cosSecretKey: FIXTURE_PAIRED_SECRET,
       },
       current,
     )
-    expect(r).toMatchObject({ ok: true, effectiveSecretKey: "brand-new-key" })
+    expect(r).toMatchObject({ ok: true, effectiveSecretKey: FIXTURE_PAIRED_SECRET })
   })
 
   it("provider=local 时密钥字段与 COS 无关，不拦截", () => {
@@ -147,7 +156,7 @@ describe("normalizeStorageSubmission 密钥对成对更换拦截", () => {
       {
         ...current,
         provider: "local",
-        cosSecretId: "AKIDchanged",
+        cosSecretId: "tenant-changed" /* 占位 */,
         cosSecretKey: maskStorageSecret(current.cosSecretKey),
       },
       current,

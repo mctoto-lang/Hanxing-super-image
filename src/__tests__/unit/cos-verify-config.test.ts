@@ -18,9 +18,13 @@ vi.mock("cos-nodejs-sdk-v5", () => ({
   }),
 }))
 
+// 测试专用占位值（不是任何真实环境的凭据；COS SDK 已 mock，测试零网络请求）
+const FIXTURE_COS_ID = "tenant-test"
+const FIXTURE_COS_SECRET = "test-token"
+
 const input = {
-  cosSecretId: "AKIDtest",
-  cosSecretKey: "test-key",
+  cosSecretId: FIXTURE_COS_ID,
+  cosSecretKey: FIXTURE_COS_SECRET,
   cosRegion: "ap-guangzhou",
   cosBucket: "hanxing-test-1250000000",
 }

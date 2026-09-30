@@ -194,6 +194,10 @@ export async function saveFromUrl(
  */
 export function getLocalPath(relUrl: string): string | null {
   const rel = relUrl.replace(/^.*\/uploads\//, "")
+  // 显式拒绝越界段（..、绝对路径、反斜杠）；下方 resolve+困根校验兜底
+  if (rel.split(/[\\/]/).includes("..") || rel.includes("\\") || path.isAbsolute(rel)) {
+    return null
+  }
   const abs = path.resolve(UPLOAD_ROOT, rel)
   if (abs !== UPLOAD_ROOT && !abs.startsWith(UPLOAD_ROOT + path.sep)) {
     return null

@@ -52,3 +52,6 @@ next-env.d.ts
 # 本地数据
 *.sqlite
 *.db
+
+# mimosa 本地扫描产物（会话状态/报告，含本机路径，绝不入库）
+.mimosa/

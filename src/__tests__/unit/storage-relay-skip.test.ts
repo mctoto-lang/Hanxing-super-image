@@ -17,10 +17,14 @@ vi.mock("@/lib/env", () => ({
   env: { NEXT_PUBLIC_APP_URL: "https://app.example.com" },
 }))
 
+// 测试专用占位值（不是任何真实环境的凭据；本套测试从不发起 COS 请求）
+const FIXTURE_COS_ID = "dummy-id"
+const FIXTURE_COS_SECRET = "dummy-token"
+
 const cfg = {
   provider: "cos",
-  cosSecretId: "dummy-id",
-  cosSecretKey: "dummy-key",
+  cosSecretId: FIXTURE_COS_ID,
+  cosSecretKey: FIXTURE_COS_SECRET,
   cosRegion: "ap-guangzhou",
   cosBucket: "hanxing-test",
   cosBaseUrl: "",

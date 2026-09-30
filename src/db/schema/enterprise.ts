@@ -36,7 +36,7 @@ export const enterprises = pgTable("enterprise", {
   creditsBalance: integer("credits_balance").default(0).notNull(),
   enabledModules: jsonb("enabled_modules")
     .$type<ModuleName[]>()
-    .default(["create", "chat", "assets", "mockup", "settings"])
+    .default(["create", "chat", "assets", "mockup", "agent", "settings"])
     .notNull(),
   /** 生图企业级并发上限（Redis 槽位跨副本强制，图片级计数；≤0 = 不限） */
   maxConcurrent: integer("max_concurrent").default(5).notNull(),

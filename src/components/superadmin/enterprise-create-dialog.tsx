@@ -22,11 +22,14 @@ import { createEnterpriseAction } from "@/server/actions/platform"
 
 const MODULE_OPTIONS = [
   { value: "create", label: "创作" },
+  { value: "chat", label: "AI 对话" },
   { value: "assets", label: "资产管理" },
   { value: "workspace", label: "批量生图" },
   { value: "product", label: "商品图片" },
+  { value: "weartry", label: "穿戴图片" },
   { value: "mockup", label: "样机渲染" },
   { value: "temu", label: "Temu 数据" },
+  { value: "agent", label: "AI Agent" },
 ] as const
 
 export function EnterpriseCreateDialog() {

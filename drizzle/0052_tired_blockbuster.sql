@@ -1,0 +1,1 @@
+ALTER TABLE "agent_run" ADD COLUMN "unbilled_centicredits" integer DEFAULT 0 NOT NULL;

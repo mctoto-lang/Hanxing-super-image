@@ -351,6 +351,69 @@
       "when": 1789631252286,
       "tag": "0049_add_temu_metric_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1790308041508,
+      "tag": "0050_faulty_wallop",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1790308351499,
+      "tag": "0051_lowly_dagger",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1790308434195,
+      "tag": "0052_tired_blockbuster",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1790314388091,
+      "tag": "0053_agent_workshop",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1790576307928,
+      "tag": "0054_agent_template_stages",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1790580944856,
+      "tag": "0055_agent_template_pending_action",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1790584186377,
+      "tag": "0056_tarot_template_config",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1790687398526,
+      "tag": "0057_purge_classic_runs",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1790753462031,
+      "tag": "0058_silky_roland_deschain",
+      "breakpoints": true
     }
   ]
 }

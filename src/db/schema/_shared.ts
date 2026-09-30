@@ -16,6 +16,7 @@ export const MODULE_NAMES = [
   "weartry", // 穿戴图片（服装组图/模特穿戴/AI万戴/AI换色）
   "mockup", // 样机渲染
   "temu", // Temu 卖家数据面板（插件采集上报）
+  "agent", // AI Agent 工作流画布（多智能体协作生图流水线）
   "settings", // 用户个人设置（默认开通）
 ] as const
 export type ModuleName = (typeof MODULE_NAMES)[number]

@@ -72,7 +72,7 @@ void (async () => {
       .values({
         name: "默认企业",
         slug: "default",
-        enabledModules: ["create", "assets", "mockup", "settings"],
+        enabledModules: ["create", "assets", "mockup", "agent", "settings"],
         creditsBalance: 1000, // 初始赠送 1000 积分，便于开发测试
         maxConcurrent: 5,
       })

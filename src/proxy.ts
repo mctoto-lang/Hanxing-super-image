@@ -74,7 +74,7 @@ export default auth(async (req) => {
   // 超管访问需要企业作用域的业务页时，重定向到 /platform
   // （超管无 enterpriseId，进入 /create 等页面会触发 getCurrentEnterpriseScope 抛错）
   if (isSuperAdmin) {
-    const enterpriseScopedPaths = ["/create", "/chat", "/assets", "/workspace", "/product", "/weartry", "/mockup"]
+    const enterpriseScopedPaths = ["/create", "/chat", "/assets", "/workspace", "/product", "/weartry", "/mockup", "/agent"]
     if (enterpriseScopedPaths.some((p) => pathname === p || pathname.startsWith(p + "/"))) {
       const url = req.nextUrl.clone()
       url.pathname = "/platform"

@@ -79,6 +79,16 @@ export async function GET(
 ): Promise<Response> {
   const { path: segments } = await ctx.params
 
+  // 入口即拒绝可疑段（防御纵深：getLocalPath 内部另有 resolve+困根校验，
+  // 这里在拼路径之前就把 ..、盘符、反斜杠等越界形态挡掉）
+  if (
+    segments.some(
+      (segment) => !segment || segment === "." || segment === ".." || segment.includes("\\") || segment.includes("/"),
+    )
+  ) {
+    return new Response("not found", { status: 404 })
+  }
+
   const filename = segments[segments.length - 1] ?? ""
   const ext = filename.includes(".")
     ? filename.split(".").pop()!.toLowerCase()

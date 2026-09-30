@@ -1,0 +1,167 @@
+/**
+ * 模板流程 LLM 输出的解析与校验（纯函数，零运行时依赖）。
+ *
+ * 从 template-steps 抽出：template-steps 依赖执行链（orchestrator →
+ * task-queue → redis），纯函数单测不需要也不应连上真实 Redis——
+ * 本模块保持零 db/redis import。
+ */
+import type { AgentClarifyQuestion, AgentTemplateDirection } from "@/lib/agent/graph"
+import { LlmValidationError } from "./llm-errors"
+
+/** 单条澄清消息最多追问数（澄清 system prompt 与解析共用同一上限） */
+export const MAX_CLARIFY_QUESTIONS = 3
+
+function asRecord(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+}
+
+// ═══════════════════════════ 澄清输出解析 ═══════════════════════════
+
+/** 澄清轮 LLM 输出（归一化后） */
+export interface ClarifyOutput {
+  analysis: string
+  filled: Record<string, string>
+  questions: AgentClarifyQuestion[]
+  ready: boolean
+}
+
+/**
+ * 归一化并校验澄清轮输出：questions 裁到最多 3 个；question 文本为空的条目、
+ * 非布尔的 ready 视为不合格（抛 LlmValidationError → callLlmJson 纠错重试）。
+ */
+export function parseClarifyOutput(raw: unknown): ClarifyOutput {
+  const obj = asRecord(raw)
+  if (!obj) throw new LlmValidationError("输出不是 JSON 对象")
+  const analysis = typeof obj.analysis === "string" ? obj.analysis.trim() : ""
+
+  const filled: Record<string, string> = {}
+  const rawFilled = asRecord(obj.filled)
+  if (rawFilled) {
+    for (const [key, value] of Object.entries(rawFilled)) {
+      if (typeof value === "string" && value.trim()) filled[key] = value.trim()
+    }
+  }
+
+  const rawQuestions = Array.isArray(obj.questions) ? obj.questions : []
+  const questions: AgentClarifyQuestion[] = []
+  const seenIds = new Set<string>()
+  for (const item of rawQuestions.slice(0, MAX_CLARIFY_QUESTIONS)) {
+    const q = asRecord(item)
+    const text = q && typeof q.question === "string" ? q.question.trim() : ""
+    if (!text) throw new LlmValidationError("questions 中存在缺少 question 文本的条目")
+    let id = q && typeof q.id === "string" && q.id.trim() ? q.id.trim() : `q-${questions.length + 1}`
+    while (seenIds.has(id)) id = `${id}-${questions.length + 1}`
+    seenIds.add(id)
+    const options = (q && Array.isArray(q.options) ? q.options : [])
+      .map((o) => (typeof o === "string" ? o.trim() : ""))
+      .filter(Boolean)
+      .slice(0, 4)
+    questions.push({ id, question: text, options })
+  }
+
+  if (typeof obj.ready !== "boolean") throw new LlmValidationError("ready 必须是布尔值")
+  return { analysis, filled, questions, ready: obj.ready }
+}
+
+// ═══════════════════════════ 方向输出校验 ═══════════════════════════
+
+/** 小阿卡纳四花色的兜底映射（LLM 缺项时按塔罗经典元素补全） */
+const SUIT_ELEMENT_DEFAULTS: { suit: string; mapping: string }[] = [
+  { suit: "权杖", mapping: "火 · 行动与创造的意象" },
+  { suit: "圣杯", mapping: "水 · 情感与关系的意象" },
+  { suit: "宝剑", mapping: "风 · 思维与冲突的意象" },
+  { suit: "星币", mapping: "土 · 物质与现实的意象" },
+]
+
+function slugifyDirectionId(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+}
+
+function normalizeSuitMapping(raw: unknown): { suit: string; mapping: string }[] {
+  const fromLlm = new Map<string, string>()
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      const entry = asRecord(item)
+      const suit = entry && typeof entry.suit === "string" ? entry.suit.trim() : ""
+      const mapping = entry && typeof entry.mapping === "string" ? entry.mapping.trim() : ""
+      if (suit) fromLlm.set(suit, mapping)
+    }
+  }
+  return SUIT_ELEMENT_DEFAULTS.map(({ suit, mapping }) => ({
+    suit,
+    mapping: fromLlm.get(suit) || mapping,
+  }))
+}
+
+function normalizeSampleCards(raw: unknown, directionName: string): { name: string; scene: string }[] {
+  if (!Array.isArray(raw)) {
+    throw new LlmValidationError(`方向「${directionName}」缺少示例牌 sampleCards`)
+  }
+  const cards = raw
+    .map((item) => {
+      const c = asRecord(item)
+      const name = c && typeof c.name === "string" ? c.name.trim() : ""
+      const scene = c && typeof c.scene === "string" ? c.scene.trim() : ""
+      return name ? { name, scene } : null
+    })
+    .filter((c): c is { name: string; scene: string } => c !== null)
+    .slice(0, 3)
+  if (cards.length === 0) {
+    throw new LlmValidationError(`方向「${directionName}」缺少有效的示例牌`)
+  }
+  return cards
+}
+
+/**
+ * 校验并归一化 gen_directions 输出：恰好 3 个方向、名称非空且互不重复、
+ * id 缺失时按名称/序号生成并保证唯一。不合格抛 LlmValidationError。
+ */
+export function validateDirections(raw: unknown): AgentTemplateDirection[] {
+  const obj = asRecord(raw)
+  const list = obj && Array.isArray(obj.directions) ? obj.directions : null
+  if (!list) throw new LlmValidationError("输出缺少 directions 数组")
+  if (list.length !== 3) {
+    throw new LlmValidationError(`directions 必须恰好 3 个方向，实际 ${list.length} 个`)
+  }
+  const seenIds = new Set<string>()
+  const seenNames = new Set<string>()
+  return list.map((item, index) => {
+    const d = asRecord(item)
+    if (!d) throw new LlmValidationError(`第 ${index + 1} 个方向不是对象`)
+    const name = typeof d.name === "string" ? d.name.trim() : ""
+    if (!name) throw new LlmValidationError(`第 ${index + 1} 个方向缺少名称`)
+    if (seenNames.has(name)) throw new LlmValidationError(`方向名重复：${name}`)
+    seenNames.add(name)
+
+    let id = slugifyDirectionId(typeof d.id === "string" ? d.id : "")
+    if (!id) id = slugifyDirectionId(name)
+    if (!id) id = `direction-${index + 1}`
+    while (seenIds.has(id)) id = `${id}-${index + 1}`
+    seenIds.add(id)
+
+    const concept = typeof d.concept === "string" ? d.concept.trim() : ""
+    const palette = typeof d.palette === "string" ? d.palette.trim() : ""
+    const description = (typeof d.description === "string" && d.description.trim()) || concept || name
+    const worldview = typeof d.worldview === "string" ? d.worldview.trim() : ""
+    const majorArcana = typeof d.majorArcana === "string" ? d.majorArcana.trim() : ""
+    const visualLanguage =
+      (typeof d.visualLanguage === "string" && d.visualLanguage.trim()) || palette || description
+
+    return {
+      id,
+      name,
+      description,
+      concept: concept || undefined,
+      worldview: worldview || undefined,
+      majorArcana: majorArcana || undefined,
+      suitMapping: normalizeSuitMapping(d.suitMapping),
+      palette: palette || undefined,
+      visualLanguage,
+      sampleCards: normalizeSampleCards(d.sampleCards, name),
+    }
+  })
+}
