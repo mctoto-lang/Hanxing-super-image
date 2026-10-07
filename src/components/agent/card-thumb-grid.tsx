@@ -13,6 +13,13 @@
 import { cn } from "@/lib/utils"
 import { ITEM_STATUS_META } from "./canvas-shared"
 
+/**
+ * 卡片正方形预览统一样式：hover 无浮动位移，仅边框 + 柔光发光
+ * （生图评审缩略、融合与交付成品卡/套件资产网格共用）。
+ */
+export const CARD_SQUARE_THUMB_CLASS =
+  "rounded-lg border bg-card p-1 text-left transition-[border-color,box-shadow] duration-200 hover:border-violet-500/60 hover:shadow-[0_0_0_1px_rgba(139,92,246,0.35),0_0_18px_-4px_rgba(139,92,246,0.5)]"
+
 export interface CardThumbItem {
   id: string
   index: number
@@ -35,7 +42,10 @@ function CardThumb({ item, onOpen }: { item: CardThumbItem; onOpen: (id: string)
       aria-label={`查看「${item.name ?? `第 ${item.index + 1} 张`}」生成轮次`}
       title={item.errorMessage ?? item.name ?? undefined}
       onClick={() => onOpen(item.id)}
-      className="group overflow-hidden rounded-lg border bg-card p-1 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-violet-500/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/60"
+      className={cn(
+        "group overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/60",
+        CARD_SQUARE_THUMB_CLASS,
+      )}
     >
       <div className="relative aspect-square w-full overflow-hidden rounded-md bg-muted">
         {item.imageUrl ? (

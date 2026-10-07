@@ -32,11 +32,13 @@ function modelConcurrentKey(modelId: string) {
 }
 
 /**
- * 原子获取一个图片槽位（企业 + 模型 + 权限组三条件，Lua 保证多 worker 安全）。
+ * 原子获取一个槽位（企业 + 模型 + 权限组三条件，Lua 保证多 worker 安全）。
  * 任一条件不满足则不动计数并返回 0；成功则各计数器 +1 并续期 TTL。
  * modelMax / groupMax ≤ 0 表示该维度不限（跳过检查与计数）。
+ * 键序约定：KEYS[1]=企业 KEYS[2]=模型 KEYS[3]=权限组；ARGV[1..3]=对应上限，ARGV[4]=TTL 秒。
+ * 供生图槽位与 Agent 对话槽位（llm-slots）共用。
  */
-const ACQUIRE_SLOT_LUA = `
+export const ACQUIRE_SLOT_LUA = `
 local function overLimit(i, maxArg)
   local max = tonumber(maxArg)
   if max == nil or max <= 0 then return false end
@@ -56,11 +58,20 @@ end
 return 1
 `
 
-/** 原子释放一个图片槽位（计数器减到 0 为止，防负数；key 已过期则跳过） */
-const RELEASE_SLOT_LUA = `
+/**
+ * 原子释放一个槽位（计数器减到 0 为止，防负数；key 已过期则跳过）。供生图/Agent 对话槽位共用。
+ * 重复键只减一次：llm-slots 无权限组用户以企业键占位第三键（max≤0 时 ACQUIRE 不计数，
+ * 但占位键与企业键相同），不去重会导致企业计数每次释放多扣一次、持续向下漂移。
+ */
+export const RELEASE_SLOT_LUA = `
+local seen = {}
 for i = 1, #KEYS do
-  local v = tonumber(redis.call('GET', KEYS[i]) or '0')
-  if v > 0 then redis.call('DECR', KEYS[i]) end
+  local k = KEYS[i]
+  if not seen[k] then
+    seen[k] = true
+    local v = tonumber(redis.call('GET', k) or '0')
+    if v > 0 then redis.call('DECR', k) end
+  end
 end
 return 1
 `

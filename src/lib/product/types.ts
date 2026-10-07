@@ -3,6 +3,7 @@
  */
 
 import type { ModelSizePreset } from "@/db/schema"
+import type { ImageApiFormat } from "@/lib/ai/image-model-config"
 
 /** 方向行（前端展示，含超管可配字段） */
 export interface ProductDirectionRow {
@@ -41,7 +42,7 @@ export interface ProductModelRow {
   supportsReferenceImage: boolean
   maxReferenceImages: number
   costPerImage: number
-  apiFormat: "openai" | "jimeng" | "gemini"
+  apiFormat: ImageApiFormat
 }
 
 /** 上架平台下拉项（DB 化配置） */

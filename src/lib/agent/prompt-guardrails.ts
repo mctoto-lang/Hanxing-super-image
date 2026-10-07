@@ -64,6 +64,24 @@ export function appendCardArtGuardrails(prompt: string): string {
   return `${trimmed}\n${CARD_ART_NEGATIVE_PROMPT}`
 }
 
+/**
+ * 融合生图专用负向约束：仅禁文字/水印/签名——融合的目标就是把卡面装进
+ * 参考图 1 的边框，卡面护栏的「不要出现任何边框」条款与该目标直接冲突，
+ * 不得复用（见 compose.buildAiFramePrompt）。
+ */
+export const FUSION_NEGATIVE_PROMPT =
+  `${CARD_ART_GUARDRAIL_MARKER}：不要新增任何文字、标题、牌名或字母（no text / no title / no letters）；` +
+  `不要出现水印或签名（no watermark / no signature）。`
+
+/** 追加融合专用负向约束（幂等 + 尺寸措辞清洗，与卡面护栏同款加工顺序） */
+export function applyFusionGuardrails(prompt: string): string {
+  const cleaned = sanitizeDimensionWording(prompt)
+  const trimmed = cleaned.trim()
+  if (!trimmed) return ""
+  if (hasCardArtGuardrails(trimmed)) return trimmed
+  return `${trimmed}\n${FUSION_NEGATIVE_PROMPT}`
+}
+
 /* ─── 尺寸/比例措辞清洗 ─────────────────────────────────────────────── */
 
 /** 尺寸/比例关键词（「尺寸」「比例」语义太泛，只删「关键词+参数值」组合与无歧义词） */

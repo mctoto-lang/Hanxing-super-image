@@ -1,32 +1,35 @@
 "use client"
 
 /**
- * 工作台 server actions 注入层。
+ * 工作台 server actions 汇聚层。
  *
- * 真实页面（/agent/run/[id]）不挂 Provider，直接落到 realWorkspaceActions，
- * 与此前各组件逐个 import server action 的行为完全一致；/agent/preview
- * 预览页挂 Provider 注入 mock 实现（写操作 no-op + toast、读操作喂 mock
- * 数据），让整套工作台 UI 可以脱离真实项目走查。
+ * 各组件统一经 useWorkspaceActions() 取 action，避免逐个 import
+ * server action；后续若需替换实现（测试桩等），只需调整这里的绑定。
  */
-import { createContext, useContext, type ReactNode } from "react"
 import {
   appendTemplateMessageAction,
   confirmAiFrameBatchAction,
   confirmSampleBatchAction,
-  getTarotDeckScoresAction,
   getTarotDeliverablesAction,
   getTemplateWorkspaceAction,
   regenerateDirectionsAction,
+  regenerateStyleSpecAction,
   requestAiFramePreviewAction,
   requestBriefAction,
   retryAiFrameItemAction,
   retryTemplateActionAction,
   saveTemplateBriefAction,
   selectTemplateDirectionAction,
+  switchTemplateStageAction,
 } from "@/server/actions/agent-template"
-import { confirmTarotCardPlanAction, updateTarotCardPlanItemAction } from "@/server/actions/agent-cards"
-import { confirmItemAction, getRunItemDetailAction, regenItemAction } from "@/server/actions/agent"
-import { confirmTarotAssetAction, getTarotAssetPromptsAction, saveTarotAssetAction } from "@/server/actions/agent-assets"
+import {
+  confirmTarotCardDraftsAction,
+  confirmTarotCardFinalsAction,
+  regenerateCardPromptsAction,
+  updateTarotCardPlanItemAction,
+} from "@/server/actions/agent-cards"
+import { confirmItemAction, getRunItemDetailAction, regenFailedItemsAction, regenItemAction, updateItemPromptAction } from "@/server/actions/agent"
+import { confirmTarotAssetAction, getTarotAssetPromptsAction, requestTarotAssetGenerationAction, saveTarotAssetAction } from "@/server/actions/agent-assets"
 
 export interface AgentWorkspaceActions {
   getTemplateWorkspace: typeof getTemplateWorkspaceAction
@@ -35,21 +38,27 @@ export interface AgentWorkspaceActions {
   requestBrief: typeof requestBriefAction
   saveTemplateBrief: typeof saveTemplateBriefAction
   regenerateDirections: typeof regenerateDirectionsAction
+  regenerateStyleSpec: typeof regenerateStyleSpecAction
   selectTemplateDirection: typeof selectTemplateDirectionAction
   confirmSampleBatch: typeof confirmSampleBatchAction
-  getTarotDeckScores: typeof getTarotDeckScoresAction
   getTarotDeliverables: typeof getTarotDeliverablesAction
   requestAiFramePreview: typeof requestAiFramePreviewAction
   confirmAiFrameBatch: typeof confirmAiFrameBatchAction
   retryAiFrameItem: typeof retryAiFrameItemAction
+  switchTemplateStage: typeof switchTemplateStageAction
   updateTarotCardPlanItem: typeof updateTarotCardPlanItemAction
-  confirmTarotCardPlan: typeof confirmTarotCardPlanAction
+  confirmTarotCardDrafts: typeof confirmTarotCardDraftsAction
+  confirmTarotCardFinals: typeof confirmTarotCardFinalsAction
+  regenerateCardPrompts: typeof regenerateCardPromptsAction
   confirmItem: typeof confirmItemAction
   regenItem: typeof regenItemAction
+  regenFailedItems: typeof regenFailedItemsAction
+  updateItemPrompt: typeof updateItemPromptAction
   getRunItemDetail: typeof getRunItemDetailAction
   getTarotAssetPrompts: typeof getTarotAssetPromptsAction
   saveTarotAsset: typeof saveTarotAssetAction
   confirmTarotAsset: typeof confirmTarotAssetAction
+  requestTarotAssetGeneration: typeof requestTarotAssetGenerationAction
 }
 
 export const realWorkspaceActions: AgentWorkspaceActions = {
@@ -59,35 +68,29 @@ export const realWorkspaceActions: AgentWorkspaceActions = {
   requestBrief: requestBriefAction,
   saveTemplateBrief: saveTemplateBriefAction,
   regenerateDirections: regenerateDirectionsAction,
+  regenerateStyleSpec: regenerateStyleSpecAction,
   selectTemplateDirection: selectTemplateDirectionAction,
   confirmSampleBatch: confirmSampleBatchAction,
-  getTarotDeckScores: getTarotDeckScoresAction,
   getTarotDeliverables: getTarotDeliverablesAction,
   requestAiFramePreview: requestAiFramePreviewAction,
   confirmAiFrameBatch: confirmAiFrameBatchAction,
   retryAiFrameItem: retryAiFrameItemAction,
+  switchTemplateStage: switchTemplateStageAction,
   updateTarotCardPlanItem: updateTarotCardPlanItemAction,
-  confirmTarotCardPlan: confirmTarotCardPlanAction,
+  confirmTarotCardDrafts: confirmTarotCardDraftsAction,
+  confirmTarotCardFinals: confirmTarotCardFinalsAction,
+  regenerateCardPrompts: regenerateCardPromptsAction,
   confirmItem: confirmItemAction,
   regenItem: regenItemAction,
+  regenFailedItems: regenFailedItemsAction,
+  updateItemPrompt: updateItemPromptAction,
   getRunItemDetail: getRunItemDetailAction,
   getTarotAssetPrompts: getTarotAssetPromptsAction,
   saveTarotAsset: saveTarotAssetAction,
   confirmTarotAsset: confirmTarotAssetAction,
-}
-
-const AgentWorkspaceActionsContext = createContext<AgentWorkspaceActions>(realWorkspaceActions)
-
-export function AgentWorkspaceActionsProvider({
-  actions,
-  children,
-}: {
-  actions: AgentWorkspaceActions
-  children: ReactNode
-}) {
-  return <AgentWorkspaceActionsContext.Provider value={actions}>{children}</AgentWorkspaceActionsContext.Provider>
+  requestTarotAssetGeneration: requestTarotAssetGenerationAction,
 }
 
 export function useWorkspaceActions(): AgentWorkspaceActions {
-  return useContext(AgentWorkspaceActionsContext)
+  return realWorkspaceActions
 }

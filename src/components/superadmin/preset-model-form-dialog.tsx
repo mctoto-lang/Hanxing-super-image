@@ -51,13 +51,15 @@ interface FormState {
   badgeColor: string
   apiEndpoint: string
   apiKey: string
-  apiFormat: "openai" | "jimeng" | "gemini"
+  apiFormat: "openai" | "jimeng" | "gemini" | "grsai"
   jimengResolution: "" | "1k" | "2k" | "4k"
   jimengN: number
   qualityEnabled: boolean
   quality: string
   useRatioParam: boolean
   ratioParamField: string
+  /** grsai 格式：清晰度档位手动覆盖（空 = 按预设尺寸自动推导） */
+  grsaiImageSize: "" | "1K" | "2K" | "4K"
   costPerImage: number
   sizePresets: ModelSizePreset[]
   supportsImageCount: boolean
@@ -67,6 +69,7 @@ interface FormState {
   visibleInProduct: boolean
   visibleInWeartry: boolean
   visibleInMockup: boolean
+  visibleInAgent: boolean
   supportsReferenceImage: boolean
   maxReferenceImages: number
   referenceImageField: string
@@ -93,6 +96,7 @@ function emptyState(): FormState {
     quality: "",
     useRatioParam: false,
     ratioParamField: "",
+    grsaiImageSize: "",
     costPerImage: 1,
     sizePresets: DEFAULT_SIZE_PRESETS.map((p) => ({ ...p })),
     supportsImageCount: false,
@@ -102,6 +106,7 @@ function emptyState(): FormState {
     visibleInProduct: false,
     visibleInWeartry: false,
     visibleInMockup: false,
+    visibleInAgent: false,
     supportsReferenceImage: false,
     maxReferenceImages: 0,
     referenceImageField: "",
@@ -131,6 +136,7 @@ function fromModel(m: PresetModelRow): FormState {
     quality: (ec.quality as string) ?? "",
     useRatioParam: m.useRatioParam,
     ratioParamField: m.ratioParamField ?? "",
+    grsaiImageSize: (ec.grsai_image_size as FormState["grsaiImageSize"]) ?? "",
     costPerImage: m.costPerImage,
     sizePresets: m.sizePresets
       ? m.sizePresets.map((p) => ({ ...p }))
@@ -142,6 +148,7 @@ function fromModel(m: PresetModelRow): FormState {
     visibleInProduct: m.visibleInProduct,
     visibleInWeartry: m.visibleInWeartry,
     visibleInMockup: m.visibleInMockup,
+    visibleInAgent: m.visibleInAgent,
     supportsReferenceImage: m.supportsReferenceImage,
     maxReferenceImages: m.maxReferenceImages,
     referenceImageField: m.referenceImageField ?? "",
@@ -196,6 +203,7 @@ export function PresetModelFormDialog({
       visibleInProduct: state.visibleInProduct,
       visibleInWeartry: state.visibleInWeartry,
       visibleInMockup: state.visibleInMockup,
+      visibleInAgent: state.visibleInAgent,
       supportsReferenceImage: state.supportsReferenceImage,
       maxReferenceImages: state.maxReferenceImages,
       referenceImageField: state.referenceImageField,
@@ -208,6 +216,9 @@ export function PresetModelFormDialog({
     if (state.apiFormat === "jimeng") {
       input.jimengResolution = state.jimengResolution || undefined
       input.jimengN = state.jimengN
+    }
+    if (state.apiFormat === "grsai") {
+      input.grsaiImageSize = state.grsaiImageSize || undefined
     }
     if (state.apiFormat === "openai" || state.apiFormat === "gemini") {
       if (state.qualityEnabled && !state.quality.trim()) {
@@ -350,7 +361,7 @@ export function PresetModelFormDialog({
                 onValueChange={(v) =>
                   up(
                     "apiFormat",
-                    (v ?? "openai") as "openai" | "jimeng" | "gemini",
+                    (v ?? "openai") as FormState["apiFormat"],
                   )
                 }
               >
@@ -360,13 +371,16 @@ export function PresetModelFormDialog({
                       ? "即梦"
                       : state.apiFormat === "gemini"
                         ? "Gemini（OpenAI 兼容中转）"
-                        : "OpenAI 标准生图"}
+                        : state.apiFormat === "grsai"
+                          ? "Gemini (Grsai)"
+                          : "OpenAI 标准生图"}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="openai">OpenAI 标准生图</SelectItem>
                   <SelectItem value="jimeng">即梦</SelectItem>
                   <SelectItem value="gemini">Gemini（OpenAI 兼容中转）</SelectItem>
+                  <SelectItem value="grsai">Gemini (Grsai)</SelectItem>
                 </SelectContent>
               </Select>
               {state.apiFormat === "openai" && (
@@ -380,6 +394,13 @@ export function PresetModelFormDialog({
                   请求形状同 OpenAI 标准生图（POST {"{接口地址}"}/images/generations、
                   Bearer 鉴权），供 Gemini 系中转模型使用；可在下方配置生图时
                   传比例参数代替尺寸参数
+                </p>
+              )}
+              {state.apiFormat === "grsai" && (
+                <p className="text-xs text-muted-foreground">
+                  请求 POST {"{接口地址}"}/api/generate（接口地址配到域名或 /v1
+                  结尾，如 https://grsaiapi.com），比例自动取自下方启用的尺寸预设
+                  （aspectRatio），清晰度档位可选；参考图传入 images 字段
                 </p>
               )}
             </div>
@@ -441,7 +462,7 @@ export function PresetModelFormDialog({
             </div>
           )}
 
-          {state.apiFormat !== "jimeng" && (
+          {(state.apiFormat === "openai" || state.apiFormat === "gemini") && (
             <div className="space-y-3 rounded-md border p-3">
               <label className="flex items-center justify-between">
                 <span className="text-sm font-medium">
@@ -475,6 +496,41 @@ export function PresetModelFormDialog({
                   </datalist>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Grsai 专属：清晰度档位（比例自动取自启用的尺寸预设） */}
+          {state.apiFormat === "grsai" && (
+            <div className="grid gap-2 rounded-md border p-3">
+              <Label>清晰度档位（imageSize）</Label>
+              <Select
+                value={state.grsaiImageSize || "__auto"}
+                onValueChange={(v) =>
+                  up(
+                    "grsaiImageSize",
+                    (v === "__auto" ? "" : v) as FormState["grsaiImageSize"],
+                  )
+                }
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue>
+                    {state.grsaiImageSize
+                      ? state.grsaiImageSize
+                      : "自动（按预设尺寸推导）"}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__auto">自动（按预设尺寸推导）</SelectItem>
+                  <SelectItem value="1K">1K</SelectItem>
+                  <SelectItem value="2K">2K</SelectItem>
+                  <SelectItem value="4K">4K</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                自动档按所选尺寸预设的总像素推导（约 ≤160 万像素 → 1K、
+                ≤600 万像素 → 2K、更大 → 4K）；生图比例无需配置，自动取自
+                下方启用的尺寸预设（如 1024x1536 → 2:3）
+              </p>
             </div>
           )}
 
@@ -599,6 +655,13 @@ export function PresetModelFormDialog({
                     onCheckedChange={(v) => up("visibleInMockup", v === true)}
                   />
                   样机渲染
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={state.visibleInAgent}
+                    onCheckedChange={(v) => up("visibleInAgent", v === true)}
+                  />
+                  Agent 工坊
                 </label>
               </div>
             </div>

@@ -73,6 +73,12 @@ export function AgentConfigManager({
         toast.error("塔罗评审团至少选择 1 个支持视觉的对话模型（在「评审团模型」中勾选）")
         return
       }
+      // 创意总监是澄清/简报主流程的硬依赖（无回退链），漏配会让所有用户
+      // 项目在澄清阶段必挂，与评审团预检同口径拦截
+      if (!config.models.styleChatModelId) {
+        toast.error("塔罗模板必须选择「创意总监模型」（需求澄清/简报阶段硬依赖，在「创意总监模型（需求澄清 / 简报）」中选择）")
+        return
+      }
     }
     setSaving(config.direction)
     try {
@@ -86,8 +92,9 @@ export function AgentConfigManager({
                 .slice(0, 3),
               assetSizes: { ...DEFAULT_TAROT_TEMPLATE_CONFIG.assetSizes },
               reviewThresholds: { ...DEFAULT_TAROT_TEMPLATE_CONFIG.reviewThresholds },
-              maxRetries: config.maxRetries,
-              sampleCount: config.sampleCount,
+              // 顶层列可能存有旧 schema 时代的越界值，兜底分支同样钳制
+              maxRetries: Math.min(3, Math.max(0, config.maxRetries)),
+              sampleCount: Math.min(12, Math.max(1, config.sampleCount)),
             }
           : undefined
       await updateDirectionConfigAction({

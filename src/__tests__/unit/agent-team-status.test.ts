@@ -21,10 +21,11 @@ import type {
  */
 
 const ROLES = [
-  { id: "creative_director", name: "创意总监", duty: "主持需求澄清，产出创作简报", group: "planning" },
-  { id: "world_planner", name: "世界观策划", duty: "产出风格规范书与内容方向", group: "planning" },
-  { id: "prompt_designer", name: "提示词设计师", duty: "逐张撰写生图提示词", group: "planning" },
-  { id: "artist", name: "画师", duty: "按提示词与参考图逐张生图", group: "production" },
+  { id: "creative_director", name: "创意总监", duty: "主持需求澄清（只问风格/内容/主题）", group: "planning" },
+  { id: "style_director", name: "风格策划", duty: "拟定唯一《风格规范书》", group: "planning" },
+  { id: "prompt_designer", name: "初稿设计师", duty: "逐张撰写简洁画面初稿", group: "planning" },
+  { id: "final_refiner", name: "终稿细化师", duty: "初稿细化为结构化终稿", group: "planning" },
+  { id: "artist", name: "画师", duty: "按终稿与参考图逐张生图", group: "production" },
   { id: "review_panel", name: "评审团", duty: "内容/审美/一致性三审打回", group: "qa" },
   { id: "compositor", name: "合成师", duty: "边框叠加与牌名编号排版", group: "delivery" },
   { id: "supervisor", name: "总控", duty: "三审裁决：放行/打回/兜底", group: "control" },
@@ -32,10 +33,10 @@ const ROLES = [
 
 const STAGES = [
   { id: "clarify", name: "需求澄清", roleIds: ["creative_director"] },
-  { id: "world", name: "内容方向", roleIds: ["world_planner", "creative_director"] },
-  { id: "prompt", name: "提示词设计", roleIds: ["prompt_designer"] },
-  { id: "art", name: "生图与评审", roleIds: ["artist", "review_panel", "supervisor"] },
-  { id: "compose", name: "合成交付", roleIds: ["compositor", "supervisor"] },
+  { id: "draft", name: "初稿设计", roleIds: ["style_director", "prompt_designer"] },
+  { id: "final", name: "终稿细化", roleIds: ["final_refiner"] },
+  { id: "art", name: "生图与评审", roleIds: ["final_refiner", "artist", "review_panel", "supervisor"] },
+  { id: "compose", name: "融合与交付", roleIds: ["compositor", "supervisor"] },
 ] as const
 
 function event(overrides: Partial<TeamEventSnapshot> & { nodeKey: string }): TeamEventSnapshot {
@@ -97,28 +98,37 @@ describe("deriveTeamStatus · working（pendingAction 归属 + run 执行中）"
     expect(roleOf(team, "creative_director").currentTask).toBe("正在根据你的回答整理追问")
   })
 
-  it("gen_directions → 世界观策划 working；方向数量取 run.directions，缺省按 3", () => {
-    const base = {
+  it("gen_style_spec → 风格策划 working「正在拟定 3 个风格规范方向」", () => {
+    const team = deriveTeamStatus({
       roles: ROLES,
       stages: STAGES,
-      run: {
-        stage: "world",
-        status: "running",
-        pendingAction: { kind: "gen_directions" },
-      },
+      run: { stage: "draft", status: "running", pendingAction: { kind: "gen_style_spec" } },
       events: [],
       messages: [],
-    }
-    expect(roleOf(deriveTeamStatus(base), "world_planner").currentTask).toBe("正在构思 3 个内容方向")
-    expect(
-      roleOf(
-        deriveTeamStatus({
-          ...base,
-          run: { ...base.run, directions: [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }] },
-        }),
-        "world_planner",
-      ).currentTask,
-    ).toBe("正在构思 4 个内容方向")
+    })
+    const planner = roleOf(team, "style_director")
+    expect(planner.state).toBe("working")
+    expect(planner.currentTask).toBe("正在拟定 3 个风格规范方向")
+  })
+
+  it("design_drafts → 初稿设计师 working；design_finals → 终稿细化师 working", () => {
+    const drafts = deriveTeamStatus({
+      roles: ROLES,
+      stages: STAGES,
+      run: { stage: "draft", status: "running", pendingAction: { kind: "design_drafts" } },
+      events: [],
+      messages: [],
+    })
+    expect(roleOf(drafts, "prompt_designer").currentTask).toBe("正在逐张撰写画面初稿")
+
+    const finals = deriveTeamStatus({
+      roles: ROLES,
+      stages: STAGES,
+      run: { stage: "final", status: "running", pendingAction: { kind: "design_finals" } },
+      events: [],
+      messages: [],
+    })
+    expect(roleOf(finals, "final_refiner").currentTask).toBe("正在把初稿细化为结构化终稿")
   })
 
   it("最新事件为 start 且其后无 done/fail、run 执行中 → working（任务取事件详情）", () => {
@@ -170,18 +180,22 @@ describe("deriveTeamStatus · waiting_user（等待用户确认）", () => {
     expect(chip(team, "creative_director", "简报")).toBe("未生成")
   })
 
-  it("waiting_human + 内容方向已产出 → 世界观策划「等待你选择内容方向」", () => {
+  it("waiting_human + 3 个候选风格规范已产出 → 风格策划等待选择方向", () => {
     const team = deriveTeamStatus({
       roles: ROLES,
       stages: STAGES,
-      run: { stage: "world", status: "waiting_human", directions: [{ id: "moon" }, { id: "star" }] },
-      events: [event({ nodeKey: "world_planner", action: "done", detail: "已生成 2 个内容方向" })],
-      messages: [],
+      run: {
+        stage: "draft",
+        status: "waiting_human",
+        directions: [{ id: "moon" }, { id: "star" }, { id: "market" }],
+      },
+      events: [event({ nodeKey: "style_director", action: "done", detail: "已拟定 3 个候选方向" })],
+      messages: [message({ nodeKey: "style_director", meta: { kind: "directions" } })],
     })
-    const planner = roleOf(team, "world_planner")
+    const planner = roleOf(team, "style_director")
     expect(planner.state).toBe("waiting_user")
-    expect(planner.currentTask).toBe("等待你选择内容方向")
-    expect(chip(team, "world_planner", "内容方向")).toBe("2 个")
+    expect(planner.currentTask).toBe("等待你选择风格规范方向")
+    expect(chip(team, "style_director", "风格规范")).toBe("3 个候选")
   })
 
   it("meta.questions 优先于问号行计数；brief 类消息不计追问", () => {
@@ -199,7 +213,7 @@ describe("deriveTeamStatus · waiting_user（等待用户确认）", () => {
         message({
           nodeKey: "creative_director",
           meta: { kind: "brief" },
-          content: "创作要点简报：\n媒介？\n色调？\n边框？",
+          content: "创作要点简报：\n媒介？\n色调？\n氛围？",
         }),
       ],
     })
@@ -208,18 +222,18 @@ describe("deriveTeamStatus · waiting_user（等待用户确认）", () => {
 })
 
 describe("deriveTeamStatus · done / error / idle", () => {
-  it("阶段推进到 prompt 后，world_planner（world 阶段）→ done，任务「已完成」", () => {
+  it("阶段推进到 final 后，style_director（draft 阶段）→ done，任务「已完成」", () => {
     const team = deriveTeamStatus({
       roles: ROLES,
       stages: STAGES,
-      run: { stage: "prompt", status: "waiting_human" },
-      events: [event({ nodeKey: "world_planner", action: "done", detail: "内容方向已确认" })],
+      run: { stage: "final", status: "waiting_human" },
+      events: [event({ nodeKey: "style_director", action: "done", detail: "风格规范书已定稿" })],
       messages: [],
     })
-    const planner = roleOf(team, "world_planner")
+    const planner = roleOf(team, "style_director")
     expect(planner.state).toBe("done")
     expect(planner.currentTask).toBe("已完成")
-    expect(planner.latestOutput).toBe("内容方向已确认")
+    expect(planner.latestOutput).toBe("风格规范书已定稿")
   })
 
   it("fail 事件 → error，任务取失败详情", () => {
@@ -281,8 +295,8 @@ describe("deriveTeamStatus · done / error / idle", () => {
     const artist = roleOf(team, "artist")
     expect(artist.state).toBe("idle")
     expect(artist.currentTask).toBe("待命，将在「生图与评审」阶段加入")
-    expect(roleOf(team, "compositor").currentTask).toBe("待命，将在「合成交付」阶段加入")
-    expect(team.usedCount).toBe(7)
+    expect(roleOf(team, "compositor").currentTask).toBe("待命，将在「融合与交付」阶段加入")
+    expect(team.usedCount).toBe(8)
     expect(team.participatedCount).toBe(0)
     expect(team.activeRoleId).toBeNull()
   })
@@ -309,12 +323,14 @@ describe("deriveTeamStatus · 产出指标与计数", () => {
       event({ nodeKey: "supervisor", action: "confirm" }),
       event({ nodeKey: "prompt_designer", action: "done" }),
       event({ nodeKey: "prompt_designer", action: "done" }),
+      event({ nodeKey: "final_refiner", action: "done" }),
     ],
     messages: [
       message({ nodeKey: "creative_director", content: "已按你的回答整理出创作简报，请确认。" }),
     ],
     items,
     assets,
+    cardTotal: 78,
   })
 
   it("画师：卡面 X/78 按 finalRoundId 计数，套件资产 N/6", () => {
@@ -322,22 +338,23 @@ describe("deriveTeamStatus · 产出指标与计数", () => {
     expect(chip(team, "artist", "套件资产")).toBe("1/6")
   })
 
-  it("评审团/合成师/提示词设计师/总控按事件与条目计数", () => {
+  it("评审团/合成师/初稿设计师/终稿细化师/总控按事件与条目计数", () => {
     expect(chip(team, "review_panel", "已评审")).toBe("3 张")
     expect(chip(team, "compositor", "AI 融合")).toBe("2/78 张")
-    expect(chip(team, "prompt_designer", "提示词")).toBe("2 批")
+    expect(chip(team, "prompt_designer", "画面初稿")).toBe("2 批")
+    expect(chip(team, "final_refiner", "终稿")).toBe("1 批")
     expect(chip(team, "supervisor", "裁决")).toBe("1 次")
   })
 
-  it("创意总监：简报已生成；世界观策划：方向 1 个", () => {
+  it("创意总监：简报已生成；风格策划：候选方向计数", () => {
     expect(chip(team, "creative_director", "简报")).toBe("已生成")
-    expect(chip(team, "world_planner", "内容方向")).toBe("1 个")
+    expect(chip(team, "style_director", "风格规范")).toBe("1 个候选")
   })
 
   it("usedCount = 编制总数；participatedCount 只统计有事件/消息的角色", () => {
-    expect(team.usedCount).toBe(7)
-    // 有事件：review_panel / supervisor / prompt_designer；有消息：creative_director
-    expect(team.participatedCount).toBe(4)
+    expect(team.usedCount).toBe(8)
+    // 有事件：review_panel / supervisor / prompt_designer / final_refiner；有消息：creative_director
+    expect(team.participatedCount).toBe(5)
     expect(roleOf(team, "artist").participated).toBe(false)
   })
 
@@ -411,14 +428,14 @@ describe("deriveTeamStatus · 多阶段角色（done 判定按 lastPos）", () =
     expect(roleOf(team, "supervisor").state).toBe("done")
   })
 
-  it("world_planner 在 world 阶段产出方向后进入 waiting_user 兜底（优先于 done）", () => {
+  it("style_director 在 draft 阶段产出候选方向后进入 waiting_user 兜底（优先于 done）", () => {
     const team = deriveTeamStatus({
       roles: ROLES,
       stages: STAGES,
-      run: { stage: "world", status: "waiting_human", directions: [{ id: "a" }, { id: "b" }, { id: "c" }] },
-      events: [event({ nodeKey: "world_planner", action: "done", detail: "已生成 3 个内容方向" })],
-      messages: [message({ nodeKey: "world_planner", meta: { kind: "directions" } })],
+      run: { stage: "draft", status: "waiting_human", directions: [{ id: "a" }, { id: "b" }, { id: "c" }] },
+      events: [event({ nodeKey: "style_director", action: "done", detail: "已拟定 3 个候选方向" })],
+      messages: [message({ nodeKey: "style_director", meta: { kind: "directions" } })],
     })
-    expect(roleOf(team, "world_planner").state).toBe("waiting_user")
+    expect(roleOf(team, "style_director").state).toBe("waiting_user")
   })
 })

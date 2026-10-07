@@ -25,11 +25,11 @@ import { GrokAgentAvatar } from "./grok-agent-avatar"
 
 /** 节点编制：名称 / 职责 / grok 身体色 */
 const NODE_AGENTS: Record<ClassicNodeKey, { title: string; duty: string; grokColor: `#${string}` }> = {
-  style: { title: "风格艺术总监", duty: "收敛题材/媒介/色调决策，产出风格规范", grokColor: "#8b5cf6" },
-  structure: { title: "结构策划师", duty: "按骨架补全 78 张卡牌清单与牌义", grokColor: "#6366f1" },
-  copywriter: { title: "文案策划师", duty: "逐张撰写生图提示词并自检卡面守则", grokColor: "#d946ef" },
-  imagegen: { title: "画师生图", duty: "按提示词与参考图逐张出图", grokColor: "#0ea5e9" },
-  review_content: { title: "内容审核员", duty: "核对画面与牌名/牌义是否对齐", grokColor: "#10b981" },
+  style: { title: "创意总监", duty: "主持需求澄清：只追问风格/内容/主题", grokColor: "#8b5cf6" },
+  structure: { title: "风格策划师", duty: "拟定唯一《风格规范书》与画面风格总述", grokColor: "#6366f1" },
+  copywriter: { title: "终稿细化师", duty: "初稿→结构化终稿；打回时从初稿重细化", grokColor: "#d946ef" },
+  imagegen: { title: "画师生图", duty: "按终稿与参考图逐张出图", grokColor: "#0ea5e9" },
+  review_content: { title: "内容审核员", duty: "核对画面与终稿对齐（Ace-10 清点花色数量）", grokColor: "#10b981" },
   review_aesthetic: { title: "审美评审", duty: "构图/色彩/细节 0-100 打分，宁严勿宽", grokColor: "#f43f5e" },
   review_consistency: { title: "一致性审核员", duty: "对照规范书与基准图核对成套一致性", grokColor: "#06b6d4" },
   supervisor: { title: "总控裁决", duty: "三审裁决：放行/打回/兜底选优", grokColor: "#f59e0b" },

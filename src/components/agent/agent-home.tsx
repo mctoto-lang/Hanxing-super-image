@@ -1,12 +1,10 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
   Bot,
   Check,
-  FlaskConical,
   Loader2,
   LockKeyhole,
   MessageCircleQuestion,
@@ -253,43 +251,6 @@ function RunHistoryCard({
   )
 }
 
-/** 置顶「UI 预览」示例项目卡（Mock 数据，不占项目数；通往 /agent/preview） */
-function PreviewProjectCard({ onOpen }: { onOpen: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      aria-label="打开 UI 预览项目（示例数据）"
-      className="group relative block w-full overflow-hidden rounded-xl border border-dashed border-amber-500/50 bg-card text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-amber-500 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60"
-    >
-      <div className={cn("relative aspect-square w-full overflow-hidden", DIRECTION_CARDS.tarot.coverClass)}>
-        <div className="absolute inset-0 opacity-30 [background-image:radial-gradient(circle_at_20%_20%,white_1px,transparent_1px),radial-gradient(circle_at_80%_70%,white_1px,transparent_1px)] [background-size:28px_28px]" />
-        <div className="relative flex h-full w-full flex-col items-center justify-center gap-2 text-white">
-          <span className="text-4xl drop-shadow-lg">🌙</span>
-          <span className="flex items-center gap-1 text-xs font-medium tracking-wide text-white/85">
-            <FlaskConical className="size-3.5 text-amber-300" />
-            星月暗夜塔罗 · 示例
-          </span>
-        </div>
-        <span className="absolute right-2 top-2 rounded-full bg-amber-500/90 px-2 py-0.5 text-xs font-medium text-white backdrop-blur-sm">
-          UI 预览
-        </span>
-      </div>
-      <div className="p-3">
-        <div className="flex min-w-0 items-center gap-1 text-sm font-medium">
-          <span className="truncate">示例项目 · 全阶段走查</span>
-          <span className="shrink-0 rounded-[3px] bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-300">
-            Mock 数据
-          </span>
-        </div>
-        <p className="mt-1 truncate text-xs text-muted-foreground">
-          占位图片与文案，五阶段界面任意切换
-        </p>
-      </div>
-    </button>
-  )
-}
-
 const PAGE_SIZE = 20
 const POLL_INTERVAL_MS = 5000
 
@@ -381,12 +342,6 @@ export function AgentHome({
         <div className="pointer-events-none absolute -right-20 -top-28 size-72 rounded-full bg-violet-500/15 blur-3xl" />
         <div className="pointer-events-none absolute -bottom-32 -left-16 size-64 rounded-full bg-amber-500/10 blur-3xl" />
         <div className="pointer-events-none absolute inset-0 opacity-30 [background-image:radial-gradient(circle_at_1px_1px,var(--border)_1px,transparent_0)] [background-size:22px_22px]" />
-        <Link
-          href="/agent/preview"
-          className="absolute right-4 top-4 z-10 inline-flex items-center gap-1.5 rounded-full border bg-background/70 px-3 py-1.5 text-xs text-muted-foreground backdrop-blur-sm transition-colors hover:border-violet-400 hover:text-foreground"
-        >
-          <FlaskConical className="size-3.5 text-amber-500" /> UI 预览
-        </Link>
         <div className="relative max-w-3xl animate-fade-slide-in-1">
           <div className="mb-3 inline-flex items-center gap-2 rounded-full border bg-background/70 px-3 py-1 text-xs text-muted-foreground backdrop-blur-sm">
             <Bot className="size-3.5 text-violet-500" /> AI Agent 模板工坊
@@ -395,7 +350,7 @@ export function AgentHome({
             把一套卡牌，交给一支完整的 AI 团队
           </h1>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground md:text-base">
-            先通过几组关键问题对齐需求，再确认内容方向、视觉资产和卡面小样。每个阶段都可回看、修改和确认，不再把
+            先通过几组关键问题对齐风格、内容与主题，再逐步确认画面初稿、结构化终稿与卡面小样。每个阶段都可回看、修改和确认，不再把
             78 张图一次性交给黑盒。
           </p>
           <div className="mt-5 flex flex-wrap gap-2 text-xs text-muted-foreground">
@@ -453,24 +408,18 @@ export function AgentHome({
           </span>
         </div>
         {runs.length === 0 ? (
-          <>
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-              <PreviewProjectCard onOpen={() => router.push("/agent/preview")} />
-            </div>
-            <Empty className="rounded-2xl border">
-              <EmptyHeader>
-                <EmptyMedia variant="icon">
-                  <Package className="size-8 text-muted-foreground/60" />
-                </EmptyMedia>
-                <EmptyTitle>还没有真实项目</EmptyTitle>
-                <EmptyDescription>可先打开「UI 预览」示例项目走查界面，或从塔罗牌模板开始创建第一套牌。</EmptyDescription>
-              </EmptyHeader>
-            </Empty>
-          </>
+          <Empty className="rounded-2xl border">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <Package className="size-8 text-muted-foreground/60" />
+              </EmptyMedia>
+              <EmptyTitle>还没有项目</EmptyTitle>
+              <EmptyDescription>从上面的塔罗牌模板开始，创建第一套属于你的卡牌。</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         ) : (
           <>
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-              <PreviewProjectCard onOpen={() => router.push("/agent/preview")} />
               {runs.map((run) => (
                 <RunHistoryCard
                   key={run.id}
@@ -494,7 +443,7 @@ export function AgentHome({
 
       <div className="flex items-center gap-2 rounded-xl border bg-muted/30 px-4 py-3 text-xs text-muted-foreground animate-fade-slide-in-4">
         <MessageCircleQuestion className="size-4 shrink-0 text-violet-500" />
-        新模板会先询问缺失信息，再生成 3 个内容方向；任何阶段都可以暂停、修改或重新生成。
+        新模板会先就风格/内容/主题追问缺失信息，再给出 3 个《风格规范书》方向供你选择；任何阶段都可以暂停、修改或重新生成。
       </div>
 
       <TarotTemplateStartDialog

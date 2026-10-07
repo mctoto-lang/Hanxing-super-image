@@ -11,6 +11,7 @@ import { agentDirectionConfigs } from "@/db/schema"
 import {
   DEFAULT_DIRECTION_CONFIGS,
   defaultTemplateConfigFor,
+  normalizeTarotTemplateConfig,
   type DirectionConfig,
 } from "@/lib/agent/pipelines"
 import type { AgentDirection } from "@/lib/agent/graph"
@@ -34,9 +35,9 @@ export async function loadFullDirectionConfig(direction: AgentDirection): Promis
     maxRetries: row.maxRetries,
     thresholds: row.thresholds,
     models: row.models as DirectionConfig["models"],
-    templateConfig:
-      defaults && row.templateConfig
-        ? { ...defaults, ...(row.templateConfig as DirectionConfig["templateConfig"]) }
-        : ((row.templateConfig as DirectionConfig["templateConfig"] | null) ?? defaults ?? undefined),
+    // 存量脏值统一归一化（越界打回数/多余尺寸键/非法阈值不再原样进生产图快照）
+    templateConfig: defaults
+      ? normalizeTarotTemplateConfig(row.templateConfig)
+      : ((row.templateConfig as DirectionConfig["templateConfig"] | null) ?? undefined),
   }
 }

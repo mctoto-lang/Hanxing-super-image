@@ -43,8 +43,8 @@ export type RunTemplateAction = (fn: () => Promise<unknown>, successMessage?: st
 
 type Message = TemplateWorkspaceData["messages"][number]
 
-/** 澄清追问轮次上限（展示用；管理员可在后台调整模板配置） */
-const CLARIFY_MAX_ROUNDS = DEFAULT_TAROT_TEMPLATE_CONFIG.clarifyMaxRounds
+/** 澄清追问轮次上限兜底（实际以工作台数据下发的 clarifyMaxRounds 为准，管理员可配置） */
+const CLARIFY_MAX_ROUNDS_FALLBACK = DEFAULT_TAROT_TEMPLATE_CONFIG.clarifyMaxRounds
 
 /** 最新一条未被回答的追问（其后没有新的用户消息即视为待答） */
 function latestPendingClarify(messages: Message[]): {
@@ -85,6 +85,8 @@ export function ClarifyStage({
 }) {
   const { appendTemplateMessage, requestBrief, saveTemplateBrief } = useWorkspaceActions()
   const { run, messages } = data
+  // 轮次上限跟随管理员配置下发（工作台数据缺省时用内置兜底）
+  const clarifyMaxRounds = data.clarifyMaxRounds ?? CLARIFY_MAX_ROUNDS_FALLBACK
   const pending = useMemo(() => latestPendingClarify(messages), [messages])
   const answered = useMemo(() => answeredRounds(messages), [messages])
   const opener = messages.find((message) => message.role === "user")
@@ -160,7 +162,7 @@ export function ClarifyStage({
   const confirmBrief = async (brief: string) => {
     await runAction(
       () => saveTemplateBrief({ runId: run.id, brief }),
-      "简报已确认，世界观策划开始构思内容方向",
+      "简报已确认，风格策划开始构思内容方向",
     )
   }
 
@@ -177,7 +179,7 @@ export function ClarifyStage({
             <MessageCircleQuestion className="size-4 text-violet-500" />
             和创意总监对齐需求
             <Badge variant="secondary" className="bg-violet-500/10 text-violet-600 dark:text-violet-300">
-              {pendingRound > 0 ? `第 ${Math.min(pendingRound, CLARIFY_MAX_ROUNDS)}/${CLARIFY_MAX_ROUNDS} 轮` : "准备中"}
+              {pendingRound > 0 ? `第 ${Math.min(pendingRound, clarifyMaxRounds)}/${clarifyMaxRounds} 轮` : "准备中"}
             </Badge>
           </CardTitle>
           <CardDescription>
@@ -318,7 +320,7 @@ export function ClarifyStage({
               </Badge>
             </CardTitle>
             <CardDescription>
-              简报已就绪。确认后进入内容方向阶段，世界观策划会据此构思 3 个方向。
+              简报已就绪。确认后进入内容方向阶段，风格策划会据此构思 3 个方向。
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -334,7 +336,7 @@ export function ClarifyStage({
         onOpenChange={closeQuiz}
         questions={pending?.questions ?? []}
         round={pending?.round ?? 1}
-        maxRounds={CLARIFY_MAX_ROUNDS}
+        maxRounds={clarifyMaxRounds}
         state={quizState}
         onStateChange={setQuizState}
         submitting={submitting || creativeDirectorBusy}

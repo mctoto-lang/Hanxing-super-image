@@ -10,6 +10,7 @@ import { loadStorageConfig, toInternalCosFetchUrl } from "@/lib/storage/config"
 import { isPlatformStorageUrl } from "@/lib/storage/reference-url"
 import { signUploadToken } from "@/lib/storage/upload-token"
 import { readBodyBounded } from "@/lib/net/read-body-bounded"
+import { AgentRunNotFoundError } from "@/lib/agent/errors"
 import { getTarotDeliverablesAction } from "@/server/actions/agent-template"
 
 export const dynamic = "force-dynamic"
@@ -47,9 +48,18 @@ export async function GET(
   }
 
   // 归属与权限校验在 action 内完成（enterpriseId + userId 双过滤）
-  const deliverables = await getTarotDeliverablesAction(id).catch((err: unknown) => {
-    throw new Error(err instanceof Error ? err.message : "项目不存在或无权访问")
-  })
+  let deliverables
+  try {
+    deliverables = await getTarotDeliverablesAction(id)
+  } catch (err) {
+    // 业务性 404（不存在/无权/类型不符）对齐 run/[id] 页面的 notFound() 惯例；
+    // 其余异常只回通用文案，原始 message 仅记日志不外露
+    if (err instanceof AgentRunNotFoundError) {
+      return NextResponse.json({ ok: false, error: "项目不存在或无权访问" }, { status: 404 })
+    }
+    console.error("[agent/runs/download] 导出失败:", err)
+    return NextResponse.json({ ok: false, error: "导出失败，请稍后重试" }, { status: 500 })
+  }
   if (deliverables.files.length === 0) {
     return NextResponse.json({ ok: false, error: "尚无可下载的交付物" }, { status: 404 })
   }
@@ -109,8 +119,19 @@ export async function GET(
   return new NextResponse(Readable.toWeb(zip) as ReadableStream<Uint8Array>, {
     headers: {
       "Content-Type": "application/zip",
-      "Content-Disposition": `attachment; filename="${zipBaseName}.zip"; filename*=UTF-8''${encodeURIComponent(`${zipBaseName}.zip`)}`,
+      // HTTP 头只允许 ByteString（latin1），中文文件名直接塞 filename 会抛
+      // TypeError（→ 500 空体）。用 RFC 5987：filename*=UTF-8''<百分号编码>，
+      // 并给不支持 filename* 的老浏览器一个纯 ASCII 兜底名。
+      "Content-Disposition": `attachment; filename="${asciiFallbackName(zipBaseName)}.zip"; filename*=UTF-8''${encodeURIComponent(`${zipBaseName}.zip`)}`,
       "Cache-Control": "no-store",
     },
   })
+}
+
+/** Content-Disposition 的 ASCII 兜底文件名：剔除非 ASCII 与危险字符 */
+function asciiFallbackName(name: string): string {
+  return (
+    name.replace(/[^\x20-\x7e]/g, "").replace(/["\\;]/g, "").trim() ||
+    "agent-export"
+  )
 }

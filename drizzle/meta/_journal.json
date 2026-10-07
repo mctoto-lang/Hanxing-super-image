@@ -414,6 +414,20 @@
       "when": 1790753462031,
       "tag": "0058_silky_roland_deschain",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1790839800000,
+      "tag": "0059_agent_task_source",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1791342477698,
+      "tag": "0060_solid_junta",
+      "breakpoints": true
     }
   ]
 }

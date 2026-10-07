@@ -12,7 +12,6 @@ import type {
   AgentGraph,
   AgentItemStatus,
   AgentMessageRole,
-  AgentNodeRunStatus,
   AgentNodeType,
   AgentPromptSource,
   AgentRunInput,
@@ -91,8 +90,8 @@ export const agentRuns = pgTable(
     styleDoc: text("style_doc"),
     /** 卡面模板 key（模板化分阶段制作；null = 经典全流程） */
     template: varchar("template", { length: 60 }),
-    /** 模板当前阶段（AGENT_TEMPLATE_STAGES；经典全流程为 null） */
-    stage: varchar("stage", { length: 16 }).$type<AgentTemplateStage>(),
+    /** 模板当前阶段（AGENT_TEMPLATE_STAGES；经典全流程为 null。存量行可能带旧值 world/prompt——读取侧经 normalizeTemplateStage 归一化） */
+    stage: varchar("stage", { length: 16 }).$type<AgentTemplateStage | "world" | "prompt">(),
     /** 运行标题（列表/看板展示名；空 = 回退 prompt 截断） */
     title: varchar("title", { length: 120 }),
     /** 创作简报（模板化流程的结构化需求描述，下游各 Agent 引用） */
@@ -129,36 +128,6 @@ export const agentRuns = pgTable(
     index("ar_ent_user_created").on(t.enterpriseId, t.userId, t.createdAt),
     // worker 扫描入口：待处理运行
     index("ar_status_created").on(t.status, t.createdAt),
-  ],
-)
-
-/** 节点级聚合运行状态（层级树状态圆点/N tasks 数据源；runId+nodeKey 唯一） */
-export const agentNodeRuns = pgTable(
-  "agent_node_run",
-  {
-    id: uuid("id").defaultRandom().primaryKey(),
-    runId: uuid("run_id")
-      .notNull()
-      .references(() => agentRuns.id, { onDelete: "cascade" }),
-    /** 图节点 id（graphSnapshot.nodes[].id） */
-    nodeKey: varchar("node_key", { length: 60 }).notNull(),
-    nodeType: varchar("node_type", { length: 20 }).$type<AgentNodeType>().notNull(),
-    title: varchar("title", { length: 120 }).notNull(),
-    status: varchar("status", { length: 12 }).$type<AgentNodeRunStatus>().default("idle").notNull(),
-    /** 该节点需处理的总 item 数（run 级节点固定 1） */
-    totalCount: integer("total_count").default(0).notNull(),
-    processedCount: integer("processed_count").default(0).notNull(),
-    failedCount: integer("failed_count").default(0).notNull(),
-    /** 打回循环计数（supervisor 节点：已打回次数合计） */
-    retryCount: integer("retry_count").default(0).notNull(),
-    lastError: text("last_error"),
-    startedAt: timestamp("started_at", { withTimezone: true }),
-    finishedAt: timestamp("finished_at", { withTimezone: true }),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-  },
-  (t) => [
-    uniqueIndex("anr_run_node_unique").on(t.runId, t.nodeKey),
-    index("anr_run_idx").on(t.runId),
   ],
 )
 
@@ -334,7 +303,6 @@ export const agentMessages = pgTable(
 
 export type AgentDirectionConfigRow = typeof agentDirectionConfigs.$inferSelect
 export type AgentRunRow = typeof agentRuns.$inferSelect
-export type AgentNodeRunRow = typeof agentNodeRuns.$inferSelect
 export type AgentRunItemRow = typeof agentRunItems.$inferSelect
 export type AgentRoundRow = typeof agentRounds.$inferSelect
 export type AgentReviewRow = typeof agentReviews.$inferSelect

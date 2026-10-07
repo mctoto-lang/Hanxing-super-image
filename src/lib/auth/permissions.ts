@@ -79,18 +79,19 @@ export function checkModelAccess(
 }
 
 /**
- * 取三层并发上限的最小值（手册 §10.5）：
+ * 取并发上限的最小值（手册 §10.5）：
  *   enterprise.maxConcurrent ≥ group.maxConcurrent ≥ model.maxConcurrent
  *
  * 消费端 Redis 槽位（task-queue.ts acquireImageSlot 的 ACQUIRE_SLOT_LUA）
- * 已按企业 + 模型 + 权限组三层强制执行；本函数用于前端并发上限提示。
+ * 已按企业 + 模型 + 权限组三层强制执行；本函数用于前端并发上限提示，
+ * 及 Agent 生产流水线池大小的动态推导（此时不约束模型维度，model 可不传）。
  */
 export function effectiveConcurrentLimit(opts: {
   enterprise: number
   group?: number | null
-  model: number
+  model?: number | null
 }): number {
-  const limits = [opts.enterprise, opts.group ?? Infinity, opts.model].filter(
+  const limits = [opts.enterprise, opts.group ?? Infinity, opts.model ?? Infinity].filter(
     (n): n is number => typeof n === "number" && n > 0,
   )
   return limits.length ? Math.min(...limits) : 1

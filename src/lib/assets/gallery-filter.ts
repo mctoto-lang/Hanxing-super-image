@@ -41,6 +41,7 @@ export const SOURCE_FILTERS = [
   { value: "product", label: "商品图片" },
   { value: "weartry", label: "穿戴图片" },
   { value: "mockup", label: "样机渲染" },
+  { value: "agent", label: "AI Agent" },
 ] as const
 
 export type SourceFilter =

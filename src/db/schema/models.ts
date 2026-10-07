@@ -19,8 +19,9 @@ import { enterprises } from "./enterprise"
  *
  * - enterpriseId NULL = 平台级共享模型（所有企业可见）；
  *   非 NULL = 企业私有模型。
- * - apiFormat: openai | jimeng | gemini（openai = OpenAI 标准生图格式；
- *   gemini = Gemini 系中转，请求形状同 openai，尺寸参数可切比例）。
+ * - apiFormat: openai | jimeng | gemini | grsai（openai = OpenAI 标准生图格式；
+ *   gemini = Gemini 系中转，请求形状同 openai，尺寸参数可切比例；
+ *   grsai = Gemini (Grsai)，aspectRatio 比例 + imageSize 清晰度档位）。
  * - 可见性合并：旧项目 visible_in_generate + visible_in_canvas → 单一 visibleInCreate（D13）。
  */
 export interface ModelExtraConfig {
@@ -29,6 +30,8 @@ export interface ModelExtraConfig {
   jimengN?: number
   // OpenAI 格式：质量参数透传（管理员填入具体值；空 = 不传该字段）
   quality?: string
+  // Grsai 格式：清晰度档位手动覆盖（空 = 按预设尺寸自动推导）
+  grsai_image_size?: "1K" | "2K" | "4K"
   [key: string]: unknown
 }
 
@@ -94,6 +97,8 @@ export const models = pgTable(
       .notNull(),
     /** 样机渲染页 AI 生图（背景/重绘）可选 */
     visibleInMockup: boolean("visible_in_mockup").default(false).notNull(),
+    /** Agent 工坊卡面生图可选（用户创建模板时的候选池开关） */
+    visibleInAgent: boolean("visible_in_agent").default(false).notNull(),
     supportsReferenceImage: boolean("supports_reference_image")
       .default(false)
       .notNull(),

@@ -1,14 +1,18 @@
 "use server"
 
-import { and, asc, desc, eq, inArray, isNotNull, sql } from "drizzle-orm"
+import { and, asc, desc, eq, inArray, isNotNull, lte, notInArray, sql } from "drizzle-orm"
+import { z } from "zod"
 import { db } from "@/db/client"
 import {
+  agentAssets,
   agentEvents,
   agentReviews,
   agentRunItems,
   agentRounds,
   agentRuns,
+  generationTasks,
 } from "@/db/schema"
+import { getStorage } from "@/lib/storage"
 import {
   requireEnterpriseContext,
   type UserContext,
@@ -21,8 +25,9 @@ import {
   runControlSchema,
 } from "@/server/schemas/agent"
 import { DEFAULT_SCORE_THRESHOLDS } from "@/lib/agent/score"
-import { templateProductionMissingSlots, type TarotTemplateConfig } from "@/lib/agent/pipelines"
+import { reviewThresholdFromSnapshot, templateProductionMissingSlots, type TarotTemplateConfig } from "@/lib/agent/pipelines"
 import { loadFullDirectionConfig } from "@/server/services/agent/direction-config"
+import { loadAgentCardModelPool } from "@/server/services/agent/card-models"
 import { AGENT_DIRECTIONS } from "@/lib/agent/graph"
 import { revalidatePath } from "next/cache"
 
@@ -96,6 +101,18 @@ export async function listDirectionsAction() {
     })
   }
   return result
+}
+
+/**
+ * Agent 工坊卡面生图模型候选池（发起弹窗「卡面生图模型」选项来源）：
+ * visibleInAgent 启用 ∩ 企业/权限组可见 ∩ 比例严格锁定（与平台卡面同比例
+ * 的启用预设）。返回 cardRatio 供前端展示锁定比例徽标。
+ */
+export async function listAgentCardModelsAction() {
+  const ctx = await requireEnterpriseContext()
+  const denied = denyAgent(ctx)
+  if (denied) throw new Error(denied)
+  return await loadAgentCardModelPool(ctx)
 }
 
 // ═══════════════════════════ 运行查询 ═══════════════════════════
@@ -187,37 +204,47 @@ export async function listRunsAction(
     .where(inArray(agentRunItems.runId, runs.map((r) => r.id)))
     .groupBy(agentRunItems.runId, agentRunItems.status)
 
-  // 封面：第一张带融合图的卡优先；否则按各 run 前 3 张卡补查生图轮
-  const itemRows = await db
-    .select({
-      id: agentRunItems.id,
+  // 封面：第一张带融合图的卡优先（SQL 侧每 run 取一行，不再全量拉回
+  // 50×78 行 items 到内存过滤）；无融合图的 run 再按前 3 张卡补查生图轮
+  const framedRows = await db
+    .selectDistinctOn([agentRunItems.runId], {
       runId: agentRunItems.runId,
       framedImageUrl: agentRunItems.framedImageUrl,
     })
     .from(agentRunItems)
-    .where(inArray(agentRunItems.runId, runs.map((r) => r.id)))
-    .orderBy(asc(agentRunItems.index))
+    .where(
+      and(
+        inArray(agentRunItems.runId, runs.map((r) => r.id)),
+        isNotNull(agentRunItems.framedImageUrl),
+      ),
+    )
+    .orderBy(agentRunItems.runId, asc(agentRunItems.index))
   const coverByRun = new Map<string, string>()
-  const candidateItemsByRun = new Map<string, string[]>()
-  for (const run of runs) {
-    const items = itemRows.filter((i) => i.runId === run.id)
-    const framed = items.find((i) => i.framedImageUrl)
-    if (framed?.framedImageUrl) {
-      coverByRun.set(run.id, framed.framedImageUrl)
-    } else if (items.length > 0) {
-      candidateItemsByRun.set(run.id, items.slice(0, 3).map((i) => i.id))
-    }
+  for (const row of framedRows) {
+    if (row.framedImageUrl) coverByRun.set(row.runId, row.framedImageUrl)
   }
-  const roundItemIds = [...candidateItemsByRun.values()].flat()
-  if (roundItemIds.length > 0) {
-    const roundRows = await db
-      .select({ itemId: agentRounds.itemId, imageUrl: agentRounds.imageUrl })
-      .from(agentRounds)
-      .where(and(inArray(agentRounds.itemId, roundItemIds), isNotNull(agentRounds.imageUrl)))
-    const imageByItem = new Map(roundRows.map((r) => [r.itemId, r.imageUrl]))
-    for (const [runId, itemIds] of candidateItemsByRun) {
-      const hit = itemIds.map((id) => imageByItem.get(id)).find(Boolean)
-      if (hit) coverByRun.set(runId, hit)
+
+  const runsNeedingRoundCover = runs.filter((r) => !coverByRun.has(r.id)).map((r) => r.id)
+  if (runsNeedingRoundCover.length > 0) {
+    const itemRows = await db
+      .select({ id: agentRunItems.id, runId: agentRunItems.runId })
+      .from(agentRunItems)
+      .where(and(inArray(agentRunItems.runId, runsNeedingRoundCover), lte(agentRunItems.index, 2)))
+      .orderBy(asc(agentRunItems.index))
+    const roundItemIds = itemRows.map((i) => i.id)
+    if (roundItemIds.length > 0) {
+      const roundRows = await db
+        .select({ itemId: agentRounds.itemId, imageUrl: agentRounds.imageUrl })
+        .from(agentRounds)
+        .where(and(inArray(agentRounds.itemId, roundItemIds), isNotNull(agentRounds.imageUrl)))
+      const imageByItem = new Map(roundRows.map((r) => [r.itemId, r.imageUrl]))
+      for (const runId of runsNeedingRoundCover) {
+        const hit = itemRows
+          .filter((i) => i.runId === runId)
+          .map((i) => imageByItem.get(i.id))
+          .find(Boolean)
+        if (hit) coverByRun.set(runId, hit)
+      }
     }
   }
 
@@ -229,25 +256,6 @@ export async function listRunsAction(
     })),
     nextCursor: hasMore && last ? `${last.createdAt.toISOString()}|${last.id}` : null,
   }
-}
-
-/**
- * 从运行快照的评审节点读取及格线（兼容多评审节点：任一节点携带该维度阈值即可）。
- * 快照缺失/数值非法时回退 fallback。
- */
-function reviewThresholdFromSnapshot(
-  snapshot: unknown,
-  pick: (config: Record<string, unknown>) => unknown,
-  fallback: number,
-): number {
-  const nodes = (snapshot as { nodes?: { config?: Record<string, unknown> }[] } | null)?.nodes ?? []
-  for (const node of nodes) {
-    const raw = node.config ? pick(node.config) : undefined
-    if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0 && raw <= 100) {
-      return Math.round(raw)
-    }
-  }
-  return fallback
 }
 
 /** 单卡详情：全部轮次（prompt/图/候选）+ 审核与裁决记录（逐轮回放） */
@@ -307,6 +315,8 @@ export async function getRunItemDetailAction(itemId: string) {
       fallbackContentWarning: item.fallbackContentWarning,
       manualRegenCount: item.manualRegenCount,
       errorMessage: item.errorMessage,
+      /** 提示词终稿（评审弹窗内可编辑；后续生图沿用） */
+      currentPrompt: item.currentPrompt,
     },
     rounds,
     reviews,
@@ -335,7 +345,9 @@ export async function getRunItemDetailAction(itemId: string) {
 /**
  * 删除项目（历史记录管理）：运行中/排队中的项目暂不可删（无取消能力，
  * 需等待批次完成或失败）。子表（item/round/review/event/message/asset）
- * 由 agent_run 外键 ON DELETE CASCADE 级联清理；存储图片文件保留。
+ * 由 agent_run 外键 ON DELETE CASCADE 级联清理；存储图片文件先收集
+ * URL 再交 storage 批量删除（非本平台存储的 URL 自动跳过，删除失败
+ * 不阻断项目删除——文件残留由存储清理策略兜底）。
  */
 export async function deleteRunAction(runId: string) {
   const ctx = await requireEnterpriseContext()
@@ -347,6 +359,50 @@ export async function deleteRunAction(runId: string) {
   if (run.status === "running" || run.status === "queued") {
     throw new Error("项目正在处理中，请等待本批次结束后再删除")
   }
+
+  // 删除前收集本项目产生的全部图片 URL（级联删除后无从查起）
+  const urls = new Set<string>()
+  const collect = (...values: (string | null | undefined | string[])[]) => {
+    for (const value of values) {
+      if (!value) continue
+      if (typeof value === "string") {
+        if (value.startsWith("http")) urls.add(value)
+      } else {
+        for (const item of value) if (item?.startsWith("http")) urls.add(item)
+      }
+    }
+  }
+  try {
+    const [roundRows, itemRows, assetRows, genTaskRows] = await Promise.all([
+      db
+        .select({ imageUrl: agentRounds.imageUrl, candidates: agentRounds.candidates })
+        .from(agentRounds)
+        .where(eq(agentRounds.runId, runId)),
+      db
+        .select({ framedImageUrl: agentRunItems.framedImageUrl })
+        .from(agentRunItems)
+        .where(eq(agentRunItems.runId, runId)),
+      db.select({ url: agentAssets.url }).from(agentAssets).where(eq(agentAssets.runId, runId)),
+      db
+        .select({ resultImages: generationTasks.resultImages })
+        .from(generationTasks)
+        .where(
+          and(
+            eq(generationTasks.source, "agent"),
+            sql`${generationTasks.templateInfo} ->> 'runId' = ${runId}`,
+          ),
+        ),
+    ])
+    for (const row of roundRows) {
+      collect(row.imageUrl, (row.candidates ?? []).map((c) => c.url))
+    }
+    for (const row of itemRows) collect(row.framedImageUrl)
+    for (const row of assetRows) collect(row.url)
+    for (const row of genTaskRows) collect(row.resultImages ?? [])
+  } catch (error) {
+    console.error("[agent] 删除项目前收集图片 URL 失败（将继续删除 DB 记录）:", error)
+  }
+
   await db
     .delete(agentRuns)
     .where(
@@ -356,6 +412,15 @@ export async function deleteRunAction(runId: string) {
         eq(agentRuns.userId, ctx.user.id),
       ),
     )
+
+  // DB 级联删除成功后再清理存储文件（失败不阻断：幂等可重试，残留由保留策略兜底）
+  if (urls.size > 0) {
+    try {
+      await (await getStorage()).deleteObjects([...urls])
+    } catch (error) {
+      console.error(`[agent] 删除项目 ${runId} 的存储文件失败（${urls.size} 个，记录已删除）:`, error)
+    }
+  }
   revalidatePath("/agent")
   return { ok: true }
 }
@@ -379,7 +444,9 @@ export async function confirmItemAction(input: { itemId: string; roundId: string
       ),
     )
   if (!item) throw new Error("卡牌不存在")
-  if (!["waiting_human", "fallback", "approved_by_ai", "confirmed"].includes(item.status)) {
+  // failed 也允许改选：生图失败（如内容被上游拒绝/调用失败）的卡若有历史
+  // 成图轮，用户可直接改选其一为终稿收口，不必重开重试
+  if (!["waiting_human", "fallback", "approved_by_ai", "confirmed", "failed"].includes(item.status)) {
     throw new Error("当前状态不可确认")
   }
   const [round] = await db
@@ -428,10 +495,16 @@ export async function regenItemAction(input: { itemId: string }) {
   const [runRow] = await db
     .select({ status: agentRuns.status, template: agentRuns.template, phase: agentRuns.phase })
     .from(agentRuns)
-    .where(eq(agentRuns.id, item.runId))
-  // 模板流程：清单提示词是用户确认过的底稿，重开保留（首轮直接沿用，
-  // 仅在审核打回时由文案 Agent 改写）
-  const isTemplate = !!runRow?.template
+    .where(
+      and(
+        eq(agentRuns.id, item.runId),
+        eq(agentRuns.enterpriseId, ctx.user.enterpriseId!),
+        eq(agentRuns.userId, ctx.user.id),
+      ),
+    )
+  // 模板流程（经典全流程已下线）：清单提示词是用户确认过的底稿，重开保留
+  // （首轮直接沿用，仅在审核打回时由文案 Agent 改写）
+  if (!runRow?.template) throw new Error("该项目不是模板项目，无法重开")
 
   await db
     .update(agentRunItems)
@@ -441,34 +514,137 @@ export async function regenItemAction(input: { itemId: string }) {
       finalRoundId: null,
       fallbackContentWarning: false,
       errorMessage: null,
-      ...(isTemplate ? {} : { currentPrompt: null, promptSource: null }),
       manualRegenCount: item.manualRegenCount + 1,
       updatedAt: new Date(),
     })
     .where(eq(agentRunItems.id, item.id))
 
   // 模板运行必须带上 produce_cards 动作，模板队列才会认领
-  if (runRow && runRow.status !== "running" && runRow.status !== "queued") {
-    await db
+  if (runRow.status !== "running" && runRow.status !== "queued") {
+    // 条件更新守住 SELECT→UPDATE 间隙：状态被并发改变（如 worker 已认领）时不覆盖
+    const updated = await db
       .update(agentRuns)
-      .set(
-        isTemplate
-          ? {
-              status: "queued",
-              finishedAt: null,
-              error: null,
-              pendingAction: { kind: "produce_cards", phase: runRow.phase, requestedAt: new Date().toISOString() },
-              updatedAt: new Date(),
-            }
-          : { status: "queued", finishedAt: null, error: null, updatedAt: new Date() },
-      )
-      .where(eq(agentRuns.id, item.runId))
+      .set({
+        status: "queued",
+        finishedAt: null,
+        error: null,
+        pendingAction: { kind: "produce_cards", phase: runRow.phase, requestedAt: new Date().toISOString() },
+        updatedAt: new Date(),
+      })
+      .where(and(eq(agentRuns.id, item.runId), notInArray(agentRuns.status, ["running", "queued"])))
+      .returning({ id: agentRuns.id })
+    if (updated.length === 0) throw new Error("AI 团队正在处理中，请稍候")
   }
   await db.insert(agentEvents).values({
     runId: item.runId,
     action: "regen",
     status: "ok",
     detail: `「${item.name ?? `第 ${item.index + 1} 张`}」手动重开（第 ${item.manualRegenCount + 1} 次，重新执行流水线）`,
+    itemId: item.id,
+  })
+  revalidatePath("/agent")
+  return { ok: true }
+}
+
+/**
+ * 批量重试失败卡面（生图/模型调用失败造成的中断）：把该 run 全部
+ * failed/cancelled 卡一次性重置为 pending 并重新排队生产。produce_cards
+ * 只原子认领 pending 卡（见 runItemBatches），已完成的卡不会被重复处理。
+ */
+export async function regenFailedItemsAction(runId: string) {
+  const ctx = await requireEnterpriseContext()
+  const denied = denyAgent(ctx)
+  if (denied) throw new Error(denied)
+  const id = z.string().uuid().parse(runId)
+  const runRow = await getOwnedRun(ctx, id)
+  if (!runRow) throw new Error("项目不存在或无权访问")
+  if (!runRow.template) throw new Error("该项目不是模板项目")
+  if (runRow.status === "running" || runRow.status === "queued") {
+    throw new Error("AI 团队正在处理中，请稍候")
+  }
+  const failed = await db
+    .select({ id: agentRunItems.id })
+    .from(agentRunItems)
+    .where(
+      and(eq(agentRunItems.runId, id), inArray(agentRunItems.status, ["failed", "cancelled"])),
+    )
+  if (failed.length === 0) throw new Error("没有可重试的失败卡面")
+
+  await db
+    .update(agentRunItems)
+    .set({
+      status: "pending",
+      roundsUsed: 0,
+      finalRoundId: null,
+      fallbackContentWarning: false,
+      errorMessage: null,
+      manualRegenCount: sql`${agentRunItems.manualRegenCount} + 1`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(eq(agentRunItems.runId, id), inArray(agentRunItems.status, ["failed", "cancelled"])),
+    )
+
+  // 条件更新守住 SELECT→UPDATE 间隙：状态被并发改变（如 worker 已认领）时不覆盖
+  const updated = await db
+    .update(agentRuns)
+    .set({
+      status: "queued",
+      finishedAt: null,
+      error: null,
+      pendingAction: { kind: "produce_cards", phase: runRow.phase, requestedAt: new Date().toISOString() },
+      updatedAt: new Date(),
+    })
+    .where(and(eq(agentRuns.id, id), notInArray(agentRuns.status, ["running", "queued"])))
+    .returning({ id: agentRuns.id })
+  if (updated.length === 0) throw new Error("AI 团队正在处理中，请稍候")
+
+  await db.insert(agentEvents).values({
+    runId: id,
+    action: "regen",
+    status: "ok",
+    detail: `批量重试 ${failed.length} 张失败卡面（重置为待生产并重新排队）`,
+  })
+  revalidatePath("/agent")
+  return { ok: true, count: failed.length }
+}
+
+/** 用户编辑卡面提示词终稿（评审弹窗内）；后续生图/重开沿用编辑后的 currentPrompt */
+const updateItemPromptSchema = z.object({
+  itemId: z.string().uuid(),
+  prompt: z.string().trim().min(10, "提示词太短（至少 10 字）").max(8000),
+})
+
+export async function updateItemPromptAction(input: unknown) {
+  const ctx = await requireEnterpriseContext()
+  const denied = denyAgent(ctx)
+  if (denied) throw new Error(denied)
+  const parsed = updateItemPromptSchema.parse(input)
+  const [item] = await db
+    .select({ id: agentRunItems.id, runId: agentRunItems.runId, status: agentRunItems.status })
+    .from(agentRunItems)
+    .where(
+      and(
+        eq(agentRunItems.id, parsed.itemId),
+        eq(agentRunItems.enterpriseId, ctx.user.enterpriseId!),
+        eq(agentRunItems.userId, ctx.user.id),
+      ),
+    )
+  if (!item) throw new Error("卡牌不存在")
+  // 在途守卫（对齐 regenItemAction）：生成/评审期间改写 currentPrompt 会与
+  // worker 内存态 state.prompt 竞态，下一轮或崩溃恢复后口径不一
+  if (["drafting", "generating", "reviewing"].includes(item.status)) {
+    throw new Error("该卡牌正在生成或评审中，请等待本轮完成后再编辑提示词")
+  }
+  await db
+    .update(agentRunItems)
+    .set({ currentPrompt: parsed.prompt, updatedAt: new Date() })
+    .where(eq(agentRunItems.id, item.id))
+  await db.insert(agentEvents).values({
+    runId: item.runId,
+    action: "edit",
+    status: "ok",
+    detail: "提示词终稿已人工编辑，后续生图将使用编辑后的版本",
     itemId: item.id,
   })
   revalidatePath("/agent")

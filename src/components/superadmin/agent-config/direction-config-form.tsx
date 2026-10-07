@@ -14,7 +14,6 @@ import { defaultTemplateConfigFor, type DirectionConfig } from "@/lib/agent/pipe
 import { DIRECTION_CARDS } from "@/components/agent/team"
 import { cn } from "@/lib/utils"
 import { TemplateConfigForm, type ChatModelOption, type ImageModelOption } from "./template-config-form"
-
 export function DirectionConfigForm({
   draft,
   saved,
@@ -63,9 +62,14 @@ export function DirectionConfigForm({
           template={draft.templateConfig ?? defaultTemplateConfigFor("tarot")!}
           chatModels={chatModels}
           imageModels={imageModels}
+          chatModelSlots={{
+            styleChatModelId: draft.models.styleChatModelId ?? null,
+            structureChatModelId: draft.models.structureChatModelId ?? null,
+          }}
           patch={(partial) =>
             onPatch({ templateConfig: { ...(draft.templateConfig ?? defaultTemplateConfigFor("tarot")!), ...partial } })
           }
+          patchModels={(partial) => onPatch({ models: { ...draft.models, ...partial } })}
         />
       ) : (
         <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">

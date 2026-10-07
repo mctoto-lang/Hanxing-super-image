@@ -2,11 +2,12 @@
  * 图片模型请求体构造（纯函数库，零副作用，零外部依赖）
  *
  * 接口格式：openai（OpenAI 标准生图 /v1/images/generations）| jimeng（即梦）|
- * gemini（Gemini 系中转：请求形状同 openai，尺寸参数可切换为比例）。
+ * gemini（Gemini 系中转：请求形状同 openai，尺寸参数可切换为比例）|
+ * grsai（Gemini (Grsai)：aspectRatio 比例 + imageSize 清晰度档位）。
  * GRS 格式已下线。
  */
 
-export type ImageApiFormat = "openai" | "jimeng" | "gemini"
+export type ImageApiFormat = "openai" | "jimeng" | "gemini" | "grsai"
 
 export const DEFAULT_IMAGE_API_FORMAT: ImageApiFormat = "openai"
 /** 即梦参考图字段缺省名 */
@@ -55,7 +56,7 @@ interface GenerationCapabilities {
   sizePresets?: unknown
 }
 
-const FORMATS = new Set<ImageApiFormat>(["openai", "jimeng", "gemini"])
+const FORMATS = new Set<ImageApiFormat>(["openai", "jimeng", "gemini", "grsai"])
 
 function parseExtraConfig(value: unknown): Record<string, unknown> {
   if (value === undefined || value === null || value === "") return {}
@@ -163,7 +164,7 @@ export function validateGenerationCapabilities(
 export function validateImageModelConfig(input: ImageModelConfigInput): void {
   const format = input.apiFormat
   if (!FORMATS.has(format as ImageApiFormat)) {
-    throw new Error("图片模型仅支持 openai、jimeng 和 gemini 接口格式")
+    throw new Error("图片模型仅支持 openai、jimeng、gemini 和 grsai 接口格式")
   }
   const config = parseExtraConfig(input.extraConfig)
 
@@ -173,6 +174,19 @@ export function validateImageModelConfig(input: ImageModelConfigInput): void {
     const quality = config.quality
     if (quality !== undefined && typeof quality !== "string") {
       throw new Error("quality 必须是字符串")
+    }
+    return
+  }
+
+  // grsai：额外配置仅 grsai_image_size（清晰度档位手动覆盖；缺省 = 按预设尺寸自动推导）
+  if (format === "grsai") {
+    rejectUnsupportedFields(config, new Set(["grsai_image_size"]))
+    const tier = config.grsai_image_size
+    if (
+      tier !== undefined &&
+      !(GRSAI_IMAGE_SIZE_TIERS as readonly string[]).includes(String(tier))
+    ) {
+      throw new Error(`grsai_image_size 仅支持 ${GRSAI_IMAGE_SIZE_TIERS.join("、")}`)
     }
     return
   }
@@ -261,6 +275,102 @@ export function buildJimengRequestBody(
   return body
 }
 
+// ═══════════════ Grsai（Gemini (Grsai)）格式：比例 + 清晰度档位 ═══════════════
+
+interface BuildGrsaiRequestInput {
+  model: string
+  prompt: string
+  imageSize: string
+  referenceImages: string[]
+  /** 清晰度档位手动覆盖（模型 extraConfig.grsai_image_size；空 = 按预设尺寸自动推导） */
+  imageSizeOverride?: string | null
+}
+
+/** Grsai aspectRatio 支持值（nano-banana 系列通用集） */
+const GRSAI_SUPPORTED_RATIOS = [
+  "auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9",
+] as const
+
+/** 清晰度档位合法值 */
+export const GRSAI_IMAGE_SIZE_TIERS = ["1K", "2K", "4K"] as const
+
+/**
+ * 把尺寸串换算成 Grsai aspectRatio 值：
+ * gcd 归约比例（1024x1536 → 2:3）；"auto" 原样返回；归约结果不在
+ * Grsai 支持集时，按比例值（w/h）就近吸附到支持的比例，避免上游拒判。
+ */
+export function grsaiAspectRatio(size: string): string {
+  if (size === "auto") return "auto"
+  const match = size.match(/^(\d+)x(\d+)$/i)
+  if (!match) return "1:1"
+  const width = Number(match[1])
+  const height = Number(match[2])
+  if (width <= 0 || height <= 0) return "1:1"
+  const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b))
+  const divisor = gcd(width, height)
+  const ratio = `${width / divisor}:${height / divisor}`
+  if ((GRSAI_SUPPORTED_RATIOS as readonly string[]).includes(ratio)) return ratio
+  // 就近吸附：找 |log(w/h) - log(rw/rh)| 最小的支持比例
+  const target = Math.log(width / height)
+  let best = "1:1"
+  let bestDist = Number.POSITIVE_INFINITY
+  for (const candidate of GRSAI_SUPPORTED_RATIOS) {
+    if (candidate === "auto") continue
+    const [rw, rh] = candidate.split(":").map(Number)
+    const dist = Math.abs(Math.log(rw / rh) - target)
+    if (dist < bestDist) {
+      bestDist = dist
+      best = candidate
+    }
+  }
+  return best
+}
+
+/**
+ * 清晰度档位：手动覆盖优先；否则按预设总像素推导
+ * （≤160 万像素 → 1K、≤600 万像素 → 2K、更大 → 4K，与 nano-banana
+ * 1K≈百万像素级 / 2K≈四百万像素级的档位语义对齐；1024x1536 ≈ 157 万 → 1K）。
+ */
+export function grsaiImageSizeTier(
+  size: string,
+  override?: string | null,
+): string {
+  const manual = override?.trim()
+  if (manual && (GRSAI_IMAGE_SIZE_TIERS as readonly string[]).includes(manual)) {
+    return manual
+  }
+  const match = size.match(/^(\d+)x(\d+)$/i)
+  if (!match) return "1K"
+  const pixels = Number(match[1]) * Number(match[2])
+  if (pixels <= 1_600_000) return "1K"
+  if (pixels <= 6_000_000) return "2K"
+  return "4K"
+}
+
+/**
+ * Grsai 生图请求体：POST {base}/v1/api/generate
+ *
+ * - 比例必传：aspectRatio 由尺寸预设 gcd 归约（不支持的比例就近吸附）
+ * - 清晰度：imageSize 档位（1K/2K/4K），按预设像素自动推导或模型配置覆盖
+ * - 参考图：images 数组（base64 与 URL 均支持，这里传转存后的 URL）
+ * - replyType 固定 json（同步响应，与逐张工作单元模式一致）
+ */
+export function buildGrsaiRequestBody(
+  input: BuildGrsaiRequestInput,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model: input.model,
+    prompt: input.prompt,
+    aspectRatio: grsaiAspectRatio(input.imageSize || DEFAULT_IMAGE_SIZE),
+    imageSize: grsaiImageSizeTier(input.imageSize, input.imageSizeOverride),
+    replyType: "json",
+  }
+  if (input.referenceImages.length > 0) {
+    body.images = input.referenceImages
+  }
+  return body
+}
+
 // ═══════════════ 生图结果共享类型（供适配器与队列消费者使用） ═══════════════
 
 /** 单张图片生成结果（index 对应任务内图片序号；url/error 二选一） */
@@ -268,6 +378,54 @@ export interface ImageGenResult {
   index: number
   url?: string
   error?: string
+}
+
+/** 汇总错误时单条上游错误的长度上限（响应体可能很长，截断保留关键前段） */
+const IMAGE_ERROR_MAX_LENGTH = 400
+/** 汇总错误最多保留的条数（不同张可能因同一原因失败，去重后仍可能多条） */
+const IMAGE_ERROR_MAX_ITEMS = 3
+
+/**
+ * 汇总一批生图结果中失败张的上游错误（去重、逐条截断、限量）。
+ *
+ * callImageApi 对单张失败不抛异常（部分成功语义，error 携带上游状态码/
+ * 响应体摘要），调用方必须从这里取失败原因透传给重试收尾的报错/事件/
+ * 任务日志——否则失败信息只剩"未知原因"，无法定位上游问题。
+ * 全部成功时返回 null。
+ */
+export function summarizeImageErrors(results: readonly ImageGenResult[]): string | null {
+  const errors: string[] = []
+  for (const r of results) {
+    if (r.url || !r.error) continue
+    const trimmed = r.error.trim().slice(0, IMAGE_ERROR_MAX_LENGTH)
+    if (trimmed && !errors.includes(trimmed)) errors.push(trimmed)
+  }
+  if (errors.length === 0) return null
+  const shown = errors.slice(0, IMAGE_ERROR_MAX_ITEMS).join("；")
+  return errors.length > IMAGE_ERROR_MAX_ITEMS ? `${shown}；等共 ${errors.length} 类错误` : shown
+}
+
+/**
+ * 判断生图错误是否为上游内容安全策略拒绝（画面描述血腥/色情/暴力等被拦）。
+ *
+ * 这类失败可以通过改写提示词规避，调用方应把报错原文交给改写 AI；
+ * 过载/限流/超时/网络等纯调用失败不匹配本函数——重试同样的提示词即可，
+ * 不应触发改写。
+ */
+const CONTENT_POLICY_PATTERNS: RegExp[] = [
+  /content[_\s-]?polic/i,
+  /safety\s+(system|filter|setting|guard)/i,
+  /polic(?:y|ies)\s+violation/i,
+  /violat(?:es|ed|ion)\b[^\n]{0,60}(?:polic|content|communit|usage)/i,
+  /prohibited\s+(?:content|by)/i,
+  /\bnsfw\b/i,
+  /sexual(?:ly)?\s+(?:explicit|content)/i,
+  /graphic\s+(?:violence|content)/i,
+  /敏感内容|内容安全|违规内容|审核不通过/,
+]
+
+export function isContentPolicyError(message: string): boolean {
+  return CONTENT_POLICY_PATTERNS.some((pattern) => pattern.test(message))
 }
 
 /**

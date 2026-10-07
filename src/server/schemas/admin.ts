@@ -49,11 +49,13 @@ export const modelConfigSchema = z.object({
   displayName: z.string().min(1, "请输入显示名").max(200),
   apiEndpoint: z.string().min(1, "请输入 API 地址").max(500),
   apiKey: z.string().optional(), // 创建时必填（action 内校验），编辑留空=不修改
-  apiFormat: z.enum(["openai", "jimeng", "gemini"]),
+  apiFormat: z.enum(["openai", "jimeng", "gemini", "grsai"]),
   jimengResolution: z.enum(["1k", "2k", "4k"]).optional(),
   jimengN: z.number().int().min(1).max(8).optional(),
   /** OpenAI 格式质量参数透传（管理员填入具体值；空 = 不传） */
   quality: z.string().trim().max(50).optional(),
+  /** grsai 格式：清晰度档位手动覆盖（空 = 按预设尺寸自动推导） */
+  grsaiImageSize: z.enum(["1K", "2K", "4K"]).optional(),
   /** gemini 格式：以比例参数代替尺寸参数（openai/jimeng 格式忽略） */
   useRatioParam: z.boolean().default(false),
   /** gemini 格式：比例参数字段名（空 = aspect_ratio） */
@@ -84,6 +86,7 @@ export const modelConfigSchema = z.object({
   visibleInProduct: z.boolean().default(false),
   visibleInWeartry: z.boolean().default(false),
   visibleInMockup: z.boolean().default(false),
+  visibleInAgent: z.boolean().default(false),
   supportsReferenceImage: z.boolean().default(false),
   maxReferenceImages: z.number().int().min(0).max(10).default(0),
   referenceImageField: z.string().max(50).optional(),

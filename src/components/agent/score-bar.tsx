@@ -3,8 +3,10 @@
 /**
  * 评分进度条（0-100）
  *
- * - 轨道按 scoreTone 档位着色（红/琥珀/绿），及格线处以细竖线标记；
- * - score = null 时展示空轨道 +「—」（未评分）；
+ * - ScoreBar：分格竖条带（「服务可用性」同款分段样式）——100 根细竖条、
+ *   每根 1 分（gap 2px 细密间隔），按分数点亮对应数量；颜色按 scoreTone
+ *   档位（红/琥珀/绿），及格线位置以分隔缺口呈现；
+ * - score = null 时全部置灰 +「—」（未评分）；
  * - ScoreMiniBars：无标签的三条细进度条，用于卡片网格缩略图等紧凑场景。
  */
 import { cn } from "@/lib/utils"
@@ -26,16 +28,91 @@ export const SCORE_TONE_FILL_CLASSES: Record<ScoreTone, string> = {
 const EMPTY_FILL_CLASS = "bg-zinc-400/50 dark:bg-zinc-500/40"
 const TRACK_CLASS = "bg-zinc-200 dark:bg-zinc-700"
 
-type BarSize = "sm" | "md"
-
-const SIZE_CLASSES: Record<BarSize, { track: string; label: string; value: string }> = {
-  sm: { track: "h-1.5", label: "w-12 text-[10px]", value: "text-[10px]" },
-  md: { track: "h-2.5", label: "w-14 text-xs", value: "text-xs" },
+/** 分数条带配色（与服务状态 UptimeBar 同款 400 亮色系；未点亮 = bg-muted） */
+const SEGMENT_TONE_CLASSES: Record<ScoreTone, string> = {
+  low: "bg-red-400",
+  warn: "bg-yellow-400",
+  pass: "bg-green-400",
 }
 
-/** 把分数/及格线收敛到 0-100，防止非法输入把轨道画穿 */
+/** 通过状态圆点颜色：绿=达到及格线 / 黄=未达线但 ≥60（接近及格）/ 红=<60 或不通过 */
+const STATUS_DOT_CLASSES: Record<"pass" | "warn" | "low", string> = {
+  pass: "bg-emerald-500",
+  warn: "bg-amber-500",
+  low: "bg-red-500",
+}
+
+/** 竖条带总分格数（每根 2 分；柱 w-1(4px) + gap-0.5(2px) 与 UptimeBar 完全
+ * 相同，50 根总宽 298px 恰好适配弹窗中列；100 根需 600px 超宽放不下） */
+export const SCORE_SEGMENTS = 50
+
+type BarSize = "sm" | "md"
+
+/** 条带高度统一 h-6（与服务状态 UptimeBar 一致） */
+const SIZE_CLASSES: Record<BarSize, { bar: string; label: string; value: string }> = {
+  sm: { bar: "h-6", label: "w-12 text-[10px]", value: "text-[10px]" },
+  md: { bar: "h-6", label: "w-14 text-xs", value: "text-xs" },
+}
+
+/** 把分数/及格线收敛到 0-100，防止非法输入画穿 */
 function toPercent(value: number): number {
   return Math.max(0, Math.min(100, value))
+}
+
+/** 分数 → 点亮格数（每根 2 分，四舍五入，0-SCORE_SEGMENTS） */
+function toSegments(value: number): number {
+  return Math.max(0, Math.min(SCORE_SEGMENTS, Math.round((toPercent(value) / 100) * SCORE_SEGMENTS)))
+}
+
+/** 纯分数条带（无标签/数值/圆点；柱参数固定与服务状态 UptimeBar 一致）——列表式评分行等场景单独使用 */
+export function ScoreSegmentsBar({
+  label,
+  score,
+  threshold,
+  className,
+}: {
+  /** 无障碍标签（如「审美分」） */
+  label: string
+  score: number | null
+  threshold: number
+  className?: string
+}) {
+  const tone = score === null ? null : scoreTone(score, threshold)
+  const lit = score === null ? 0 : toSegments(score)
+  const ariaLabel =
+    score === null
+      ? `${label}：暂无评分，及格线 ${threshold}`
+      : `${label} ${score}，及格线 ${threshold}`
+  return (
+    <div
+      role="meter"
+      aria-label={ariaLabel}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={score ?? undefined}
+      aria-valuetext={score === null ? "暂无评分" : `${score} 分（及格线 ${threshold}）`}
+      className={cn("flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden", className)}
+    >
+      {Array.from({ length: SCORE_SEGMENTS }, (_, index) => (
+        <span
+          key={index}
+          aria-hidden="true"
+          className={cn(
+            // 与服务状态 UptimeBar 完全相同的柱参数：h-6 / w-1(4px) /
+            // rounded-sm / gap-0.5(2px)；固定宽度不参与 flex 均分（均分会
+            // 产生亚像素舍入，柱宽与间隔忽宽忽窄）。无及格线刻度——
+            // UptimeBar 没有该元素，通过颜色（绿=达线）体现状态。
+            "h-6 w-1 shrink-0 rounded-sm transition-colors duration-300",
+            index < lit
+              ? tone
+                ? SEGMENT_TONE_CLASSES[tone]
+                : EMPTY_FILL_CLASS
+              : "bg-muted",
+          )}
+        />
+      ))}
+    </div>
+  )
 }
 
 export function ScoreBar({
@@ -44,50 +121,36 @@ export function ScoreBar({
   threshold,
   size = "md",
   showThreshold = false,
+  status = null,
   className,
 }: {
   /** 维度标签（如「审美分」） */
   label: string
-  /** 0-100；null = 未评分，展示空轨道 + — */
+  /** 0-100；null = 未评分，展示全灰竖条 + — */
   score: number | null
-  /** 及格线（0-100），轨道上以细竖线标记位置 */
+  /** 及格线（0-100），竖条带以分隔缺口标记位置 */
   threshold: number
   /** sm = 紧凑（评审员明细/缩略场景），md = 默认 */
   size?: BarSize
   /** 数值下方追加「及格 X」小字 */
   showThreshold?: boolean
+  /** 名称后方的通过状态圆点（绿/黄/红）；null = 不显示 */
+  status?: "pass" | "warn" | "low" | null
   className?: string
 }) {
   const sizes = SIZE_CLASSES[size]
-  const tone = score === null ? null : scoreTone(score, threshold)
-  const ariaLabel =
-    score === null
-      ? `${label}：暂无评分，及格线 ${threshold}`
-      : `${label} ${score}，及格线 ${threshold}`
   return (
     <div className={cn("flex items-center gap-2", className)}>
-      <span className={cn("shrink-0 text-muted-foreground", sizes.label)}>{label}</span>
-      <div
-        role="meter"
-        aria-label={ariaLabel}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={score ?? undefined}
-        className={cn("relative flex-1 rounded-full", sizes.track, TRACK_CLASS)}
-      >
-        <div
-          className={cn(
-            "h-full rounded-full transition-[width] duration-500 ease-out",
-            tone ? SCORE_TONE_FILL_CLASSES[tone] : EMPTY_FILL_CLASS,
-          )}
-          style={{ width: score === null ? "0%" : `${toPercent(score)}%` }}
-        />
-        <span
-          aria-hidden="true"
-          className="absolute top-1/2 h-[calc(100%+4px)] w-px -translate-y-1/2 bg-foreground/40"
-          style={{ left: `${toPercent(threshold)}%` }}
-        />
-      </div>
+      <span className={cn("flex shrink-0 items-center gap-1.5 text-muted-foreground", sizes.label)}>
+        {label}
+        {status && (
+          <span
+            aria-label={status === "pass" ? "通过" : status === "warn" ? "接近及格" : "未通过"}
+            className={cn("inline-block size-2 shrink-0 rounded-full", STATUS_DOT_CLASSES[status])}
+          />
+        )}
+      </span>
+      <ScoreSegmentsBar label={label} score={score} threshold={threshold} />
       <div className="flex w-12 shrink-0 flex-col items-end leading-tight">
         <span className={cn("font-medium tabular-nums", sizes.value)}>
           {score === null ? "—" : score}

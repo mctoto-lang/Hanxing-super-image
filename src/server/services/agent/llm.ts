@@ -19,6 +19,7 @@ import type { ChatStreamEvent, ChatUpstreamMessage, ThinkingLevel } from "@/lib/
 import { calcMessageCostCenticredits, estimateMessageTokens } from "@/lib/ai/chat/chat-model-config"
 import { deductCredits, CreditsInsufficientError } from "@/server/services/credits-service"
 import type { AgentThinkingLevel } from "@/lib/agent/graph"
+import { withAgentLlmSlot, type AgentLlmLimits } from "./llm-slots"
 
 export type ChatModelRow = typeof chatApiConfigs.$inferSelect
 
@@ -26,6 +27,11 @@ export type ChatModelRow = typeof chatApiConfigs.$inferSelect
 export interface AgentLlmContext {
   run: AgentRunRow
   chatModelCache: Map<string, ChatModelRow>
+  /**
+   * 对话槽位限额缓存（模型/权限组/企业三层；llm-slots 惰性加载后回填，
+   * 与 chatModelCache 同模式避免每次调用查库）。运行期视为不变。
+   */
+  llmLimits?: AgentLlmLimits
 }
 
 /** 运行计费/日志用展示名（固定流水线：方向名） */
@@ -62,6 +68,9 @@ export async function loadChatModel(ctx: AgentLlmContext, modelId: string | null
 /**
  * 聚合流式调用为完整文本 + usage（usage 缺失时按估算兜底计费，同 chat SSE 策略）。
  * 流中任意位置出现 error 事件即抛错（不返回半截文本，避免残缺输出污染下游）。
+ *
+ * 带总时长预算（取模型 taskTimeout，至少 120 秒）：单次调用挂死时及时抛错，
+ * 避免单个 worker 进程的整条 agent 队列被无限阻塞（崩溃恢复/新任务认领同停）。
  */
 export async function callLlmText(
   model: ChatModelRow,
@@ -71,24 +80,42 @@ export async function callLlmText(
     thinkingLevel: AgentThinkingLevel
   },
 ): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
+  const budgetSec = Math.max(120, model.taskTimeout || 300)
   let text = ""
   let inputTokens = 0
   let outputTokens = 0
   let sawError: string | null = null
-  for await (const ev of dispatchStreamChat(model, {
-    messages: opts.messages,
-    systemPrompt: opts.systemPrompt,
-    thinkingLevel: opts.thinkingLevel as ThinkingLevel,
-  })) {
-    const e = ev as ChatStreamEvent
-    if (e.type === "text_delta") {
-      text += e.text
-    } else if (e.type === "usage") {
-      inputTokens = Math.max(inputTokens, e.inputTokens ?? 0)
-      outputTokens = Math.max(outputTokens, e.outputTokens ?? 0)
-    } else if (e.type === "error") {
-      sawError = e.message
+  const consume = async (): Promise<void> => {
+    for await (const ev of dispatchStreamChat(model, {
+      messages: opts.messages,
+      systemPrompt: opts.systemPrompt,
+      thinkingLevel: opts.thinkingLevel as ThinkingLevel,
+    })) {
+      const e = ev as ChatStreamEvent
+      if (e.type === "text_delta") {
+        text += e.text
+      } else if (e.type === "usage") {
+        inputTokens = Math.max(inputTokens, e.inputTokens ?? 0)
+        outputTokens = Math.max(outputTokens, e.outputTokens ?? 0)
+      } else if (e.type === "error") {
+        sawError = e.message
+      }
     }
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`模型调用超时（上限 ${budgetSec} 秒），已中止本次调用`)),
+      budgetSec * 1000,
+    )
+  })
+  const consuming = consume()
+  try {
+    await Promise.race([consuming, deadline])
+  } finally {
+    clearTimeout(timer)
+    // 超时后后台流不再使用：吞掉其后续异常，防 unhandledRejection 拖崩进程
+    consuming.catch(() => {})
   }
   if (sawError) throw new Error(`模型调用失败：${sawError}`)
   if (inputTokens === 0 && outputTokens === 0) {
@@ -145,11 +172,15 @@ export async function callLlmJson<T = Record<string, unknown>>(
     const systemPrompt = nudge
       ? `${opts.systemPrompt}\n\n上一次输出不符合要求（${nudge.slice(0, 160)}）。请严格只输出一个合法的 JSON 对象，包含全部必需字段，不要包含任何其他文字或代码块标记。`
       : opts.systemPrompt
-    const { text, inputTokens, outputTokens } = await callLlmText(model, {
-      systemPrompt,
-      messages: opts.messages,
-      thinkingLevel: opts.thinkingLevel,
-    })
+    // 三层对话槽位（模型/权限组/企业，与生图队列同款语义）包住每次真实调用：
+    // 含纠错重试在内的全部 Agent LLM 调用都在此限流排队
+    const { text, inputTokens, outputTokens } = await withAgentLlmSlot(ctx, model, () =>
+      callLlmText(model, {
+        systemPrompt,
+        messages: opts.messages,
+        thinkingLevel: opts.thinkingLevel,
+      }),
+    )
     await settleLlmCost(ctx, model, inputTokens, outputTokens)
     const parsed = parseJsonLoose<T>(text)
     if (opts.validate) opts.validate(parsed)

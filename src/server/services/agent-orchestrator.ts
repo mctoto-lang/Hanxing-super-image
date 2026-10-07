@@ -25,7 +25,6 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import {
   agentEvents,
-  agentNodeRuns,
   agentReviews,
   agentRunItems,
   agentRounds,
@@ -40,12 +39,14 @@ import type {
   ChatContentPart,
   ChatUpstreamMessage,
 } from "@/lib/ai/chat/chat-model-config"
-import { callImageApi } from "@/lib/ai"
+import { callImageApi, isContentPolicyError, summarizeImageErrors } from "@/lib/ai"
 import { acquireImageSlot, releaseImageSlot } from "@/lib/queue/task-queue"
 import { majorityVotePassed } from "@/lib/agent/review"
+import { effectiveConcurrentLimit } from "@/lib/auth/permissions"
 import { getStorage } from "@/lib/storage"
 import { signUploadToken } from "@/lib/storage/upload-token"
 import { deductCredits, refundCredits, CreditsInsufficientError } from "@/server/services/credits-service"
+import { recordAgentImageTask } from "./agent/image-gen-log"
 import {
   callLlmJson,
   LlmValidationError,
@@ -64,7 +65,9 @@ import type {
   VerdictPayload,
 } from "@/lib/agent/graph"
 import { mainEdges, nodesById, validateAgentGraph } from "@/lib/agent/validate"
-import { PIPELINE_NODE_IDS } from "@/lib/agent/pipelines"
+import { DEFAULT_REVIEWER_PROMPT, PIPELINE_NODE_IDS } from "@/lib/agent/pipelines"
+import { suitCountRuleByIndex } from "@/lib/agent/templates"
+import { splitFinalPromptSegments } from "@/lib/agent/cards/plan"
 
 type ImageModelRow = typeof modelsTable.$inferSelect
 
@@ -99,6 +102,8 @@ interface RunEnv {
   enterpriseMaxConcurrent: number
   groupId: string | null
   groupMaxConcurrent: number
+  /** 权限组生图模型白名单（jsonb；null = 无组或未配置 = 放行全部） */
+  groupAllowedModels: string[] | null
   chatModelCache: Map<string, ChatModelRow>
   imageModelCache: Map<string, ImageModelRow>
 }
@@ -110,7 +115,11 @@ async function buildRunEnv(run: AgentRunRow): Promise<RunEnv> {
     .from(enterprises)
     .where(eq(enterprises.id, run.enterpriseId))
   const [groupRow] = await db
-    .select({ groupId: permissionGroups.id, maxConcurrent: permissionGroups.maxConcurrent })
+    .select({
+      groupId: permissionGroups.id,
+      maxConcurrent: permissionGroups.maxConcurrent,
+      allowedModels: permissionGroups.allowedModels,
+    })
     .from(users)
     .innerJoin(permissionGroups, eq(users.groupId, permissionGroups.id))
     .where(eq(users.id, run.userId))
@@ -121,6 +130,9 @@ async function buildRunEnv(run: AgentRunRow): Promise<RunEnv> {
     enterpriseMaxConcurrent: entRow?.maxConcurrent ?? 5,
     groupId: groupRow?.groupId ?? null,
     groupMaxConcurrent: groupRow?.maxConcurrent ?? 0,
+    groupAllowedModels: Array.isArray(groupRow?.allowedModels)
+      ? (groupRow.allowedModels as string[])
+      : null,
     chatModelCache: new Map(),
     imageModelCache: new Map(),
   }
@@ -138,6 +150,14 @@ async function loadImageModel(env: RunEnv, modelId: string | null): Promise<Imag
   if (!row || !row.isActive) throw new Error("生图模型不存在或已停用")
   if (row.enterpriseId !== null && row.enterpriseId !== env.run.enterpriseId) {
     throw new Error("生图模型不在本企业可用范围内")
+  }
+  // 权限组白名单兜底：发起时已校验，防启动后权限变更导致越权（空 = 放行）
+  if (
+    env.groupAllowedModels &&
+    env.groupAllowedModels.length > 0 &&
+    !env.groupAllowedModels.includes(modelId)
+  ) {
+    throw new Error("当前权限组无权使用该生图模型")
   }
   env.imageModelCache.set(modelId, row)
   return row
@@ -171,35 +191,6 @@ async function heartbeat(runId: string): Promise<void> {
   await db.update(agentRuns).set({ updatedAt: new Date() }).where(eq(agentRuns.id, runId))
 }
 
-/** 节点开始处理某 item：status → running（幂等保留已有 processed 计数） */
-async function nodeRunStart(runId: string, nodeKey: string): Promise<void> {
-  await db
-    .update(agentNodeRuns)
-    .set({ status: "running", startedAt: sql`COALESCE(${agentNodeRuns.startedAt}, now())`, updatedAt: new Date() })
-    .where(and(eq(agentNodeRuns.runId, runId), eq(agentNodeRuns.nodeKey, nodeKey)))
-}
-
-/** 节点处理完一个 item */
-async function nodeRunProgress(runId: string, nodeKey: string, failed = false): Promise<void> {
-  await db
-    .update(agentNodeRuns)
-    .set({
-      processedCount: sql`${agentNodeRuns.processedCount} + 1`,
-      failedCount: failed ? sql`${agentNodeRuns.failedCount} + 1` : undefined,
-      lastError: failed ? undefined : agentNodeRuns.lastError,
-      updatedAt: new Date(),
-    })
-    .where(and(eq(agentNodeRuns.runId, runId), eq(agentNodeRuns.nodeKey, nodeKey)))
-}
-
-/** 节点执行报错（保留 processed 计数，记 lastError） */
-async function nodeRunError(runId: string, nodeKey: string, message: string): Promise<void> {
-  await db
-    .update(agentNodeRuns)
-    .set({ lastError: message, updatedAt: new Date() })
-    .where(and(eq(agentNodeRuns.runId, runId), eq(agentNodeRuns.nodeKey, nodeKey)))
-}
-
 // ═══════════════════════════ 生图（槽位 + 预扣/退还） ═══════════════════════════
 
 /**
@@ -218,7 +209,9 @@ async function generateRoundImages(
   prompt: string,
   imageSize: string,
   count: number,
+  taskContext?: { itemLabel?: string | null },
 ): Promise<{ urls: string[]; costCredits: number }> {
+  const startedAt = Date.now()
   // 预扣（对齐生图队列「预扣 + 失败退还」语义）
   const prepay = model.costPerImage * count
   await deductCredits({
@@ -310,6 +303,8 @@ async function generateRoundImages(
 
   const okUrls: string[] = []
   let pending = Array.from({ length: count }, (_, i) => i)
+  // 最后一次上游失败原因：最终 throw 时完整带给 item.errorMessage / run.error
+  let lastFailReason = "未知原因"
 
   try {
     const storage = await getStorage()
@@ -359,6 +354,10 @@ async function generateRoundImages(
         for (const r of succeeded) {
           okUrls.push(r.url!)
         }
+        // 单张失败不抛异常（部分成功语义）：从结果里取上游原始错误，
+        // 否则重试耗尽后只剩「未知原因」，无法定位上游问题
+        const failedNow = summarizeImageErrors(results)
+        if (failedNow) lastFailReason = failedNow
         pending = pending.filter((i) => !succeeded.some((r) => r.index === i))
       } catch (err) {
         if (budget.signal.aborted) {
@@ -373,6 +372,7 @@ async function generateRoundImages(
           break
         }
         const reason = err instanceof Error ? err.message : String(err)
+        lastFailReason = reason
         if (attempt >= maxRetries) {
           await logEvent({
             runId: env.run.id,
@@ -380,7 +380,8 @@ async function generateRoundImages(
             nodeType: "image_gen",
             action: "fail",
             status: "warn",
-            detail: `生图失败（重试 ${maxRetries} 次后放弃）：${reason.slice(0, 120)}`,
+            // 完整保留上游错误（状态码/响应体），便于定位错误来源
+            detail: `生图失败（重试 ${maxRetries} 次后放弃）：${reason}`,
           })
         }
       }
@@ -411,8 +412,35 @@ async function generateRoundImages(
       .set({ imageCount: sql`${agentRuns.imageCount} + ${okUrls.length}` })
       .where(eq(agentRuns.id, env.run.id))
   } else {
-    throw new Error(`生图失败（已重试 ${maxRetries} 次，费用已退还）`)
+    // 补录失败生图任务（资产管理/操作日志可见；费用已退还按 0 计）
+    await recordAgentImageTask({
+      run: env.run,
+      model,
+      prompt,
+      imageSize,
+      kindLabel: "卡面",
+      itemLabel: taskContext?.itemLabel ?? null,
+      imageCount: count,
+      resultImages: [],
+      errorMessage: `生图失败（已重试 ${maxRetries} 次）：${lastFailReason}`,
+      creditsCharged: 0,
+      durationMs: Date.now() - startedAt,
+    })
+    throw new Error(`生图失败（已重试 ${maxRetries} 次，费用已退还）：${lastFailReason}`)
   }
+  // 补录成功生图任务（资产管理画廊 + 操作日志生图 Tab 可见）
+  await recordAgentImageTask({
+    run: env.run,
+    model,
+    prompt,
+    imageSize,
+    kindLabel: "卡面",
+    itemLabel: taskContext?.itemLabel ?? null,
+    imageCount: count,
+    resultImages: okUrls,
+    creditsCharged: model.costPerImage * okUrls.length,
+    durationMs: Date.now() - startedAt,
+  })
   return { urls: okUrls, costCredits: model.costPerImage * okUrls.length }
 }
 
@@ -561,8 +589,6 @@ async function walkItem(
 ): Promise<WalkOutcome> {
   const graph = env.graph
   const edges = mainEdges(graph)
-  const topo = graph.nodes.map((n) => n.id) // 仅用于排序基准
-  void topo
   const indeg = new Map<string, number>()
   const outMain = new Map<string, string[]>()
   for (const n of graph.nodes) {
@@ -635,26 +661,20 @@ async function executeNode(
 ): Promise<NodeOutcome> {
   const runId = env.run.id
   const title = node.config.title
-  await nodeRunStart(runId, node.id)
   try {
     switch (node.type) {
       case "start":
-        await nodeRunProgress(runId, node.id)
         return { kind: "passed" }
 
       case "agent":
         await executeAgentNode(env, item, state, node)
-        await nodeRunProgress(runId, node.id)
         return { kind: "passed" }
 
       case "image_gen":
-        await executeImageGenNode(env, item, state, node)
-        await nodeRunProgress(runId, node.id)
-        return { kind: "passed" }
+        return await executeImageGenNode(env, item, state, node)
 
       case "review":
         await executeReviewNode(env, item, state, node)
-        await nodeRunProgress(runId, node.id)
         return { kind: "passed" }
 
       case "supervisor":
@@ -680,18 +700,14 @@ async function executeNode(
           itemId: item.id,
           roundId: state.currentRoundId,
         })
-        await nodeRunProgress(runId, node.id)
         return { kind: "waiting_human" }
       }
 
       case "end":
-        await nodeRunProgress(runId, node.id)
         return { kind: "passed" }
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    await nodeRunError(runId, node.id, message)
-    await nodeRunProgress(runId, node.id, true)
     await logEvent({
       runId,
       nodeKey: node.id,
@@ -717,7 +733,10 @@ async function executeAgentNode(
   if (config.role === "style" || config.role === "structure") return
   const model = await loadChatModel(env, config.chatModelId)
 
-  // 重启幂等：已有 prompt 且本轮无反馈 → 跳过起草（反馈任一维度不通过即进入改写）
+  // 重启幂等：已有 prompt 且本轮无反馈 → 跳过起草（反馈任一维度不通过即进入改写）。
+  // 用户在 final 阶段确认过的终稿即 item.currentPrompt（state.prompt 初始值），
+  // 首轮生产由此直接进入生图，不会重写确认稿；起草分支仅在手动重开等
+  // prompt 为空的场景触发，输出口径与终稿两段结构保持一致。
   const hasFeedback =
     state.contentPass === false ||
     state.aestheticOk === false ||
@@ -740,10 +759,10 @@ async function executeAgentNode(
 
   const candidateCount = Math.max(1, config.candidateCount || 1)
   const formatSpec = hasFeedback
-    ? `只输出 JSON：{"prompt": "改写后的完整提示词"}`
+    ? `只输出 JSON：{"prompt": "重新细化后的完整终稿（[1] 画面风格 + [2] 画面内容 两段结构）"}`
     : candidateCount > 1
-      ? `输出 ${candidateCount} 个候选，只输出 JSON：{"variants": [{"name": "牌名", "meaning": "一句话牌义", "prompt": "文生图提示词"}, ...]}`
-      : `只输出 JSON：{"name": "牌名(≤20字)", "meaning": "一句话牌义", "prompt": "文生图提示词（以风格约束为前缀，画面具体可画）"}`
+      ? `输出 ${candidateCount} 个候选，只输出 JSON：{"variants": [{"name": "牌名", "meaning": "一句话牌义", "prompt": "完整终稿（[1] 画面风格 + [2] 画面内容 两段结构）"}, ...]}`
+      : `只输出 JSON：{"name": "牌名(≤20字，可选)", "meaning": "一句话牌义(可选)", "prompt": "完整终稿（[1] 画面风格 + [2] 画面内容 两段结构，画面内容 150-250 字）"}`
 
   const systemPrompt = `${config.rolePrompt}\n\n【输出格式】${formatSpec}\n不要输出 JSON 以外的任何内容（包括代码块标记、解释、前后缀）。`
 
@@ -752,14 +771,20 @@ async function executeAgentNode(
     userPrompt: env.run.input.prompt,
     styleDoc: (env.run.styleDoc ?? "").slice(0, 2000),
     card: {
-      index: item.index + 1,
-      total: env.run.input.cardCount,
-      name: state.name,
-      meaning: state.meaning,
-    },
+    index: item.index + 1,
+    total: env.run.input.cardCount,
+    name: state.name,
+    meaning: state.meaning,
+    // 花色数量硬规则（Ace 至十 = 恰好 N 个花色物品；宫廷牌/大阿卡纳无要求）
+    suitRule: suitCountRuleByIndex(item.index),
+  },
     referenceImageCount: env.run.input.referenceImages?.length ?? 0,
   }
   if (hasFeedback) {
+    // 打回重细化契约（见 ROLE_PROMPTS.finalRefiner）：以初稿为基准重新细化。
+    // 必须携带初稿 visualBrief——只有旧终稿时模型无法「回到初稿重写」，
+    // 旧终稿仅作上下文参考（评审意见指向其问题表述）
+    if (item.visualBrief) basePayload.draft = item.visualBrief
     basePayload.originalPrompt = state.prompt
     basePayload.feedback = {
       contentPass: state.contentPass,
@@ -863,13 +888,13 @@ function strField(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null
 }
 
-/** 生图节点：落一轮 round → 生成候选 → 预扣/退还 */
+/** 生图节点：落一轮 round → 生成候选 → 预扣/退还（内容拒绝时返回 retry 打回改写） */
 async function executeImageGenNode(
   env: RunEnv,
   item: typeof agentRunItems.$inferSelect,
   state: ItemState,
   node: AgentGraphNode,
-): Promise<void> {
+): Promise<NodeOutcome> {
   const config = node.config as AgentNodeConfigByType["image_gen"]
   if (!state.prompt) throw new Error("缺少提示词（上游智能体节点未产出）")
   const model = await loadImageModel(env, config.imageModelId)
@@ -908,13 +933,51 @@ async function executeImageGenNode(
     roundId: round!.id,
   })
 
-  const { urls, costCredits } = await generateRoundImages(
-    env,
-    model,
-    state.prompt,
-    config.imageSize || "1024x1024",
-    candidateCount,
-  )
+  let urls: string[]
+  let costCredits: number
+  try {
+    ;({ urls, costCredits } = await generateRoundImages(
+      env,
+      model,
+      state.prompt,
+      config.imageSize || "1024x1024",
+      candidateCount,
+      { itemLabel: item.name },
+    ))
+  } catch (err) {
+    // 内容安全拒绝（画面描述血腥/色情/暴力等被上游拦截）：报错原文交给终稿
+    // 细化师改写规避，走与评审打回同一条 retry 通道；过载/超时等纯调用
+    // 失败不改写（同样提示词重试即可），维持原样抛出走 failed 人工重试。
+    const message = err instanceof Error ? err.message : String(err)
+    const supervisorNode = env.graph.nodes.find((n) => n.type === "supervisor")
+    const maxRetries =
+      (supervisorNode?.config as { maxRetries?: number } | undefined)?.maxRetries ?? 2
+    if (isContentPolicyError(message) && state.roundsUsed < maxRetries) {
+      await logEvent({
+        runId: env.run.id,
+        nodeKey: node.id,
+        nodeType: "image_gen",
+        action: "retry",
+        status: "warn",
+        detail: `第 ${roundNumber} 轮生图被上游内容安全策略拒绝（${state.roundsUsed + 1}/${maxRetries}），打回改写规避敏感内容`,
+        itemId: item.id,
+        roundId: round!.id,
+      })
+      return {
+        kind: "retry",
+        targetId: PIPELINE_NODE_IDS.copywriter,
+        feedback: {
+          contentPass: false,
+          contentReason: `生图被上游内容安全策略拒绝，原始报错：${message}。请检查画面描述中是否包含血腥、色情、暴力等敏感内容，改用安全、可过审的意象与表述重写画面，保持牌义与主体不变。`,
+          aestheticScore: null,
+          aestheticReason: null,
+          consistencyScore: null,
+          consistencyReason: null,
+        },
+      }
+    }
+    throw err
+  }
   if (urls.length === 0) throw new Error("生图全部失败（费用已退还）")
 
   const candidates: RoundCandidate[] = urls.map((url) => ({
@@ -939,6 +1002,7 @@ async function executeImageGenNode(
     itemId: item.id,
     roundId: round!.id,
   })
+  return { kind: "passed" }
 }
 
 /**
@@ -1010,7 +1074,8 @@ async function executeReviewNode(
 
   const defaultPrompt =
     dims.includes("content") && dims.includes("aesthetic") && dims.includes("consistency")
-      ? "你是严格的卡牌图评审员。对待审图同时进行三项评审：1) 内容对齐（0-100：画面与提示词、牌名/牌义的吻合度）；2) 审美质量（0-100：构图、色彩、细节、执行质量）；3) 成套一致性（0-100：与基准图/风格规范书的风格统一度）。三项独立打分，宁严勿宽。"
+      ? // 三维同审（模板评审团）：与超管表单预览/内置默认同源（含花色数量逐一清点、无边框废卡规则）
+        DEFAULT_REVIEWER_PROMPT
       : dims.includes("content") && dims.includes("aesthetic")
         ? "你是严格的卡牌图审核员。同时进行两项评审：1) 内容对齐：图片是否准确呈现提示词与牌名/牌义；2) 审美质量：构图、色彩、细节、风格一致性。"
         : dims.includes("content")
@@ -1033,6 +1098,10 @@ async function executeReviewNode(
         text: JSON.stringify(
           {
             prompt: state.prompt,
+            // 结构化终稿分段（评审按 [画面内容] 段比对内容对齐，风格段供一致性参照；
+            // 旧式无段标记提示词时为 null，评审回退按整段 prompt 比对）
+            finalStyle: splitFinalPromptSegments(state.prompt ?? "")?.style ?? null,
+            finalContent: splitFinalPromptSegments(state.prompt ?? "")?.content ?? null,
             cardName: state.name,
             meaning: state.meaning,
             styleDoc: (env.run.styleDoc ?? "").slice(0, 1200),
@@ -1188,7 +1257,10 @@ async function executeReviewNode(
       `候选 ${bestIdx + 1} 入选` +
       (dims.includes("content") ? `｜内容${best.contentPass === false ? "不通过" : "通过"}` : "") +
       (dims.includes("aesthetic") ? `｜审美 ${best.score ?? "?"} 分（及格线 ${threshold}）` : "") +
-      (dims.includes("consistency") ? `｜一致性 ${best.score ?? "?"} 分（及格线 ${threshold}）` : ""),
+      // 一致性取该维度实际分（best.score 优先审美分，直接复用会显示成审美分）
+      (dims.includes("consistency")
+        ? `｜一致性 ${bestScores.consistency ?? "?"} 分（及格线 ${consistencyThreshold}）`
+        : ""),
     itemId: item.id,
     roundId: state.currentRoundId,
   })
@@ -1235,10 +1307,6 @@ async function executeSupervisorNode(
       kind: "verdict",
       result: payload,
     })
-    await db
-      .update(agentNodeRuns)
-      .set({ retryCount: sql`${agentNodeRuns.retryCount} + ${v === "retry" ? 1 : 0}`, updatedAt: new Date() })
-      .where(and(eq(agentNodeRuns.runId, env.run.id), eq(agentNodeRuns.nodeKey, node.id)))
     await logEvent({
       runId: env.run.id,
       nodeKey: node.id,
@@ -1257,7 +1325,6 @@ async function executeSupervisorNode(
       "approve",
       `三审通过${state.aestheticScore !== null ? `（审美 ${state.aestheticScore} 分` : ""}${state.consistencyScore !== null ? `，一致性 ${state.consistencyScore} 分` : ""}），放行`,
     )
-    await nodeRunProgress(env.run.id, node.id)
     if (!mainNext) {
       // 无下游：直接终态
       await finalizeItem(env, item.id, state, "approved_by_ai")
@@ -1284,14 +1351,12 @@ async function executeSupervisorNode(
       "retry",
       `第 ${roundsUsed + 1} 轮未过（${fails.join("；")}），打回改写（${roundsUsed + 1}/${maxRetries}）`,
     )
-    await nodeRunProgress(env.run.id, node.id)
     return { kind: "retry", targetId: retryEdge.target, feedback }
   }
 
   // 3) 耗尽：按策略兜底
   if (config.exhaustedStrategy === "mark_failed") {
     await writeVerdict("fallback", "打回次数耗尽，按策略标记失败")
-    await nodeRunProgress(env.run.id, node.id)
     await db
       .update(agentRunItems)
       .set({ status: "failed", errorMessage: "打回次数耗尽（策略：标记失败）", updatedAt: new Date() })
@@ -1303,7 +1368,6 @@ async function executeSupervisorNode(
   const best = pickBestRound(rounds)
   if (!best) {
     await writeVerdict("fallback", "打回次数耗尽且无可选历史轮次，标记失败")
-    await nodeRunProgress(env.run.id, node.id)
     await db
       .update(agentRunItems)
       .set({ status: "failed", errorMessage: "打回耗尽且无历史成图可选", updatedAt: new Date() })
@@ -1324,7 +1388,6 @@ async function executeSupervisorNode(
       updatedAt: new Date(),
     })
     .where(eq(agentRunItems.id, item.id))
-  await nodeRunProgress(env.run.id, node.id)
   if (!mainNext) return { kind: "stopped" }
   return { kind: "passed" }
 }
@@ -1462,24 +1525,6 @@ async function processItem(
 
 // ═══════════════════════════ run 主流程 ═══════════════════════════
 
-/** 初始化节点聚合行（幂等；run 级节点 totalCount 固定 1） */
-async function ensureNodeRuns(env: RunEnv): Promise<void> {
-  for (const node of env.graph.nodes) {
-    const role = node.type === "agent" ? (node.config as AgentNodeConfigByType["agent"]).role : undefined
-    const isRunScope = role === "style" || role === "structure"
-    await db
-      .insert(agentNodeRuns)
-      .values({
-        runId: env.run.id,
-        nodeKey: node.id,
-        nodeType: node.type,
-        title: node.config.title,
-        totalCount: isRunScope ? 1 : env.run.input.cardCount,
-      })
-      .onConflictDoNothing({ target: [agentNodeRuns.runId, agentNodeRuns.nodeKey] })
-  }
-}
-
 async function failRun(runId: string, message: string): Promise<void> {
   await db
     .update(agentRuns)
@@ -1489,47 +1534,81 @@ async function failRun(runId: string, message: string): Promise<void> {
 }
 
 /**
- * item 分批执行循环（模板 produce_cards 生产执行器使用）：
- * 按 phase 取 pending 卡（sample = 仅小样；full = 全部），并发池 ≤ concurrency，
- * 直到无 pending 或运行不再 active。积分不足等运行级错误原样上抛由调用方处置。
+ * item 执行循环（滑动窗口）：固定 N 个工人，每完成一张立即补位下一张。
+ * N = min(企业, 权限组) 全局用户并发限制（限值口径未改动）。相比旧
+ * 「分块 Promise.allSettled」消除队头阻塞——某张卡进入评审/改写（对话
+ * 阶段）时立即释放窗口给下一张卡的生图：首轮生图持续打满配置上限，
+ * 评审与改写在生图后续逐步完成（与 Agent 对话槽位限流配套）。
+ * 原子认领（pending→drafting 条件更新）防多工人重入与人工操作竞态。
+ * 积分不足等运行级错误原样上抛由调用方处置。
  */
-async function runItemBatches(env: RunEnv, concurrencyInput?: number): Promise<void> {
+async function runItemBatches(env: RunEnv): Promise<void> {
   const runId = env.run.id
-  const concurrency = concurrencyInput ?? Math.min(4, Math.max(1, env.run.input.concurrency || 1))
+  // 生产并发纯跟随全局用户并发限制：min(企业并发上限, 权限组并发上限)，
+  // 不再读模板配置的固定值（默认配置下 = min(5, 2) = 2，与旧行为一致；
+  // 企业调大上限后自动放宽）。生图调用仍与企业/模型/组三层 Redis 槽位
+  // 共享额度；LLM 调用另按对话槽位（llm-slots）三层限流。
+  const concurrency = effectiveConcurrentLimit({
+    enterprise: env.enterpriseMaxConcurrent,
+    group: env.groupMaxConcurrent,
+  })
 
-  while (true) {
-    const alive = await assertRunActive(runId)
-    if (alive.status !== "running") break
-    // 两阶段：sample 阶段只取小样卡；full 阶段取全部 pending
-    const phaseFilter =
-      alive.phase === "sample" ? eq(agentRunItems.isSample, true) : undefined
-    const batch = await db
-      .select()
-      .from(agentRunItems)
-      .where(
-        phaseFilter
-          ? and(
-              eq(agentRunItems.runId, runId),
-              eq(agentRunItems.status, "pending"),
-              phaseFilter,
-            )
-          : and(eq(agentRunItems.runId, runId), eq(agentRunItems.status, "pending")),
-      )
-      .orderBy(asc(agentRunItems.index))
-      .limit(concurrency)
-    if (batch.length === 0) break
-    await heartbeat(runId)
-    const results = await Promise.allSettled(
-      batch.map((item) => processItem(env, item)),
-    )
-    // 积分不足等运行级错误：立即中断（由调用方统一处置）
-    const fatal = results.find(
-      (r) => r.status === "rejected" && r.reason instanceof CreditsInsufficientError,
-    )
-    if (fatal && "reason" in fatal) {
-      throw fatal.reason
+  // 原子认领下一张 pending 卡：选最早一张 → 条件更新 pending→drafting；
+  // 被其他工人/人工操作抢先（返回空）则重查下一张
+  const claimNext = async (): Promise<typeof agentRunItems.$inferSelect | null> => {
+    for (;;) {
+      const alive = await assertRunActive(runId)
+      if (alive.status !== "running") return null
+      // 两阶段：sample 阶段只取小样卡；full 阶段取全部 pending
+      const phaseFilter =
+        alive.phase === "sample" ? eq(agentRunItems.isSample, true) : undefined
+      const [candidate] = await db
+        .select({ id: agentRunItems.id })
+        .from(agentRunItems)
+        .where(
+          phaseFilter
+            ? and(
+                eq(agentRunItems.runId, runId),
+                eq(agentRunItems.status, "pending"),
+                phaseFilter,
+              )
+            : and(eq(agentRunItems.runId, runId), eq(agentRunItems.status, "pending")),
+        )
+        .orderBy(asc(agentRunItems.index))
+        .limit(1)
+      if (!candidate) return null
+      const claimed = await db
+        .update(agentRunItems)
+        .set({ status: "drafting", updatedAt: new Date() })
+        .where(and(eq(agentRunItems.id, candidate.id), eq(agentRunItems.status, "pending")))
+        .returning()
+      if (claimed.length > 0) return claimed[0]!
+      // 认领失败：并发竞态，立即重试（下一轮查询会取到更晚的卡）
     }
   }
+
+  let stopped = false
+  let fatal: unknown = null
+  const worker = async (): Promise<void> => {
+    while (!stopped) {
+      await heartbeat(runId)
+      const item = await claimNext()
+      if (!item) return
+      try {
+        await processItem(env, item)
+      } catch (err) {
+        if (err instanceof CreditsInsufficientError) {
+          // 积分不足等运行级错误：停止补位，等全部在途卡收尾后中断（由调用方处置）
+          fatal = err
+          stopped = true
+          return
+        }
+        // 其余失败：processItem 已把该卡置 failed 并记事件（与旧分块 allSettled 语义一致）
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, () => worker()))
+  if (fatal) throw fatal
 }
 
 /**
@@ -1555,7 +1634,6 @@ export async function executeTemplateProduction(input: { runId: string }): Promi
   }
 
   const env = await buildRunEnv(runRow)
-  await ensureNodeRuns(env)
   await heartbeat(runRow.id)
   await ensureTemplateStyleDoc(env)
 
@@ -1619,7 +1697,7 @@ async function ensureTemplateStyleDoc(env: RunEnv): Promise<void> {
 
 /**
  * 收口检查（executeAgentRun 与确认风格/人工操作 Action 共用）：
- * - sample 阶段：小样全部终态 → waiting_style（等用户确认风格）；
+ * - sample 阶段：小样全部终态 → waiting_human（等用户确认风格）；
  * - full 阶段：全部终态 → completed / failed。
  */
 export async function checkRunCompletion(runId: string): Promise<void> {
@@ -1675,7 +1753,23 @@ export async function checkRunCompletion(runId: string): Promise<void> {
   const successCount = statuses.filter(
     (s) => s === "confirmed" || s === "approved_by_ai" || s === "fallback",
   ).length
-  if (successCount > 0) {
+  const failedCount = statuses.filter((s) => s === "failed" || s === "cancelled").length
+  if (successCount > 0 && failedCount > 0) {
+    // 有成功也有失败：等待用户处理失败卡（工作台批量重试横幅承接），
+    // 全部成功后才收口 completed——避免「completed 却缺卡」的状态语义漂移
+    if (run.status !== "waiting_human") {
+      await db
+        .update(agentRuns)
+        .set({ status: "waiting_human", updatedAt: new Date() })
+        .where(eq(agentRuns.id, runId))
+      await logEvent({
+        runId,
+        action: "start",
+        status: "warn",
+        detail: `生产收口：${successCount}/${statuses.length} 张产出，${failedCount} 张失败待处理（可重试）`,
+      })
+    }
+  } else if (successCount > 0) {
     await db
       .update(agentRuns)
       .set({ status: "completed", finishedAt: new Date(), updatedAt: new Date() })

@@ -55,7 +55,7 @@ export interface PresetModelRow {
   name: string
   displayName: string
   apiEndpoint: string
-  apiFormat: "openai" | "jimeng" | "gemini"
+  apiFormat: "openai" | "jimeng" | "gemini" | "grsai"
   extraConfig: ModelExtraConfig | null
   costPerImage: number
   description: string | null
@@ -71,6 +71,7 @@ export interface PresetModelRow {
   visibleInProduct: boolean
   visibleInWeartry: boolean
   visibleInMockup: boolean
+  visibleInAgent: boolean
   supportsReferenceImage: boolean
   maxReferenceImages: number
   referenceImageField: string | null
@@ -123,6 +124,7 @@ export async function listPresetModelsAction(
       visibleInProduct: models.visibleInProduct,
       visibleInWeartry: models.visibleInWeartry,
       visibleInMockup: models.visibleInMockup,
+      visibleInAgent: models.visibleInAgent,
       supportsReferenceImage: models.supportsReferenceImage,
       maxReferenceImages: models.maxReferenceImages,
       referenceImageField: models.referenceImageField,
@@ -202,6 +204,7 @@ export async function createPresetModelAction(
         visibleInProduct: d.visibleInProduct,
         visibleInWeartry: d.visibleInWeartry,
         visibleInMockup: d.visibleInMockup,
+        visibleInAgent: d.visibleInAgent,
         supportsReferenceImage: d.supportsReferenceImage,
         maxReferenceImages: d.maxReferenceImages,
         referenceImageField: d.referenceImageField || null,
@@ -261,6 +264,7 @@ export async function updatePresetModelAction(
     jimengResolution: d.jimengResolution,
     jimengN: d.jimengN,
     quality: d.quality,
+    grsaiImageSize: d.grsaiImageSize,
   })
 
   try {
@@ -299,6 +303,7 @@ export async function updatePresetModelAction(
   if (d.visibleInProduct !== undefined) set.visibleInProduct = d.visibleInProduct
   if (d.visibleInWeartry !== undefined) set.visibleInWeartry = d.visibleInWeartry
   if (d.visibleInMockup !== undefined) set.visibleInMockup = d.visibleInMockup
+  if (d.visibleInAgent !== undefined) set.visibleInAgent = d.visibleInAgent
   if (d.supportsReferenceImage !== undefined)
     set.supportsReferenceImage = d.supportsReferenceImage
   if (d.maxReferenceImages !== undefined)

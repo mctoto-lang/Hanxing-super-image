@@ -10,7 +10,6 @@ import type {
   AgentGraph,
   AgentGraphEdge,
   AgentGraphNode,
-  AgentNodeType,
 } from "./graph"
 
 export type GraphValidation =
@@ -31,11 +30,11 @@ export function nodesById(graph: AgentGraph): Map<string, AgentGraphNode> {
 }
 
 /** 节点的主出口边（可能多条：并行分支；supervisor 一条 main + 一条 retry） */
-export function mainOutEdges(graph: AgentGraph, nodeId: string): AgentGraphEdge[] {
+function mainOutEdges(graph: AgentGraph, nodeId: string): AgentGraphEdge[] {
   return mainEdges(graph).filter((e) => e.source === nodeId)
 }
 
-export function mainInEdges(graph: AgentGraph, nodeId: string): AgentGraphEdge[] {
+function mainInEdges(graph: AgentGraph, nodeId: string): AgentGraphEdge[] {
   return mainEdges(graph).filter((e) => e.target === nodeId)
 }
 
@@ -174,35 +173,4 @@ function computeReachableTo(graph: AgentGraph, endId: string): Set<string> {
     }
   }
   return seen
-}
-
-/** 图执行画像（成本预估与引擎概览用） */
-export interface GraphExecutionProfile {
-  agentNodes: AgentGraphNode[]
-  imageGenNodes: AgentGraphNode[]
-  reviewNodes: AgentGraphNode[]
-  supervisorNode: AgentGraphNode | null
-  hasHuman: boolean
-  /** 主线最多轮数 = 1 + 各 supervisor 打回上限（多 supervisor 取最小保守值） */
-  maxRounds: number
-  nodeTypes: AgentNodeType[]
-}
-
-export function graphExecutionProfile(graph: AgentGraph): GraphExecutionProfile {
-  const agentNodes = graph.nodes.filter((n) => n.type === "agent")
-  const imageGenNodes = graph.nodes.filter((n) => n.type === "image_gen")
-  const reviewNodes = graph.nodes.filter((n) => n.type === "review")
-  const supervisors = graph.nodes.filter((n) => n.type === "supervisor")
-  const maxRetries = supervisors.length
-    ? Math.min(...supervisors.map((n) => (n.config as { maxRetries?: number }).maxRetries ?? 0))
-    : 0
-  return {
-    agentNodes,
-    imageGenNodes,
-    reviewNodes,
-    supervisorNode: supervisors[0] ?? null,
-    hasHuman: graph.nodes.some((n) => n.type === "human"),
-    maxRounds: 1 + Math.max(0, maxRetries),
-    nodeTypes: graph.nodes.map((n) => n.type),
-  }
 }

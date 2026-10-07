@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest"
 import {
-  averageScores,
   clampScore,
   DEFAULT_SCORE_THRESHOLDS,
   scoreTone,
@@ -41,38 +40,6 @@ describe("clampScore", () => {
     expect(clampScore(82.6)).toBe(83)
     expect(clampScore(-5)).toBe(0)
     expect(clampScore(120)).toBe(100)
-  })
-})
-
-describe("averageScores", () => {
-  it("ignores nulls per dimension and counts below-threshold items", () => {
-    const result = averageScores([
-      { content: 80, aesthetic: 90, consistency: 80 },
-      { content: 40, aesthetic: null, consistency: 60 },
-      { content: null, aesthetic: 70, consistency: null },
-    ])
-    expect(result.content).toBe(60) // (80+40)/2
-    expect(result.aesthetic).toBe(80) // (90+70)/2，null 忽略
-    expect(result.consistency).toBe(70) // (80+60)/2
-    expect(result.belowThreshold.content).toBe(1) // 40 < 60
-    expect(result.belowThreshold.aesthetic).toBe(1) // 70 < 75
-    expect(result.belowThreshold.consistency).toBe(1) // 60 < 70
-  })
-
-  it("returns null averages and zero counts when nothing is scored", () => {
-    const result = averageScores([{ content: null, aesthetic: null, consistency: null }])
-    expect(result.content).toBeNull()
-    expect(result.aesthetic).toBeNull()
-    expect(result.consistency).toBeNull()
-    expect(result.belowThreshold).toEqual({ content: 0, aesthetic: 0, consistency: 0 })
-  })
-
-  it("supports custom thresholds", () => {
-    const result = averageScores([{ content: 65, aesthetic: 65, consistency: 65 }], {
-      aesthetic: 60,
-    })
-    expect(result.belowThreshold.aesthetic).toBe(0)
-    expect(result.belowThreshold.consistency).toBe(1)
   })
 })
 

@@ -49,6 +49,7 @@ export interface NodeBoardRunSnapshot {
 export interface NodeBoardItemSnapshot {
   status: string
   currentPrompt: string | null
+  promptSource?: string | null
   latestRoundId: string | null
   latestImageUrl: string | null
   finalRoundId: string | null
@@ -73,17 +74,23 @@ export interface NodeCardInfo {
 const ERROR_NODE_BY_ACTION: Record<string, ClassicNodeKey> = {
   clarify_turn: "style",
   finalize_brief: "style",
-  gen_directions: "structure",
+  gen_style_spec: "structure",
+  design_drafts: "copywriter",
+  design_finals: "copywriter",
   produce_cards: "imagegen",
+  asset_gen: "supervisor",
   compose_preview: "supervisor",
   compose_batch: "supervisor",
+  // 旧动作（存量 run 过渡期）
+  gen_directions: "structure",
+  design_prompts: "copywriter",
 }
 
 /** 经典节点 → 模板角色（点击节点卡打开对应 AgentRoleSheet） */
 export const NODE_TO_TEMPLATE_ROLE: Record<ClassicNodeKey, string> = {
   style: "creative_director",
-  structure: "world_planner",
-  copywriter: "prompt_designer",
+  structure: "style_director",
+  copywriter: "final_refiner",
   imagegen: "artist",
   review_content: "review_panel",
   review_aesthetic: "review_panel",
@@ -91,10 +98,32 @@ export const NODE_TO_TEMPLATE_ROLE: Record<ClassicNodeKey, string> = {
   supervisor: "supervisor",
 }
 
-const STAGE_ORDER = ["clarify", "world", "prompt", "art", "compose"]
+/**
+ * 节点卡点击 → 模板角色（按当前待执行动作细分）：
+ * - copywriter：初稿期（design_drafts）打开初稿设计师，终稿/生产期打开终稿细化师；
+ * - supervisor：融合/资产期（compose_* / asset_gen）打开合成师，其余打开总控。
+ */
+export function templateRoleForNode(nodeKey: ClassicNodeKey, pendingKind: string | null): string {
+  if (nodeKey === "copywriter") {
+    return pendingKind === "design_drafts" || pendingKind === "design_prompts"
+      ? "prompt_designer"
+      : NODE_TO_TEMPLATE_ROLE.copywriter
+  }
+  if (nodeKey === "supervisor") {
+    return pendingKind === "compose_preview" || pendingKind === "compose_batch" || pendingKind === "asset_gen"
+      ? "compositor"
+      : NODE_TO_TEMPLATE_ROLE.supervisor
+  }
+  return NODE_TO_TEMPLATE_ROLE[nodeKey]
+}
+
+/** 新五阶段顺序（存量 run 的 world/prompt 归一化后比对） */
+const STAGE_ORDER = ["clarify", "draft", "final", "art", "compose"]
 
 function stagePos(stage: string | null): number {
-  return stage ? STAGE_ORDER.indexOf(stage) : -1
+  if (!stage) return -1
+  const normalized = stage === "world" ? "draft" : stage === "prompt" ? "final" : stage
+  return STAGE_ORDER.indexOf(normalized)
 }
 
 /** 小样阶段按小样口径统计，全套/交付按全套 */
@@ -105,14 +134,18 @@ function scopeOf(run: NodeBoardRunSnapshot, items: readonly NodeBoardItemSnapsho
 /**
  * 推导经典 8 节点卡片数据。
  *
- * @param input.run   工作台 run 快照
- * @param input.items 卡面清单快照（clarify/world 阶段可为空数组）
+ * @param input.run       工作台 run 快照
+ * @param input.items     卡面清单快照（clarify/world 阶段可为空数组）
+ * @param input.cardTotal 卡组目标张数（run.input.cardCount；清单未建时作为
+ *                        structure/copywriter 的 total 展示基准）
  */
 export function deriveClassicNodeBoard(input: {
   run: NodeBoardRunSnapshot
   items: readonly NodeBoardItemSnapshot[]
+  cardTotal: number
 }): NodeCardInfo[] {
   const { run, items } = input
+  const cardTotal = Math.max(0, Math.round(input.cardTotal))
   const pos = stagePos(run.stage)
   const busy = run.status === "queued" || run.status === "running"
   const pendingKind = run.pendingAction?.kind ?? null
@@ -123,32 +156,35 @@ export function deriveClassicNodeBoard(input: {
   const retryCount = items.reduce((sum, item) => sum + Math.max(0, item.roundsUsed - 1), 0)
   const lastError = run.error ?? items.find((item) => item.errorMessage)?.errorMessage ?? null
 
-  const withPrompt = items.filter((item) => !!item.currentPrompt).length
+  const withFinal = items.filter(
+    (item) => item.promptSource === "final" || !!(item.currentPrompt && item.currentPrompt.includes("[2] 画面内容")),
+  ).length
   const scope = scopeOf(run, items)
   const withImage = scope.filter((item) => !!item.latestImageUrl).length
   const withRound = scope.filter((item) => !!item.latestRoundId).length
-  const withFinal = scope.filter((item) => !!item.finalRoundId).length
-  const cardTotal = 78
+  const withFinalRound = scope.filter((item) => !!item.finalRoundId).length
 
-  // -- style：澄清 + 简报 + 方向定稿即完成 --------------------------------
+  // -- style（创意总监）：澄清 + 简报确认即完成 ----------------------------
   let styleStatus: NodeBoardStatus
-  if (run.selectedDirectionId) styleStatus = "done"
-  else if (pos <= 0) {
+  if (pos >= 1 || run.selectedDirectionId) styleStatus = "done"
+  else {
     // clarify 阶段：AI 分析中 → running；简报/追问就绪 → 等待用户
     styleStatus =
       busy && (pendingKind === "clarify_turn" || pendingKind === "finalize_brief") ? "running" : "waiting"
-  } else styleStatus = busy && pendingKind === "gen_directions" ? "running" : "waiting"
+  }
 
-  // -- structure：78 张清单齐备即完成 -------------------------------------
+  // -- structure（风格策划）：风格规范书 + 78 张清单齐备即完成 --------------
   let structureStatus: NodeBoardStatus
-  if (items.length >= cardTotal) structureStatus = "done"
-  else if (pos === 1) structureStatus = busy && pendingKind === "gen_directions" ? "running" : "waiting"
+  if (items.length >= cardTotal && run.selectedDirectionId) structureStatus = "done"
+  else if (pos === 1) structureStatus = busy && pendingKind === "gen_style_spec" ? "running" : "waiting"
   else structureStatus = "idle"
 
-  // -- copywriter：提示词底稿齐备即完成（打回改写按需进行） ----------------
+  // -- copywriter（终稿细化师）：78 张终稿齐备即完成（打回重细化按需进行） ---
   let copywriterStatus: NodeBoardStatus
-  if (items.length >= cardTotal && withPrompt >= cardTotal) copywriterStatus = "done"
-  else if (pos >= 2) copywriterStatus = busy && pendingKind === "produce_cards" ? "running" : "waiting"
+  if (items.length >= cardTotal && withFinal >= cardTotal) copywriterStatus = "done"
+  else if (pos >= 1)
+    copywriterStatus =
+      busy && ["design_finals", "design_drafts", "produce_cards"].includes(pendingKind ?? "") ? "running" : "waiting"
   else copywriterStatus = "idle"
 
   // -- 生产三兄弟（生图 / 三审 / 裁决）：art 阶段起按 scope 口径 ----------
@@ -180,13 +216,13 @@ export function deriveClassicNodeBoard(input: {
   })
 
   return [
-    card("style", styleStatus, run.selectedDirectionId ? 1 : run.brief ? 1 : 0, 1),
+    card("style", styleStatus, pos >= 1 || run.selectedDirectionId ? 1 : run.brief ? 1 : 0, 1),
     card("structure", structureStatus, items.length, cardTotal),
-    card("copywriter", copywriterStatus, withPrompt, cardTotal),
+    card("copywriter", copywriterStatus, withFinal, cardTotal),
     card("imagegen", imagegenStatus, withImage, scope.length),
     card("review_content", reviewStatus, withRound, scope.length),
     card("review_aesthetic", reviewStatus, withRound, scope.length),
     card("review_consistency", reviewStatus, withRound, scope.length),
-    card("supervisor", supervisorStatus, withFinal, scope.length),
+    card("supervisor", supervisorStatus, withFinalRound, scope.length),
   ]
 }

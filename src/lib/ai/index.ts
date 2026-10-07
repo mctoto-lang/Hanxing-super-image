@@ -2,13 +2,16 @@
  * AI 统一调度入口（手册 §5.6）
  *
  * 按 model.apiFormat 分发：openai / gemini 共用 OpenAI 标准生图适配器
- * （gemini 请求形状相同，仅尺寸参数可切换为比例），jimeng 用即梦适配器。
+ * （gemini 请求形状相同，仅尺寸参数可切换为比例），jimeng 用即梦适配器，
+ * grsai 用 Grsai 适配器（aspectRatio 比例 + imageSize 清晰度档位）。
  * 调用方（队列消费者）注入 downloadAndUpload 回调（storage 抽象）。
  */
 import { decrypt } from "@/lib/crypto"
 import { signUploadToken } from "@/lib/storage/upload-token"
 import {
   assertSupportedImageApiFormat,
+  isContentPolicyError,
+  summarizeImageErrors,
   validateImageModelConfig,
   DEFAULT_IMAGE_SIZE,
   type ImageGenResult,
@@ -19,6 +22,7 @@ import {
   type ImageApiSlotCallbacks,
 } from "@/lib/ai/openai-image"
 import { callJimengApi } from "@/lib/ai/jimeng"
+import { callGrsaiImageApi } from "@/lib/ai/grsai-image"
 import type { models } from "@/db/schema"
 
 type ModelRow = typeof models.$inferSelect
@@ -26,6 +30,7 @@ type ModelRow = typeof models.$inferSelect
 export type DownloadAndUploadFn = OpenAiDownloadAndUploadFn
 
 export type { ImageGenResult, ImageApiSlotCallbacks }
+export { isContentPolicyError, summarizeImageErrors }
 
 /**
  * 统一调用：根据模型 apiFormat 分发。
@@ -87,6 +92,27 @@ export async function callImageApi(opts: {
         useRatioParam:
           model.apiFormat === "gemini" && model.useRatioParam === true,
         ratioParamField: model.ratioParamField ?? undefined,
+      },
+      task: { prompt, imageSize, imageCount, indexes, referenceImages: referenceImagesForUpstream },
+      apiKey,
+      downloadAndUpload,
+      signal,
+      slots,
+    })
+  }
+
+  // grsai：Gemini (Grsai) 专用端点 /v1/api/generate，比例必传
+  // （aspectRatio 由尺寸预设归约），清晰度档位自动推导或模型配置覆盖
+  if (model.apiFormat === "grsai") {
+    return await callGrsaiImageApi({
+      model: {
+        name: model.name,
+        apiEndpoint: model.apiEndpoint,
+        apiTimeout: model.apiTimeout,
+        imageSizeOverride:
+          typeof extraConfig.grsai_image_size === "string"
+            ? extraConfig.grsai_image_size
+            : undefined,
       },
       task: { prompt, imageSize, imageCount, indexes, referenceImages: referenceImagesForUpstream },
       apiKey,

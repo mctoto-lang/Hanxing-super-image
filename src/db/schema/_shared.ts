@@ -51,8 +51,8 @@ export const creditTxTypeEnum = pgEnum("credit_tx_type", [
 ])
 export type CreditTxType = (typeof creditTxTypeEnum.enumValues)[number]
 
-/** AI 模型 API 格式（openai = OpenAI 标准生图，jimeng = 即梦，gemini = Gemini 系中转：请求形状同 openai，尺寸参数可切换为比例） */
-export const apiFormatEnum = pgEnum("api_format", ["openai", "jimeng", "gemini"])
+/** AI 模型 API 格式（openai = OpenAI 标准生图，jimeng = 即梦，gemini = Gemini 系中转：请求形状同 openai，尺寸参数可切换为比例，grsai = Gemini (Grsai)：比例 + 清晰度档位） */
+export const apiFormatEnum = pgEnum("api_format", ["openai", "jimeng", "gemini", "grsai"])
 
 /** 任务状态 */
 export const taskStatusEnum = pgEnum("task_status", [
@@ -72,11 +72,12 @@ export const taskTypeEnum = pgEnum("task_type", [
   "mockup", // 样机渲染（外部 psd-render-api，无 AI 模型）
 ])
 
-/** 任务来源（合并 creative/project → create，手册 D13） */
+/** 任务来源（合并 creative/project → create，手册 D13；agent = AI Agent 工坊三路生图） */
 export const taskSourceEnum = pgEnum("task_source", [
   "create",
   "workspace",
   "product",
   "weartry",
   "mockup",
+  "agent",
 ])

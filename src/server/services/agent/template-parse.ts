@@ -11,6 +11,9 @@ import { LlmValidationError } from "./llm-errors"
 /** 单条澄清消息最多追问数（澄清 system prompt 与解析共用同一上限） */
 export const MAX_CLARIFY_QUESTIONS = 3
 
+/** 每个追问输出的推荐选项上限（与「3 个最适合的推荐选项」策略对齐） */
+export const MAX_CLARIFY_OPTIONS = 3
+
 function asRecord(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null
 }
@@ -55,7 +58,7 @@ export function parseClarifyOutput(raw: unknown): ClarifyOutput {
     const options = (q && Array.isArray(q.options) ? q.options : [])
       .map((o) => (typeof o === "string" ? o.trim() : ""))
       .filter(Boolean)
-      .slice(0, 4)
+      .slice(0, MAX_CLARIFY_OPTIONS)
     questions.push({ id, question: text, options })
   }
 
@@ -163,5 +166,72 @@ export function validateDirections(raw: unknown): AgentTemplateDirection[] {
       visualLanguage,
       sampleCards: normalizeSampleCards(d.sampleCards, name),
     }
+  })
+}
+
+/**
+ * 单个风格规范方向（AgentTemplateDirection 载体）的归一化。
+ * visualLanguage = 画面风格总述（直接用作每张卡终稿的 [1] 画面风格段）；
+ * 过短时用 palette / 说明 / 世界观确定性补全而非判废——风格规范生成是
+ * 流程咽喉，卡在这里会让用户停在「等待候选方向」无法推进。
+ */
+function normalizeStyleSpecDirection(
+  d: Record<string, unknown>,
+  name: string,
+  index: number,
+): AgentTemplateDirection {
+  const palette = typeof d.palette === "string" ? d.palette.trim() : ""
+  const concept = typeof d.concept === "string" ? d.concept.trim() : ""
+  const description = (typeof d.description === "string" && d.description.trim()) || concept || name
+  const worldview = typeof d.worldview === "string" ? d.worldview.trim() : ""
+  const baseVisualLanguage = (typeof d.visualLanguage === "string" && d.visualLanguage.trim()) || ""
+
+  const parts = [baseVisualLanguage || `${name}的画面风格`, palette, description, worldview]
+    .map((part) => part.replace(/[。；;，,]$/, ""))
+    .filter(Boolean)
+  const visualLanguage =
+    parts.join("，").length >= 40
+      ? parts.join("，")
+      : `${parts.join("，")}，整套 78 张画面保持统一的媒介、色调、光影与质感`
+
+  let id = slugifyDirectionId(typeof d.id === "string" ? d.id : "")
+  if (!id) id = slugifyDirectionId(name)
+  if (!id) id = `style-spec-${index + 1}`
+
+  return {
+    id,
+    name,
+    description,
+    concept: concept || undefined,
+    worldview: worldview || undefined,
+    majorArcana: typeof d.majorArcana === "string" && d.majorArcana.trim() ? d.majorArcana.trim() : undefined,
+    suitMapping: normalizeSuitMapping(d.suitMapping),
+    palette: palette || undefined,
+    visualLanguage,
+    sampleCards: normalizeSampleCards(d.sampleCards, name),
+  }
+}
+
+/**
+ * 校验并归一化 gen_style_spec 输出：恰好 3 个候选《风格规范书》方向、
+ * 名称非空且互不重复（结构性问题抛 LlmValidationError 触发纠错重试）；
+ * 画面风格总述过短走确定性补全而非拒绝（防流程卡死）。
+ */
+export function validateStyleDirections(raw: unknown): AgentTemplateDirection[] {
+  const obj = asRecord(raw)
+  const list = obj && Array.isArray(obj.directions) ? obj.directions : null
+  if (!list) throw new LlmValidationError("输出缺少 directions 数组")
+  if (list.length !== 3) {
+    throw new LlmValidationError(`必须恰好 3 个风格规范方向，实际 ${list.length} 个`)
+  }
+  const seenNames = new Set<string>()
+  return list.map((item, index) => {
+    const d = asRecord(item)
+    if (!d) throw new LlmValidationError(`第 ${index + 1} 个方向不是对象`)
+    const name = typeof d.name === "string" ? d.name.trim() : ""
+    if (!name) throw new LlmValidationError(`第 ${index + 1} 个方向缺少名称`)
+    if (seenNames.has(name)) throw new LlmValidationError(`方向名重复：${name}`)
+    seenNames.add(name)
+    return normalizeStyleSpecDirection(d, name, index)
   })
 }

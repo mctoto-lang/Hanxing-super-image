@@ -202,13 +202,18 @@ export interface AgentGraph {
 // 运行时状态枚举（DB varchar 落库，前端状态色据此映射）
 // ---------------------------------------------------------------------------
 
-/** 运行状态（agent_run.status） */
+/**
+ * 运行状态（agent_run.status）。
+ * paused / waiting_style 为历史遗留值：模板流程无暂停入口、小样等待已统一
+ * 为 waiting_human 语义（存量行读取时归一化）；PostgreSQL 枚举无法删除值，
+ * 此处保留全集仅作 DB 类型镜像，业务代码不再写入这两个状态。
+ */
 export const AGENT_RUN_STATUSES = [
   "queued", // 排队中（等待 worker 拉起）
   "running", // 运行中
-  "paused", // 已暂停（可恢复）
-  "waiting_style", // 小样完成，等待用户确认风格（两阶段模式）
-  "waiting_human", // 全部在途 item 等待人工确认
+  "paused", // （遗留，无写入入口）
+  "waiting_style", // （遗留，读侧按 waiting_human 语义处理）
+  "waiting_human", // 全部在途 item 等待人工确认（含小样确认/失败卡处理）
   "completed", // 完成
   "failed", // 失败
   "cancelled", // 已取消
@@ -233,18 +238,8 @@ export const AGENT_ITEM_STATUSES = [
 ] as const
 export type AgentItemStatus = (typeof AGENT_ITEM_STATUSES)[number]
 
-/** 节点级聚合状态（agent_node_run.status；画布状态色数据源） */
-export const AGENT_NODE_RUN_STATUSES = [
-  "idle", // 未执行
-  "running", // 执行中（蓝）
-  "done", // 全部完成（绿）
-  "failed", // 有失败（红）
-  "skipped", // 跳过（半透明）
-] as const
-export type AgentNodeRunStatus = (typeof AGENT_NODE_RUN_STATUSES)[number]
-
 /** prompt 来源（agent_round.promptSource；对齐 ai-card-studio 留痕设计） */
-export const AGENT_PROMPT_SOURCES = ["initial", "auto_revise", "manual"] as const
+export const AGENT_PROMPT_SOURCES = ["initial", "auto_revise", "manual", "ai", "final"] as const
 export type AgentPromptSource = (typeof AGENT_PROMPT_SOURCES)[number]
 
 // ---------------------------------------------------------------------------
@@ -253,13 +248,33 @@ export type AgentPromptSource = (typeof AGENT_PROMPT_SOURCES)[number]
 
 /** 模板阶段（agent_run.stage）：模板化分阶段制作的推进游标 */
 export const AGENT_TEMPLATE_STAGES = [
-  "clarify", // 需求澄清与创作简报
-  "world", // 内容方向、世界观与风格定稿
-  "prompt", // 卡面与套件资产提示词
-  "art", // 生图与多评审员审核
+  "clarify", // 需求澄清（只追问风格/内容/主题/画面内容，不问生产细节）
+  "draft", // 画面提示词初稿（简洁明了，用户可编辑）
+  "final", // 画面提示词终稿（结构化 [1]画面风格 + [2]画面内容，用户确认）
+  "art", // 生图与多评审员审核（不通过从初稿重细化）
   "compose", // 边框合成与交付
 ] as const
 export type AgentTemplateStage = (typeof AGENT_TEMPLATE_STAGES)[number]
+
+/**
+ * 归一化模板阶段：旧流程的 world/prompt 阶段 id 映射进新五阶段
+ * （world → draft、prompt → final），存量进行中 run 仅展示层换名照常跑完。
+ */
+export function normalizeTemplateStage(stage: string | null | undefined): AgentTemplateStage {
+  switch (stage) {
+    case "clarify":
+    case "draft":
+    case "final":
+    case "art":
+    case "compose":
+      return stage
+    case "world":
+    case "prompt":
+      return stage === "world" ? "draft" : "final"
+    default:
+      return "clarify"
+  }
+}
 
 /** 卡框模式（agent_run.frameMode）：custom 时引用 agent_run.frameAssetId */
 /** 新模板只创建 AI 模式；旧数据库中的 none/local/custom 由读取层归一化为 ai。 */
@@ -301,16 +316,25 @@ export type AgentPendingAction = {
   kind:
     | "clarify_turn"
     | "finalize_brief"
-    | "gen_directions"
+    | "gen_style_spec" // 生成 3 个候选《风格规范书》供用户选择（选定后才写初稿）
+    | "design_drafts" // 新流程：批量撰写 78 张画面提示词初稿
+    | "design_finals" // 新流程：批量把初稿细化为结构化终稿
     | "compose_preview"
     | "compose_batch"
     | "produce_cards"
-  /** gen_directions 重新生成时携带的用户反馈 */
+    | "asset_gen" // 周边资产生图（每项独立提示词，逐项生成 ≤6 张）
+    | "gen_directions" // 旧流程（存量 run 过渡期保留）
+    | "design_prompts" // 旧流程（存量 run 过渡期保留）
+  /** gen_style_spec / design_drafts / design_finals 重新生成时携带的用户反馈 */
   feedback?: string
   itemId?: string
+  /** design_drafts / design_finals：指定重写的卡（缺省 = 全部 78 张） */
+  itemIds?: string[]
   borderAssetId?: string
   /** produce_cards：本轮生产批次（sample = 风格小样；full = 全套） */
   phase?: AgentRunPhase
+  /** asset_gen：逐项生成任务（资产类型 + 该项独立提示词） */
+  assetTasks?: { kind: AgentAssetKind; prompt: string }[]
   requestedAt: string
 }
 
@@ -365,12 +389,23 @@ export interface AgentRunInput {
   prompt: string
   /** 卡牌张数 */
   cardCount: number
-  /** 单次运行内并行执行的流水线数 */
-  concurrency: number
+  /**
+   * 单次运行内并行执行的流水线数——已废弃：运行时并发动态跟随全局用户
+   * 并发限制（min(企业并发上限, 权限组并发上限)）。可选字段，仅为兼容
+   * 存量 run 的快照数据。
+   */
+  concurrency?: number
   /** 风格参考图 URL（≤4，生图与一致性审核引用） */
   referenceImages: string[]
   /** 质量要求（缺省用管理员配置的默认值） */
   quality?: AgentRunQuality
+  /**
+   * 用户选择的卡面生图模型（发起弹窗候选池；null/缺省 = 平台默认配置
+   * templateConfig.cardImageModelId ?? models.imageModelId）。
+   */
+  imageModelId?: string | null
+  /** 用户模型对应的卡面尺寸（"WxH"，取该模型与平台卡面同比例的启用预设） */
+  imageSize?: string | null
 }
 
 /** 生图候选（agent_round.candidates 数组元素；多候选评分选优留档） */

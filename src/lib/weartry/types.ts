@@ -3,6 +3,7 @@
  */
 
 import type { ModelSizePreset } from "@/db/schema"
+import type { ImageApiFormat } from "@/lib/ai/image-model-config"
 
 /** 预置场景行（前端展示；promptTemplate 由服务端注入使用，不下发） */
 export interface WeartrySceneRow {
@@ -22,7 +23,7 @@ export interface WeartryModelRow {
   supportsReferenceImage: boolean
   maxReferenceImages: number
   costPerImage: number
-  apiFormat: "openai" | "jimeng" | "gemini"
+  apiFormat: ImageApiFormat
 }
 
 /** 单个生成任务（批次内，前端展示；复用商品页 BatchView，保留其兼容字段） */

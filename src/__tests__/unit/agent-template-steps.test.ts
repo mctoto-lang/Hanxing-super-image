@@ -47,11 +47,11 @@ describe("validateDirections", () => {
 })
 
 describe("parseClarifyOutput", () => {
-  it("超过 3 个问题时截断，并清理空选项", () => {
+  it("超过 3 个问题时截断；每题选项清理空值并截到 3 个推荐选项", () => {
     const result = parseClarifyOutput({
       analysis: "主题已明确",
       questions: [
-        { id: "a", question: "问题一", options: ["x", " ", "y"] },
+        { id: "a", question: "问题一", options: ["选项1", "选项2", "选项3", "选项4", " ", "选项5"] },
         { id: "b", question: "问题二", options: [] },
         { id: "c", question: "问题三" },
         { id: "d", question: "问题四" },
@@ -59,7 +59,7 @@ describe("parseClarifyOutput", () => {
       ready: false,
     })
     expect(result.questions).toHaveLength(3)
-    expect(result.questions[0]!.options).toEqual(["x", "y"])
+    expect(result.questions[0]!.options).toEqual(["选项1", "选项2", "选项3"])
     expect(result.ready).toBe(false)
   })
 

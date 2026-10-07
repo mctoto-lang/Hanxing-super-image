@@ -6,11 +6,19 @@
  * 评审阈值 / 生产参数。
  */
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
-import { Slider } from "@/components/ui/slider"
-import { Sparkles, Users } from "lucide-react"
-import type { TarotTemplateConfig } from "@/lib/agent/pipelines"
+import { Slider, SliderControl, SliderRange, SliderThumb, SliderTrack } from "@/components/ui/slider"
+import { Textarea } from "@/components/ui/textarea"
+import { FileText, RotateCcw, Sparkles, Users } from "lucide-react"
+import {
+  DEFAULT_ART_RULES,
+  DEFAULT_REVIEWER_PROMPT,
+  ROLE_PROMPTS,
+  type TarotTemplateConfig,
+  type TemplateRolePromptKey,
+} from "@/lib/agent/pipelines"
 import { SlotSelect } from "./slot-select"
 
 export type ChatModelOption = { id: string; displayName: string; supportsVision: boolean; scope: string }
@@ -45,7 +53,15 @@ function ThresholdSlider({
       <Label className="text-xs">
         {label}及格线：<span className="tabular-nums">{value}</span>
       </Label>
-      <Slider min={40} max={95} value={[value]} onValueChange={(v) => onChange(Array.isArray(v) ? v[0]! : v)} />
+      {/* Base UI Slider 复合组件：须带 Control/Track/Range/Thumb 子组件 */}
+      <Slider min={40} max={95} value={[value]} onValueChange={(v) => onChange(Array.isArray(v) ? v[0]! : v)}>
+        <SliderControl>
+          <SliderTrack>
+            <SliderRange />
+          </SliderTrack>
+          <SliderThumb />
+        </SliderControl>
+      </Slider>
     </div>
   )
 }
@@ -70,7 +86,80 @@ function ParamSlider({
       <Label className="text-xs">
         {label}：<span className="tabular-nums">{value}</span> {suffix}
       </Label>
-      <Slider min={min} max={max} value={[value]} onValueChange={(v) => onChange(Array.isArray(v) ? v[0]! : v)} />
+      <Slider min={min} max={max} value={[value]} onValueChange={(v) => onChange(Array.isArray(v) ? v[0]! : v)}>
+        <SliderControl>
+          <SliderTrack>
+            <SliderRange />
+          </SliderTrack>
+          <SliderThumb />
+        </SliderControl>
+      </Slider>
+    </div>
+  )
+}
+
+/** 阶段对话模型槽位（存在 models jsonb；此前无配置入口，只能沿用旧落库值） */
+export interface ChatModelSlots {
+  /** 创意总监：需求澄清 / 简报整理 */
+  styleChatModelId: string | null
+  /** 世界观策划：内容方向生成 */
+  structureChatModelId: string | null
+}
+
+/**
+ * 提示词覆盖编辑器：未配置时展示内置默认（与运行时回退一致），
+ * 编辑即存自定义；「恢复默认」清除自定义回到内置值（内置文案升级可继续生效）。
+ */
+function PromptOverrideTextarea({
+  label,
+  value,
+  defaultValue,
+  rows = 6,
+  hint,
+  onChange,
+}: {
+  label: string
+  value: string | undefined
+  defaultValue: string
+  rows?: number
+  hint?: string
+  onChange: (v: string | undefined) => void
+}) {
+  const customized = !!value?.trim() && value.trim() !== defaultValue.trim()
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2">
+        <Label className="text-xs">{label}</Label>
+        <Badge
+          variant="secondary"
+          className={
+            customized
+              ? "bg-violet-500/15 text-violet-600 dark:text-violet-300"
+              : undefined
+          }
+        >
+          {customized ? "自定义" : "内置默认"}
+        </Badge>
+        {customized && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="ml-auto h-6 gap-1 px-2 text-[11px]"
+            onClick={() => onChange(undefined)}
+          >
+            <RotateCcw className="size-3" />
+            恢复默认
+          </Button>
+        )}
+      </div>
+      <Textarea
+        value={value ?? defaultValue}
+        onChange={(e) => onChange(e.target.value)}
+        rows={rows}
+        className="text-xs leading-relaxed"
+      />
+      {hint && <p className="text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
     </div>
   )
 }
@@ -79,16 +168,25 @@ export function TemplateConfigForm({
   template,
   chatModels,
   imageModels,
+  chatModelSlots,
   patch,
+  patchModels,
 }: {
   template: TarotTemplateConfig
   chatModels: ChatModelOption[]
   imageModels: ImageModelOption[]
+  chatModelSlots: ChatModelSlots
   patch: (partial: Partial<TarotTemplateConfig>) => void
+  patchModels: (partial: Partial<ChatModelSlots>) => void
 }) {
   const visionModels = chatModels.filter((c) => c.supportsVision)
   const reviewers = template.reviewerModelIds
   const cardSizes = sizeOptionsOf(template.cardImageModelId, imageModels)
+  // 阶段对话模型可选项：支持读图的优先标注（澄清首条消息可能带参考图）
+  const stageChatOptions = chatModels.map((c) => ({
+    id: c.id,
+    label: `${c.displayName}（${c.scope}${c.supportsVision ? " · 支持读图" : ""}）`,
+  }))
 
   const toggleReviewer = (id: string, checked: boolean) => {
     const next = checked
@@ -111,14 +209,26 @@ export function TemplateConfigForm({
           卡框：AI 融合
         </Badge>
         <span className="text-xs text-muted-foreground">
-          模板五阶段（澄清→方向→清单→生产→交付）专属参数；未设置的生图模型回退平台经典槽位
+          模板五阶段（澄清→初稿→终稿→生图评审→交付）专属参数；未设置的生图模型回退平台经典槽位
         </span>
       </div>
 
-      {/* 文案与评审团 */}
+      {/* 阶段对话模型与评审团 */}
       <div className="grid gap-3 lg:grid-cols-2">
         <SlotSelect
-          label="文案改写模型"
+          label="创意总监模型（需求澄清 / 简报）"
+          options={stageChatOptions}
+          value={chatModelSlots.styleChatModelId ?? ""}
+          onChange={(v) => patchModels({ styleChatModelId: v || null })}
+        />
+        <SlotSelect
+          label="风格策划模型（风格规范书）"
+          options={stageChatOptions}
+          value={chatModelSlots.structureChatModelId ?? ""}
+          onChange={(v) => patchModels({ structureChatModelId: v || null })}
+        />
+        <SlotSelect
+          label="初稿/终稿撰写模型"
           options={chatModels.map((c) => ({ id: c.id, label: `${c.displayName}（${c.scope}）` }))}
           value={template.copywriterChatModelId ?? ""}
           onChange={(v) => patch({ copywriterChatModelId: v || null })}
@@ -209,6 +319,7 @@ export function TemplateConfigForm({
         />
         <SlotSelect
           label="套件资产生图模型"
+          hint="边框/卡背/牌盒四面由该模型自动生成，生图比例延用上方卡面尺寸"
           options={cardImageOptions}
           value={template.assetImageModelId ?? INHERIT_SENTINEL}
           onChange={(v) => patch({ assetImageModelId: v === INHERIT_SENTINEL ? null : v })}
@@ -233,7 +344,7 @@ export function TemplateConfigForm({
           onChange={(v) => patch({ reviewThresholds: { ...template.reviewThresholds, consistency: v } })}
         />
       </div>
-      <div className="grid gap-5 rounded-lg border bg-card p-3.5 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-5 rounded-lg border bg-card p-3.5 sm:grid-cols-3">
         <ParamSlider
           label="打回上限"
           suffix="轮"
@@ -251,14 +362,6 @@ export function TemplateConfigForm({
           onChange={(v) => patch({ sampleCount: v })}
         />
         <ParamSlider
-          label="生产并发"
-          suffix="路"
-          min={1}
-          max={4}
-          value={template.concurrency}
-          onChange={(v) => patch({ concurrency: v })}
-        />
-        <ParamSlider
           label="澄清追问上限"
           suffix="轮"
           min={1}
@@ -267,6 +370,67 @@ export function TemplateConfigForm({
           onChange={(v) => patch({ clarifyMaxRounds: v })}
         />
       </div>
+
+      {/* 角色提示词与画面规则（空 = 内置默认；生效于初稿/终稿撰写、打回重细化与评审团） */}
+      <div className="grid gap-4 rounded-lg border bg-card p-3.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <FileText className="size-3.5 text-violet-500" />
+          <p className="text-xs font-medium">角色提示词与画面规则</p>
+          <span className="text-[11px] text-muted-foreground">
+            留空即用内置默认；改动后新项目的初稿/终稿撰写与评审立即按新文案执行
+          </span>
+        </div>
+        <PromptOverrideTextarea
+          label="画面规则（整套卡面的硬性创作要求）"
+          value={template.artRules}
+          defaultValue={DEFAULT_ART_RULES}
+          rows={8}
+          hint="随角色提示词一并注入「初稿设计师 / 终稿细化师」：约束每张卡的主体占比、构图、风格统一与视觉冲击力，保证生图效果。"
+          onChange={(v) => patch({ artRules: v?.trim() ? v : undefined })}
+        />
+        <div className="grid gap-4 lg:grid-cols-3">
+          <PromptOverrideTextarea
+            label="初稿设计师（初稿设计阶段）"
+            value={template.rolePrompts?.prompt_designer}
+            defaultValue={ROLE_PROMPTS.copywriter}
+            rows={7}
+            hint="逐张撰写 78 张简洁画面初稿（40-80 字）；用户可在初稿页查看与修改。"
+            onChange={(v) => patchRolePrompt(template, patch, "prompt_designer", v)}
+          />
+          <PromptOverrideTextarea
+            label="终稿细化师（终稿细化阶段 + 打回重细化）"
+            value={template.rolePrompts?.final_refiner}
+            defaultValue={ROLE_PROMPTS.finalRefiner}
+            rows={7}
+            hint="把初稿细化为「[1]画面风格 + [2]画面内容」结构终稿；评审打回时以初稿为基准重新细化。"
+            onChange={(v) => patchRolePrompt(template, patch, "final_refiner", v)}
+          />
+          <PromptOverrideTextarea
+            label="评审团（内容对齐 / 审美 / 一致性三维同审）"
+            value={template.rolePrompts?.reviewer}
+            defaultValue={DEFAULT_REVIEWER_PROMPT}
+            rows={7}
+            hint="每个评审模型对候选卡面三维打分；Ace-10 花色数量不符、主体占比过低、风格跳出成套体系的画面应被打回。"
+            onChange={(v) => patchRolePrompt(template, patch, "reviewer", v)}
+          />
+        </div>
+      </div>
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
+        生产并发不再在此配置：实际并发自动跟随全局用户并发限制（企业并发上限与权限组并发上限的较小值，随后台调整实时生效）。
+      </p>
     </div>
   )
+}
+
+/** 更新单个角色提示词覆盖（空值剔除该键 = 回退内置默认） */
+function patchRolePrompt(
+  template: TarotTemplateConfig,
+  patch: (partial: Partial<TarotTemplateConfig>) => void,
+  key: TemplateRolePromptKey,
+  value: string | undefined,
+): void {
+  const next: Partial<Record<TemplateRolePromptKey, string>> = { ...template.rolePrompts }
+  if (value?.trim()) next[key] = value
+  else delete next[key]
+  patch({ rolePrompts: next })
 }

@@ -154,19 +154,24 @@ export interface TeamStatus {
 // 常量与映射（口径对齐塔罗模板）
 // ---------------------------------------------------------------------------
 
-/** 成品卡面总数（78 张 = 22 大阿卡纳 + 56 小阿卡纳） */
-const CARD_TOTAL = 78
 /** 套件资产总数（边框/牌背/牌盒正面/背面/侧面/顶面） */
 const ASSET_TOTAL = 6
 
-/** 待执行动作 → 责任角色（与 pendingAction.kind 约定对齐） */
+/** 待执行动作 → 责任角色（与 pendingAction.kind 约定对齐；旧动作映射到承接角色） */
 const PENDING_ACTION_ROLES: Record<string, string> = {
   clarify_turn: "creative_director",
   finalize_brief: "creative_director",
-  gen_directions: "world_planner",
+  gen_style_spec: "style_director",
+  design_drafts: "prompt_designer",
+  design_finals: "final_refiner",
   compose_preview: "compositor",
   compose_batch: "compositor",
   produce_cards: "artist",
+  // 周边资产生成（边框/牌背/牌盒）由合成师负责（asset-steps 事件 nodeKey 同为 compositor）
+  asset_gen: "compositor",
+  // 旧动作（存量 run 过渡期）：由更名后的角色承接
+  gen_directions: "style_director",
+  design_prompts: "prompt_designer",
 }
 
 /** 收尾动作：其后无更新事件即视为该角色完成 */
@@ -176,17 +181,28 @@ const FINISH_ACTIONS = new Set(["done", "confirm"])
 function workingTaskText(kind: string, directionCount: number, stageName: string | null, phase?: string): string {
   if (kind === "clarify_turn") return "正在根据你的回答整理追问"
   if (kind === "finalize_brief") return "正在整理设计简报"
+  if (kind === "gen_style_spec") return "正在拟定 3 个风格规范方向"
+  if (kind === "design_drafts") return "正在逐张撰写画面初稿"
+  if (kind === "design_finals") return "正在把初稿细化为结构化终稿"
   if (kind === "gen_directions") return `正在构思 ${directionCount > 0 ? directionCount : 3} 个内容方向`
+  if (kind === "design_prompts") return "正在逐张撰写画面提示词"
   if (kind === "produce_cards") return phase === "full" ? "正在生产全套卡面（生图 + 三审 + 裁决）" : "正在生成风格小样"
+  if (kind === "asset_gen") return "正在生成套件资产（边框/牌背/牌盒）"
   return stageName ? `正在执行「${stageName}」阶段任务` : "正在执行阶段任务"
 }
 
 /** 等待用户：待执行动作 / 等待语境 → 文案 */
-function waitingTaskText(kind: string | null): string {
+function waitingTaskText(kind: string | null, phase?: string): string {
   if (kind === "clarify_turn") return "等待你回答问题"
   if (kind === "finalize_brief") return "等待你确认简报"
+  if (kind === "gen_style_spec") return "等待你选择风格规范方向"
+  if (kind === "design_drafts") return "等待你确认画面初稿"
+  if (kind === "design_finals") return "等待你确认画面终稿"
   if (kind === "gen_directions") return "等待你选择内容方向"
-  if (kind === "produce_cards") return "等待你确认小样风格"
+  if (kind === "design_prompts") return "等待你确认卡牌清单"
+  // produce_cards 按 phase 区分：sample 完成等确认；full 生产失败等待重试时文案不同
+  if (kind === "produce_cards") return phase === "full" ? "全套生产等待重试或继续" : "等待你确认小样风格"
+  if (kind === "asset_gen") return "套件资产生成等待重试或继续"
   return "等待你确认"
 }
 
@@ -233,10 +249,13 @@ export function deriveTeamStatus(input: {
   messages: readonly TeamMessageSnapshot[]
   items?: readonly TeamItemSnapshot[]
   assets?: readonly TeamAssetSnapshot[]
+  /** 卡组目标张数（run.input.cardCount；缺省按当前清单长度计） */
+  cardTotal?: number
 }): TeamStatus {
   const { roles, stages, run, events, messages } = input
   const items = input.items ?? []
   const assets = input.assets ?? []
+  const cardTotal = Math.max(0, Math.round(input.cardTotal ?? items.length))
 
   // 统一按时间升序（Date / 字符串混排也稳定）
   const sortedEvents = [...events].sort((a, b) => toTime(a.createdAt) - toTime(b.createdAt))
@@ -258,9 +277,14 @@ export function deriveTeamStatus(input: {
     else messagesByRole.set(message.nodeKey, [message])
   }
 
-  // 阶段位置（数组顺序即流程顺序；未知阶段记 -1，所有先后判定全部收敛）
-  const stagePos = (stageId: string | null | undefined): number =>
-    stageId ? stages.findIndex((stage) => stage.id === stageId) : -1
+  // 阶段位置（数组顺序即流程顺序；存量 run 的旧阶段 id 归一化后再比对，
+  // 未知阶段记 -1，所有先后判定全部收敛）
+  const stagePos = (stageId: string | null | undefined): number => {
+    if (!stageId) return -1
+    const normalized =
+      stageId === "world" ? "draft" : stageId === "prompt" ? "final" : stageId
+    return stages.findIndex((stage) => stage.id === normalized)
+  }
   const currentIndex = stagePos(run.stage)
   const currentStageName = currentIndex >= 0 ? (stages[currentIndex]?.name ?? null) : null
 
@@ -307,13 +331,14 @@ export function deriveTeamStatus(input: {
           ) ||
             !!run.brief)
         const hasDirectionsOutput =
-          role.id === "world_planner" &&
+          role.id === "style_director" &&
           (directionCount > 0 ||
             roleMessages.some(
-              (message) => message.role === "assistant" && message.meta?.kind === "directions",
+              (message) =>
+                message.role === "assistant" && message.meta?.kind === "directions",
             ))
         if (hasClarifyOutput) waitingKind = run.brief ? "finalize_brief" : "clarify_turn"
-        else if (hasDirectionsOutput) waitingKind = "gen_directions"
+        else if (hasDirectionsOutput) waitingKind = "gen_style_spec"
       }
     }
 
@@ -348,7 +373,7 @@ export function deriveTeamStatus(input: {
     } else if (state === "error") {
       currentTask = latest?.detail ?? run.error ?? "执行出错，请查看事件详情"
     } else if (state === "waiting_user") {
-      currentTask = waitingTaskText(waitingKind)
+      currentTask = waitingTaskText(waitingKind, run.pendingAction?.phase)
     } else if (state === "done") {
       currentTask = "已完成"
     } else {
@@ -370,15 +395,18 @@ export function deriveTeamStatus(input: {
         outputs.push({ label: "简报", value: run.brief ? "已生成" : "未生成" })
         break
       }
-      case "world_planner":
-        outputs.push({ label: "内容方向", value: `${directionCount} 个` })
+      case "style_director":
+        outputs.push({ label: "风格规范", value: directionCount > 0 ? `${directionCount} 个候选` : "拟定中" })
         break
       case "prompt_designer":
-        outputs.push({ label: "提示词", value: `${doneCount} 批` })
+        outputs.push({ label: "画面初稿", value: `${doneCount} 批` })
+        break
+      case "final_refiner":
+        outputs.push({ label: "终稿", value: `${doneCount} 批` })
         break
       case "artist": {
         const confirmedCards = items.filter((item) => item.finalRoundId).length
-        outputs.push({ label: "卡面", value: `${confirmedCards}/${CARD_TOTAL}` })
+        outputs.push({ label: "卡面", value: `${confirmedCards}/${cardTotal}` })
         outputs.push({ label: "套件资产", value: `${assets.length}/${ASSET_TOTAL}` })
         break
       }
@@ -387,7 +415,7 @@ export function deriveTeamStatus(input: {
         break
       case "compositor": {
         const framedCards = items.filter((item) => item.frameStatus === "framed").length
-        outputs.push({ label: "AI 融合", value: `${framedCards}/${CARD_TOTAL} 张` })
+        outputs.push({ label: "AI 融合", value: `${framedCards}/${cardTotal} 张` })
         break
       }
       case "supervisor":

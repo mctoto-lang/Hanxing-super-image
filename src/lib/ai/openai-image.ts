@@ -57,8 +57,8 @@ export type DownloadAndUploadFn = (
   imageIndex: number,
 ) => Promise<string>
 
-/** 槽位等待重试间隔（等待期间不计时单张超时，拿到槽位才开始计时） */
-const SLOT_WAIT_MS = 500
+/** 槽位等待重试间隔（等待期间不计时单张超时，拿到槽位才开始计时；200ms 降低释放到拾取延迟） */
+const SLOT_WAIT_MS = 200
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
@@ -183,7 +183,8 @@ export async function callOpenAiImageApi(opts: {
 
         if (!response.ok) {
           const text = await response.text().catch(() => "")
-          throw new Error(`OpenAI 生图 API 错误 ${response.status}: ${text.slice(0, 200)}`)
+          // 保留大段上游响应体（含内容政策拒绝等完整错误），便于定位来源
+          throw new Error(`OpenAI 生图 API 错误 ${response.status}: ${text.slice(0, 2000)}`)
         }
 
         const data: unknown = await response.json()

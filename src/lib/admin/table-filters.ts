@@ -3,7 +3,7 @@
  * URL 参数的解析约定、日期范围换算与模块中文名映射。
  */
 
-/** 模块 → 中文名（generation_task.source 五枚举 + chat 虚拟模块） */
+/** 模块 → 中文名（generation_task.source 枚举 + chat 虚拟模块） */
 export const MODULE_LABELS: Record<string, string> = {
   chat: "AI 对话",
   create: "自由创作",
@@ -11,6 +11,7 @@ export const MODULE_LABELS: Record<string, string> = {
   product: "商品图片",
   weartry: "穿戴图片",
   mockup: "样机渲染",
+  agent: "AI Agent",
 }
 
 /** 积分流水「模块」筛选选项（消费可来自 AI 对话） */
@@ -30,6 +31,7 @@ export const TASK_SOURCE_OPTIONS = [
   "product",
   "weartry",
   "mockup",
+  "agent",
 ] as const
 
 const DAY_KEY_RE = /^\d{4}-\d{2}-\d{2}$/

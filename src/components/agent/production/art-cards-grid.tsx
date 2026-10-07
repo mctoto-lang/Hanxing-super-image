@@ -99,7 +99,8 @@ export function ArtCardsGrid({
               isSample: item.isSample,
               fallbackContentWarning: item.fallbackContentWarning,
               errorMessage: item.errorMessage,
-              imageUrl: item.latestImageUrl,
+              // 终版优先：融合图 > 终版图 > 最新轮图（与导出/融合同源）
+              imageUrl: item.displayImageUrl,
               roundNumber: item.latestRoundNumber,
             }))}
             onOpen={onOpenItem}

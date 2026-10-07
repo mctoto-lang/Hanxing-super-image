@@ -73,6 +73,10 @@ const envSchema = z.object({
   // 转存下载并发上限：防止高并发波次打满服务器入方向带宽导致 30s 下载超时雪崩。
   // 经验值 ≈ 入方向带宽 Mbps × 2 ÷ 平均图片 MB（12M 带宽、2MB 图 ≈ 16）
   TRANSFER_CONCURRENCY: z.coerce.number().int().min(4).max(128).default(16),
+  // Agent 模板初稿/终稿批量撰写的批间并发上限保护：实际并发动态拉满对话
+  // 三层槽位（模型/权限组/企业 chat）的最小值；三层全不限或超出此值时以
+  // 此值为准（防止无限流配置下打爆上游）
+  AGENT_PROMPT_BATCH_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(8),
 
   // /uploads 无签名访问宽限期截止（ISO 日期，如 2026-10-08）。到期后本地
   // 存储图片强制「登录会话或 HMAC 令牌」；未配置视为宽限中。上线后将此值

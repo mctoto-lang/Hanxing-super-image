@@ -36,6 +36,7 @@ export const SOURCE_LABELS: Record<string, string> = {
   product: "商品图片",
   weartry: "穿戴图片",
   mockup: "样机渲染",
+  agent: "AI Agent",
 }
 
 export const STATUS_VARIANTS: Record<

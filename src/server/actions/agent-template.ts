@@ -1,14 +1,12 @@
 "use server"
 
-import { and, asc, desc, eq, isNotNull, notInArray, sql } from "drizzle-orm"
+import { and, asc, desc, eq, inArray, notInArray } from "drizzle-orm"
 import { z } from "zod"
 import { db } from "@/db/client"
 import {
   agentAssets,
   agentEvents,
   agentMessages,
-  agentNodeRuns,
-  agentReviews,
   agentRunItems,
   agentRounds,
   agentRuns,
@@ -16,16 +14,16 @@ import {
 import { requireEnterpriseContext, type UserContext } from "@/lib/auth/session"
 import { checkModuleAccess } from "@/lib/auth/permissions"
 import { buildTemplateProductionGraph } from "@/lib/agent/pipelines"
-import { majorityVotePassed } from "@/lib/agent/review"
 import { ensureTarotCardPlan } from "@/server/services/agent/card-plan"
 import { loadFullDirectionConfig } from "@/server/services/agent/direction-config"
+import { resolveAgentCardModelChoice } from "@/server/services/agent/card-models"
 import { validateReferenceImageUrls } from "@/lib/storage/reference-url"
 import { AgentRunNotFoundError } from "@/lib/agent/errors"
 import {
   AGENT_TEMPLATE_STAGES,
+  normalizeTemplateStage,
   type AgentAssetKind,
   type AgentPendingAction,
-  type AgentTemplateStage,
 } from "@/lib/agent/graph"
 import { getDeckTemplate } from "@/lib/agent/templates"
 
@@ -42,6 +40,8 @@ const startSchema = z.object({
   prompt: z.string().trim().min(5, "请先描述你的主题、风格或设计方向").max(2000),
   referenceImages: z.array(z.string().url()).max(4).default([]),
   quality: qualitySchema.optional(),
+  /** 卡面生图模型（候选池见 listAgentCardModelsAction；null/缺省 = 平台默认配置） */
+  imageModelId: z.string().uuid().nullish(),
 })
 
 const messageSchema = z.object({
@@ -71,16 +71,11 @@ const stageSchema = z.object({
   stage: z.enum(AGENT_TEMPLATE_STAGES),
 })
 
-const assetSchema = z.object({
-  runId: z.string().uuid(),
-  kind: z.enum(["border", "back", "box_front", "box_back", "box_side", "box_top"]),
-  name: z.string().trim().max(200).optional(),
-  url: z.string().url(),
-  meta: z.record(z.string(), z.unknown()).optional(),
-})
-
 const aiFramePreviewSchema = z.object({ runId: z.string().uuid(), borderAssetId: z.string().uuid() })
 const aiFrameItemSchema = z.object({ runId: z.string().uuid(), itemId: z.string().uuid(), borderAssetId: z.string().uuid() })
+
+/** brief 中「用户确认的风格规范方向」段落标记（幂等替换依据） */
+const BRIEF_DIRECTION_MARKER = "【用户确认的风格规范方向】"
 
 function deny(ctx: UserContext): void {
   const error = checkModuleAccess(ctx, "agent")
@@ -131,9 +126,21 @@ export async function startTarotTemplateAction(input: unknown) {
     if (invalid) throw new Error(invalid)
   }
 
+  // 用户选择的卡面生图模型：跑同一候选池校验（企业/权限组可见 + 比例严格
+  // 锁定），通过后把模型与该模型同比例预设的具体尺寸固化进 run.input
+  let cardModelOverride: { imageModelId: string; imageSize: string } | null = null
+  if (parsed.imageModelId) {
+    const resolved = await resolveAgentCardModelChoice(ctx, parsed.imageModelId)
+    if (!resolved.ok) throw new Error(resolved.error)
+    cardModelOverride = {
+      imageModelId: resolved.imageModelId,
+      imageSize: resolved.imageSize,
+    }
+  }
+
   const config = await loadFullDirectionConfig("tarot")
   // 初始快照用模板生产图（graphSnapshot 非空约束；确认卡牌清单时按当前配置+用户质量参数重建）
-  const graph = buildTemplateProductionGraph(config)
+  const graph = buildTemplateProductionGraph(config, undefined, cardModelOverride ?? undefined)
   const [run] = await db
     .insert(agentRuns)
     .values({
@@ -154,10 +161,16 @@ export async function startTarotTemplateAction(input: unknown) {
       input: {
         prompt: parsed.prompt,
         cardCount: template.meta.cardCount,
-        // 并行度跟随模板配置（管理员可调 1-4），不再硬编码
-        concurrency: config.templateConfig?.concurrency ?? 2,
+        // 生产并发不再快照：运行时动态跟随全局用户并发限制
+        // （min(企业并发上限, 权限组并发上限)，见 agent-orchestrator.runItemBatches）
         referenceImages: parsed.referenceImages,
         ...(parsed.quality ? { quality: parsed.quality } : {}),
+        ...(cardModelOverride
+          ? {
+              imageModelId: cardModelOverride.imageModelId,
+              imageSize: cardModelOverride.imageSize,
+            }
+          : {}),
       },
       graphSnapshot: graph,
     })
@@ -211,7 +224,7 @@ export async function requestBriefAction(runId: string) {
   return { ok: true }
 }
 
-/** 保存用户确认的创作简报并进入内容方向阶段（方向由世界观策划 LLM 生成）。 */
+/** 保存用户确认的创作简报并进入初稿设计阶段（风格规范书 + 78 张初稿由 AI 自动续跑）。 */
 export async function saveTemplateBriefAction(input: unknown) {
   const ctx = await requireEnterpriseContext()
   deny(ctx)
@@ -219,12 +232,31 @@ export async function saveTemplateBriefAction(input: unknown) {
   const run = await ownedRun(ctx, parsed.runId)
   assertTarotRun(run)
   if (run.stage !== "clarify") throw new Error("当前项目不在需求澄清阶段")
-  await db.update(agentRuns).set({ brief: parsed.brief, stage: "world", updatedAt: new Date() }).where(eq(agentRuns.id, run.id))
-  await enqueueTemplateAction(run.id, { kind: "gen_directions", requestedAt: new Date().toISOString() })
+  await db.update(agentRuns).set({ brief: parsed.brief, stage: "draft", updatedAt: new Date() }).where(eq(agentRuns.id, run.id))
+  await enqueueTemplateAction(run.id, { kind: "gen_style_spec", requestedAt: new Date().toISOString() })
   return { ok: true }
 }
 
-/** 根据用户反馈重新构思 3 个内容方向（世界观策划会避开已出现过的方向名）。 */
+/**
+ * 根据用户反馈重新拟定 3 个候选《风格规范书》（draft 阶段可用；重置当前
+ * 选择，重新选定后才会重写初稿）。
+ */
+export async function regenerateStyleSpecAction(input: unknown) {
+  const ctx = await requireEnterpriseContext()
+  deny(ctx)
+  const parsed = regenerateDirectionsSchema.parse(input)
+  const run = await ownedRun(ctx, parsed.runId)
+  assertTarotRun(run)
+  if (normalizeTemplateStage(run.stage) !== "draft") throw new Error("当前项目不在初稿设计阶段")
+  await enqueueTemplateAction(run.id, {
+    kind: "gen_style_spec",
+    feedback: parsed.feedback || undefined,
+    requestedAt: new Date().toISOString(),
+  })
+  return { ok: true }
+}
+
+/** 根据用户反馈重新构思 3 个内容方向（旧流程：存量 world 阶段 run 过渡期保留）。 */
 export async function regenerateDirectionsAction(input: unknown) {
   const ctx = await requireEnterpriseContext()
   deny(ctx)
@@ -240,22 +272,34 @@ export async function regenerateDirectionsAction(input: unknown) {
   return { ok: true }
 }
 
-/** 保存用户选定的内容方向并进入提示词设计阶段。 */
+/**
+ * 保存用户选定的《风格规范书》方向：
+ * - 新流程（stage=draft）：保持 draft 阶段，落 78 张清单并排队 design_drafts；
+ * - 存量 run（raw stage=world）：维持旧行为（进 final + design_prompts）。
+ */
 export async function selectTemplateDirectionAction(input: unknown) {
   const ctx = await requireEnterpriseContext()
   deny(ctx)
   const parsed = directionSchema.parse(input)
   const run = await ownedRun(ctx, parsed.runId)
   assertTarotRun(run)
-  if (run.stage !== "world") throw new Error("当前项目不在内容方向阶段")
+  const legacyWorld = run.stage === "world"
+  if (!legacyWorld && normalizeTemplateStage(run.stage) !== "draft") {
+    throw new Error("当前项目不在初稿设计阶段")
+  }
   const direction = (run.directions ?? []).find((item) => item.id === parsed.directionId)
-  if (!direction) throw new Error("内容方向不存在或已更新，请刷新后重试")
+  if (!direction) throw new Error("风格规范方向不存在或已更新，请刷新后重选")
   const briefSection =
-    `【用户确认的内容方向】${direction.name}\n${direction.concept || direction.description}` +
+    `【用户确认的风格规范方向】${direction.name}\n${direction.concept || direction.description}` +
     (parsed.note ? `\n（用户备注：${parsed.note}）` : "")
-  const newBrief = `${run.brief ?? ""}\n\n${briefSection}`.trim()
-  // 先落 78 张卡牌清单、再推进阶段：清单生成失败时项目停留在 world，
-  // 用户重试即自愈（重选方向 → ensure 幂等返回已有清单 → 推进 stage）
+  // 幂等替换该段落而非追加：用户「换一批方向」后重选不让 brief 反复膨胀
+  // （下游 design_drafts 只截 1500 字、finalize 限 800 字，膨胀会截断真实需求）
+  const base = run.brief ?? ""
+  const cut = base.indexOf(BRIEF_DIRECTION_MARKER)
+  const head = (cut >= 0 ? base.slice(0, cut) : base).trimEnd()
+  const newBrief = `${head ? `${head}\n\n` : ""}${briefSection}`.trim()
+  // 先落 78 张卡牌清单、再排队初稿撰写：清单生成失败时项目停留在待选方向，
+  // 用户重试即自愈（重选方向 → ensure 幂等返回已有清单 → 排队撰写）
   await ensureTarotCardPlan({ ...run, brief: newBrief, selectedDirectionId: direction.id }, direction)
   await db
     .update(agentRuns)
@@ -263,48 +307,26 @@ export async function selectTemplateDirectionAction(input: unknown) {
       selectedDirectionId: direction.id,
       selectedDirection: "tarot",
       brief: newBrief,
-      stage: "prompt",
+      stage: legacyWorld ? "final" : "draft",
       updatedAt: new Date(),
     })
     .where(eq(agentRuns.id, run.id))
   await db.insert(agentEvents).values({
     runId: run.id,
-    nodeKey: "world_planner",
+    nodeKey: "style_director",
     nodeType: "agent",
     action: "done",
     status: "ok",
-    detail: `内容方向「${direction.name}」已确认，开始准备 78 张卡牌清单`,
+    detail: `风格规范「${direction.name}」已确认，开始撰写 78 张画面初稿`,
+  })
+  await enqueueTemplateAction(run.id, {
+    kind: legacyWorld ? "design_prompts" : "design_drafts",
+    requestedAt: new Date().toISOString(),
   })
   return { ok: true }
 }
 
-/** 手动推进/回看模板阶段；仅允许单步前进，避免跳过确认门槛。 */
-export async function setTemplateStageAction(input: unknown) {
-  const ctx = await requireEnterpriseContext()
-  deny(ctx)
-  const parsed = stageSchema.parse(input)
-  const run = await ownedRun(ctx, parsed.runId)
-  assertTarotRun(run)
-  const current = AGENT_TEMPLATE_STAGES.indexOf(run.stage as AgentTemplateStage)
-  const target = AGENT_TEMPLATE_STAGES.indexOf(parsed.stage)
-  if (target < 0 || (current >= 0 && target > current + 1)) throw new Error("不能跳过模板阶段")
-  await db.update(agentRuns).set({ stage: parsed.stage, updatedAt: new Date() }).where(eq(agentRuns.id, run.id))
-  return { ok: true, stage: parsed.stage }
-}
-
-/** 保存一项套件资产（AI 生成结果或用户上传结果）。 */
-export async function createTemplateAssetAction(input: unknown) {
-  const ctx = await requireEnterpriseContext()
-  deny(ctx)
-  const parsed = assetSchema.parse(input)
-  const run = await ownedRun(ctx, parsed.runId)
-  assertTarotRun(run)
-  // 资产 URL 只允许本企业上传到本平台存储（后续会被 ZIP 回源/融合流程代取）
-  const invalid = await validateReferenceImageUrls([parsed.url], ctx.user.enterpriseId!)
-  if (invalid) throw new Error(invalid)
-  const [asset] = await db.insert(agentAssets).values({ runId: run.id, kind: parsed.kind, name: parsed.name ?? parsed.kind, url: parsed.url, meta: parsed.meta ?? null }).returning()
-  return asset
-}
+/** 手动推进/回看模板阶段已由 switchTemplateStageAction 取代（art ↔ compose 双向）。 */
 
 /** AI 融合动作排队（与 enqueueTemplateAction 同语义，供预览/批量/单张重做复用）。 */
 async function enqueueComposeAction(runId: string, action: AgentPendingAction): Promise<void> {
@@ -372,12 +394,15 @@ export async function requestAiFramePreviewAction(input: unknown) {
   const parsed = aiFramePreviewSchema.parse(input)
   const run = await ownedRun(ctx, parsed.runId)
   assertTarotRun(run)
+  // 融合动作仅属 compose 阶段（UI 已限制；直接调用 action 同样拦截，
+  // 避免 clarify/draft 阶段排队融合与卡面生产互相踩状态）
+  if (normalizeTemplateStage(run.stage) !== "compose") {
+    throw new Error("请先进入「融合与交付」阶段")
+  }
   const [border] = await db.select().from(agentAssets).where(and(eq(agentAssets.id, parsed.borderAssetId), eq(agentAssets.runId, run.id)))
-  if (!border || border.kind !== "border") throw new Error("请先确认透明边框资产")
+  if (!border || border.kind !== "border") throw new Error("边框参考图不存在")
   const items = await db.select().from(agentRunItems).where(eq(agentRunItems.runId, run.id)).orderBy(asc(agentRunItems.index))
-  if (items.length !== 78 || items.some((item) => !item.finalRoundId)) throw new Error("请先确认 78 张卡面")
-  // 预览不切换阶段：仍停留在 art，等用户看到 3 张预览后点「批量融合」时
-  // 才进入 compose——否则发起预览就卸载确认按钮，批量入口在真实流程不可达
+  if (items.length !== 78 || items.some((item) => !item.finalRoundId)) throw new Error("请先完成 78 张卡面生产")
   await db.update(agentRuns).set({ frameAssetId: border.id, frameMode: "ai", updatedAt: new Date() }).where(eq(agentRuns.id, run.id))
   await enqueueComposeAction(run.id, { kind: "compose_preview", borderAssetId: border.id, requestedAt: new Date().toISOString() })
   return { ok: true, previewCount: 3, estimatedImages: 3 }
@@ -391,10 +416,34 @@ export async function confirmAiFrameBatchAction(runId: string) {
   assertTarotRun(run)
   const items = await db.select().from(agentRunItems).where(eq(agentRunItems.runId, run.id))
   if (items.filter((item) => item.frameStatus === "framed").length < 3) throw new Error("请先完成 3 张 AI 融合预览")
-  // 批量确认时才进入交付（compose）阶段（与预览不切阶段配套）
-  await db.update(agentRuns).set({ stage: "compose", updatedAt: new Date() }).where(eq(agentRuns.id, run.id))
   await enqueueComposeAction(run.id, { kind: "compose_batch", borderAssetId: run.frameAssetId ?? undefined, requestedAt: new Date().toISOString() })
   return { ok: true, estimatedImages: 78 }
+}
+
+/**
+ * art ↔ compose 阶段双向切换（融合与交付阶段内做融合，卡面/资产仍在 art）：
+ * - → compose：78 张卡面终版齐备才放行；
+ * - → art：无进行中的模板任务即可（融合完成后回看卡面与资产）。
+ */
+export async function switchTemplateStageAction(input: unknown) {
+  const ctx = await requireEnterpriseContext()
+  deny(ctx)
+  const parsed = stageSchema.parse(input)
+  const run = await ownedRun(ctx, parsed.runId)
+  assertTarotRun(run)
+  if (parsed.stage === run.stage) return { ok: true }
+  if (parsed.stage !== "art" && parsed.stage !== "compose") {
+    throw new Error("仅支持在「卡面生产」与「融合与交付」之间切换")
+  }
+  if (run.status === "running" || run.status === "queued") throw new Error("AI 团队正在处理中，请稍候")
+  if (parsed.stage === "compose") {
+    const items = await db.select().from(agentRunItems).where(eq(agentRunItems.runId, run.id))
+    if (items.length !== 78 || items.some((item) => !item.finalRoundId)) {
+      throw new Error("请先完成 78 张卡面生产，再进入融合与交付")
+    }
+  }
+  await db.update(agentRuns).set({ stage: parsed.stage, updatedAt: new Date() }).where(eq(agentRuns.id, run.id))
+  return { ok: true }
 }
 
 export async function retryAiFrameItemAction(input: unknown) {
@@ -541,90 +590,13 @@ export async function getTarotDeliverablesAction(runId: string) {
   return { cards, assets, files, readyCount: files.length, totalCount: cards.length + assets.length } satisfies TarotDeliverablesResult
 }
 
-/** 整副评分聚合（art 阶段评分卡）：终版轮次的三维评分均分与及格统计 */
-export async function getTarotDeckScoresAction(runId: string) {
-  const ctx = await requireEnterpriseContext()
-  deny(ctx)
-  const run = await ownedRun(ctx, runId)
-  assertTarotRun(run)
-  const rows = await db
-    .select({
-      itemId: agentReviews.itemId,
-      dimension: sql<string>`${agentReviews.result} ->> 'dimension'`,
-      score: sql<number | null>`NULLIF(${agentReviews.result} ->> 'score', '')::float8`,
-      pass: sql<boolean | null>`NULLIF(${agentReviews.result} ->> 'pass', '')::boolean`,
-    })
-    .from(agentReviews)
-    .innerJoin(agentRunItems, eq(agentReviews.itemId, agentRunItems.id))
-    .where(
-      and(
-        eq(agentRunItems.runId, run.id),
-        eq(agentReviews.kind, "review"),
-        isNotNull(agentRunItems.finalRoundId),
-        sql`${agentReviews.roundId} = ${agentRunItems.finalRoundId}`,
-      ),
-    )
-    // 定序保证归并结果确定（同 item 行集中返回）
-    .orderBy(asc(agentRunItems.index))
-
-  // 终版轮评审按「卡 × 维度」归并：多评审取平均分、内容按多数票（对齐
-  // aggregateReviewerScores 语义；单评审一票否决）
-  const byItem = new Map<string, { aesthetic: number[]; consistency: number[]; contentPass: number[] }>()
-  for (const row of rows) {
-    const entry = byItem.get(row.itemId) ?? { aesthetic: [], consistency: [], contentPass: [] }
-    if (row.dimension === "content") {
-      if (row.pass !== null) entry.contentPass.push(row.pass ? 1 : 0)
-    } else {
-      if (row.dimension === "aesthetic" && row.score !== null) entry.aesthetic.push(row.score)
-      if (row.dimension === "consistency" && row.score !== null) entry.consistency.push(row.score)
-    }
-    byItem.set(row.itemId, entry)
-  }
-  let contentPass = 0
-  let contentTotal = 0
-  const items: { content: null; aesthetic: number | null; consistency: number | null }[] = []
-  for (const entry of byItem.values()) {
-    items.push({
-      content: null,
-      aesthetic: entry.aesthetic.length > 0 ? Math.round(entry.aesthetic.reduce((s, v) => s + v, 0) / entry.aesthetic.length) : null,
-      consistency: entry.consistency.length > 0 ? Math.round(entry.consistency.reduce((s, v) => s + v, 0) / entry.consistency.length) : null,
-    })
-    if (entry.contentPass.length > 0) {
-      contentTotal += 1
-      const votes = entry.contentPass.reduce((s, v) => s + v, 0)
-      if (majorityVotePassed(votes, entry.contentPass.length)) contentPass += 1
-    }
-  }
-
-  // 及格线：从生产图快照读取（缺省回退内置默认）
-  const thresholds = {
-    aesthetic: readSnapshotThreshold(run.graphSnapshot, "review_aesthetic", 75),
-    consistency: readSnapshotThreshold(run.graphSnapshot, "review_consistency", 70),
-  }
-  return {
-    items,
-    contentPass,
-    contentTotal,
-    thresholds,
-    sampled: items.length,
-  }
-}
-
-function readSnapshotThreshold(snapshot: unknown, nodeId: string, fallback: number): number {
-  const node = (snapshot as { nodes?: { id: string; config?: { aestheticThreshold?: unknown } }[] } | null)?.nodes?.find(
-    (n) => n.id === nodeId,
-  )
-  const raw = node?.config?.aestheticThreshold
-  return typeof raw === "number" && Number.isFinite(raw) && raw >= 0 && raw <= 100 ? Math.round(raw) : fallback
-}
-
 /** 模板工作台聚合查询：阶段、消息、套件资产、卡面（含最新轮图）、状态统计、事件与节点聚合，供轮询。 */
 export async function getTemplateWorkspaceAction(runId: string) {
   const ctx = await requireEnterpriseContext()
   deny(ctx)
   const run = await ownedRun(ctx, runId)
   assertTarotRun(run)
-  const [messages, assets, itemRows, latestEvents, rounds, nodes] = await Promise.all([
+  const [messages, assets, itemRows, latestEvents, rounds, config] = await Promise.all([
     db.select().from(agentMessages).where(eq(agentMessages.runId, run.id)).orderBy(asc(agentMessages.createdAt)),
     db.select().from(agentAssets).where(eq(agentAssets.runId, run.id)).orderBy(asc(agentAssets.createdAt)),
     db
@@ -635,6 +607,7 @@ export async function getTemplateWorkspaceAction(runId: string) {
         meaning: agentRunItems.meaning,
         visualBrief: agentRunItems.visualBrief,
         currentPrompt: agentRunItems.currentPrompt,
+        promptSource: agentRunItems.promptSource,
         status: agentRunItems.status,
         isSample: agentRunItems.isSample,
         roundsUsed: agentRunItems.roundsUsed,
@@ -651,27 +624,50 @@ export async function getTemplateWorkspaceAction(runId: string) {
     // 事件取最新 100 条（desc 取尾后反转回升序，保证数组末尾恒为最新事件；
     // 全套生产事件远超 100 条，asc+limit 会冻结在最旧事件上导致悬浮球停更）
     db.select().from(agentEvents).where(eq(agentEvents.runId, run.id)).orderBy(desc(agentEvents.createdAt)).limit(100),
+    // 轮次仅取每卡最新一行（卡面网格缩略图数据源；本接口 2s 轮询，不再全量
+    // 拉回全部历史轮次。agent_node_run 不再查询：看板由 node-board 纯推导）
     db
-      .select({ id: agentRounds.id, itemId: agentRounds.itemId, roundNumber: agentRounds.roundNumber, imageUrl: agentRounds.imageUrl })
+      .selectDistinctOn([agentRounds.itemId], {
+        id: agentRounds.id,
+        itemId: agentRounds.itemId,
+        roundNumber: agentRounds.roundNumber,
+        imageUrl: agentRounds.imageUrl,
+      })
       .from(agentRounds)
       .where(eq(agentRounds.runId, run.id))
-      .orderBy(asc(agentRounds.roundNumber)),
-    db.select().from(agentNodeRuns).where(eq(agentNodeRuns.runId, run.id)),
+      .orderBy(agentRounds.itemId, desc(agentRounds.roundNumber)),
+    // 澄清轮次上限随配置下发（管理员可在后台调整 1-8；澄清页轮次徽标跟随）
+    loadFullDirectionConfig("tarot"),
   ])
   // 时间线升序（数组末尾 = 最新事件，与前端「最新在上」的展示契约一致）
   const events = [...latestEvents].reverse()
-  // 每卡最新一轮（升序遍历后留下的即最大轮次）——卡面网格缩略图
+  // 每卡最新一轮（DISTINCT ON 已按轮次倒序取一行/卡）——在途生产时的缩略图
   const latestRoundByItem = new Map<string, { id: string; roundNumber: number; imageUrl: string | null }>()
   for (const round of rounds) {
     latestRoundByItem.set(round.itemId, { id: round.id, roundNumber: round.roundNumber, imageUrl: round.imageUrl })
   }
+  // 每卡终版轮（用户选定的 finalRoundId，可能是历史轮，不在最新轮集合内）——
+  // 卡面网格按「融合图 > 终版图 > 最新轮图」取展示图，与导出/融合同源
+  const finalRoundIds = itemRows.map((item) => item.finalRoundId).filter((id): id is string => Boolean(id))
+  const finalRounds = finalRoundIds.length > 0
+    ? await db
+        .select({ id: agentRounds.id, itemId: agentRounds.itemId, imageUrl: agentRounds.imageUrl })
+        .from(agentRounds)
+        .where(inArray(agentRounds.id, finalRoundIds))
+    : []
+  const finalRoundByItem = new Map<string, string | null>()
+  for (const round of finalRounds) finalRoundByItem.set(round.itemId, round.imageUrl)
   const items = itemRows.map((item) => {
     const latest = latestRoundByItem.get(item.id)
+    const finalImageUrl = item.finalRoundId ? (finalRoundByItem.get(item.id) ?? null) : null
     return {
       ...item,
       latestRoundId: latest?.id ?? null,
       latestRoundNumber: latest?.roundNumber ?? null,
       latestImageUrl: latest?.imageUrl ?? null,
+      finalImageUrl,
+      /** 卡面展示图：融合图 > 终版图 > 最新轮图（终版选定后卡面不再漂移） */
+      displayImageUrl: item.framedImageUrl ?? finalImageUrl ?? latest?.imageUrl ?? null,
     }
   })
   const statusCounts = new Map<string, number>()
@@ -683,6 +679,7 @@ export async function getTemplateWorkspaceAction(runId: string) {
     items,
     itemStats: [...statusCounts.entries()].map(([status, count]) => ({ status, count })),
     events,
-    nodes,
+    /** 澄清追问轮次上限（管理员配置；缺省兜底由前端常量承担） */
+    clarifyMaxRounds: config.templateConfig?.clarifyMaxRounds ?? null,
   }
 }
