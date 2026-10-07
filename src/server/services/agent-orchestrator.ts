@@ -8,7 +8,8 @@
  *   同批并发；supervisor 裁决 approve / retry（沿 retry 边回到上游节点，
  *   携带本轮反馈，只传本轮防 prompt 膨胀）/ 耗尽兜底选历史最优；
  * - 留痕：每轮尝试写 agent_round，审核与裁决写 agent_review，全程写
- *   agent_event，节点聚合状态写 agent_node_run（画布状态色数据源）。
+ *   agent_event，节点聚合状态旧版写 agent_node_run（已随 0060 迁移下线，
+ *   画布状态色现由 node-board 纯推导）。
  *
  * 计费：
  * - LLM：每次调用按实际 usage × 模型厘价累计，满 100 厘（1 积分）原子扣企业池
@@ -67,7 +68,7 @@ import type {
 import { mainEdges, nodesById, validateAgentGraph } from "@/lib/agent/validate"
 import { DEFAULT_REVIEWER_PROMPT, PIPELINE_NODE_IDS } from "@/lib/agent/pipelines"
 import { suitCountRuleByIndex } from "@/lib/agent/templates"
-import { splitFinalPromptSegments } from "@/lib/agent/cards/plan"
+import { normalizeFinalPrompt, splitFinalPromptSegments } from "@/lib/agent/cards/plan"
 
 type ImageModelRow = typeof modelsTable.$inferSelect
 
@@ -861,6 +862,15 @@ async function executeAgentNode(
     state.promptSource = "initial"
   }
 
+  // LLM 偶发漏两段标记时包一层，保证落库结构与 design_finals 路径
+  // （template-steps.ts）同口径——node-board / final-stage-view 的终稿
+  // 识别都按两段标记消费；风格段取值与 runDesignFinals 一致
+  if (state.prompt) {
+    const direction = (env.run.directions ?? []).find((d) => d.id === env.run.selectedDirectionId)
+    const styleSummary = direction?.visualLanguage || direction?.palette || "统一的塔罗牌视觉风格"
+    state.prompt = normalizeFinalPrompt(state.prompt, styleSummary)
+  }
+
   await db
     .update(agentRunItems)
     .set({
@@ -1462,9 +1472,14 @@ async function processItem(
           aesthetic: { sum: 0, passVotes: 0, total: 0, reasons: [] },
           consistency: { sum: 0, passVotes: 0, total: 0, reasons: [] },
         }
+        // 打回只落轮数：不写回 pending——写回瞬间到重新置 drafting 的数次
+        // DB 往返间，该卡会被同池 worker 的 claimNext（只认 pending）再次
+        // 认领导致双执行；保持瞬态（reviewing 等）对 claimNext 恒不可见，
+        // 下方 walkItem 重启后 executeAgentNode 会再置 drafting（幂等）。
+        // worker 若在此间崩溃，卡停在瞬态，由 stale 恢复循环复位 pending。
         await db
           .update(agentRunItems)
-          .set({ roundsUsed: state.roundsUsed, status: "pending", updatedAt: new Date() })
+          .set({ roundsUsed: state.roundsUsed, updatedAt: new Date() })
           .where(eq(agentRunItems.id, item.id))
         startAt = outcome.targetId
         continue

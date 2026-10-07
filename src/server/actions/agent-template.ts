@@ -431,9 +431,16 @@ export async function switchTemplateStageAction(input: unknown) {
   const parsed = stageSchema.parse(input)
   const run = await ownedRun(ctx, parsed.runId)
   assertTarotRun(run)
-  if (parsed.stage === run.stage) return { ok: true }
+  // 来源阶段先归一（存量 world/prompt run 的裸比较会失真），早退也按归一值比较
+  const currentStage = normalizeTemplateStage(run.stage)
+  if (parsed.stage === currentStage) return { ok: true }
   if (parsed.stage !== "art" && parsed.stage !== "compose") {
     throw new Error("仅支持在「卡面生产」与「融合与交付」之间切换")
+  }
+  // 来源守卫：只允许 art ↔ compose 双向；clarify/draft/final 直跳 art 会绕过
+  // 初稿/终稿确认门槛，且跳后无 action 能回到 draft/final（项目永久卡死）
+  if (currentStage !== "art" && currentStage !== "compose") {
+    throw new Error("当前阶段不支持切换，请先完成终稿确认，进入「卡面生产」阶段")
   }
   if (run.status === "running" || run.status === "queued") throw new Error("AI 团队正在处理中，请稍候")
   if (parsed.stage === "compose") {

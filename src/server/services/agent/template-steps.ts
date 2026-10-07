@@ -454,7 +454,13 @@ async function runDesignDrafts(run: AgentRunRow, action: AgentPendingAction): Pr
 
     const runBatch = async (batch: PromptTargetItem[]) => {
       const writeFallbackBatch = async (reason: string) => {
+        // 手动编辑过的初稿不套兜底：保留用户原文（可稍后单张重新生成）
+        let manualKept = 0
         for (const item of batch) {
+          if (item.promptSource === "manual") {
+            manualKept += 1
+            continue
+          }
           await writeCardDraft(item, { meaning: item.meaning ?? "", body: fallbackFor(item), source: "initial" })
           fallbackCount += 1
         }
@@ -463,7 +469,7 @@ async function runDesignDrafts(run: AgentRunRow, action: AgentPendingAction): Pr
           nodeKey,
           action: "fail",
           status: "warn",
-          detail: `第 ${batch[0]!.index + 1}-${batch[batch.length - 1]!.index + 1} 张 AI 撰写失败，已用模板兜底（${reason}），可稍后单张重新生成`,
+          detail: `第 ${batch[0]!.index + 1}-${batch[batch.length - 1]!.index + 1} 张 AI 撰写失败，已用模板兜底（${reason}），可稍后单张重新生成${manualKept > 0 ? `；${manualKept} 张手动编辑稿保留原文未套兜底` : ""}`,
         })
       }
 
@@ -645,6 +651,7 @@ async function runDesignFinals(run: AgentRunRow, action: AgentPendingAction): Pr
 
     let aiCount = 0
     let fallbackCount = 0
+    let manualKeptCount = 0
     let doneCount = 0
 
     const batches: PromptTargetItem[][] = []
@@ -654,7 +661,13 @@ async function runDesignFinals(run: AgentRunRow, action: AgentPendingAction): Pr
 
     const runBatch = async (batch: PromptTargetItem[]) => {
       const writeFallbackBatch = async (reason: string) => {
+        // 手动编辑过的卡不套兜底终稿：保留用户原文（可稍后单张重细化）
+        let manualKept = 0
         for (const item of batch) {
+          if (item.promptSource === "manual") {
+            manualKept += 1
+            continue
+          }
           await db
             .update(agentRunItems)
             .set({ currentPrompt: fallbackFor(item), promptSource: "initial", updatedAt: new Date() })
@@ -666,7 +679,7 @@ async function runDesignFinals(run: AgentRunRow, action: AgentPendingAction): Pr
           nodeKey,
           action: "fail",
           status: "warn",
-          detail: `第 ${batch[0]!.index + 1}-${batch[batch.length - 1]!.index + 1} 张 AI 细化失败，已用兜底终稿（${reason}），可稍后单张重细化`,
+          detail: `第 ${batch[0]!.index + 1}-${batch[batch.length - 1]!.index + 1} 张 AI 细化失败，已用兜底终稿（${reason}），可稍后单张重细化${manualKept > 0 ? `；${manualKept} 张手动编辑稿保留原文未套兜底` : ""}`,
         })
       }
 
@@ -724,6 +737,9 @@ async function runDesignFinals(run: AgentRunRow, action: AgentPendingAction): Pr
               .set({ currentPrompt: finalPrompt, promptSource: "final", updatedAt: new Date() })
               .where(eq(agentRunItems.id, item.id))
             aiCount += 1
+          } else if (item.promptSource === "manual") {
+            // 手动编辑过的卡不套兜底终稿：保留用户原文（可稍后单张重细化）
+            manualKeptCount += 1
           } else {
             await db
               .update(agentRunItems)
@@ -733,13 +749,13 @@ async function runDesignFinals(run: AgentRunRow, action: AgentPendingAction): Pr
             shortCount += 1
           }
         }
-        if (shortCount > 0) {
+        if (shortCount > 0 || manualKeptCount > 0) {
           await logTemplateEvent({
             runId: run.id,
             nodeKey,
             action: "fail",
             status: "warn",
-            detail: `本批 ${shortCount} 张终稿缺失、过短或结构不合格，已用兜底终稿，可单张重细化`,
+            detail: `本批 ${shortCount} 张终稿缺失、过短或结构不合格，已用兜底终稿，可单张重细化${manualKeptCount > 0 ? `；${manualKeptCount} 张手动编辑稿保留原文未套兜底` : ""}`,
           })
         }
       } catch (err) {

@@ -63,7 +63,11 @@ export function ComposeStageView({
   const framing = data.items.filter((item) => item.frameStatus === "framing").length
   const frameFailed = data.items.filter((item) => item.frameStatus === "failed")
   // 单张重做沿用发起融合时记忆的边框（frameAssetId），回退最新一条边框资产
-  const borderAssetId = data.run.frameAssetId ?? data.assets.find((asset) => asset.kind === "border")?.id
+  // （assets 为服务端升序返回，find 会命中最旧一条，须倒序；不用 findLast
+  // 以避免 target/lib 兼容问题）
+  const borderAssetId =
+    data.run.frameAssetId ??
+    [...data.assets].reverse().find((asset) => asset.kind === "border")?.id
   const readyCount = deliverables?.readyCount ?? 0
   const totalCount = deliverables?.totalCount ?? 84
   const percent = totalCount > 0 ? Math.round((readyCount / totalCount) * 100) : 0

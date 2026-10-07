@@ -18,9 +18,10 @@ export function buildExtraConfig(input: {
     if (input.quality?.trim()) cfg.quality = input.quality.trim()
     return cfg
   }
-  // grsai：清晰度档位手动覆盖（空 = 自动推导，不写字段）
+  // grsai：清晰度档位手动覆盖（空 = 自动推导，不写字段）。
+  // 只写新键 grsaiImageSize（旧键 grsai_image_size 为存量数据，读取侧双读兼容）
   if (input.apiFormat === "grsai") {
-    if (input.grsaiImageSize) cfg.grsai_image_size = input.grsaiImageSize
+    if (input.grsaiImageSize) cfg.grsaiImageSize = input.grsaiImageSize
     return cfg
   }
   // jimeng

@@ -7,7 +7,6 @@ import {
 } from "@/server/actions/conversations"
 import { CreateApp } from "@/components/create/create-app"
 import { type TaskDetail } from "@/components/create/task-detail-card"
-import type { CreateModel } from "@/components/create/types"
 
 export const dynamic = "force-dynamic"
 
@@ -58,7 +57,7 @@ export default async function CreatePage({
         }
       >
         <CreateApp
-          models={models as CreateModel[]}
+          models={models}
           conversations={conversations.map((c) => ({
             id: c.id,
             title: c.title,

@@ -164,7 +164,10 @@ function fromModel(m: ModelRow): FormState {
     quality: (ec.quality as string) ?? "",
     useRatioParam: m.useRatioParam,
     ratioParamField: m.ratioParamField ?? "",
-    grsaiImageSize: (ec.grsai_image_size as FormState["grsaiImageSize"]) ?? "",
+    // 双读：新键优先，旧键 grsai_image_size 为存量数据
+    grsaiImageSize:
+      ((ec.grsaiImageSize ?? ec.grsai_image_size) as FormState["grsaiImageSize"]) ??
+      "",
     costPerImage: m.costPerImage,
     sizePresets: m.sizePresets
       ? m.sizePresets.map((p) => ({ ...p }))
@@ -741,15 +744,21 @@ export function ModelFormDialog({
                     }
                   />
                 </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="referenceImageField">参考图 API 字段名</Label>
-                  <Input
-                    id="referenceImageField"
-                    value={state.referenceImageField}
-                    onChange={(e) => up("referenceImageField", e.target.value)}
-                    placeholder="留空按格式默认：openai→image，即梦→images"
-                  />
-                </div>
+                {/* grsai 固定用 images 字段（适配器硬编码，见 grsai-image.ts），
+                    不暴露字段名配置，避免填了 image 之类的值被静默忽略 */}
+                {state.apiFormat !== "grsai" && (
+                  <div className="grid gap-2">
+                    <Label htmlFor="referenceImageField">
+                      参考图 API 字段名
+                    </Label>
+                    <Input
+                      id="referenceImageField"
+                      value={state.referenceImageField}
+                      onChange={(e) => up("referenceImageField", e.target.value)}
+                      placeholder="留空按格式默认：openai→image，即梦/grsai→images"
+                    />
+                  </div>
+                )}
               </div>
             ) : null}
           </div>

@@ -3,9 +3,9 @@
 /**
  * 评分进度条（0-100）
  *
- * - ScoreBar：分格竖条带（「服务可用性」同款分段样式）——100 根细竖条、
- *   每根 1 分（gap 2px 细密间隔），按分数点亮对应数量；颜色按 scoreTone
- *   档位（红/琥珀/绿），及格线位置以分隔缺口呈现；
+ * - ScoreBar：分格竖条带（「服务可用性」同款分段样式）——50 根细竖条、
+ *   每根 2 分（gap 2px 细密间隔），按分数点亮对应数量；颜色按 scoreTone
+ *   档位（红/琥珀/绿）；无及格线刻度，达线与否由颜色体现；
  * - score = null 时全部置灰 +「—」（未评分）；
  * - ScoreMiniBars：无标签的三条细进度条，用于卡片网格缩略图等紧凑场景。
  */
@@ -48,10 +48,11 @@ export const SCORE_SEGMENTS = 50
 
 type BarSize = "sm" | "md"
 
-/** 条带高度统一 h-6（与服务状态 UptimeBar 一致） */
-const SIZE_CLASSES: Record<BarSize, { bar: string; label: string; value: string }> = {
-  sm: { bar: "h-6", label: "w-12 text-[10px]", value: "text-[10px]" },
-  md: { bar: "h-6", label: "w-14 text-xs", value: "text-xs" },
+/** 条带高度统一 h-6、硬编码在 ScoreSegmentsBar（与服务状态 UptimeBar 一致），
+ * 故此处只需 label/value 两档字号宽度 */
+const SIZE_CLASSES: Record<BarSize, { label: string; value: string }> = {
+  sm: { label: "w-12 text-[10px]", value: "text-[10px]" },
+  md: { label: "w-14 text-xs", value: "text-xs" },
 }
 
 /** 把分数/及格线收敛到 0-100，防止非法输入画穿 */

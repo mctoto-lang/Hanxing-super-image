@@ -30,8 +30,9 @@ export interface ModelExtraConfig {
   jimengN?: number
   // OpenAI 格式：质量参数透传（管理员填入具体值；空 = 不传该字段）
   quality?: string
-  // Grsai 格式：清晰度档位手动覆盖（空 = 按预设尺寸自动推导）
-  grsai_image_size?: "1K" | "2K" | "4K"
+  // Grsai 格式：清晰度档位手动覆盖（空 = 按预设尺寸自动推导）。
+  // 旧键 grsai_image_size 为存量数据（历史行仍存旧键），读取侧双读兼容、新键优先
+  grsaiImageSize?: "1K" | "2K" | "4K"
   [key: string]: unknown
 }
 

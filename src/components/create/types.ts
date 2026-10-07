@@ -1,4 +1,5 @@
 import type { ModelExtraConfig, ModelSizePreset } from "@/db/schema"
+import type { ImageApiFormat } from "@/lib/ai/image-model-config"
 
 /**
  * 创作页可用模型类型（自由创作页 §6）
@@ -25,7 +26,8 @@ export interface CreateModel {
   supportsSmartSize: boolean
   supportsReferenceImage: boolean
   maxReferenceImages: number
-  apiFormat: "openai" | "jimeng" | "gemini"
+  /** 接口格式：统一引用生图配置的 ImageApiFormat（含 grsai），避免本地字面量联合漏掉新格式 */
+  apiFormat: ImageApiFormat
   extraConfig: ModelExtraConfig | null
   iconUrl: string | null
   /** listAvailableModelsAction 多查的字段，权限校验用 */

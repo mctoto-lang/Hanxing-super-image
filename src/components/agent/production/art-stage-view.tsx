@@ -62,8 +62,15 @@ export function ArtStageView({
     setRetrying(true)
     try {
       const result = await regenFailedItems(data.run.id)
-      await onRefresh()
+      // 成功即报：重试动作本身已成功；若把刷新与动作放在同一个 try 里，
+      // 刷新抛错会误报「批量重试失败」，诱导用户重复点击造成重复入队
       toast.success(`已重新排队 ${result.count} 张失败卡面`)
+      // 刷新仅为拉取最新列表，失败不影响已入队的重试任务，静默降级
+      try {
+        await onRefresh()
+      } catch (error) {
+        console.error("批量重试后刷新运行数据失败", error)
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "批量重试失败")
     } finally {

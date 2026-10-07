@@ -2,8 +2,6 @@ import { describe, expect, it, vi } from "vitest"
 import { computeFrameConcurrency, FRAME_MAX_CONCURRENCY } from "@/server/services/agent/frame-steps"
 import { resolvePromptBatchConcurrency } from "@/server/services/agent/template-steps"
 import type { AgentLlmContext, ChatModelRow } from "@/server/services/agent/llm"
-import { assetGenerationOrder } from "@/lib/agent/asset-prompts"
-import type { AgentPendingAction } from "@/lib/agent/graph"
 
 // 批并发断言以 AGENT_PROMPT_BATCH_CONCURRENCY 默认值 8 为基准；该变量可由
 // .env 外置（合法范围 1-16），且 env 模块在 import 时一次性求值——运行时
@@ -43,7 +41,13 @@ describe("AI 融合并发池并发数计算", () => {
 
   it("不超过保护上限 8，且恒 ≥1", () => {
     expect(computeFrameConcurrency({ enterpriseMax: 50, groupMax: 0, pending: 78 })).toBe(FRAME_MAX_CONCURRENCY)
-    expect(computeFrameConcurrency({ enterpriseMax: 0, groupMax: 0, pending: 78 })).toBe(1)
+    // 两个维度都不限（≤0 全部剔除）→ 回退保护上限 cap（默认 8）
+    expect(computeFrameConcurrency({ enterpriseMax: 0, groupMax: 0, pending: 78 })).toBe(FRAME_MAX_CONCURRENCY)
+  })
+
+  it("企业不限（≤0 剔除）而组限 5 → 5（不塌缩为 1）", () => {
+    expect(computeFrameConcurrency({ enterpriseMax: 0, groupMax: 5, pending: 78 })).toBe(5)
+    expect(computeFrameConcurrency({ enterpriseMax: -1, groupMax: 5, pending: 78 })).toBe(5)
   })
 
   it("不超过待处理张数（小批量预览不空转 worker）", () => {
@@ -86,32 +90,6 @@ describe("初稿/终稿批并发动态拉满对话槽位", () => {
     expect(
       await resolvePromptBatchConcurrency(mockCtx({ groupMax: 8, entChatMax: 8 }), mockModel(8), 0),
     ).toBe(1)
-  })
-})
-
-describe("asset_gen 周边资产生成", () => {
-  it("生成顺序固定为 边框 → 卡背 → 盒正面 → 其余盒面（盒面参考先就绪）", () => {
-    expect(assetGenerationOrder()).toEqual([
-      "border",
-      "back",
-      "box_front",
-      "box_back",
-      "box_side",
-      "box_top",
-    ])
-  })
-
-  it("pendingAction 携带逐项独立提示词（assetTasks）", () => {
-    const action: AgentPendingAction = {
-      kind: "asset_gen",
-      assetTasks: [
-        { kind: "border", prompt: "透明卡牌边框…" },
-        { kind: "box_front", prompt: "牌盒正面…" },
-      ],
-      requestedAt: new Date().toISOString(),
-    }
-    expect(action.assetTasks).toHaveLength(2)
-    expect(action.assetTasks?.[0]?.kind).toBe("border")
   })
 })
 

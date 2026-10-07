@@ -104,12 +104,18 @@ export async function runTarotAssetGeneration(
 
   const [entRow] = await db.select({ maxConcurrent: enterprises.maxConcurrent }).from(enterprises).where(eq(enterprises.id, run.enterpriseId))
   const [groupRow] = await db
-    .select({ groupId: permissionGroups.id, maxConcurrent: permissionGroups.maxConcurrent })
+    .select({ groupId: permissionGroups.id, maxConcurrent: permissionGroups.maxConcurrent, allowedModels: permissionGroups.allowedModels })
     .from(users)
     .innerJoin(permissionGroups, eq(users.groupId, permissionGroups.id))
     .where(eq(users.id, run.userId))
   const groupId = groupRow?.groupId ?? null
   const groupMaxConcurrent = groupRow?.maxConcurrent ?? 0
+  // 权限组生图白名单兜底（与 loadImageModel 同口径）：资产模型来自平台配置
+  // 而非用户选择，但受限组同样不应经资产路径越权使用白名单外模型
+  const groupAllowedModels = Array.isArray(groupRow?.allowedModels) ? (groupRow!.allowedModels as string[]) : []
+  if (groupAllowedModels.length > 0 && !groupAllowedModels.includes(imageModel.id)) {
+    throw new Error("当前权限组无权使用周边资产生图模型，请联系管理员调整配置")
+  }
   const storage = await getStorage()
   const endpointHost = (() => {
     try {
@@ -156,15 +162,40 @@ export async function runTarotAssetGeneration(
       const attemptStartedAt = Date.now()
       let url: string | null = null
       let genError: string | null = null
-      const gotSlot = await acquireImageSlot({
-        enterpriseId: run.enterpriseId,
-        modelId: imageModel.id,
-        groupId,
-        enterpriseMaxConcurrent,
-        modelMaxConcurrent: imageModel.maxConcurrent,
-        groupMaxConcurrent,
-        ttlSec: slotTtlSec,
-      })
+      // 与生图队列共享的全局并发额度：经 slots 回调交给适配器逐张占用/释放
+      // （与 orchestrator/融合路径同款）——抢不到槽位时适配器内 waitForSlot
+      // 轮询等待，不再单次尝试失败就绕行直连上游
+      let slotWaitWarnedAt = 0
+      const slots = {
+        acquireSlot: async () => {
+          const got = await acquireImageSlot({
+            enterpriseId: run.enterpriseId,
+            modelId: imageModel.id,
+            groupId,
+            enterpriseMaxConcurrent,
+            modelMaxConcurrent: imageModel.maxConcurrent,
+            groupMaxConcurrent,
+            ttlSec: slotTtlSec,
+          })
+          if (!got) {
+            const now = Date.now()
+            if (now - slotWaitWarnedAt > 30_000) {
+              slotWaitWarnedAt = now
+              console.warn(`[agent-asset] 生图并发槽位已满，资产生成排队等待中（run=${run.id} model=${imageModel.name}）`)
+            }
+          }
+          return got
+        },
+        releaseSlot: async () => {
+          await releaseImageSlot({
+            enterpriseId: run.enterpriseId,
+            modelId: imageModel.id,
+            groupId,
+            modelMaxConcurrent: imageModel.maxConcurrent,
+            groupMaxConcurrent,
+          }).catch(() => {})
+        },
+      }
       try {
         const result = await callImageApi({
           model: imageModel,
@@ -175,6 +206,7 @@ export async function runTarotAssetGeneration(
           referenceImages,
           downloadAndUpload: (u) =>
             storage.saveFromUrl(u, run.enterpriseId, "generate", endpointHost ? [endpointHost] : undefined),
+          slots,
         })
         const output = result.find((candidate) => candidate.url)?.url
         if (!output) throw new Error(summarizeImageErrors(result) ?? "生图未返回图片")
@@ -182,16 +214,6 @@ export async function runTarotAssetGeneration(
       } catch (err) {
         // 单次生图失败不吞掉整批：按本次尝试失败计，进入下一次尝试
         genError = err instanceof Error ? err.message : String(err)
-      } finally {
-        if (gotSlot) {
-          await releaseImageSlot({
-            enterpriseId: run.enterpriseId,
-            modelId: imageModel.id,
-            groupId,
-            modelMaxConcurrent: imageModel.maxConcurrent,
-            groupMaxConcurrent,
-          }).catch(() => {})
-        }
       }
 
       // 补录生图任务（资产管理画廊 + 操作日志生图 Tab 可见；资产路径不计积分）

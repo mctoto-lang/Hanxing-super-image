@@ -9,7 +9,7 @@
  * - 中列 = 评分与裁决（提示词区域内滑动查看/评审卡/候选/裁决）；
  * - 右窄列 = 轮次缩略图列表（点击切换，终版标记 + 左缘状态色条）；
  * - 弹窗固定高度（85vh），三列各自内部滚动（隐藏滚动条），窄屏三列按比例压缩；
- * - 底部操作：确认当前轮为终版 / 手动重开（readOnly 时隐藏）。
+ * - 底部操作：确认当前轮为终版 / 手动重开。
  */
 import { useCallback, useEffect, useState } from "react"
 import { AlertTriangle, CheckCircle2, Circle, ExternalLink, Pencil, RefreshCcw, ShieldAlert } from "lucide-react"
@@ -77,15 +77,12 @@ export function RunItemDetailDialog({
   open,
   onOpenChange,
   onChanged,
-  readOnly = false,
 }: {
   itemId: string | null
   open: boolean
   onOpenChange: (v: boolean) => void
   /** 确认/重开后通知父级刷新运行状态 */
   onChanged: () => void
-  /** 只读模式：隐藏确认/重开操作，仅回放 */
-  readOnly?: boolean
 }) {
   const { confirmItem, getRunItemDetail, regenItem, updateItemPrompt } = useWorkspaceActions()
   const [detail, setDetail] = useState<Detail | null>(null)
@@ -133,12 +130,10 @@ export function RunItemDetailDialog({
   }, [open, itemId, load])
 
   const canConfirm =
-    !readOnly &&
     detail &&
     // failed 可改选：生图失败的卡若有历史成图轮，直接确认其一为终稿
     ["waiting_human", "fallback", "approved_by_ai", "confirmed", "failed"].includes(detail.item.status)
   const canRegen =
-    !readOnly &&
     detail &&
     !["pending", "drafting", "generating", "reviewing"].includes(detail.item.status)
 
@@ -547,7 +542,6 @@ export function RunItemDetailDialog({
               <p className="text-xs text-muted-foreground">
                 已打回 {detail.item.roundsUsed} 轮
                 {detail.item.manualRegenCount > 0 ? ` · 手动重开 ${detail.item.manualRegenCount} 次` : ""}
-                {readOnly ? " · 只读" : ""}
               </p>
               <div className="flex gap-2">
                 {canConfirm && activeRound?.imageUrl && !(activeIsFinal && detail.item.status === "confirmed") && (

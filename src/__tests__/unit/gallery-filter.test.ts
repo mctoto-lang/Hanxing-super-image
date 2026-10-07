@@ -34,6 +34,7 @@ const items: GalleryItem[] = [
   item({ taskId: "t3", prompt: "街道写真", createdAt: "2026-09-02T12:00:00" }),
   item({ taskId: "t4", prompt: "穿戴模特", modelDisplayName: "模型A", source: "weartry", createdAt: d("2026-09-01T08:00:00") }),
   item({ taskId: "t5", prompt: "seaside mockup", modelDisplayName: "模型C", source: "mockup", createdAt: d("2026-08-28T12:00:00") }),
+  item({ taskId: "t6", prompt: "塔罗卡面", modelDisplayName: "模型A", source: "agent", createdAt: d("2026-09-04T09:00:00") }),
 ]
 
 const ids = (list: GalleryItem[]) => list.map((i) => i.taskId)
@@ -75,7 +76,7 @@ describe("filterGalleryItems: 日期范围", () => {
   })
 
   it("仅 from：保留当天及之后", () => {
-    expect(byDate({ from: d("2026-09-02T00:00:00") })).toEqual(["t1", "t2", "t3"])
+    expect(byDate({ from: d("2026-09-02T00:00:00") })).toEqual(["t1", "t2", "t3", "t6"])
   })
 
   it("仅 to：保留当天及之前，含当天深夜（23:30）", () => {
@@ -123,6 +124,16 @@ describe("filterGalleryItems: 来源与仅收藏", () => {
     expect(
       ids(filterGalleryItems(items, { sourceFilter: "weartry", keyword: "" })),
     ).toEqual(["t4"])
+    // agent（AI Agent 任务）命中且仅命中自身来源，不落入其它筛选项
+    expect(
+      ids(filterGalleryItems(items, { sourceFilter: "agent", keyword: "" })),
+    ).toEqual(["t6"])
+    expect(
+      ids(filterGalleryItems(items, { sourceFilter: "create", keyword: "" })),
+    ).not.toContain("t6")
+    expect(
+      ids(filterGalleryItems(items, { sourceFilter: "product", keyword: "" })),
+    ).not.toContain("t6")
   })
 
   it("仅收藏按 pinnedMap 过滤（含乐观占位值）", () => {

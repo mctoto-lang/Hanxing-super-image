@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 
+import { TAROT_TEMPLATE } from "@/lib/agent/templates"
 import {
   CLASSIC_NODE_KEYS,
   NODE_TO_TEMPLATE_ROLE,
@@ -20,8 +21,7 @@ type Status = "waiting_human" | "running" | "error"
 const STAGES: Stage[] = ["clarify", "draft", "final", "art", "compose"]
 const STATUSES: Status[] = ["waiting_human", "running", "error"]
 
-/** 与模板小样序号一致（TAROT_TEMPLATE.meta.sampleIndexes） */
-const SAMPLE_INDEXES = [0, 1, 2, 5, 10, 21]
+const SAMPLE_INDEXES = TAROT_TEMPLATE.meta.sampleIndexes
 const CARD_TOTAL = 78
 
 const FINAL_PROMPT = "[1] 画面风格\n测试风格\n\n[2] 画面内容\n测试画面内容"
@@ -201,6 +201,41 @@ describe("deriveClassicNodeBoard", () => {
     expect(cardOf(cards, "imagegen").status).toBe("running")
     expect(cardOf(cards, "imagegen").total).toBe(CARD_TOTAL)
     expect(cardOf(cards, "review_content").status).toBe("running")
+  })
+
+  it("art 全套生产整体失败（error + phase=full）：错误归属 imagegen，全套口径而非小样", () => {
+    // 全套生产中途失败：8 张已出图定稿、4 张失败、其余仍在途（中断瞬间的快照）
+    const { run, items } = makeFixture("art", "error")
+    const fullFailureItems = itemsOf(CARD_TOTAL, (index) => {
+      if (index < 8) {
+        return {
+          status: "approved_by_ai",
+          currentPrompt: FINAL_PROMPT,
+          latestRoundId: `r${index}`,
+          latestImageUrl: `u${index}`,
+          finalRoundId: `r${index}`,
+        }
+      }
+      if (index < 12) return { status: "failed", currentPrompt: FINAL_PROMPT, errorMessage: "生图失败" }
+      return { status: "pending", currentPrompt: FINAL_PROMPT }
+    })
+    const fullFailureRun: NodeBoardRunSnapshot = {
+      ...run,
+      phase: "full",
+      pendingAction: { kind: "produce_cards", phase: "full" },
+      error: "全套生产失败",
+    }
+    const cards = deriveClassicNodeBoard({ run: fullFailureRun, items: fullFailureItems, cardTotal: CARD_TOTAL })
+
+    // produce_cards 出错 → imagegen 节点 failed，lastError 取 run.error
+    expect(cardOf(cards, "imagegen").status).toBe("failed")
+    expect(cardOf(cards, "imagegen").lastError).toBe("全套生产失败")
+    // 全套口径（scope 非 sample）：total = 78 而非小样 6；已出图 8 张
+    expect(cardOf(cards, "imagegen").total).toBe(CARD_TOTAL)
+    expect(cardOf(cards, "imagegen").processed).toBe(8)
+    expect(cardOf(cards, "imagegen").failedCount).toBe(4)
+    expect(cardOf(cards, "supervisor").total).toBe(CARD_TOTAL)
+    expect(cardOf(cards, "supervisor").processed).toBe(8)
   })
 
   it("compose 交付：全部完成，裁决 78/78", () => {

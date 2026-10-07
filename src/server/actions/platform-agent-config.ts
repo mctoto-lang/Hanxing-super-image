@@ -64,7 +64,14 @@ export async function listDirectionConfigsAction() {
         aestheticThreshold: Math.min(95, Math.max(40, row.thresholds.aestheticThreshold)),
         consistencyThreshold: Math.min(95, Math.max(40, row.thresholds.consistencyThreshold)),
       },
-      models: { ...rawModels, imageSize: rawModels.imageSize || "1024x1024" },
+      models: {
+        ...rawModels,
+        imageSize: rawModels.imageSize || "1024x1024",
+        // 手工 SQL 写入的旧行可能缺对话槽位键：zod 里这两个字段非 optional，
+        // 缺键会导致下次保存被拒，load 侧补 null 占位（与 imageSize 兜底同思路）
+        styleChatModelId: rawModels.styleChatModelId ?? null,
+        structureChatModelId: rawModels.structureChatModelId ?? null,
+      },
       templateConfig,
     }
   })

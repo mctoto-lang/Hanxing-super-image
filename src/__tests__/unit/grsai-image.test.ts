@@ -8,6 +8,7 @@ import {
   buildGrsaiRequestBody,
   grsaiAspectRatio,
   grsaiImageSizeTier,
+  resolveGrsaiImageSizeOverride,
   validateImageModelConfig,
 } from "@/lib/ai/image-model-config"
 
@@ -37,11 +38,10 @@ describe("grsaiAspectRatio 比例换算", () => {
     expect(grsaiAspectRatio("auto")).toBe("auto")
   })
 
-  it("不支持的比例就近吸附（1024x1025 → 1:1；1000x1111 → 9:10 附近 → 4:5 或 1:1 之外最近者）", () => {
+  it("不支持的比例就近吸附（1024x1025 → 1:1；1000x1111 ≈ 0.9 → log 距离最近者 1:1）", () => {
     expect(grsaiAspectRatio("1024x1025")).toBe("1:1")
-    // 1000:1111 ≈ 0.9，最近支持比例为 4:5 (0.8) 与 1:1 (1.0)——log 距离上 1:1 更近
-    const snapped = grsaiAspectRatio("1000x1111")
-    expect(["4:5", "1:1"]).toContain(snapped)
+    // 1000:1111 ≈ 0.9：log 距离 |log(0.9)|≈0.105（1:1）< |log(0.9)−log(0.8)|≈0.118（4:5），确定为 1:1
+    expect(grsaiAspectRatio("1000x1111")).toBe("1:1")
   })
 
   it("极端竖长比例吸附到最近支持比例（1000x4000 ≈ 1:4 → 9:16 最近）", () => {
@@ -68,6 +68,21 @@ describe("grsaiImageSizeTier 档位推导", () => {
 
   it("非法覆盖值忽略，回落自动推导", () => {
     expect(grsaiImageSizeTier("1024x1024", "8K")).toBe("1K")
+  })
+})
+
+describe("resolveGrsaiImageSizeOverride 双读", () => {
+  it("新键 grsaiImageSize 优先于旧键", () => {
+    expect(resolveGrsaiImageSizeOverride({ grsaiImageSize: "4K", grsai_image_size: "1K" })).toBe("4K")
+  })
+
+  it("旧键 grsai_image_size 兜底（存量数据）", () => {
+    expect(resolveGrsaiImageSizeOverride({ grsai_image_size: "2K" })).toBe("2K")
+  })
+
+  it("都缺省返回 undefined（按预设尺寸自动推导）", () => {
+    expect(resolveGrsaiImageSizeOverride({})).toBeUndefined()
+    expect(resolveGrsaiImageSizeOverride(null)).toBeUndefined()
   })
 })
 
@@ -112,11 +127,20 @@ describe("validateImageModelConfig grsai 格式", () => {
     ).not.toThrow()
   })
 
-  it("grsai + grsai_image_size 合法值通过", () => {
+  it("grsai + grsai_image_size 合法值通过（存量键白名单放行）", () => {
     expect(() =>
       validateImageModelConfig({
         apiFormat: "grsai",
         extraConfig: { grsai_image_size: "2K" },
+      }),
+    ).not.toThrow()
+  })
+
+  it("grsai + grsaiImageSize（新键）合法值通过", () => {
+    expect(() =>
+      validateImageModelConfig({
+        apiFormat: "grsai",
+        extraConfig: { grsaiImageSize: "4K" },
       }),
     ).not.toThrow()
   })
@@ -127,7 +151,7 @@ describe("validateImageModelConfig grsai 格式", () => {
         apiFormat: "grsai",
         extraConfig: { grsai_image_size: "8K" },
       }),
-    ).toThrow(/grsai_image_size/)
+    ).toThrow(/grsaiImageSize/)
     expect(() =>
       validateImageModelConfig({
         apiFormat: "grsai",

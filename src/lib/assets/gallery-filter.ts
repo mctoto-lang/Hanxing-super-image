@@ -13,7 +13,7 @@ export interface GalleryItem {
   prompt: string
   images: string[]
   modelDisplayName: string
-  /** 对应 generation_task.source（create/workspace/product/weartry/mockup） */
+  /** 对应 generation_task.source（create/workspace/product/weartry/mockup/agent，与 SOURCE_FILTERS 一致） */
   source: string
   createdAt: Date | string
   /** 生成耗时（毫秒，查看器元信息）；缺省不显示 */

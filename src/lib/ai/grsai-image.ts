@@ -6,7 +6,8 @@
  *
  * - 请求体：{ model, prompt, aspectRatio, imageSize, images, replyType }
  *   比例由尺寸预设 gcd 归约（不支持的比例就近吸附）；清晰度档位
- *   1K/2K/4K 自动推导，可由模型 extraConfig.grsai_image_size 覆盖；
+ *   1K/2K/4K 自动推导，可由模型 extraConfig.grsaiImageSize 覆盖
+ *   （旧键 grsai_image_size 为存量数据，读取侧双读兼容）；
  *   参考图以 URL/base64 数组传入 images 字段。
  * - 每张图一个独立工作单元（等待并发槽位 → fetch → 解析 → 转存），
  *   张与张之间互不阻塞、各自独立超时；单张失败不影响其他张，
@@ -27,7 +28,7 @@ export interface GrsaiImageModel {
   name: string
   apiEndpoint: string
   apiTimeout: number
-  /** 清晰度档位手动覆盖（模型 extraConfig.grsai_image_size；空 = 自动推导） */
+  /** 清晰度档位手动覆盖（模型 extraConfig.grsaiImageSize，旧键 grsai_image_size 存量双读；空 = 自动推导） */
   imageSizeOverride?: string | null
 }
 

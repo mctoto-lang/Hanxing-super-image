@@ -18,6 +18,7 @@ import {
 } from "@/lib/agent/pipelines"
 import { validateAgentGraph } from "@/lib/agent/validate"
 import { loadFullDirectionConfig } from "@/server/services/agent/direction-config"
+import { resolveAgentCardModelChoice } from "@/server/services/agent/card-models"
 import {
   confirmCardPlanSchema,
   regenerateCardPromptsSchema,
@@ -41,7 +42,13 @@ export async function updateTarotCardPlanItemAction(input: unknown) {
   deny(ctx)
   const parsed = updateCardPlanItemSchema.parse(input)
   const run = await ownedTarotRun(ctx, parsed.runId)
-  if (normalizeTemplateStage(run.stage) !== "draft") throw new Error("当前阶段不允许修改画面初稿")
+  // prompt 为存量阶段名（normalizeTemplateStage 映射为 final，但初稿编辑
+  // 语义与 draft 相同——存量 run 的 design_drafts 也在写这些卡）
+  const stage = normalizeTemplateStage(run.stage)
+  if (stage !== "draft" && run.stage !== "prompt") throw new Error("当前阶段不允许修改画面初稿")
+  // 运行态守卫：design_drafts/design_finals 在途期间 worker 会整批回写
+  // currentPrompt，此刻的直调编辑会被静默覆盖
+  if (run.status === "running" || run.status === "queued") throw new Error("AI 团队正在处理中，请稍候")
   const [item] = await db.select().from(agentRunItems).where(and(eq(agentRunItems.id, parsed.itemId), eq(agentRunItems.runId, run.id)))
   if (!item) throw new Error("卡牌不存在")
   // 新流程：初稿直通 currentPrompt（不拼风格前缀、不带负向约束）；
@@ -153,6 +160,14 @@ export async function confirmTarotCardFinalsAction(input: unknown) {
   const missing = templateProductionMissingSlots(config)
   if (missing.length > 0) {
     throw new Error(`塔罗生产流水线缺少配置：${missing.join("、")}，请联系管理员在「Agent 工坊配置」中补齐`)
+  }
+  // 固化模型复验：发起时校验过，但模型可能在此期间被停用/移出权限组——
+  // 不复验会让 78 张生产在运行期逐张失败（run.input 无换模型入口）
+  if (run.input.imageModelId) {
+    const resolved = await resolveAgentCardModelChoice(ctx, run.input.imageModelId)
+    if (!resolved.ok) {
+      throw new Error(`${resolved.error}。请联系管理员重新启用模型，或重新发起项目更换卡面模型`)
+    }
   }
   // 用户发起时选择的质量要求覆盖默认阈值与打回上限（存 run.input.quality）；
   // 用户选择的卡面模型（run.input.imageModelId/imageSize）同样带入重建图

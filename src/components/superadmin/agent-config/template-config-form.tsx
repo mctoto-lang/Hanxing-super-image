@@ -33,6 +33,13 @@ export type ImageModelOption = {
 /** 跟随平台生图模型的哨兵值（对应 null = 未单独设置时回退经典 models 槽位） */
 export const INHERIT_SENTINEL = "__inherit__"
 
+/**
+ * 可选对话槽位「未设置」哨兵值（对应 null = 运行时回退：风格策划回退
+ * 创意总监、初稿/终稿撰写回退经典文案模型）。创意总监为硬依赖（保存
+ * 预检拦截），不加哨兵——否则选了哨兵也存不进去，徒增困惑。
+ */
+const UNSET_SENTINEL = "__unset__"
+
 function sizeOptionsOf(modelId: string | null, imageModels: ImageModelOption[]) {
   return (imageModels.find((m) => m.id === modelId)?.sizePresets ?? [])
     .filter((s) => s.enabled !== false)
@@ -223,15 +230,35 @@ export function TemplateConfigForm({
         />
         <SlotSelect
           label="风格策划模型（风格规范书）"
-          options={stageChatOptions}
-          value={chatModelSlots.structureChatModelId ?? ""}
-          onChange={(v) => patchModels({ structureChatModelId: v || null })}
+          // 哨兵项允许清回 null（运行时回退创意总监模型，template-steps ?? 链）；
+          // 此前一旦选中无法清空，只能换模型不能「不设」
+          options={[
+            { id: UNSET_SENTINEL, label: "未设置（回退创意总监）" },
+            ...stageChatOptions,
+          ]}
+          value={chatModelSlots.structureChatModelId ?? UNSET_SENTINEL}
+          onChange={(v) =>
+            patchModels({
+              structureChatModelId: v === UNSET_SENTINEL ? null : v,
+            })
+          }
         />
         <SlotSelect
           label="初稿/终稿撰写模型"
-          options={chatModels.map((c) => ({ id: c.id, label: `${c.displayName}（${c.scope}）` }))}
-          value={template.copywriterChatModelId ?? ""}
-          onChange={(v) => patch({ copywriterChatModelId: v || null })}
+          // 同上：哨兵项允许清回 null（运行时回退经典 models.copywriterChatModelId）
+          options={[
+            { id: UNSET_SENTINEL, label: "未设置（回退经典文案模型）" },
+            ...chatModels.map((c) => ({
+              id: c.id,
+              label: `${c.displayName}（${c.scope}）`,
+            })),
+          ]}
+          value={template.copywriterChatModelId ?? UNSET_SENTINEL}
+          onChange={(v) =>
+            patch({
+              copywriterChatModelId: v === UNSET_SENTINEL ? null : v,
+            })
+          }
         />
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2">

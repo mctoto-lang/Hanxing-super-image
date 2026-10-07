@@ -11,12 +11,17 @@
  *    「1024x1024」「3:4」「aspect ratio」等参数措辞泄漏进提示词，清洗后避免
  *    模型把尺寸数字当画面元素画出（如把 "1:1" 画成匾额题字）。
  *
- * 追加为幂等设计（以 CARD_ART_GUARDRAIL_MARKER 为界）：重复应用不叠加，
- * 且清洗跳过已追加的护栏段（护栏文案本身含「尺寸/比例」等关键词）。
+ * 追加为幂等设计（以护栏段起始标记为界）：重复应用不叠加，且清洗跳过
+ * 已追加的护栏段（护栏文案本身含「尺寸/比例」等关键词）。卡面与融合两套
+ * 护栏各用独立标记（语义互斥：融合的目标就是装进边框，卡面护栏禁边框），
+ * 交叉套用时各认各的标记，不误判「已加固」。
  */
 
-/** 护栏段起始标记（幂等判定 + 清洗分段依据，不对外暴露到提示词语义之外） */
+/** 卡面护栏段起始标记（幂等判定 + 清洗分段依据，不对外暴露到提示词语义之外） */
 export const CARD_ART_GUARDRAIL_MARKER = "卡面负向约束"
+
+/** 融合护栏段起始标记（与卡面标记独立：两套护栏互斥，幂等判定互不误判） */
+export const FUSION_GUARDRAIL_MARKER = "融合负向约束"
 
 /**
  * 卡面负向约束段（追加到提示词末尾的固定文案）。
@@ -42,35 +47,47 @@ export function hasCardArtGuardrails(prompt: string): boolean {
   return prompt.includes(CARD_ART_GUARDRAIL_MARKER)
 }
 
+/** 提示词是否已带融合护栏 */
+export function hasFusionGuardrails(prompt: string): boolean {
+  return prompt.includes(FUSION_GUARDRAIL_MARKER)
+}
+
 /**
- * 剥离用户可控文本中伪造的护栏标记：正文一旦包含 marker，会让幂等追加
- * 误判「已加固」而跳过负向约束，并让尺寸清洗把 marker 之后的整段豁免。
- * 用户可控段（visualBrief / brief / meaning 等）拼进提示词前先过这里。
+ * 剥离用户可控文本中伪造的护栏标记：正文一旦包含标记，会让幂等追加
+ * 误判「已加固」而跳过负向约束，并让尺寸清洗把标记之后的整段豁免。
+ * 用户可控段（visualBrief / brief / meaning 等）拼进提示词前先过这里
+ * （两类标记都剥）。
  */
 export function stripGuardrailMarker(text: string): string {
-  return text.includes(CARD_ART_GUARDRAIL_MARKER)
-    ? text.split(CARD_ART_GUARDRAIL_MARKER).join("〔已移除护栏标记〕")
-    : text
+  let out = text
+  if (out.includes(CARD_ART_GUARDRAIL_MARKER)) {
+    out = out.split(CARD_ART_GUARDRAIL_MARKER).join("〔已移除护栏标记〕")
+  }
+  if (out.includes(FUSION_GUARDRAIL_MARKER)) {
+    out = out.split(FUSION_GUARDRAIL_MARKER).join("〔已移除护栏标记〕")
+  }
+  return out
 }
 
 /**
  * 追加卡面负向约束（幂等：已带护栏的提示词原样返回）。
  * 空提示词返回空串（由调用方在上游判空）。
+ * 已带互斥的融合护栏同样原样返回：不叠加语义冲突的约束段。
  */
 export function appendCardArtGuardrails(prompt: string): string {
   const trimmed = prompt.trim()
   if (!trimmed) return ""
-  if (hasCardArtGuardrails(trimmed)) return trimmed
+  if (hasCardArtGuardrails(trimmed) || hasFusionGuardrails(trimmed)) return trimmed
   return `${trimmed}\n${CARD_ART_NEGATIVE_PROMPT}`
 }
 
 /**
  * 融合生图专用负向约束：仅禁文字/水印/签名——融合的目标就是把卡面装进
  * 参考图 1 的边框，卡面护栏的「不要出现任何边框」条款与该目标直接冲突，
- * 不得复用（见 compose.buildAiFramePrompt）。
+ * 不得复用（见 compose.buildAiFramePrompt）。使用独立的融合标记。
  */
 export const FUSION_NEGATIVE_PROMPT =
-  `${CARD_ART_GUARDRAIL_MARKER}：不要新增任何文字、标题、牌名或字母（no text / no title / no letters）；` +
+  `${FUSION_GUARDRAIL_MARKER}：不要新增任何文字、标题、牌名或字母（no text / no title / no letters）；` +
   `不要出现水印或签名（no watermark / no signature）。`
 
 /** 追加融合专用负向约束（幂等 + 尺寸措辞清洗，与卡面护栏同款加工顺序） */
@@ -78,7 +95,7 @@ export function applyFusionGuardrails(prompt: string): string {
   const cleaned = sanitizeDimensionWording(prompt)
   const trimmed = cleaned.trim()
   if (!trimmed) return ""
-  if (hasCardArtGuardrails(trimmed)) return trimmed
+  if (hasFusionGuardrails(trimmed) || hasCardArtGuardrails(trimmed)) return trimmed
   return `${trimmed}\n${FUSION_NEGATIVE_PROMPT}`
 }
 
@@ -129,9 +146,16 @@ function cleanupAfterStrip(text: string): string {
  */
 export function sanitizeDimensionWording(prompt: string): string {
   if (!prompt) return ""
-  const markerIdx = prompt.indexOf(CARD_ART_GUARDRAIL_MARKER)
-  const head = markerIdx >= 0 ? prompt.slice(0, markerIdx) : prompt
-  const tail = markerIdx >= 0 ? prompt.slice(markerIdx) : ""
+  // 分段界取两类护栏标记中最早出现者：护栏段（标记起至结尾）本身含
+  // 「尺寸/比例」等关键词，原样保留不参与清洗，只清洗标记之前的正文
+  const markerIdx = Math.min(
+    ...[prompt.indexOf(CARD_ART_GUARDRAIL_MARKER), prompt.indexOf(FUSION_GUARDRAIL_MARKER)]
+      .filter((i) => i >= 0)
+      .concat(Number.POSITIVE_INFINITY),
+  )
+  const hasTail = Number.isFinite(markerIdx)
+  const head = hasTail ? prompt.slice(0, markerIdx) : prompt
+  const tail = hasTail ? prompt.slice(markerIdx) : ""
 
   let cleaned = head
   for (const pattern of DIMENSION_PATTERNS) {

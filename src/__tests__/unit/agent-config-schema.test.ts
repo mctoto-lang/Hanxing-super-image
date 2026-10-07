@@ -151,6 +151,13 @@ describe("normalizeTarotTemplateConfig（存量脏值清洗）", () => {
     expect("back" in n.assetSizes).toBe(false)
   })
 
+  it("卡面显式空串保留（跟随平台），不回退默认尺寸——与缺键回退区分", () => {
+    // 显式 ""：用户明确选择跟随平台 imageSize，归一化原样保留
+    const n = normalizeTarotTemplateConfig({ assetSizes: { card: "" } })
+    expect(n.assetSizes.card).toBe("")
+    expect(n.assetSizes.card).not.toBe(DEFAULT_TAROT_TEMPLATE_CONFIG.assetSizes.card)
+  })
+
   it("reviewerModelIds 去重、剔除非字符串并截断到 3 个", () => {
     const n = normalizeTarotTemplateConfig({ reviewerModelIds: ["a", "a", "b", 42, "", "c", "d"] })
     expect(n.reviewerModelIds).toEqual(["a", "b", "c"])

@@ -178,15 +178,16 @@ export function validateImageModelConfig(input: ImageModelConfigInput): void {
     return
   }
 
-  // grsai：额外配置仅 grsai_image_size（清晰度档位手动覆盖；缺省 = 按预设尺寸自动推导）
+  // grsai：额外配置仅清晰度档位（新键 grsaiImageSize；旧键 grsai_image_size
+  // 为存量数据，白名单同时放行，存量行不因旧键被拒，读取新键优先）
   if (format === "grsai") {
-    rejectUnsupportedFields(config, new Set(["grsai_image_size"]))
-    const tier = config.grsai_image_size
+    rejectUnsupportedFields(config, new Set(["grsaiImageSize", "grsai_image_size"]))
+    const tier = config.grsaiImageSize ?? config.grsai_image_size
     if (
       tier !== undefined &&
       !(GRSAI_IMAGE_SIZE_TIERS as readonly string[]).includes(String(tier))
     ) {
-      throw new Error(`grsai_image_size 仅支持 ${GRSAI_IMAGE_SIZE_TIERS.join("、")}`)
+      throw new Error(`grsaiImageSize 仅支持 ${GRSAI_IMAGE_SIZE_TIERS.join("、")}`)
     }
     return
   }
@@ -282,7 +283,7 @@ interface BuildGrsaiRequestInput {
   prompt: string
   imageSize: string
   referenceImages: string[]
-  /** 清晰度档位手动覆盖（模型 extraConfig.grsai_image_size；空 = 按预设尺寸自动推导） */
+  /** 清晰度档位手动覆盖（模型 extraConfig.grsaiImageSize，旧键 grsai_image_size 存量双读；空 = 按预设尺寸自动推导） */
   imageSizeOverride?: string | null
 }
 
@@ -293,6 +294,19 @@ const GRSAI_SUPPORTED_RATIOS = [
 
 /** 清晰度档位合法值 */
 export const GRSAI_IMAGE_SIZE_TIERS = ["1K", "2K", "4K"] as const
+
+/**
+ * 提取 grsai 清晰度档位手动覆盖：新键 grsaiImageSize 优先，旧键
+ * grsai_image_size 为存量数据兜底双读；都缺省返回 undefined
+ * （= 按预设尺寸自动推导档位）。
+ */
+export function resolveGrsaiImageSizeOverride(
+  extraConfig: Record<string, unknown> | null | undefined,
+): string | undefined {
+  if (typeof extraConfig?.grsaiImageSize === "string") return extraConfig.grsaiImageSize
+  if (typeof extraConfig?.grsai_image_size === "string") return extraConfig.grsai_image_size
+  return undefined
+}
 
 /**
  * 把尺寸串换算成 Grsai aspectRatio 值：

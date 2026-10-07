@@ -122,7 +122,9 @@ export async function GET(
       // HTTP 头只允许 ByteString（latin1），中文文件名直接塞 filename 会抛
       // TypeError（→ 500 空体）。用 RFC 5987：filename*=UTF-8''<百分号编码>，
       // 并给不支持 filename* 的老浏览器一个纯 ASCII 兜底名。
-      "Content-Disposition": `attachment; filename="${asciiFallbackName(zipBaseName)}.zip"; filename*=UTF-8''${encodeURIComponent(`${zipBaseName}.zip`)}`,
+      // 单引号不在 RFC 5987 attr-char 集内、encodeURIComponent 也不转义它，
+      // 需手动补成 %27，否则文件名含 ' 会截断/破坏 filename* 解析。
+      "Content-Disposition": `attachment; filename="${asciiFallbackName(zipBaseName)}.zip"; filename*=UTF-8''${encodeURIComponent(`${zipBaseName}.zip`).replace(/'/g, "%27")}`,
       "Cache-Control": "no-store",
     },
   })

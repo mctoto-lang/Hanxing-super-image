@@ -11,6 +11,7 @@ import { signUploadToken } from "@/lib/storage/upload-token"
 import {
   assertSupportedImageApiFormat,
   isContentPolicyError,
+  resolveGrsaiImageSizeOverride,
   summarizeImageErrors,
   validateImageModelConfig,
   DEFAULT_IMAGE_SIZE,
@@ -109,10 +110,8 @@ export async function callImageApi(opts: {
         name: model.name,
         apiEndpoint: model.apiEndpoint,
         apiTimeout: model.apiTimeout,
-        imageSizeOverride:
-          typeof extraConfig.grsai_image_size === "string"
-            ? extraConfig.grsai_image_size
-            : undefined,
+        // 清晰度档位手动覆盖（新键优先、旧键存量兜底，见 image-model-config）
+        imageSizeOverride: resolveGrsaiImageSizeOverride(extraConfig),
       },
       task: { prompt, imageSize, imageCount, indexes, referenceImages: referenceImagesForUpstream },
       apiKey,

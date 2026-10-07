@@ -191,8 +191,8 @@ function workingTaskText(kind: string, directionCount: number, stageName: string
   return stageName ? `正在执行「${stageName}」阶段任务` : "正在执行阶段任务"
 }
 
-/** 等待用户：待执行动作 / 等待语境 → 文案 */
-function waitingTaskText(kind: string | null, phase?: string): string {
+/** 等待用户：待执行动作 / 等待语境 → 文案（hasError = run 级失败标记，等待重试语境据此区分） */
+function waitingTaskText(kind: string | null, phase?: string, hasError = false): string {
   if (kind === "clarify_turn") return "等待你回答问题"
   if (kind === "finalize_brief") return "等待你确认简报"
   if (kind === "gen_style_spec") return "等待你选择风格规范方向"
@@ -200,8 +200,13 @@ function waitingTaskText(kind: string | null, phase?: string): string {
   if (kind === "design_finals") return "等待你确认画面终稿"
   if (kind === "gen_directions") return "等待你选择内容方向"
   if (kind === "design_prompts") return "等待你确认卡牌清单"
-  // produce_cards 按 phase 区分：sample 完成等确认；full 生产失败等待重试时文案不同
-  if (kind === "produce_cards") return phase === "full" ? "全套生产等待重试或继续" : "等待你确认小样风格"
+  // produce_cards 按 phase 区分：sample 完成等确认；生产失败等待重试时文案不同
+  // （sample 批失败也保留 pendingAction 置 waiting_human——不按 run.error 区分会
+  //   误导用户去"确认小样"而非重试）
+  if (kind === "produce_cards") {
+    if (phase === "full") return "全套生产等待重试或继续"
+    return hasError ? "小样生产失败，等待重试或继续" : "等待你确认小样风格"
+  }
   if (kind === "asset_gen") return "套件资产生成等待重试或继续"
   return "等待你确认"
 }
@@ -373,7 +378,7 @@ export function deriveTeamStatus(input: {
     } else if (state === "error") {
       currentTask = latest?.detail ?? run.error ?? "执行出错，请查看事件详情"
     } else if (state === "waiting_user") {
-      currentTask = waitingTaskText(waitingKind, run.pendingAction?.phase)
+      currentTask = waitingTaskText(waitingKind, run.pendingAction?.phase, !!run.error)
     } else if (state === "done") {
       currentTask = "已完成"
     } else {
