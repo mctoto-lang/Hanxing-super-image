@@ -439,7 +439,7 @@ export function TemplateConfigForm({
           value={template.artRules}
           defaultValue={DEFAULT_ART_RULES}
           rows={8}
-          hint="随角色提示词一并注入「提示词设计师」：约束每张卡的画面内容篇幅（100-140 字）、主体占比、构图与无边框硬规则（固定风格由系统统一拼接），保证生图效果。"
+          hint="随角色提示词一并注入「提示词设计师」：约束每张卡的画面内容篇幅（120-200 字，约 160 字，只写内容不写风格词）、主体占比、构图与无边框硬规则（固定风格由系统统一拼接），保证生图效果。"
           onChange={(v) => patch({ artRules: v?.trim() ? v : undefined })}
         />
         <div className="grid gap-4 lg:grid-cols-3">
@@ -448,7 +448,7 @@ export function TemplateConfigForm({
             value={template.rolePrompts?.prompt_designer}
             defaultValue={ROLE_PROMPTS.copywriter}
             rows={7}
-            hint="逐张撰写 78 张单段画面内容（100-140 字，系统在末尾拼接固定风格提示词，首次撰写即终稿）；用户可在提示词页查看与修改。"
+            hint="逐张撰写 78 张单段画面内容（120-200 字、约 160 字，系统在末尾拼接固定风格提示词，首次撰写即终稿）；用户可在提示词页查看与修改。"
             onChange={(v) => patchRolePrompt(template, patch, "prompt_designer", v)}
           />
           <PromptOverrideTextarea

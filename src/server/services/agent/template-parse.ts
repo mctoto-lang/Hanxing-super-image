@@ -215,8 +215,8 @@ export function validateDirections(raw: unknown): AgentTemplateDirection[] {
 /**
  * 单个风格规范方向（AgentTemplateDirection 载体）的归一化。
  * visualLanguage = 画面风格总述（80-120 字完整表述，约 100 字——保证整体
- * 提示词 ≈ 220 字）；stylePhrase = 风格
- * 短语（整套 78 张提示词逐字开头的文字锚点）；过短时确定性补全而非判废
+ * 提示词 ≈ 260 字）；stylePhrase = 风格
+ * 短语（风格的短文字锚点，当前仅存储留档）；过短时确定性补全而非判废
  * ——风格规范生成是流程咽喉，卡在这里会让用户停在「等待候选方向」无法推进。
  */
 function normalizeStyleSpecDirection(

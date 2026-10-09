@@ -766,7 +766,7 @@ async function executeAgentNode(
   const fixedStyle = selectedDirection?.visualLanguage || selectedDirection?.palette || "统一的塔罗牌视觉风格"
   const legacyPromptShape = "完整终稿（[1] 画面风格 + [2] 画面内容 两段结构）"
   const contentShape =
-    "画面内容（100-140 字中文单段，约 120 字，只写主体/动作神态/道具/场景氛围/光影；多件物品不描述具体摆放方式与位置关系，交给生图模型自由发挥；不含风格提示词与结尾句——系统会统一拼接固定风格与无边框句）"
+    "画面内容（120-200 字中文单段，约 160 字，只写主体/动作神态/道具/场景氛围/场景内的具体光影；不写任何风格词——媒介/画风流派/质感/整体色调色系都由系统拼接的固定风格提示词承担；多件物品不描述具体摆放方式与位置关系，交给生图模型自由发挥；不含风格提示词与结尾句——系统会统一拼接固定风格与无边框句）"
   const formatSpec = legacyStructured
     ? hasFeedback
       ? `只输出 JSON：{"prompt": "重写后的${legacyPromptShape}"}`

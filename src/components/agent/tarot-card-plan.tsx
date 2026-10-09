@@ -2,11 +2,11 @@
 
 /**
  * draft 阶段：78 张画面提示词清单——AI 提示词设计师逐张撰写画面内容
- * （100-140 字，约 120 字），系统在写回时把固定风格提示词（选定方向风格
- * 总述，约 100 字，整套逐字统一）与无边框句确定性拼接到提示词末尾（整体
- * 约 220 字），在此展示，用户可直接查看/修改/重新生成；全部就绪后确认
- * 直接进入生图与评审（art 阶段）。牌义为 AI 内部参考（只读），不再参与
- * 用户编辑。
+ * （120-200 字，约 160 字，只写内容不写风格），系统在写回时把固定风格
+ * 提示词（选定方向风格总述，约 100 字，整套逐字统一）与无边框句确定性
+ * 拼接到提示词末尾（整体约 260 字），在此展示，用户可直接查看/修改/
+ * 重新生成；全部就绪后确认直接进入生图与评审（art 阶段）。牌义为 AI
+ * 内部参考（只读），不再参与用户编辑。
  */
 import { useEffect, useMemo, useState } from "react"
 import { AlertCircle, Check, Loader2, RefreshCw, Save, Search, Sparkles, Wand2 } from "lucide-react"
@@ -23,7 +23,7 @@ import { useWorkspaceActions } from "./workspace-actions"
 
 type PlanItem = TemplateWorkspaceData["items"][number]
 
-/** 提示词就绪门槛（与服务端 SINGLE_PROMPT_MIN_CHARS 一致；撰写目标 80-130 字） */
+/** 提示词就绪门槛（与服务端 SINGLE_PROMPT_MIN_CHARS 一致；画面内容撰写目标 120-200 字，约 160 字） */
 const PROMPT_MIN_CHARS = 60
 
 /**
@@ -111,7 +111,7 @@ export function TarotCardPlan({
   const save = async () => {
     if (!active) return
     if (prompt.trim().length < PROMPT_MIN_CHARS) {
-      toast.error(`画面提示词至少 ${PROMPT_MIN_CHARS} 字（画面内容建议 100-140 字 + 系统拼接的固定风格），请补充主体与场景描述`)
+      toast.error(`画面提示词至少 ${PROMPT_MIN_CHARS} 字（画面内容建议 120-200 字、约 160 字 + 系统拼接的固定风格），请补充主体与场景描述`)
       return
     }
     setSaving(true)
@@ -400,7 +400,7 @@ export function TarotCardPlan({
                       bodyLen >= PROMPT_MIN_CHARS ? "text-muted-foreground" : "text-red-500",
                     )}
                   >
-                    {bodyLen} 字{bodyLen < PROMPT_MIN_CHARS ? `（至少 ${PROMPT_MIN_CHARS} 字）` : "（画面内容约 120 字 + 固定风格约 100 字，整体约 220 字）"}
+                    {bodyLen} 字{bodyLen < PROMPT_MIN_CHARS ? `（至少 ${PROMPT_MIN_CHARS} 字）` : "（画面内容约 160 字 + 固定风格约 100 字，整体约 260 字）"}
                   </span>
                 </div>
                 <Textarea
@@ -412,7 +412,7 @@ export function TarotCardPlan({
                   }}
                   className="min-h-36"
                   disabled={busy || saving}
-                  placeholder="画面内容（主体/动作神态/道具/场景氛围/光影，约 120 字）——固定风格提示词与无边框句由系统自动拼接在末尾。权杖/圣杯/宝剑/星币 Ace-10 需写明对应数量的花色物品（如「五只圣杯」），摆放位置交给生图 AI 自由发挥。"
+                  placeholder="画面内容（主体/动作神态/道具/场景氛围/场景内光影，约 160 字；不写媒介、画风、质感、整体色调等风格词）——固定风格提示词与无边框句由系统自动拼接在末尾。权杖/圣杯/宝剑/星币 Ace-10 需写明对应数量的花色物品（如「五只圣杯」），摆放位置交给生图 AI 自由发挥。"
                 />
                 <p className="rounded-md bg-muted/50 px-2.5 py-1.5 text-[11px] leading-relaxed text-muted-foreground">
                   提示词 = 画面内容（AI 逐卡撰写）+ 固定风格提示词（整套逐字统一）+ 无边框句——后两者由系统拼接，

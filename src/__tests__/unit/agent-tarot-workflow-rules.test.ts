@@ -38,7 +38,7 @@ import {
  * 四阶段工作流规则单测（纯函数）：
  * - 阶段归一化（存量 world/prompt/final 映射到 draft）；
  * - 花色数量硬规则（Ace-10 恰好 N 个 + ≥2 件不描述具体摆放位置；宫廷牌/大阿卡纳无数量与牌名要求）；
- * - 单段短提示词（画面内容 100-140 字，系统在末尾拼接固定风格提示词；首次撰写即终稿）与存量两段结构兼容；
+ * - 单段短提示词（画面内容 120-200 字约 160 字、严禁风格词，系统在末尾拼接固定风格提示词；首次撰写即终稿）与存量两段结构兼容；
  * - 风格规范方向（总述 80-120 字 + 风格短语 20-50 字）；
  * - 提示词无负向约束（默认角色提示词与画面规则不含禁令表述，无边框句除外）。
  */
@@ -126,7 +126,7 @@ describe("拼接式单段提示词（画面内容 + 固定风格提示词）", (
     expect(prompt.slice(prompt.indexOf(FIXED_STYLE))).toBe(other.slice(other.indexOf(FIXED_STYLE)))
   })
 
-  it("validateTarotPromptPlan：拼接式提示词 ≥60 字通过；过短打回（提示内容目标 100-140 字）", () => {
+  it("validateTarotPromptPlan：拼接式提示词 ≥60 字通过；过短打回（提示内容目标 120-200 字）", () => {
     const singleItems = TAROT_CARDS.map((card) => ({
       index: card.index,
       name: card.name,
@@ -325,15 +325,20 @@ describe("四阶段与角色编制", () => {
     expect(director.systemPrompt).toContain("参考图仅用于提取艺术风格样式")
   })
 
-  it("提示词设计师提示词：只写画面内容（100-140 字，约 120 字），风格与结尾句由系统拼接", () => {
+  it("提示词设计师提示词：只写画面内容（120-200 字，约 160 字），严禁风格词，风格与结尾句由系统拼接", () => {
     const designer = TAROT_ROLES.find((role) => role.id === "prompt_designer")!
-    expect(designer.systemPrompt).toContain("100-140 字")
+    expect(designer.systemPrompt).toContain("120-200 字")
     expect(designer.systemPrompt).toContain("固定风格提示词")
     expect(designer.systemPrompt).toContain("由系统自动拼接")
     expect(designer.systemPrompt).toContain("请勿写入任何风格描述或结尾句")
     expect(designer.systemPrompt).toContain("不写任何负向约束")
-    expect(ROLE_PROMPTS.copywriter).toContain("100-140 字")
+    // 风格词禁令落到具体类目（媒介/画风流派/质感/整体色调色系）
+    expect(designer.systemPrompt).toContain("严禁任何风格词")
+    expect(designer.systemPrompt).toContain("整体色调色系")
+    expect(designer.systemPrompt).not.toContain("光影与色调倾向")
+    expect(ROLE_PROMPTS.copywriter).toContain("120-200 字")
     expect(ROLE_PROMPTS.copywriter).toContain("请勿写入任何风格描述或结尾句")
+    expect(ROLE_PROMPTS.copywriter).toContain("整体色调色系")
   })
 
   it("终稿细化师提示词保留存量两段结构口径（legacy）", () => {
@@ -360,10 +365,11 @@ describe("四阶段与角色编制", () => {
     expect(DEFAULT_REVIEWER_PROMPT).toContain("不接受「美感不足」类空泛理由")
   })
 
-  it("画面规则含风格分离与内容篇幅（100-140 字，整体约 220 字）", () => {
+  it("画面规则含风格分离（含风格词类目）与内容篇幅（120-200 字，整体约 260 字）", () => {
     expect(DEFAULT_ART_RULES).toContain("风格分离")
-    expect(DEFAULT_ART_RULES).toContain("100-140 字")
-    expect(DEFAULT_ART_RULES).toContain("220 字左右")
+    expect(DEFAULT_ART_RULES).toContain("120-200 字")
+    expect(DEFAULT_ART_RULES).toContain("260 字左右")
+    expect(DEFAULT_ART_RULES).toContain("整体色调色系")
     expect(DEFAULT_ART_RULES).toContain("由系统自动拼接到每张提示词末尾")
     expect(DEFAULT_ART_RULES).toContain("英文画种词")
   })
