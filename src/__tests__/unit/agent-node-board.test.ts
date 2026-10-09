@@ -12,7 +12,8 @@ import {
 
 /**
  * 经典 8 节点看板推导单测（纯函数）：以本地构造的最小快照为输入，
- * 校验五阶段 × 三状态下的节点状态/进度/警示推导。
+ * 校验四阶段 × 三状态下的节点状态/进度/警示推导（final 为存量阶段值，
+ * stagePos 归一化到 draft 后比对）。
  */
 
 type Stage = "clarify" | "draft" | "final" | "art" | "compose"

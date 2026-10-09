@@ -7,8 +7,9 @@
  * - 阶段进度条（大进度条 + 阶段胶囊，置于 4 张信息卡上方）；
  * - 常驻顶部：4 张信息卡（文本 / 图片 / 产出 / 积分）+ 8 张紧凑 Agent 卡
  *   （deriveClassicNodeBoard 从工作台快照推导，点击打开对应角色详情侧栏）；
- * - 错误重试横幅 + 当前阶段内容（全宽）：澄清 → 初稿设计 → 终稿细化 →
- *   生图与评审 → 融合与交付（存量 run 的 world 阶段渲染旧版方向选择视图）；
+ * - 错误重试横幅 + 当前阶段内容（全宽）：澄清 → 画面提示词（方向选择 +
+ *   78 张短提示词编辑）→ 生图与评审 → 融合与交付（存量 run 的 world 阶段
+ *   渲染旧版方向选择视图）；
  * - 右下角圆形悬浮球：点击查看团队历史（动态时间线）；
  * - TarotWorkspace：项目容器（轮询 + 动作包装）；TarotWorkspaceShell：纯展示壳。
  */
@@ -31,19 +32,19 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { normalizeTemplateStage } from "@/lib/agent/graph"
-import { isStructuredFinalPrompt } from "@/lib/agent/cards/plan"
+import { isPromptItemReady } from "@/lib/agent/cards/plan"
 import { TAROT_ROLES, TAROT_STAGES } from "@/lib/agent/templates"
 import { deriveTeamStatus } from "@/lib/agent/team-status"
 import { templateRoleForNode, deriveClassicNodeBoard } from "@/lib/agent/node-board"
 import { AgentRoleSheet } from "./agent-role-sheet"
 import { AgentCardsGrid } from "./agent-cards-grid"
 import { ActivityFab } from "./activity-fab"
+import { CurrentActionBanner } from "./current-action-banner"
 import { StatCard } from "./production/production-stats"
 import { useWorkspaceActions } from "./workspace-actions"
 import { ClarifyStage, type RunTemplateAction } from "./tarot-stage-clarify"
 import { WorldStage } from "./tarot-stage-world"
 import { TarotCardPlan } from "./tarot-card-plan"
-import { FinalStageView } from "./final-stage-view"
 import { ArtStageView } from "./production/art-stage-view"
 import { ComposeStageView } from "./compose-stage-view"
 import { useTemplateWorkspace, type TemplateWorkspaceData } from "./use-template-workspace"
@@ -51,9 +52,9 @@ import { useTemplateWorkspace, type TemplateWorkspaceData } from "./use-template
 const PENDING_ACTION_LABELS: Record<string, string> = {
   clarify_turn: "需求澄清",
   finalize_brief: "整理设计简报",
-  gen_style_spec: "拟定风格规范书",
-  design_drafts: "撰写画面初稿",
-  design_finals: "细化画面终稿",
+  gen_style_spec: "拟定风格规范书与示例图",
+  design_drafts: "撰写画面提示词",
+  design_finals: "细化画面终稿（存量）",
   produce_cards: "卡面生产",
   compose_preview: "AI 融合预览",
   compose_batch: "AI 融合批量",
@@ -118,8 +119,8 @@ export function TarotWorkspaceShell({
   const { retryTemplateAction } = useWorkspaceActions()
   const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null)
   const { run, items } = data
-  // 存量 run 的旧阶段值（world/prompt）归一化到新五阶段；rawStage 保留用于
-  // 旧版方向选择视图（存量 world 阶段且未选定方向时仍渲染 WorldStage）
+  // 存量 run 的旧阶段值（world/prompt/final）归一化到四阶段；rawStage 保留
+  // 用于旧版方向选择视图（存量 world 阶段且未选定方向时仍渲染 WorldStage）
   const rawStage = run.stage ?? "clarify"
   const stage = normalizeTemplateStage(rawStage)
   const stageIndex = Math.max(0, TAROT_STAGES.findIndex((item) => item.id === stage))
@@ -152,16 +153,14 @@ export function TarotWorkspaceShell({
   ).length
   const overallPercent = items.length > 0 ? Math.round((doneCount / items.length) * 100) : 0
 
-  // 阶段内进度（阶段基数 + 阶段内完成度加权；替代纯 stageIndex/5 的粗粒度百分比）
+  // 阶段内进度（阶段基数 + 阶段内完成度加权；替代纯 stageIndex/4 的粗粒度百分比）
   const stageProgress = useMemo(() => {
     const total = items.length || run.input.cardCount || 78
     if (stage === "draft") {
-      const written = items.filter((item) => (item.visualBrief ?? "").trim().length >= 20).length
+      // 提示词就绪 = AI 已写完或用户手动编辑（与服务端 isPromptItemReady 同口径）；
+      // 待写/撰写中/失败的卡不计入，进度条与实际生成过程一致
+      const written = items.filter((item) => isPromptItemReady(item)).length
       return { count: written, total }
-    }
-    if (stage === "final") {
-      const refined = items.filter((item) => isStructuredFinalPrompt(item.currentPrompt)).length
-      return { count: refined, total }
     }
     if (stage === "art") {
       const scope = run.phase === "sample" ? items.filter((item) => item.isSample) : items
@@ -207,6 +206,9 @@ export function TarotWorkspaceShell({
           <Badge className="bg-violet-500/10 text-violet-600 dark:text-violet-300">塔罗模板</Badge>
         </div>
       </div>
+
+      {/* 当前动作横幅（busy 时显著提示正在进行哪一步 + 卡面实时进度） */}
+      <CurrentActionBanner data={data} busy={busy} />
 
       {/* 阶段进度条（大进度条 + 阶段胶囊；置于 4 张信息卡上方） */}
       <StageProgress
@@ -285,10 +287,9 @@ export function TarotWorkspaceShell({
           (run.selectedDirectionId ? (
             <TarotCardPlan data={data} busy={locked} onRefresh={onRefresh} />
           ) : (
-            // 初稿阶段第一步：选择《风格规范书》方向（选定后才开始撰写初稿）
+            // 画面提示词阶段第一步：选择《风格规范书》方向（各附示例图，选定后才开始撰写提示词）
             <WorldStage data={data} busy={locked} runAction={runAction} variant="style" />
           ))}
-        {stage === "final" && <FinalStageView data={data} busy={locked} onRefresh={onRefresh} />}
         {stage === "art" && <ArtStageView data={data} busy={locked} onRefresh={onRefresh} runAction={runAction} />}
         {stage === "compose" && <ComposeStageView data={data} busy={locked} onRefresh={onRefresh} />}
       </main>
@@ -308,9 +309,9 @@ export function TarotWorkspaceShell({
 }
 
 /**
- * 阶段进度条（方案 C）：阶段 N/5 + 阶段内实时计数 + 大号渐变进度条 +
- * 5 个状态胶囊（已完成✓ / 进行中（脉冲点） / 等待用户⏸ / 待开始）。
- * 百分比 = (阶段序 + 阶段内完成度) / 5，替代旧的纯阶段序百分比。
+ * 阶段进度条：阶段 N/总数 + 阶段内实时计数 + 大号渐变进度条 +
+ * 状态胶囊（已完成✓ / 进行中（脉冲点） / 等待用户⏸ / 待开始）。
+ * 百分比 = (阶段序 + 阶段内完成度) / 阶段总数，替代旧的纯阶段序百分比。
  */
 function StageProgress({
   stageIndex,

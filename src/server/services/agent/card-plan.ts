@@ -37,8 +37,9 @@ export async function ensureTarotCardPlan(run: AgentRunRow, direction: AgentTemp
         index: item.index,
         name: item.name,
         meaning: item.meaning,
-        visualBrief: item.visualBrief,
-        currentPrompt: item.prompt,
+        // 提示词正文不预填：空 = 待 AI 撰写（进度与就绪判据见 isPromptItemReady）
+        visualBrief: item.visualBrief || null,
+        currentPrompt: item.prompt || null,
         promptSource: "initial" as const,
         status: "pending" as const,
         isSample: sampleSet.has(item.index),

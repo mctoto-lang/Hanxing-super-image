@@ -24,8 +24,13 @@ import {
   normalizeTemplateStage,
   type AgentAssetKind,
   type AgentPendingAction,
+  type AgentTeamModelOverrides,
 } from "@/lib/agent/graph"
 import { getDeckTemplate } from "@/lib/agent/templates"
+import {
+  resolveAgentChatModelChoice,
+  resolveAgentReviewerChoice,
+} from "@/server/services/agent/chat-models"
 
 /** 用户质量要求（发起时可选；滑块以管理员默认为基准步进，服务端只做范围校验） */
 const qualitySchema = z.object({
@@ -35,13 +40,26 @@ const qualitySchema = z.object({
   maxRetries: z.number().int().min(0).max(3),
 })
 
+/** AI 团队对话模型覆盖（发起时可选；缺省项 = 跟随平台超管配置；服务端逐项经候选池校验） */
+const teamModelOverridesSchema = z.object({
+  styleChatModelId: z.string().uuid().optional(),
+  structureChatModelId: z.string().uuid().optional(),
+  copywriterChatModelId: z.string().uuid().optional(),
+  reviewerModelIds: z.array(z.string().uuid()).min(1).max(3).optional(),
+})
+
 const startSchema = z.object({
   title: z.string().trim().min(1).max(120).optional(),
-  prompt: z.string().trim().min(5, "请先描述你的主题、风格或设计方向").max(2000),
+  /** 内容描述（主题/题材/画面内容方向；风格走 stylePrompt 与参考图） */
+  prompt: z.string().trim().min(5, "请先描述你的主题、题材或画面内容方向").max(2000),
+  /** 艺术风格描述（可选；与参考图共同构成风格输入） */
+  stylePrompt: z.string().trim().max(2000).optional(),
   referenceImages: z.array(z.string().url()).max(4).default([]),
   quality: qualitySchema.optional(),
   /** 卡面生图模型（候选池见 listAgentCardModelsAction；null/缺省 = 平台默认配置） */
   imageModelId: z.string().uuid().nullish(),
+  /** AI 团队对话模型覆盖（候选池见 listAgentChatModelsAction） */
+  teamModelOverrides: teamModelOverridesSchema.optional(),
 })
 
 const messageSchema = z.object({
@@ -138,9 +156,48 @@ export async function startTarotTemplateAction(input: unknown) {
     }
   }
 
+  // 用户选择的 AI 团队对话模型覆盖：逐项经候选池校验（企业/权限组可见性；
+  // 评审团另需 1-3 个且全部支持视觉），通过后固化进 run.input
+  const rawOverrides = parsed.teamModelOverrides
+  let teamOverrides: AgentTeamModelOverrides | undefined
+  if (
+    rawOverrides &&
+    (rawOverrides.styleChatModelId ||
+      rawOverrides.structureChatModelId ||
+      rawOverrides.copywriterChatModelId ||
+      rawOverrides.reviewerModelIds?.length)
+  ) {
+    const validated: AgentTeamModelOverrides = {}
+    const slots: { slot: "styleChatModelId" | "structureChatModelId" | "copywriterChatModelId"; label: string; id?: string }[] = [
+      { slot: "styleChatModelId", label: "创意总监", id: rawOverrides.styleChatModelId },
+      { slot: "structureChatModelId", label: "风格策划", id: rawOverrides.structureChatModelId },
+      { slot: "copywriterChatModelId", label: "提示词撰写", id: rawOverrides.copywriterChatModelId },
+    ]
+    for (const { slot, label, id } of slots) {
+      if (!id) continue
+      const resolved = await resolveAgentChatModelChoice(ctx, id)
+      if (!resolved.ok) throw new Error(`所选${label}模型不可用：${resolved.error}`)
+      validated[slot] = resolved.modelId
+    }
+    if (rawOverrides.reviewerModelIds?.length) {
+      const resolved = await resolveAgentReviewerChoice(ctx, rawOverrides.reviewerModelIds)
+      if (!resolved.ok) throw new Error(resolved.error)
+      validated.reviewerModelIds = resolved.reviewerModelIds
+    }
+    teamOverrides = validated
+  }
+
   const config = await loadFullDirectionConfig("tarot")
-  // 初始快照用模板生产图（graphSnapshot 非空约束；确认卡牌清单时按当前配置+用户质量参数重建）
-  const graph = buildTemplateProductionGraph(config, undefined, cardModelOverride ?? undefined)
+  // 初始快照用模板生产图（graphSnapshot 非空约束；确认画面提示词时按当前配置+用户质量参数重建）
+  const initialOverride = {
+    ...(cardModelOverride ?? {}),
+    ...(teamOverrides ?? {}),
+  }
+  const graph = buildTemplateProductionGraph(
+    config,
+    undefined,
+    Object.keys(initialOverride).length > 0 ? initialOverride : undefined,
+  )
   const [run] = await db
     .insert(agentRuns)
     .values({
@@ -160,6 +217,8 @@ export async function startTarotTemplateAction(input: unknown) {
       frameMode: "ai",
       input: {
         prompt: parsed.prompt,
+        // 内容/风格分轨：风格描述与参考图共同构成风格输入（仅提取风格样式）
+        ...(parsed.stylePrompt ? { stylePrompt: parsed.stylePrompt } : {}),
         cardCount: template.meta.cardCount,
         // 生产并发不再快照：运行时动态跟随全局用户并发限制
         // （min(企业并发上限, 权限组并发上限)，见 agent-orchestrator.runItemBatches）
@@ -171,16 +230,25 @@ export async function startTarotTemplateAction(input: unknown) {
               imageSize: cardModelOverride.imageSize,
             }
           : {}),
+        ...(teamOverrides ? { teamModelOverrides: teamOverrides } : {}),
       },
       graphSnapshot: graph,
     })
     .returning({ id: agentRuns.id })
   if (!run) throw new Error("创建项目失败")
 
+  // 开场白把内容/风格两轨分开展示，澄清追问据此分轨展开
+  const openerContent = [
+    `【内容描述】${parsed.prompt}`,
+    parsed.stylePrompt ? `【风格描述】${parsed.stylePrompt}` : "",
+    parsed.referenceImages.length > 0 ? `【风格参考图】${parsed.referenceImages.length} 张（仅用于提取艺术风格样式）` : "",
+  ]
+    .filter(Boolean)
+    .join("\n")
   await db.insert(agentMessages).values({
     runId: run.id,
     role: "user",
-    content: parsed.prompt,
+    content: openerContent,
     nodeKey: "creative_director",
   })
   await enqueueTemplateAction(run.id, { kind: "clarify_turn", requestedAt: new Date().toISOString() })
@@ -224,7 +292,7 @@ export async function requestBriefAction(runId: string) {
   return { ok: true }
 }
 
-/** 保存用户确认的创作简报并进入初稿设计阶段（风格规范书 + 78 张初稿由 AI 自动续跑）。 */
+/** 保存用户确认的创作简报并进入画面提示词阶段（风格规范书 + 78 张提示词由 AI 自动续跑）。 */
 export async function saveTemplateBriefAction(input: unknown) {
   const ctx = await requireEnterpriseContext()
   deny(ctx)
@@ -239,7 +307,7 @@ export async function saveTemplateBriefAction(input: unknown) {
 
 /**
  * 根据用户反馈重新拟定 3 个候选《风格规范书》（draft 阶段可用；重置当前
- * 选择，重新选定后才会重写初稿）。
+ * 选择，重新选定后才会重写提示词）。
  */
 export async function regenerateStyleSpecAction(input: unknown) {
   const ctx = await requireEnterpriseContext()
@@ -247,7 +315,7 @@ export async function regenerateStyleSpecAction(input: unknown) {
   const parsed = regenerateDirectionsSchema.parse(input)
   const run = await ownedRun(ctx, parsed.runId)
   assertTarotRun(run)
-  if (normalizeTemplateStage(run.stage) !== "draft") throw new Error("当前项目不在初稿设计阶段")
+  if (normalizeTemplateStage(run.stage) !== "draft") throw new Error("当前项目不在画面提示词阶段")
   await enqueueTemplateAction(run.id, {
     kind: "gen_style_spec",
     feedback: parsed.feedback || undefined,
@@ -273,9 +341,9 @@ export async function regenerateDirectionsAction(input: unknown) {
 }
 
 /**
- * 保存用户选定的《风格规范书》方向：
- * - 新流程（stage=draft）：保持 draft 阶段，落 78 张清单并排队 design_drafts；
- * - 存量 run（raw stage=world）：维持旧行为（进 final + design_prompts）。
+ * 保存用户选定的《风格规范书》方向：保持 draft 阶段，落 78 张清单并排队
+ * design_drafts（首次撰写即终稿的单段短提示词）。存量 world/final 阶段
+ * run 经 normalizeTemplateStage 同样归并到 draft 走新流程。
  */
 export async function selectTemplateDirectionAction(input: unknown) {
   const ctx = await requireEnterpriseContext()
@@ -283,9 +351,8 @@ export async function selectTemplateDirectionAction(input: unknown) {
   const parsed = directionSchema.parse(input)
   const run = await ownedRun(ctx, parsed.runId)
   assertTarotRun(run)
-  const legacyWorld = run.stage === "world"
-  if (!legacyWorld && normalizeTemplateStage(run.stage) !== "draft") {
-    throw new Error("当前项目不在初稿设计阶段")
+  if (normalizeTemplateStage(run.stage) !== "draft") {
+    throw new Error("当前项目不在画面提示词阶段")
   }
   const direction = (run.directions ?? []).find((item) => item.id === parsed.directionId)
   if (!direction) throw new Error("风格规范方向不存在或已更新，请刷新后重选")
@@ -298,7 +365,7 @@ export async function selectTemplateDirectionAction(input: unknown) {
   const cut = base.indexOf(BRIEF_DIRECTION_MARKER)
   const head = (cut >= 0 ? base.slice(0, cut) : base).trimEnd()
   const newBrief = `${head ? `${head}\n\n` : ""}${briefSection}`.trim()
-  // 先落 78 张卡牌清单、再排队初稿撰写：清单生成失败时项目停留在待选方向，
+  // 先落 78 张卡牌清单、再排队提示词撰写：清单生成失败时项目停留在待选方向，
   // 用户重试即自愈（重选方向 → ensure 幂等返回已有清单 → 排队撰写）
   await ensureTarotCardPlan({ ...run, brief: newBrief, selectedDirectionId: direction.id }, direction)
   await db
@@ -307,7 +374,7 @@ export async function selectTemplateDirectionAction(input: unknown) {
       selectedDirectionId: direction.id,
       selectedDirection: "tarot",
       brief: newBrief,
-      stage: legacyWorld ? "final" : "draft",
+      stage: "draft",
       updatedAt: new Date(),
     })
     .where(eq(agentRuns.id, run.id))
@@ -317,10 +384,10 @@ export async function selectTemplateDirectionAction(input: unknown) {
     nodeType: "agent",
     action: "done",
     status: "ok",
-    detail: `风格规范「${direction.name}」已确认，开始撰写 78 张画面初稿`,
+    detail: `风格规范「${direction.name}」已确认，开始撰写 78 张画面提示词（首次撰写即终稿）`,
   })
   await enqueueTemplateAction(run.id, {
-    kind: legacyWorld ? "design_prompts" : "design_drafts",
+    kind: "design_drafts",
     requestedAt: new Date().toISOString(),
   })
   return { ok: true }

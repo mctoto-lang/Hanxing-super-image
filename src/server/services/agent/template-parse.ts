@@ -6,6 +6,7 @@
  * 本模块保持零 db/redis import。
  */
 import type { AgentClarifyQuestion, AgentTemplateDirection } from "@/lib/agent/graph"
+import { SINGLE_PROMPT_BORDER_SUFFIX } from "@/lib/agent/cards/plan"
 import { LlmValidationError } from "./llm-errors"
 
 /** 单条澄清消息最多追问数（澄清 system prompt 与解析共用同一上限） */
@@ -55,11 +56,12 @@ export function parseClarifyOutput(raw: unknown): ClarifyOutput {
     let id = q && typeof q.id === "string" && q.id.trim() ? q.id.trim() : `q-${questions.length + 1}`
     while (seenIds.has(id)) id = `${id}-${questions.length + 1}`
     seenIds.add(id)
+    const topic = q && (q.topic === "style" || q.topic === "content") ? q.topic : undefined
     const options = (q && Array.isArray(q.options) ? q.options : [])
       .map((o) => (typeof o === "string" ? o.trim() : ""))
       .filter(Boolean)
       .slice(0, MAX_CLARIFY_OPTIONS)
-    questions.push({ id, question: text, options })
+    questions.push(topic ? { id, topic, question: text, options } : { id, question: text, options })
   }
 
   if (typeof obj.ready !== "boolean") throw new LlmValidationError("ready 必须是布尔值")
@@ -82,6 +84,46 @@ function slugifyDirectionId(raw: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 40)
+}
+
+// ═══════════════════════════ 风格短语（风格锚点） ═══════════════════════════
+
+/** 风格短语长度区间（撰写目标 20-50 字；兜底截断上限 60 字） */
+export const STYLE_PHRASE_MIN_CHARS = 10
+export const STYLE_PHRASE_MAX_CHARS = 60
+
+/**
+ * 归一化 LLM 产出的风格短语：过短/缺失时取风格总述首个分句确定性补全
+ * （截 60 字），风格规范生成是流程咽喉，不因短语缺失判废卡流程。
+ */
+function normalizeStylePhrase(raw: unknown, visualLanguage: string, name: string): string {
+  const text = typeof raw === "string" ? raw.trim() : ""
+  if (text.length >= STYLE_PHRASE_MIN_CHARS) return text.slice(0, STYLE_PHRASE_MAX_CHARS)
+  const firstClause = (visualLanguage.split(/[。；;]/)[0] ?? "").trim()
+  if (firstClause.length >= STYLE_PHRASE_MIN_CHARS) return firstClause.slice(0, STYLE_PHRASE_MAX_CHARS)
+  return `${name}风格，整套 78 张统一媒介、色调与光影氛围`.slice(0, STYLE_PHRASE_MAX_CHARS)
+}
+
+/**
+ * 读取方向的风格锚点短语（78 张提示词逐字开头的文字锚）。
+ * 存量方向数据无 stylePhrase 字段——兜底取风格总述首个分句，再兜底固定文案。
+ */
+export function stylePhraseOf(direction: {
+  stylePhrase?: unknown
+  visualLanguage: string
+  name: string
+}): string {
+  return normalizeStylePhrase(direction.stylePhrase, direction.visualLanguage, direction.name)
+}
+
+/**
+ * 方向示例图提示词：画面风格总述 + 首张示例卡场景（该方向下的画面预演），
+ * 供方向选择阶段生成 1 张预览图。纯函数，便于单测。
+ */
+export function buildDirectionExamplePrompt(direction: AgentTemplateDirection): string {
+  const sample = direction.sampleCards[0]
+  const scene = sample ? `${sample.name}：${sample.scene}` : "以该方向核心意象设计的塔罗卡面"
+  return `${direction.visualLanguage}。${scene}。主体占画面 60% 以上，近景特写，构图与卡面出图比例一致。${SINGLE_PROMPT_BORDER_SUFFIX}`
 }
 
 function normalizeSuitMapping(raw: unknown): { suit: string; mapping: string }[] {
@@ -164,6 +206,7 @@ export function validateDirections(raw: unknown): AgentTemplateDirection[] {
       suitMapping: normalizeSuitMapping(d.suitMapping),
       palette: palette || undefined,
       visualLanguage,
+      stylePhrase: normalizeStylePhrase(d.stylePhrase, visualLanguage, name),
       sampleCards: normalizeSampleCards(d.sampleCards, name),
     }
   })
@@ -171,9 +214,10 @@ export function validateDirections(raw: unknown): AgentTemplateDirection[] {
 
 /**
  * 单个风格规范方向（AgentTemplateDirection 载体）的归一化。
- * visualLanguage = 画面风格总述（直接用作每张卡终稿的 [1] 画面风格段）；
- * 过短时用 palette / 说明 / 世界观确定性补全而非判废——风格规范生成是
- * 流程咽喉，卡在这里会让用户停在「等待候选方向」无法推进。
+ * visualLanguage = 画面风格总述（80-120 字完整表述，约 100 字——保证整体
+ * 提示词 ≈ 220 字）；stylePhrase = 风格
+ * 短语（整套 78 张提示词逐字开头的文字锚点）；过短时确定性补全而非判废
+ * ——风格规范生成是流程咽喉，卡在这里会让用户停在「等待候选方向」无法推进。
  */
 function normalizeStyleSpecDirection(
   d: Record<string, unknown>,
@@ -190,9 +234,9 @@ function normalizeStyleSpecDirection(
     .map((part) => part.replace(/[。；;，,]$/, ""))
     .filter(Boolean)
   const visualLanguage =
-    parts.join("，").length >= 40
+    parts.join("，").length >= 60
       ? parts.join("，")
-      : `${parts.join("，")}，整套 78 张画面保持统一的媒介、色调、光影与质感`
+      : `${parts.join("，")}，整套 78 张画面保持统一：同一艺术媒介与笔触、明确的主辅色与光线特征、一致的质感与氛围，呈现同一系列作品的完整风格体系`
 
   let id = slugifyDirectionId(typeof d.id === "string" ? d.id : "")
   if (!id) id = slugifyDirectionId(name)
@@ -208,6 +252,7 @@ function normalizeStyleSpecDirection(
     suitMapping: normalizeSuitMapping(d.suitMapping),
     palette: palette || undefined,
     visualLanguage,
+    stylePhrase: normalizeStylePhrase(d.stylePhrase, visualLanguage, name),
     sampleCards: normalizeSampleCards(d.sampleCards, name),
   }
 }

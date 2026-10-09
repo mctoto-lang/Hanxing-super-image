@@ -3,10 +3,13 @@
 /**
  * 小样确认横幅（art 阶段 · phase=sample 收口后展示；自旧版 RunBoard
  * waiting_style 横幅迁移，改为模板 waiting_human 语义）：
- * 小样全部终态且至少一张成图 → 展示缩略图 +「确认小样，开始全套」；
- * 小样全部失败 → 展示失败提示 + 重试入口。
+ * 小样全部终态且至少一张成图 → 展示缩略图 +「确认小样，开始全套」+
+ * 「重新生成小样」（一键重置全部小样重跑）；小样全部失败 → 失败提示 +
+ * 一键重新生成入口。
  */
-import { AlertTriangle, CheckCircle2, Sparkles } from "lucide-react"
+import { useState } from "react"
+import { AlertTriangle, CheckCircle2, Loader2, RotateCcw, Sparkles } from "lucide-react"
+import { toast } from "sonner"
 /* 小样成图 URL 可能来自本地存储或 COS，使用原生 img 兼容两类地址。 */
 /* eslint-disable @next/next/no-img-element */
 import { Button } from "@/components/ui/button"
@@ -73,32 +76,60 @@ export function SampleConfirmBar({
   data,
   busy,
   onOpenItem,
+  onRefresh,
   runAction,
 }: {
   data: TemplateWorkspaceData
   busy: boolean
   onOpenItem: (itemId: string) => void
+  onRefresh: () => Promise<unknown>
   runAction: ArtStageAction
 }) {
-  const { confirmSampleBatch, retryTemplateAction } = useWorkspaceActions()
+  const { confirmSampleBatch, regenSampleItems } = useWorkspaceActions()
+  const [regenning, setRegenning] = useState(false)
   const samples = data.items.filter((item) => item.isSample)
   const okSamples = samples.filter((item) => OK_STATUSES.includes(item.status as (typeof OK_STATUSES)[number]))
   const allFailed = okSamples.length === 0
 
-  // 全部失败：定向提示 + 重试（详细错误由工作台顶部错误横幅展示）
+  // 一键重新生成：全部小样（无论成败）重置重跑。业务失败以返回值传达
+  //（生产环境 Server Action 抛错会被抹为 #441 占位文案）
+  const regenSamples = async () => {
+    setRegenning(true)
+    try {
+      const result = await regenSampleItems(data.run.id)
+      if (!result.ok) {
+        toast.error(result.error)
+        return
+      }
+      toast.success(`已重新排队 ${result.count} 张风格小样`)
+      // 重排后 run 已置 queued，必须刷新让客户端状态跟上、轮询重启；
+      // 刷新失败不影响已入队任务，静默降级（口径同 art-stage-view.retryAllFailed）
+      try {
+        await onRefresh()
+      } catch (error) {
+        console.error("重新生成小样后刷新运行数据失败", error)
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "重新生成小样失败")
+    } finally {
+      setRegenning(false)
+    }
+  }
+
+  const regenButton = (
+    <Button size="sm" variant="outline" disabled={busy || regenning} onClick={() => void regenSamples()}>
+      {regenning ? <Loader2 className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
+      重新生成小样
+    </Button>
+  )
+
+  // 全部失败：定向提示 + 一键重新生成（详细错误由工作台顶部错误横幅展示）
   if (allFailed) {
     return (
       <div className="flex flex-wrap items-center gap-3 rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-3">
         <AlertTriangle className="size-4 shrink-0 text-red-500" />
-        <p className="min-w-0 flex-1 text-sm">风格小样全部失败。可重试重新生产，或在卡面列表中逐张重开。</p>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={busy || !data.run.pendingAction}
-          onClick={() => void runAction(() => retryTemplateAction(data.run.id), "已重新提交小样生产")}
-        >
-          重试小样
-        </Button>
+        <p className="min-w-0 flex-1 text-sm">风格小样全部失败。可一键重新生成，或在卡面列表中逐张重开。</p>
+        {regenButton}
       </div>
     )
   }
@@ -120,6 +151,7 @@ export function SampleConfirmBar({
             <CheckCircle2 className="size-3.5" />
             {okSamples.length}/{samples.length} 张成图
           </span>
+          {regenButton}
           <Button
             size="sm"
             className="bg-amber-500 text-white hover:bg-amber-600"

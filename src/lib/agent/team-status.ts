@@ -177,17 +177,19 @@ const PENDING_ACTION_ROLES: Record<string, string> = {
 /** 收尾动作：其后无更新事件即视为该角色完成 */
 const FINISH_ACTIONS = new Set(["done", "confirm"])
 
-/** 工作中：待执行动作 → 进行中文案 */
-function workingTaskText(kind: string, directionCount: number, stageName: string | null, phase?: string): string {
+/** 工作中：待执行动作 → 进行中文案（工作台当前动作横幅与角色侧栏共用） */
+export function workingTaskText(kind: string, directionCount: number, stageName: string | null, phase?: string): string {
   if (kind === "clarify_turn") return "正在根据你的回答整理追问"
   if (kind === "finalize_brief") return "正在整理设计简报"
-  if (kind === "gen_style_spec") return "正在拟定 3 个风格规范方向"
-  if (kind === "design_drafts") return "正在逐张撰写画面初稿"
-  if (kind === "design_finals") return "正在把初稿细化为结构化终稿"
+  if (kind === "gen_style_spec") return "正在拟定 3 个风格规范方向与示例图"
+  if (kind === "design_drafts") return "正在逐张撰写画面提示词（首次撰写即终稿）"
+  if (kind === "design_finals") return "正在把初稿细化为结构化终稿（存量流程）"
   if (kind === "gen_directions") return `正在构思 ${directionCount > 0 ? directionCount : 3} 个内容方向`
   if (kind === "design_prompts") return "正在逐张撰写画面提示词"
-  if (kind === "produce_cards") return phase === "full" ? "正在生产全套卡面（生图 + 三审 + 裁决）" : "正在生成风格小样"
+  if (kind === "produce_cards") return phase === "full" ? "正在生产全套卡面（生图 + 三审 + 裁决）" : "正在生成风格小样（生图 + 三审）"
   if (kind === "asset_gen") return "正在生成套件资产（边框/牌背/牌盒）"
+  if (kind === "compose_preview") return "正在试融合边框效果"
+  if (kind === "compose_batch") return "正在批量融合边框与卡面"
   return stageName ? `正在执行「${stageName}」阶段任务` : "正在执行阶段任务"
 }
 
@@ -196,10 +198,10 @@ function waitingTaskText(kind: string | null, phase?: string, hasError = false):
   if (kind === "clarify_turn") return "等待你回答问题"
   if (kind === "finalize_brief") return "等待你确认简报"
   if (kind === "gen_style_spec") return "等待你选择风格规范方向"
-  if (kind === "design_drafts") return "等待你确认画面初稿"
-  if (kind === "design_finals") return "等待你确认画面终稿"
+  if (kind === "design_drafts") return "等待你确认画面提示词"
+  if (kind === "design_finals") return "等待你确认画面终稿（存量流程）"
   if (kind === "gen_directions") return "等待你选择内容方向"
-  if (kind === "design_prompts") return "等待你确认卡牌清单"
+  if (kind === "design_prompts") return "等待你确认画面提示词"
   // produce_cards 按 phase 区分：sample 完成等确认；生产失败等待重试时文案不同
   // （sample 批失败也保留 pendingAction 置 waiting_human——不按 run.error 区分会
   //   误导用户去"确认小样"而非重试）
@@ -282,12 +284,12 @@ export function deriveTeamStatus(input: {
     else messagesByRole.set(message.nodeKey, [message])
   }
 
-  // 阶段位置（数组顺序即流程顺序；存量 run 的旧阶段 id 归一化后再比对，
-  // 未知阶段记 -1，所有先后判定全部收敛）
+  // 阶段位置（数组顺序即流程顺序；存量 run 的旧阶段 id（world/prompt/final）
+  // 归一化到合并后的 draft 再比对，未知阶段记 -1，所有先后判定全部收敛）
   const stagePos = (stageId: string | null | undefined): number => {
     if (!stageId) return -1
     const normalized =
-      stageId === "world" ? "draft" : stageId === "prompt" ? "final" : stageId
+      stageId === "world" || stageId === "prompt" || stageId === "final" ? "draft" : stageId
     return stages.findIndex((stage) => stage.id === normalized)
   }
   const currentIndex = stagePos(run.stage)
@@ -404,10 +406,10 @@ export function deriveTeamStatus(input: {
         outputs.push({ label: "风格规范", value: directionCount > 0 ? `${directionCount} 个候选` : "拟定中" })
         break
       case "prompt_designer":
-        outputs.push({ label: "画面初稿", value: `${doneCount} 批` })
+        outputs.push({ label: "画面提示词", value: `${doneCount} 批` })
         break
       case "final_refiner":
-        outputs.push({ label: "终稿", value: `${doneCount} 批` })
+        outputs.push({ label: "终稿（存量）", value: `${doneCount} 批` })
         break
       case "artist": {
         const confirmedCards = items.filter((item) => item.finalRoundId).length

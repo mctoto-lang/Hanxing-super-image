@@ -10,6 +10,7 @@ import {
   agentRunItems,
   agentRounds,
   agentRuns,
+  chatApiConfigs,
   generationTasks,
 } from "@/db/schema"
 import { getStorage } from "@/lib/storage"
@@ -28,11 +29,12 @@ import { DEFAULT_SCORE_THRESHOLDS } from "@/lib/agent/score"
 import { reviewThresholdFromSnapshot, templateProductionMissingSlots, type TarotTemplateConfig } from "@/lib/agent/pipelines"
 import { loadFullDirectionConfig } from "@/server/services/agent/direction-config"
 import { loadAgentCardModelPool } from "@/server/services/agent/card-models"
+import { loadAgentChatModelPool } from "@/server/services/agent/chat-models"
 import { AGENT_DIRECTIONS } from "@/lib/agent/graph"
 import { revalidatePath } from "next/cache"
 
 /**
- * AI Agent Server Actions（/agent 卡牌工坊：塔罗模板五阶段）
+ * AI Agent Server Actions（/agent 卡牌工坊：塔罗模板四阶段）
  *
  * - 全部 requireEnterpriseContext + agent 模块权限；数据访问强制
  *   enterpriseId + userId 双过滤（多租户铁律）；
@@ -113,6 +115,18 @@ export async function listAgentCardModelsAction() {
   const denied = denyAgent(ctx)
   if (denied) throw new Error(denied)
   return await loadAgentCardModelPool(ctx)
+}
+
+/**
+ * Agent 工坊 AI 团队对话模型候选池（发起弹窗「AI 团队模型」选项来源）：
+ * 企业/权限组可见的启用对话模型（带 supportsVision 标记；评审团候选仅
+ * 展示视觉模型）。用户缺省不选 = 跟随平台超管配置。
+ */
+export async function listAgentChatModelsAction() {
+  const ctx = await requireEnterpriseContext()
+  const denied = denyAgent(ctx)
+  if (denied) throw new Error(denied)
+  return await loadAgentChatModelPool(ctx)
 }
 
 // ═══════════════════════════ 运行查询 ═══════════════════════════
@@ -302,6 +316,26 @@ export async function getRunItemDetailAction(itemId: string) {
         eq(agentRuns.userId, ctx.user.id),
       ),
     )
+  // 评审节点 → 模型中文名（弹窗按「评审 N · 模型名」分组展示）
+  const snapshot = (run?.graphSnapshot ?? null) as {
+    nodes?: { id: string; type: string; config: { chatModelId?: string } }[]
+  } | null
+  const reviewNodeEntries = (snapshot?.nodes ?? [])
+    .filter((node) => node.type === "review" && node.config?.chatModelId)
+    .map((node) => ({ nodeKey: node.id, modelId: node.config.chatModelId! }))
+  const reviewModelIds = [...new Set(reviewNodeEntries.map((entry) => entry.modelId))]
+  const reviewModelRows = reviewModelIds.length
+    ? await db
+        .select({ id: chatApiConfigs.id, displayName: chatApiConfigs.displayName })
+        .from(chatApiConfigs)
+        .where(inArray(chatApiConfigs.id, reviewModelIds))
+    : []
+  const reviewModelNameById = new Map(reviewModelRows.map((row) => [row.id, row.displayName]))
+  const reviewModels = reviewNodeEntries.map((entry, index) => ({
+    nodeKey: entry.nodeKey,
+    label: `评审 ${index + 1}`,
+    modelName: reviewModelNameById.get(entry.modelId) ?? "未知模型",
+  }))
   return {
     item: {
       id: item.id,
@@ -320,6 +354,8 @@ export async function getRunItemDetailAction(itemId: string) {
     },
     rounds,
     reviews,
+    /** 评审节点模型（按快照顺序；快照缺失/旧数据为空数组，弹窗回退平铺展示） */
+    reviewModels,
     thresholds: {
       content: reviewThresholdFromSnapshot(
         run?.graphSnapshot,
@@ -472,25 +508,34 @@ export async function confirmItemAction(input: { itemId: string; roundId: string
   return { ok: true }
 }
 
-/** 手动重开（不受打回上限约束；manualRegenCount 软限流计数提醒成本） */
-export async function regenItemAction(input: { itemId: string }) {
+/**
+ * 手动重开（不受打回上限约束；manualRegenCount 软限流计数提醒成本）。
+ * 业务失败返回 { ok:false, error } 而非 throw：生产环境 Server Action 的
+ * 抛错会被抹为 digest 占位错误（Minified React error #441），用户看不到
+ * 真实中文提示。
+ */
+export async function regenItemAction(
+  input: { itemId: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
   const ctx = await requireEnterpriseContext()
   const denied = denyAgent(ctx)
-  if (denied) throw new Error(denied)
-  const parsed = regenItemSchema.parse(input)
+  if (denied) return { ok: false, error: denied }
+  const parsed = regenItemSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, error: "参数无效" }
+  const { itemId } = parsed.data
   const [item] = await db
     .select()
     .from(agentRunItems)
     .where(
       and(
-        eq(agentRunItems.id, parsed.itemId),
+        eq(agentRunItems.id, itemId),
         eq(agentRunItems.enterpriseId, ctx.user.enterpriseId!),
         eq(agentRunItems.userId, ctx.user.id),
       ),
     )
-  if (!item) throw new Error("卡牌不存在")
+  if (!item) return { ok: false, error: "卡牌不存在" }
   if (item.status === "pending" || ["drafting", "generating", "reviewing"].includes(item.status)) {
-    throw new Error("该卡牌正在处理中，无法重开")
+    return { ok: false, error: "该卡牌正在处理中，无法重开" }
   }
   const [runRow] = await db
     .select({ status: agentRuns.status, template: agentRuns.template, phase: agentRuns.phase })
@@ -504,7 +549,7 @@ export async function regenItemAction(input: { itemId: string }) {
     )
   // 模板流程（经典全流程已下线）：清单提示词是用户确认过的底稿，重开保留
   // （首轮直接沿用，仅在审核打回时由文案 Agent 改写）
-  if (!runRow?.template) throw new Error("该项目不是模板项目，无法重开")
+  if (!runRow?.template) return { ok: false, error: "该项目不是模板项目，无法重开" }
 
   await db
     .update(agentRunItems)
@@ -533,7 +578,7 @@ export async function regenItemAction(input: { itemId: string }) {
       })
       .where(and(eq(agentRuns.id, item.runId), notInArray(agentRuns.status, ["running", "queued"])))
       .returning({ id: agentRuns.id })
-    if (updated.length === 0) throw new Error("AI 团队正在处理中，请稍候")
+    if (updated.length === 0) return { ok: false, error: "AI 团队正在处理中，请稍候" }
   }
   await db.insert(agentEvents).values({
     runId: item.runId,
@@ -550,17 +595,23 @@ export async function regenItemAction(input: { itemId: string }) {
  * 批量重试失败卡面（生图/模型调用失败造成的中断）：把该 run 全部
  * failed/cancelled 卡一次性重置为 pending 并重新排队生产。produce_cards
  * 只原子认领 pending 卡（见 runItemBatches），已完成的卡不会被重复处理。
+ * 业务失败返回 { ok:false, error } 而非 throw：生产环境 Server Action 的
+ * 抛错会被抹为 digest 占位错误（Minified React error #441）。
  */
-export async function regenFailedItemsAction(runId: string) {
+export async function regenFailedItemsAction(
+  runId: string,
+): Promise<{ ok: true; count: number } | { ok: false; error: string }> {
   const ctx = await requireEnterpriseContext()
   const denied = denyAgent(ctx)
-  if (denied) throw new Error(denied)
-  const id = z.string().uuid().parse(runId)
+  if (denied) return { ok: false, error: denied }
+  const parsed = z.string().uuid().safeParse(runId)
+  if (!parsed.success) return { ok: false, error: "项目 ID 无效" }
+  const id = parsed.data
   const runRow = await getOwnedRun(ctx, id)
-  if (!runRow) throw new Error("项目不存在或无权访问")
-  if (!runRow.template) throw new Error("该项目不是模板项目")
+  if (!runRow) return { ok: false, error: "项目不存在或无权访问" }
+  if (!runRow.template) return { ok: false, error: "该项目不是模板项目" }
   if (runRow.status === "running" || runRow.status === "queued") {
-    throw new Error("AI 团队正在处理中，请稍候")
+    return { ok: false, error: "AI 团队正在处理中，请稍候" }
   }
   const failed = await db
     .select({ id: agentRunItems.id })
@@ -568,7 +619,7 @@ export async function regenFailedItemsAction(runId: string) {
     .where(
       and(eq(agentRunItems.runId, id), inArray(agentRunItems.status, ["failed", "cancelled"])),
     )
-  if (failed.length === 0) throw new Error("没有可重试的失败卡面")
+  if (failed.length === 0) return { ok: false, error: "没有可重试的失败卡面" }
 
   await db
     .update(agentRunItems)
@@ -597,7 +648,7 @@ export async function regenFailedItemsAction(runId: string) {
     })
     .where(and(eq(agentRuns.id, id), notInArray(agentRuns.status, ["running", "queued"])))
     .returning({ id: agentRuns.id })
-  if (updated.length === 0) throw new Error("AI 团队正在处理中，请稍候")
+  if (updated.length === 0) return { ok: false, error: "AI 团队正在处理中，请稍候" }
 
   await db.insert(agentEvents).values({
     runId: id,
@@ -607,6 +658,77 @@ export async function regenFailedItemsAction(runId: string) {
   })
   revalidatePath("/agent")
   return { ok: true, count: failed.length }
+}
+
+/**
+ * 一键重新生成风格小样（art 阶段 sample 相位）：把全部 isSample 卡重置为
+ * pending 并重新排队小样生产（无论成败）。phase=full 后小样终图已锁定为
+ * 成套一致性基准，不再允许整批重跑（单张重开不受此限）。业务失败返回
+ * { ok:false, error } 而非 throw：生产环境 Server Action 抛错会被抹为
+ * digest 占位错误（Minified React error #441）。
+ */
+export async function regenSampleItemsAction(
+  runId: string,
+): Promise<{ ok: true; count: number } | { ok: false; error: string }> {
+  const ctx = await requireEnterpriseContext()
+  const denied = denyAgent(ctx)
+  if (denied) return { ok: false, error: denied }
+  const parsed = z.string().uuid().safeParse(runId)
+  if (!parsed.success) return { ok: false, error: "项目 ID 无效" }
+  const id = parsed.data
+  const runRow = await getOwnedRun(ctx, id)
+  if (!runRow) return { ok: false, error: "项目不存在或无权访问" }
+  if (!runRow.template) return { ok: false, error: "该项目不是模板项目" }
+  if (runRow.status === "running" || runRow.status === "queued") {
+    return { ok: false, error: "AI 团队正在处理中，请稍候" }
+  }
+  if (runRow.stage !== "art" || runRow.phase !== "sample") {
+    return {
+      ok: false,
+      error: "风格小样确认后已作为成套一致性基准，无法整批重新生成（可在卡面弹窗中单张重开）",
+    }
+  }
+  const samples = await db
+    .select({ id: agentRunItems.id })
+    .from(agentRunItems)
+    .where(and(eq(agentRunItems.runId, id), eq(agentRunItems.isSample, true)))
+  if (samples.length === 0) return { ok: false, error: "该项目没有风格小样" }
+
+  await db
+    .update(agentRunItems)
+    .set({
+      status: "pending",
+      roundsUsed: 0,
+      finalRoundId: null,
+      fallbackContentWarning: false,
+      errorMessage: null,
+      manualRegenCount: sql`${agentRunItems.manualRegenCount} + 1`,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(agentRunItems.runId, id), eq(agentRunItems.isSample, true)))
+
+  // 条件更新守住 SELECT→UPDATE 间隙：状态被并发改变（如 worker 已认领）时不覆盖
+  const updated = await db
+    .update(agentRuns)
+    .set({
+      status: "queued",
+      finishedAt: null,
+      error: null,
+      pendingAction: { kind: "produce_cards", phase: "sample", requestedAt: new Date().toISOString() },
+      updatedAt: new Date(),
+    })
+    .where(and(eq(agentRuns.id, id), notInArray(agentRuns.status, ["running", "queued"])))
+    .returning({ id: agentRuns.id })
+  if (updated.length === 0) return { ok: false, error: "AI 团队正在处理中，请稍候" }
+
+  await db.insert(agentEvents).values({
+    runId: id,
+    action: "regen",
+    status: "ok",
+    detail: `一键重新生成风格小样（重置 ${samples.length} 张）`,
+  })
+  revalidatePath("/agent")
+  return { ok: true, count: samples.length }
 }
 
 /** 用户编辑卡面提示词终稿（评审弹窗内）；后续生图/重开沿用编辑后的 currentPrompt */

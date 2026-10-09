@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { switchTemplateStageAction } from "@/server/actions/agent-template"
-import { regenFailedItemsAction, updateItemPromptAction } from "@/server/actions/agent"
+import { regenFailedItemsAction, regenSampleItemsAction, updateItemPromptAction } from "@/server/actions/agent"
 import { updateTarotCardPlanItemAction } from "@/server/actions/agent-cards"
 
 /**
@@ -309,7 +309,9 @@ describe("regenFailedItemsAction 条件更新守卫", () => {
     state.rows.agentItems = [failedItem]
     state.viewOverrides.set(run, { status: "waiting_human" })
 
-    await expect(regenFailedItemsAction(RUN_ID)).rejects.toThrow("AI 团队正在处理中，请稍候")
+    // 业务失败以返回值传达（生产环境 Server Action 抛错会被抹为 #441）
+    const result = await regenFailedItemsAction(RUN_ID)
+    expect(result).toEqual({ ok: false, error: "AI 团队正在处理中，请稍候" })
 
     // 条件更新（notInArray status running/queued）未命中：run 行保持 worker 认领态
     expect(run.status).toBe("running")
@@ -317,6 +319,79 @@ describe("regenFailedItemsAction 条件更新守卫", () => {
     // 失败卡重置发生在 run 条件更新之前（当前实现顺序）：item 已被重置为 pending
     expect(failedItem.status).toBe("pending")
     expect(failedItem.errorMessage).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 2b) regenSampleItemsAction：一键重跑风格小样守卫
+// ---------------------------------------------------------------------------
+
+describe("regenSampleItemsAction 小样重生成守卫", () => {
+  it("phase=full（小样已确认、锁定为一致性基准）：拒绝整批重跑且 item 未被改动", async () => {
+    const run = runRow({ stage: "art", phase: "full" })
+    const sample = itemRow({ status: "confirmed", isSample: true })
+    state.rows.agentRuns = [run]
+    state.rows.agentItems = [sample]
+
+    const result = await regenSampleItemsAction(RUN_ID)
+    expect(result).toEqual({
+      ok: false,
+      error: "风格小样确认后已作为成套一致性基准，无法整批重新生成（可在卡面弹窗中单张重开）",
+    })
+    expect(sample.status).toBe("confirmed")
+    expect(run.status).toBe("waiting_human")
+  })
+
+  it("sample 相位：全部小样（无论成败）重置 pending 并重新排队小样生产，非小样卡不动", async () => {
+    const run = runRow({ stage: "art", phase: "sample" })
+    const okSample = itemRow({
+      id: "33000000-0000-4000-8000-000000000002",
+      index: 1,
+      status: "confirmed",
+      isSample: true,
+    })
+    const failedSample = itemRow({
+      id: "33000000-0000-4000-8000-000000000003",
+      index: 2,
+      status: "failed",
+      errorMessage: "生图失败",
+      finalRoundId: null,
+      isSample: true,
+    })
+    const normalCard = itemRow({
+      id: "33000000-0000-4000-8000-000000000004",
+      index: 6,
+      status: "confirmed",
+      isSample: false,
+    })
+    state.rows.agentRuns = [run]
+    state.rows.agentItems = [okSample, failedSample, normalCard]
+
+    const result = await regenSampleItemsAction(RUN_ID)
+    expect(result).toEqual({ ok: true, count: 2 })
+
+    expect(okSample.status).toBe("pending")
+    expect(okSample.roundsUsed).toBe(0)
+    expect(okSample.finalRoundId).toBeNull()
+    expect(failedSample.status).toBe("pending")
+    expect(failedSample.errorMessage).toBeNull()
+    // 非小样卡不在重置范围
+    expect(normalCard.status).toBe("confirmed")
+    expect(run.status).toBe("queued")
+    expect(run.pendingAction).toMatchObject({ kind: "produce_cards", phase: "sample" })
+  })
+
+  it("run 已被并发置 running：条件更新未命中，返回「AI 团队正在处理中」", async () => {
+    const run = runRow({ stage: "art", phase: "sample", status: "running", pendingAction: null })
+    const sample = itemRow({ status: "confirmed", isSample: true })
+    state.rows.agentRuns = [run]
+    state.rows.agentItems = [sample]
+    // action 的 SELECT 读到并发改变前的旧快照（waiting_human）
+    state.viewOverrides.set(run, { status: "waiting_human" })
+
+    const result = await regenSampleItemsAction(RUN_ID)
+    expect(result).toEqual({ ok: false, error: "AI 团队正在处理中，请稍候" })
+    expect(run.status).toBe("running")
   })
 })
 
@@ -348,9 +423,9 @@ describe("updateTarotCardPlanItemAction 运行态守卫", () => {
     state.rows.agentRuns = [run]
     state.rows.agentItems = [item]
 
-    await expect(
-      updateTarotCardPlanItemAction({ runId: RUN_ID, itemId: ITEM_ID, meaning: "新义", visualBrief: "新画面" }),
-    ).rejects.toThrow("AI 团队正在处理中，请稍候")
+    // 业务失败以返回值传达（生产环境 Server Action 抛错会被抹为 #441 占位文案）
+    const result = await updateTarotCardPlanItemAction({ runId: RUN_ID, itemId: ITEM_ID, meaning: "新义", visualBrief: "新画面" })
+    expect(result).toEqual({ ok: false, error: "AI 团队正在处理中，请稍候" })
 
     expect(item.meaning).toBe("原义")
     expect(item.visualBrief).toBe("原画面")

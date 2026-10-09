@@ -85,9 +85,11 @@ export async function runTarotAssetGeneration(
     throw new Error("周边资产生图模型不在本企业可用范围内，请联系管理员调整配置")
   }
 
-  // 评审模型：评审团首选 → 结构策划 → 创意总监（与模板生产同源槽位）
+  // 评审模型：用户评审团覆盖首选 → 超管评审团 → 结构策划 → 创意总监
+  // （与模板生产同源槽位；用户覆盖让周边资产评审与卡面评审团保持一致）
   const fullConfig = await loadFullDirectionConfig("tarot")
   const reviewerModelId =
+    run.input.teamModelOverrides?.reviewerModelIds?.[0] ??
     fullConfig.templateConfig?.reviewerModelIds?.[0] ??
     fullConfig.models.structureChatModelId ??
     fullConfig.models.styleChatModelId

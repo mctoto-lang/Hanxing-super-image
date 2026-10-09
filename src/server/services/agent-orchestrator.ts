@@ -68,7 +68,7 @@ import type {
 import { mainEdges, nodesById, validateAgentGraph } from "@/lib/agent/validate"
 import { DEFAULT_REVIEWER_PROMPT, PIPELINE_NODE_IDS } from "@/lib/agent/pipelines"
 import { suitCountRuleByIndex } from "@/lib/agent/templates"
-import { normalizeFinalPrompt, splitFinalPromptSegments } from "@/lib/agent/cards/plan"
+import { normalizeFinalPrompt, isStructuredFinalPrompt, splitFinalPromptSegments, composeStyleFixedPrompt } from "@/lib/agent/cards/plan"
 
 type ImageModelRow = typeof modelsTable.$inferSelect
 
@@ -337,9 +337,8 @@ async function generateRoundImages(
           imageSize,
           imageCount: pending.length,
           indexes: pending,
-          referenceImages: env.run.input.referenceImages?.length
-            ? env.run.input.referenceImages.map((u) => signUploadToken(u))
-            : null,
+          // 卡面生图只用提示词（纯文生图）：用户风格参考图仅用于澄清轮
+          // 视觉分析与一致性评审基准，不进入生图请求
           signal: budget.signal,
           downloadAndUpload: async (url) => {
             return storage.saveFromUrl(
@@ -759,17 +758,33 @@ async function executeAgentNode(
   })
 
   const candidateCount = Math.max(1, config.candidateCount || 1)
-  const formatSpec = hasFeedback
-    ? `只输出 JSON：{"prompt": "重新细化后的完整终稿（[1] 画面风格 + [2] 画面内容 两段结构）"}`
-    : candidateCount > 1
-      ? `输出 ${candidateCount} 个候选，只输出 JSON：{"variants": [{"name": "牌名", "meaning": "一句话牌义", "prompt": "完整终稿（[1] 画面风格 + [2] 画面内容 两段结构）"}, ...]}`
-      : `只输出 JSON：{"name": "牌名(≤20字，可选)", "meaning": "一句话牌义(可选)", "prompt": "完整终稿（[1] 画面风格 + [2] 画面内容 两段结构，画面内容 150-250 字）"}`
+  // 提示词形态随当前提示词自适应：存量结构化两段终稿沿用两段结构改写；
+  // 新流程 LLM 只写画面内容，固定风格提示词（选定方向风格总述，整套逐字
+  // 统一）与无边框句由系统确定性拼接——杜绝打回重写时的风格漂移
+  const legacyStructured = isStructuredFinalPrompt(state.prompt)
+  const selectedDirection = (env.run.directions ?? []).find((d) => d.id === env.run.selectedDirectionId)
+  const fixedStyle = selectedDirection?.visualLanguage || selectedDirection?.palette || "统一的塔罗牌视觉风格"
+  const legacyPromptShape = "完整终稿（[1] 画面风格 + [2] 画面内容 两段结构）"
+  const contentShape =
+    "画面内容（100-140 字中文单段，约 120 字，只写主体/动作神态/道具/场景氛围/光影；多件物品不描述具体摆放方式与位置关系，交给生图模型自由发挥；不含风格提示词与结尾句——系统会统一拼接固定风格与无边框句）"
+  const formatSpec = legacyStructured
+    ? hasFeedback
+      ? `只输出 JSON：{"prompt": "重写后的${legacyPromptShape}"}`
+      : candidateCount > 1
+        ? `输出 ${candidateCount} 个候选，只输出 JSON：{"variants": [{"name": "牌名", "meaning": "一句话牌义", "prompt": "${legacyPromptShape}"}, ...]}`
+        : `只输出 JSON：{"name": "牌名(≤20字，可选)", "meaning": "一句话牌义(可选)", "prompt": "${legacyPromptShape}"}`
+    : hasFeedback
+      ? `只输出 JSON：{"content": "重写后的${contentShape}"}`
+      : candidateCount > 1
+        ? `输出 ${candidateCount} 个候选，只输出 JSON：{"variants": [{"name": "牌名", "meaning": "一句话牌义", "content": "${contentShape}"}, ...]}`
+        : `只输出 JSON：{"name": "牌名(≤20字，可选)", "meaning": "一句话牌义(可选)", "content": "${contentShape}"}`
 
   const systemPrompt = `${config.rolePrompt}\n\n【输出格式】${formatSpec}\n不要输出 JSON 以外的任何内容（包括代码块标记、解释、前后缀）。`
 
   const basePayload: Record<string, unknown> = {
     task: hasFeedback ? "revise" : "draft",
     userPrompt: env.run.input.prompt,
+    ...(env.run.input.stylePrompt ? { stylePrompt: env.run.input.stylePrompt } : {}),
     styleDoc: (env.run.styleDoc ?? "").slice(0, 2000),
     card: {
     index: item.index + 1,
@@ -782,9 +797,9 @@ async function executeAgentNode(
     referenceImageCount: env.run.input.referenceImages?.length ?? 0,
   }
   if (hasFeedback) {
-    // 打回重细化契约（见 ROLE_PROMPTS.finalRefiner）：以初稿为基准重新细化。
-    // 必须携带初稿 visualBrief——只有旧终稿时模型无法「回到初稿重写」，
-    // 旧终稿仅作上下文参考（评审意见指向其问题表述）
+    // 打回重写契约：以当前提示词为基准重写（新流程 visualBrief 与
+    // currentPrompt 同文本；存量结构化 run 的 visualBrief 为旧初稿，仍
+    // 一并携带供参考），旧终稿仅作上下文（评审意见指向其问题表述）
     if (item.visualBrief) basePayload.draft = item.visualBrief
     basePayload.originalPrompt = state.prompt
     basePayload.feedback = {
@@ -806,21 +821,31 @@ async function executeAgentNode(
     thinkingLevel: config.thinkingLevel || "medium",
     validate: (p) => {
       if (hasFeedback) {
-        if (!strField(p.prompt)) throw new LlmValidationError("缺少 prompt 字段（改写需输出完整提示词）")
+        // 新流程输出 content（画面内容），存量结构化输出完整 prompt；两者皆缺才判不合格
+        if (!strField(p.content) && !strField(p.prompt)) {
+          throw new LlmValidationError("缺少 content/prompt 字段（改写需输出画面内容或完整提示词）")
+        }
       } else if (candidateCount > 1) {
         const variants = p.variants
         if (!Array.isArray(variants) || variants.length === 0 || !strField((variants[0] as Record<string, unknown>)?.prompt)) {
           throw new LlmValidationError("缺少 variants[0].prompt 字段")
         }
-      } else if (!strField(p.prompt)) {
-        throw new LlmValidationError("缺少 prompt 字段（需包含 name/meaning/prompt）")
+      } else if (!strField(p.content) && !strField(p.prompt)) {
+        throw new LlmValidationError("缺少 content/prompt 字段（需包含画面内容）")
       }
     },
   })
 
   if (hasFeedback) {
-    const prompt = strField(parsed.prompt)!
-    state.prompt = prompt
+    if (legacyStructured) {
+      state.prompt = strField(parsed.prompt) ?? state.prompt
+    } else {
+      // 新流程：LLM 只产出画面内容，与固定风格提示词确定性拼接（整套逐字统一）
+      const content = strField(parsed.content) ?? strField(parsed.prompt) ?? ""
+      state.prompt = content
+        ? composeStyleFixedPrompt(content, fixedStyle)
+        : (strField(parsed.prompt) ?? state.prompt)
+    }
     state.promptSource = "auto_revise"
     // 反馈已消费：清除审核结论与评审累计，防崩溃重启后误判为再次改写
     state.contentPass = null
@@ -855,20 +880,22 @@ async function executeAgentNode(
   } else {
     const name = strField(parsed.name)
     const meaning = strField(parsed.meaning)
-    const prompt = strField(parsed.prompt) ?? ""
     state.name = name ?? state.name
     state.meaning = meaning ?? state.meaning
-    state.prompt = prompt
+    if (legacyStructured) {
+      state.prompt = strField(parsed.prompt) ?? ""
+    } else {
+      const content = strField(parsed.content) ?? strField(parsed.prompt) ?? ""
+      state.prompt = content ? composeStyleFixedPrompt(content, fixedStyle) : ""
+    }
     state.promptSource = "initial"
   }
 
-  // LLM 偶发漏两段标记时包一层，保证落库结构与 design_finals 路径
-  // （template-steps.ts）同口径——node-board / final-stage-view 的终稿
-  // 识别都按两段标记消费；风格段取值与 runDesignFinals 一致
-  if (state.prompt) {
-    const direction = (env.run.directions ?? []).find((d) => d.id === env.run.selectedDirectionId)
-    const styleSummary = direction?.visualLanguage || direction?.palette || "统一的塔罗牌视觉风格"
-    state.prompt = normalizeFinalPrompt(state.prompt, styleSummary)
+  // 存量结构化流程：LLM 偶发漏两段标记时包一层，保证落库结构与 design_finals
+  // 路径（template-steps.ts）同口径——风格段取值与 runDesignFinals 一致；
+  // 新流程拼接式单段提示词保持原样（不包两段结构）
+  if (state.prompt && legacyStructured) {
+    state.prompt = normalizeFinalPrompt(state.prompt, fixedStyle)
   }
 
   await db
@@ -1016,25 +1043,37 @@ async function executeImageGenNode(
 }
 
 /**
- * 一致性审核基准图：用户风格参考图（≤2）+ 已确认小样终图（≤2），上限 4 张。
- * 小样终图在 full 阶段即「风格锚点」；sample 阶段无小样终图时仅用参考图。
+ * 一致性审核基准图（≤4 张）：用户风格参考图（≤2）+ 已确认小样终图
+ * （大阿卡纳 / 小阿卡纳各取 1 张，提升基准代表性）+ 选中方向示例图（≤1）。
+ * 小样终图在 full 阶段即「风格锚点」；sample 阶段无小样终图时仅用参考图
+ * 与方向示例图。
  */
 async function loadBenchmarkImages(
-  runId: string,
+  run: AgentRunRow,
   referenceImages: string[],
 ): Promise<string[]> {
   const refs = referenceImages.slice(0, 2).map((u) => signUploadToken(u))
-  const sampleFinals = await db
-    .select({ imageUrl: agentRounds.imageUrl })
+  const sampleRows = await db
+    .select({ imageUrl: agentRounds.imageUrl, index: agentRunItems.index })
     .from(agentRunItems)
     .innerJoin(agentRounds, eq(agentRunItems.finalRoundId, agentRounds.id))
-    .where(and(eq(agentRunItems.runId, runId), eq(agentRunItems.isSample, true)))
-    .limit(2)
-  const finals = sampleFinals
-    .map((r) => r.imageUrl)
-    .filter((u): u is string => !!u)
-    .map((u) => signUploadToken(u))
-  return [...refs, ...finals].slice(0, 4)
+    .where(and(eq(agentRunItems.runId, run.id), eq(agentRunItems.isSample, true)))
+    .orderBy(asc(agentRunItems.index))
+  const finals = sampleRows
+    .map((r) => ({ url: r.imageUrl, index: r.index }))
+    .filter((r): r is { url: string; index: number } => !!r.url)
+  // 大/小阿卡纳各取 1 张；不足时按序补足（管理员 sampleCount 调小等场景）
+  const major = finals.find((f) => f.index < 22)
+  const minor = finals.find((f) => f.index >= 22)
+  const picked = new Set([major?.url, minor?.url].filter((u): u is string => !!u))
+  for (const f of finals) {
+    if (picked.size >= 2) break
+    picked.add(f.url)
+  }
+  // 选中方向示例图（方向选择阶段生成的预览，风格统一的有效参照）
+  const selected = (run.directions ?? []).find((d) => d.id === run.selectedDirectionId)
+  const example = selected?.exampleImageUrl ? signUploadToken(selected.exampleImageUrl) : null
+  return [...refs, ...picked, ...(example ? [example] : [])].slice(0, 4)
 }
 
 /**
@@ -1097,7 +1136,7 @@ async function executeReviewNode(
 
   // 一致性审核的基准图：用户参考图 + 已确认小样终图（Phase=full 后小样即基准）
   const benchmarkImages = dims.includes("consistency")
-    ? await loadBenchmarkImages(env.run.id, env.run.input.referenceImages ?? [])
+    ? await loadBenchmarkImages(env.run, env.run.input.referenceImages ?? [])
     : []
 
   // 逐候选评审（单张评审可靠性优先；候选并行）
@@ -1108,8 +1147,9 @@ async function executeReviewNode(
         text: JSON.stringify(
           {
             prompt: state.prompt,
-            // 结构化终稿分段（评审按 [画面内容] 段比对内容对齐，风格段供一致性参照；
-            // 旧式无段标记提示词时为 null，评审回退按整段 prompt 比对）
+            // 存量结构化终稿的分段（评审按 [画面内容] 段比对内容对齐，风格段供
+            // 一致性参照）；新流程单段短提示词无段标记，两者均为 null——评审
+            // 回退按整段 prompt 比对（提示词末尾带固定风格提示词，styleDoc 供参照）
             finalStyle: splitFinalPromptSegments(state.prompt ?? "")?.style ?? null,
             finalContent: splitFinalPromptSegments(state.prompt ?? "")?.content ?? null,
             cardName: state.name,
@@ -1694,7 +1734,7 @@ async function ensureTemplateStyleDoc(env: RunEnv): Promise<void> {
     run.brief ? `【创作简报】\n${run.brief}` : "",
     direction ? `【内容方向】${direction.name}：${direction.concept || direction.description}` : "",
     direction?.worldview ? `【世界观】${direction.worldview}` : "",
-    direction?.visualLanguage ? `【视觉语言】${direction.visualLanguage}` : "",
+    direction?.visualLanguage ? `【固定风格提示词】${direction.visualLanguage}（系统逐字拼接到整套 78 张每张提示词末尾，用于固定画面风格）` : "",
     direction?.palette ? `【色调】${direction.palette}` : "",
     direction?.suitMapping?.length
       ? `【四花色意象】${direction.suitMapping.map((s) => `${s.suit}=${s.mapping}`).join("；")}`

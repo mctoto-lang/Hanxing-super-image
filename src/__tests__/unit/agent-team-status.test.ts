@@ -23,7 +23,7 @@ import type {
 const ROLES = [
   { id: "creative_director", name: "创意总监", duty: "主持需求澄清（只问风格/内容/主题）", group: "planning" },
   { id: "style_director", name: "风格策划", duty: "拟定唯一《风格规范书》", group: "planning" },
-  { id: "prompt_designer", name: "初稿设计师", duty: "逐张撰写简洁画面初稿", group: "planning" },
+  { id: "prompt_designer", name: "提示词设计师", duty: "逐张撰写单段短提示词", group: "planning" },
   { id: "final_refiner", name: "终稿细化师", duty: "初稿细化为结构化终稿", group: "planning" },
   { id: "artist", name: "画师", duty: "按终稿与参考图逐张生图", group: "production" },
   { id: "review_panel", name: "评审团", duty: "内容/审美/一致性三审打回", group: "qa" },
@@ -98,7 +98,7 @@ describe("deriveTeamStatus · working（pendingAction 归属 + run 执行中）"
     expect(roleOf(team, "creative_director").currentTask).toBe("正在根据你的回答整理追问")
   })
 
-  it("gen_style_spec → 风格策划 working「正在拟定 3 个风格规范方向」", () => {
+  it("gen_style_spec → 风格策划 working「正在拟定 3 个风格规范方向与示例图」", () => {
     const team = deriveTeamStatus({
       roles: ROLES,
       stages: STAGES,
@@ -108,7 +108,7 @@ describe("deriveTeamStatus · working（pendingAction 归属 + run 执行中）"
     })
     const planner = roleOf(team, "style_director")
     expect(planner.state).toBe("working")
-    expect(planner.currentTask).toBe("正在拟定 3 个风格规范方向")
+    expect(planner.currentTask).toBe("正在拟定 3 个风格规范方向与示例图")
   })
 
   it("design_drafts → 初稿设计师 working；design_finals → 终稿细化师 working", () => {
@@ -119,7 +119,7 @@ describe("deriveTeamStatus · working（pendingAction 归属 + run 执行中）"
       events: [],
       messages: [],
     })
-    expect(roleOf(drafts, "prompt_designer").currentTask).toBe("正在逐张撰写画面初稿")
+    expect(roleOf(drafts, "prompt_designer").currentTask).toBe("正在逐张撰写画面提示词（首次撰写即终稿）")
 
     const finals = deriveTeamStatus({
       roles: ROLES,
@@ -128,7 +128,7 @@ describe("deriveTeamStatus · working（pendingAction 归属 + run 执行中）"
       events: [],
       messages: [],
     })
-    expect(roleOf(finals, "final_refiner").currentTask).toBe("正在把初稿细化为结构化终稿")
+    expect(roleOf(finals, "final_refiner").currentTask).toBe("正在把初稿细化为结构化终稿（存量流程）")
   })
 
   it("最新事件为 start 且其后无 done/fail、run 执行中 → working（任务取事件详情）", () => {
@@ -341,8 +341,8 @@ describe("deriveTeamStatus · 产出指标与计数", () => {
   it("评审团/合成师/初稿设计师/终稿细化师/总控按事件与条目计数", () => {
     expect(chip(team, "review_panel", "已评审")).toBe("3 张")
     expect(chip(team, "compositor", "AI 融合")).toBe("2/78 张")
-    expect(chip(team, "prompt_designer", "画面初稿")).toBe("2 批")
-    expect(chip(team, "final_refiner", "终稿")).toBe("1 批")
+    expect(chip(team, "prompt_designer", "画面提示词")).toBe("2 批")
+    expect(chip(team, "final_refiner", "终稿（存量）")).toBe("1 批")
     expect(chip(team, "supervisor", "裁决")).toBe("1 次")
   })
 

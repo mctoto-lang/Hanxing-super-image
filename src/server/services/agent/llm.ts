@@ -79,12 +79,13 @@ export async function callLlmText(
     messages: ChatUpstreamMessage[]
     thinkingLevel: AgentThinkingLevel
   },
-): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
+): Promise<{ text: string; inputTokens: number; outputTokens: number; finishReason?: string }> {
   const budgetSec = Math.max(120, model.taskTimeout || 300)
   let text = ""
   let inputTokens = 0
   let outputTokens = 0
   let sawError: string | null = null
+  let finishReason: string | undefined
   const consume = async (): Promise<void> => {
     for await (const ev of dispatchStreamChat(model, {
       messages: opts.messages,
@@ -99,6 +100,8 @@ export async function callLlmText(
         outputTokens = Math.max(outputTokens, e.outputTokens ?? 0)
       } else if (e.type === "error") {
         sawError = e.message
+      } else if (e.type === "done") {
+        if (e.finishReason) finishReason = e.finishReason
       }
     }
   }
@@ -118,45 +121,46 @@ export async function callLlmText(
     consuming.catch(() => {})
   }
   if (sawError) throw new Error(`模型调用失败：${sawError}`)
+  if (!text.trim()) {
+    // 空正文常见于推理型模型把全部输出放进思考通道（正文通道为空）
+    throw new Error("模型返回空内容（推理型模型可能把正文放进了思考通道，请检查模型配置或更换模型）")
+  }
   if (inputTokens === 0 && outputTokens === 0) {
     // 计费兜底估算（宁可略高不漏账）
     inputTokens = opts.messages.reduce((s, m) => s + estimateMessageTokens(m), 0) +
       estimateMessageTokens({ content: opts.systemPrompt })
     outputTokens = estimateMessageTokens({ content: text })
   }
-  return { text, inputTokens, outputTokens }
+  return { text, inputTokens, outputTokens, finishReason }
 }
 
-/** 字段校验失败（可触发一次纠错重试）——定义见 llm-errors.ts（零依赖小模块） */
+/** 字段校验失败（可触发纠错重试）——定义见 llm-errors.ts（零依赖小模块） */
 export { LlmValidationError } from "./llm-errors"
 import { LlmValidationError } from "./llm-errors"
 
-export class LlmJsonParseError extends Error {
-  constructor(public raw: string) {
-    super("LLM 输出无法解析为 JSON")
-    this.name = "LlmJsonParseError"
-  }
-}
-
-/** 宽松 JSON 解析：剥离 ``` 代码块围栏、截取首尾大括号之间 */
-export function parseJsonLoose<T>(text: string): T {
-  const stripped = text.replace(/```(?:json)?/gi, "").trim()
-  const start = stripped.indexOf("{")
-  const end = stripped.lastIndexOf("}")
-  if (start === -1 || end === -1 || end <= start) {
-    throw new LlmJsonParseError(text)
-  }
-  try {
-    return JSON.parse(stripped.slice(start, end + 1)) as T
-  } catch {
-    throw new LlmJsonParseError(text)
-  }
-}
+/** JSON 解析与纠错提示——定义见 llm-json.ts（零依赖小模块，便于单测） */
+export { LlmJsonParseError, parseJsonLoose } from "./llm-json"
+import { buildJsonRetryNudge, LlmJsonParseError, parseJsonLoose } from "./llm-json"
 
 /**
  * 调用 LLM 并解析 JSON 输出；解析失败或字段校验（validate）不通过时，
- * 自动追加纠错提示重试一次，仍失败抛错（调用方按失败处置）。两次调用都计费。
+ * 自动追加纠错提示重试（含具体失败原因与原文片段；输出被 max_tokens
+ * 截断时注入精简指令），最多尝试 LLM_JSON_MAX_ATTEMPTS 次，仍失败抛
+ * 可诊断的错误（调用方按失败处置）。每次调用都计费。
  */
+export const LLM_JSON_MAX_ATTEMPTS = 3
+
+/** 可重试的尝试失败信号（解析/校验失败）；网络等硬错误不重试直接上抛 */
+class JsonRetrySignal extends Error {
+  constructor(
+    public nudge: string,
+    public summary: string,
+    public truncated: boolean,
+  ) {
+    super(nudge)
+  }
+}
+
 export async function callLlmJson<T = Record<string, unknown>>(
   ctx: AgentLlmContext,
   model: ChatModelRow,
@@ -170,11 +174,11 @@ export async function callLlmJson<T = Record<string, unknown>>(
 ): Promise<T> {
   const attempt = async (nudge?: string): Promise<T> => {
     const systemPrompt = nudge
-      ? `${opts.systemPrompt}\n\n上一次输出不符合要求（${nudge.slice(0, 160)}）。请严格只输出一个合法的 JSON 对象，包含全部必需字段，不要包含任何其他文字或代码块标记。`
+      ? `${opts.systemPrompt}\n\n上一次输出不符合要求（${nudge.slice(0, 240)}）。请严格只输出一个合法的 JSON 对象，包含全部必需字段，不要包含任何其他文字或代码块标记。`
       : opts.systemPrompt
     // 三层对话槽位（模型/权限组/企业，与生图队列同款语义）包住每次真实调用：
     // 含纠错重试在内的全部 Agent LLM 调用都在此限流排队
-    const { text, inputTokens, outputTokens } = await withAgentLlmSlot(ctx, model, () =>
+    const { text, inputTokens, outputTokens, finishReason } = await withAgentLlmSlot(ctx, model, () =>
       callLlmText(model, {
         systemPrompt,
         messages: opts.messages,
@@ -182,21 +186,49 @@ export async function callLlmJson<T = Record<string, unknown>>(
       }),
     )
     await settleLlmCost(ctx, model, inputTokens, outputTokens)
-    const parsed = parseJsonLoose<T>(text)
-    if (opts.validate) opts.validate(parsed)
-    return parsed
-  }
-  try {
-    return await attempt()
-  } catch (err) {
-    if (err instanceof LlmJsonParseError) {
-      return await attempt(`输出无法解析为 JSON，原文片段：${err.raw.slice(0, 120)}`)
+    try {
+      const parsed = parseJsonLoose<T>(text)
+      if (opts.validate) opts.validate(parsed)
+      return parsed
+    } catch (err) {
+      const truncated = finishReason === "length"
+      if (err instanceof LlmJsonParseError) {
+        const summary = `输出无法解析为 JSON（${err.reason}）`
+        throw new JsonRetrySignal(
+          buildJsonRetryNudge(summary, { rawSnippet: err.raw, truncated }),
+          summary,
+          truncated,
+        )
+      }
+      if (err instanceof LlmValidationError) {
+        throw new JsonRetrySignal(
+          buildJsonRetryNudge(err.message, { truncated }),
+          `输出字段校验未通过（${err.message.slice(0, 80)}）`,
+          truncated,
+        )
+      }
+      throw err
     }
-    if (err instanceof LlmValidationError) {
-      return await attempt(err.message)
-    }
-    throw err
   }
+  let lastNudge: string | undefined
+  let lastSummary = ""
+  let lastTruncated = false
+  for (let i = 0; i < LLM_JSON_MAX_ATTEMPTS; i++) {
+    try {
+      return await attempt(i === 0 ? undefined : lastNudge)
+    } catch (err) {
+      if (!(err instanceof JsonRetrySignal)) throw err
+      lastNudge = err.nudge
+      lastSummary = err.summary
+      lastTruncated = err.truncated
+    }
+  }
+  throw new Error(
+    `${lastSummary || "LLM 输出不符合要求"}，已连续尝试 ${LLM_JSON_MAX_ATTEMPTS} 次` +
+      (lastTruncated
+        ? "；输出疑似达到 max_tokens 上限被截断，建议调大该模型的「单次最大输出」配置或更换模型后重试"
+        : ""),
+  )
 }
 
 /** LLM 成本结算：厘累计到 run，满 100 厘原子扣企业池（零头保留自愈） */

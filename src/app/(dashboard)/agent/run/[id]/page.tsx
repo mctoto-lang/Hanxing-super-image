@@ -8,7 +8,7 @@ import { AgentRunNotFoundError } from "@/lib/agent/errors"
 export const dynamic = "force-dynamic"
 
 /**
- * 项目详情页（/agent/run/[id]）：塔罗模板五阶段工作台。
+ * 项目详情页（/agent/run/[id]）：塔罗模板四阶段工作台。
  * 经典全流程已下线（历史数据已清空）；非塔罗项目一律 404。
  */
 export default async function AgentRunBoardPage({
@@ -32,5 +32,13 @@ export default async function AgentRunBoardPage({
     throw err
   }
 
-  return <TarotWorkspace initialData={workspace} />
+  // 视口锁定（与 /chat 同范式）：以 SidebarInset 为包含块贴满 header 以下，
+  // 页面不再整页滚动，工作台内容在内部滚动（p-4 保持与其他页一致的外边距）
+  return (
+    <div className="absolute inset-x-0 top-16 bottom-0 p-4">
+      <div className="h-full overflow-y-auto">
+        <TarotWorkspace initialData={workspace} />
+      </div>
+    </div>
+  )
 }

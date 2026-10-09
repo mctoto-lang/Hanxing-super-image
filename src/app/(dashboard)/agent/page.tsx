@@ -19,10 +19,16 @@ export default async function AgentPage() {
     listRunsAction({ limit: 20 }),
   ])
   return (
-    <AgentHome
-      directions={directions}
-      initialRuns={runsResult.runs}
-      initialCursor={runsResult.nextCursor}
-    />
+    // 视口锁定（与 /chat 同范式）：以 SidebarInset 为包含块贴满 header 以下，
+    // 页面不再整页滚动，内容在内部滚动（p-4 保持与其他页一致的外边距）
+    <div className="absolute inset-x-0 top-16 bottom-0 p-4">
+      <div className="h-full overflow-y-auto">
+        <AgentHome
+          directions={directions}
+          initialRuns={runsResult.runs}
+          initialCursor={runsResult.nextCursor}
+        />
+      </div>
+    </div>
   )
 }

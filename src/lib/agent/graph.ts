@@ -62,7 +62,7 @@ export const AGENT_DIRECTIONS: DirectionMeta[] = [
     description: "标准 78 张塔罗（22 大阿卡纳 + 56 小阿卡纳），结构策划 Agent 按标准体系逐张补全牌义。",
     fixedCount: 78,
     defaultCount: 78,
-    sampleNote: "小样取 6 张大阿卡纳代表卡（愚者/魔术师/女祭司/恋人/命运之轮/世界）",
+    sampleNote: "小样取 6 张混合代表卡（愚者/魔术师/世界 + 权杖王牌/权杖十/圣杯三，覆盖小阿卡纳数字牌）",
   },
   {
     key: "oracle",
@@ -246,31 +246,35 @@ export type AgentPromptSource = (typeof AGENT_PROMPT_SOURCES)[number]
 // 模板化分阶段制作（tarot template stages；agent_run 扩列 + agent_asset / agent_message 留痕）
 // ---------------------------------------------------------------------------
 
-/** 模板阶段（agent_run.stage）：模板化分阶段制作的推进游标 */
+/**
+ * 模板阶段（agent_run.stage）：模板化分阶段制作的推进游标。
+ * 四阶段流程：需求澄清 → 画面提示词（方向选择 + 78 张短提示词撰写/编辑，
+ * 首次撰写即终稿）→ 生图评审 → 融合交付。
+ */
 export const AGENT_TEMPLATE_STAGES = [
-  "clarify", // 需求澄清（只追问风格/内容/主题/画面内容，不问生产细节）
-  "draft", // 画面提示词初稿（简洁明了，用户可编辑）
-  "final", // 画面提示词终稿（结构化 [1]画面风格 + [2]画面内容，用户确认）
-  "art", // 生图与多评审员审核（不通过从初稿重细化）
+  "clarify", // 需求澄清（内容/风格分轨追问，不问生产细节）
+  "draft", // 画面提示词（方向选择 + 78 张单段短提示词，用户可编辑，确认后直达生图）
+  "art", // 生图与多评审员审核（不通过按评审意见重写提示词）
   "compose", // 边框合成与交付
 ] as const
 export type AgentTemplateStage = (typeof AGENT_TEMPLATE_STAGES)[number]
 
 /**
- * 归一化模板阶段：旧流程的 world/prompt 阶段 id 映射进新五阶段
- * （world → draft、prompt → final），存量进行中 run 仅展示层换名照常跑完。
+ * 归一化模板阶段：旧流程的 world/prompt 阶段 id 与已合并的 final 阶段
+ * （初稿/终稿两阶段合一）统一映射到 draft，存量进行中 run 仅展示层
+ * 归并后照常走完（final 阶段的存量提示词仍可编辑与确认）。
  */
 export function normalizeTemplateStage(stage: string | null | undefined): AgentTemplateStage {
   switch (stage) {
     case "clarify":
     case "draft":
-    case "final":
     case "art":
     case "compose":
       return stage
     case "world":
     case "prompt":
-      return stage === "world" ? "draft" : "final"
+    case "final":
+      return "draft"
     default:
       return "clarify"
   }
@@ -317,8 +321,8 @@ export type AgentPendingAction = {
     | "clarify_turn"
     | "finalize_brief"
     | "gen_style_spec" // 生成 3 个候选《风格规范书》供用户选择（选定后才写初稿）
-    | "design_drafts" // 新流程：批量撰写 78 张画面提示词初稿
-    | "design_finals" // 新流程：批量把初稿细化为结构化终稿
+    | "design_drafts" // 批量撰写 78 张画面提示词（首次撰写即终稿：单段短提示词直写 currentPrompt）
+    | "design_finals" // 旧流程（存量 run 过渡期保留：把初稿细化为结构化两段终稿）
     | "compose_preview"
     | "compose_batch"
     | "produce_cards"
@@ -341,6 +345,8 @@ export type AgentPendingAction = {
 /** 澄清追问（agent_message.meta.questions 元素；工坊对话快捷选项） */
 export interface AgentClarifyQuestion {
   id: string
+  /** 问题所属轨道：content = 内容/主题/画面主体；style = 艺术风格（结合参考图）；缺省按 content 兼容存量消息 */
+  topic?: "content" | "style"
   question: string
   options: string[]
 }
@@ -367,6 +373,15 @@ export interface AgentTemplateDirection {
   /** 主辅色描述 */
   palette?: string
   visualLanguage: string
+  /**
+   * 风格短语（20-50 字）：风格的短文字锚点，由风格策划产出、选定后随
+   * 方向定稿（缺失时 stylePhraseOf()（template-parse）可确定性补全）。
+   * 注意：提示词拼装（composeStyleFixedPrompt）实际使用的是 visualLanguage
+   * 整段、拼接在每张提示词末尾；stylePhrase 目前仅存储留档，无生产消费方。
+   */
+  stylePhrase?: string
+  /** 方向示例图 URL（方向产出时同步生成的 1 张预览；失败时缺省为空） */
+  exampleImageUrl?: string
   /** 示例卡（3 张）：牌名 + 该方向下的画面场景 */
   sampleCards: { name: string; scene: string }[]
 }
@@ -383,10 +398,28 @@ export interface AgentRunQuality {
   maxRetries: number
 }
 
+/**
+ * 用户选择的 AI 团队对话模型覆盖（发起弹窗提交；缺省 = 平台超管配置）。
+ * 发起与确认提示词时各校验一次（可用性/白名单/评审团视觉），此后各执行
+ * 点按「覆盖 ?? 超管配置」解析。
+ */
+export interface AgentTeamModelOverrides {
+  /** 创意总监（需求澄清 / 简报） */
+  styleChatModelId?: string
+  /** 风格策划（风格规范书 + 方向示例图） */
+  structureChatModelId?: string
+  /** 提示词撰写（design_drafts 与生产图打回重写共用） */
+  copywriterChatModelId?: string
+  /** 评审团（1-3 个支持视觉的对话模型；卡面生产图与周边资产评审共用） */
+  reviewerModelIds?: string[]
+}
+
 /** 运行输入（agent_run.input；发起弹窗提交） */
 export interface AgentRunInput {
-  /** 创作提示词（主题 + 风格描述） */
+  /** 内容描述（主题/题材/画面内容方向；不含艺术风格——风格走 stylePrompt 与参考图） */
   prompt: string
+  /** 艺术风格描述（可选；与参考图共同构成风格输入，风格类澄清追问的基准） */
+  stylePrompt?: string
   /** 卡牌张数 */
   cardCount: number
   /**
@@ -395,7 +428,7 @@ export interface AgentRunInput {
    * 存量 run 的快照数据。
    */
   concurrency?: number
-  /** 风格参考图 URL（≤4，生图与一致性审核引用） */
+  /** 风格参考图 URL（≤4，仅用于提取艺术风格样式：澄清轮视觉分析、风格方向生成输入与一致性审核基准；不进入生图请求、不用于画面内容） */
   referenceImages: string[]
   /** 质量要求（缺省用管理员配置的默认值） */
   quality?: AgentRunQuality
@@ -406,6 +439,8 @@ export interface AgentRunInput {
   imageModelId?: string | null
   /** 用户模型对应的卡面尺寸（"WxH"，取该模型与平台卡面同比例的启用预设） */
   imageSize?: string | null
+  /** 用户选择的 AI 团队对话模型覆盖（发起弹窗；缺省 = 平台超管配置） */
+  teamModelOverrides?: AgentTeamModelOverrides
 }
 
 /** 生图候选（agent_round.candidates 数组元素；多候选评分选优留档） */

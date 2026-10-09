@@ -122,7 +122,8 @@ export function AgentConfigManager({
   }, [router])
 
   return (
-    <div className="mx-auto w-full max-w-5xl space-y-6 p-1">
+    // 与其他超管平台页一致铺满内容区（此前 max-w-5xl 居中收窄是全超管区唯一例外）
+    <div className="w-full space-y-6">
       {/* PageHeader（对齐超管表格页 text-2xl 惯例） */}
       <div>
         <h1 className="flex items-center gap-2 text-2xl font-bold">

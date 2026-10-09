@@ -90,8 +90,8 @@ export const agentRuns = pgTable(
     styleDoc: text("style_doc"),
     /** 卡面模板 key（模板化分阶段制作；null = 经典全流程） */
     template: varchar("template", { length: 60 }),
-    /** 模板当前阶段（AGENT_TEMPLATE_STAGES；经典全流程为 null。存量行可能带旧值 world/prompt——读取侧经 normalizeTemplateStage 归一化） */
-    stage: varchar("stage", { length: 16 }).$type<AgentTemplateStage | "world" | "prompt">(),
+    /** 模板当前阶段（AGENT_TEMPLATE_STAGES 四阶段；经典全流程为 null。存量行可能带旧值 world/prompt/final——读取侧经 normalizeTemplateStage 归一化到 draft） */
+    stage: varchar("stage", { length: 16 }).$type<AgentTemplateStage | "world" | "prompt" | "final">(),
     /** 运行标题（列表/看板展示名；空 = 回退 prompt 截断） */
     title: varchar("title", { length: 120 }),
     /** 创作简报（模板化流程的结构化需求描述，下游各 Agent 引用） */

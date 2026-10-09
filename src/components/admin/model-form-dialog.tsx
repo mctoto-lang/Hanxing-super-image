@@ -689,9 +689,13 @@ export function ModelFormDialog({
                     checked={state.visibleInAgent}
                     onCheckedChange={(v) => up("visibleInAgent", v === true)}
                   />
-                  Agent 工坊
+                  Agent 工坊（卡面生图可选）
                 </label>
               </div>
+              <p className="text-xs text-muted-foreground">
+                勾选「Agent 工坊」后，用户创建塔罗工坊项目时可选择此模型作为卡面生图模型
+                （需模型启用中，且尺寸预设包含与卡面比例一致的预设）。
+              </p>
             </div>
             <label className="flex items-center justify-between border-t pt-3">
               <span className="text-sm font-medium">

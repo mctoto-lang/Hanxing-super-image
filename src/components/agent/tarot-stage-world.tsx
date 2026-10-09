@@ -3,16 +3,18 @@
 /**
  * 风格规范方向选择视图
  *
- * 风格策划根据《设计简报》生成 3 个候选《风格规范书》（名称 / 概念 /
- * 画面风格总述 / 世界观 / 四花色映射 / 色调 / 3 张示例牌场景）。用户选中
- * 一个并可附补充意见后确认；不满意可附意见「换一批」。
+ * 风格策划根据《设计简报》【风格简报】与参考图生成 3 个候选《风格规范书》
+ * （名称 / 概念 / 固定风格提示词（选定后逐字拼接到 78 张每张提示词末尾）/
+ * 世界观 / 四花色映射 / 色调 / 每方向 1 张 AI 示例图 / 3 张示例牌场景）。
+ * 用户选中一个并可附补充意见后确认；不满意可附意见「换一批」（会重新
+ * 生成 3 张示例图，消耗生图积分）。
  *
  * 两种使用场景（variant）：
- * - "style"（新流程）：draft 阶段第一步——选定后开始撰写 78 张画面初稿；
+ * - "style"（新流程）：draft 阶段第一步——选定后开始撰写 78 张画面提示词；
  * - "legacy"（存量 run）：旧 world 阶段的方向选择，行为与旧版一致。
  */
 import { useState } from "react"
-import { AlertTriangle, Check, ChevronDown, FileText, Loader2, RefreshCw, Sparkles } from "lucide-react"
+import { AlertTriangle, Check, ChevronDown, FileText, ImageOff, Loader2, RefreshCw, Sparkles } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -51,9 +53,9 @@ export function WorldStage({
     variant === "style"
       ? {
           title: "选择一个《风格规范书》方向",
-          description: "风格策划根据你的简报拟定了 3 份风格规范。选定后画面初稿、终稿与整套卡面都会沿用这一风格（示例牌仅供参考画面气质）。",
-          confirm: "确认方向，开始撰写初稿",
-          generatingText: "风格策划正在拟定风格规范方向…",
+          description: "风格策划根据你的简报与参考图拟定了 3 份风格规范（各附 1 张示例图，直观预览该方向下的卡面效果）。选定后该方向的固定风格提示词会逐字拼接到 78 张每张画面提示词的末尾，统一整套画面风格。",
+          confirm: "确认方向，开始撰写提示词",
+          generatingText: "风格策划正在拟定风格规范方向与示例图…",
           regenerating: "风格策划正在重新拟定",
           confirmedToastPrefix: "已确认风格规范「",
         }
@@ -270,25 +272,39 @@ function DirectionCard({
         onClick={onSelect}
         className="flex flex-1 flex-col gap-2 p-4 text-left disabled:cursor-not-allowed"
       >
+        {/* 方向示例图（AI 按该方向风格 + 首张示例牌场景生成；失败/存量方向缺省占位） */}
+        {direction.exampleImageUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element -- 平台存储 URL（运行时动态），非静态资源
+          <img
+            src={direction.exampleImageUrl}
+            alt={`方向「${direction.name}」示例图`}
+            className="aspect-[2/3] w-full rounded-lg border object-cover"
+          />
+        ) : (
+          <div className="flex aspect-[2/3] w-full flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed bg-muted/30 text-muted-foreground">
+            <ImageOff className="size-5 opacity-60" />
+            <span className="text-[11px]">示例图未生成</span>
+          </div>
+        )}
         <div className="flex items-start justify-between gap-2">
           <p className="font-semibold">{direction.name}</p>
           {selected && <Badge className="bg-violet-500 text-white">已选择</Badge>}
         </div>
         {direction.concept && <p className="text-sm text-violet-600 dark:text-violet-300">{direction.concept}</p>}
         <p className="text-xs leading-5 text-muted-foreground">{direction.description}</p>
+        <p className="rounded-md bg-violet-500/[0.07] px-2 py-1.5 text-[11px] leading-4">
+          <span className="text-violet-600 dark:text-violet-300">固定风格提示词（选定后逐字拼接到 78 张每张提示词末尾）：</span>
+          {direction.visualLanguage}
+        </p>
         {direction.palette && (
           <p className="text-xs">
             <span className="text-muted-foreground">色调：</span>
             {direction.palette}
           </p>
         )}
-        <p className="text-xs">
-          <span className="text-muted-foreground">视觉语言：</span>
-          {direction.visualLanguage}
-        </p>
         {direction.sampleCards.length > 0 && (
           <div className="space-y-1.5 rounded-lg bg-muted/40 p-2.5">
-            <p className="text-[11px] font-medium text-muted-foreground">示例牌</p>
+            <p className="text-[11px] font-medium text-muted-foreground">示例牌（示例图取自首张场景）</p>
             {direction.sampleCards.map((card) => (
               <p key={card.name} className="text-[11px] leading-4">
                 <span className="font-medium">{card.name}</span>

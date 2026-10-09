@@ -2,7 +2,9 @@
 
 /**
  * 角色槽位下拉（Agent 配置页共用）：Label + Select + 空态提示。
- * 只渲染 SelectContent children（旧实现同时传 items prop 造成列表重复）。
+ * 只渲染 SelectContent children（旧实现同时传 items prop 造成列表重复）；
+ * SelectValue 必须传 children 显式渲染选中项 label——否则 Base UI 回退为
+ * 把选中值（模型 uuid）原样显示在触发器里。
  */
 import { Label } from "@/components/ui/label"
 import {
@@ -41,7 +43,9 @@ export function SlotSelect({
       ) : (
         <Select value={value ?? ""} onValueChange={(v) => v && onChange(v)}>
           <SelectTrigger size="sm" className="w-full" aria-label={label}>
-            <SelectValue placeholder={placeholder} />
+            <SelectValue placeholder={placeholder}>
+              {options.find((option) => option.id === value)?.label ?? placeholder}
+            </SelectValue>
           </SelectTrigger>
           <SelectContent>
             {options.map((option) => (

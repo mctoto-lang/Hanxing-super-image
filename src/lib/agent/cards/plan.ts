@@ -62,14 +62,75 @@ export const DRAFT_PROMPT_MIN_CHARS = 20
 /** 【新流程】终稿[画面内容]段最小字数（细化目标 150-250 字） */
 export const FINAL_CONTENT_MIN_CHARS = 60
 
-/** 无 LLM 参与时的确定性兜底画面描述（design_drafts/design_prompts 失败批回退用） */
-export function fallbackCardBody(card: { name: string; hint: string }): string {
-  return `${card.name}：以${card.hint}为画面意象，明确单一的主体（人物/动物/物品），主体占画面大部分、近景构图、细节丰富、光影对比强烈，环境氛围衬托主体。`
+// ---------------------------------------------------------------------------
+// 单段短提示词（四阶段流程：画面内容 + 固定风格提示词系统拼接）
+// ---------------------------------------------------------------------------
+
+/** 单段提示词最小字数（确认门槛下限；整体 ≈ 内容 120 字 + 固定风格 ≈ 100 字 + 结尾句 ≈ 220 字） */
+export const SINGLE_PROMPT_MIN_CHARS = 60
+
+/** 画面内容撰写目标（「120 字左右」；不含系统拼接的固定风格提示词与无边框句——整体提示词控制在 220 字左右） */
+export const CONTENT_TARGET = { min: 100, max: 140 } as const
+
+/** 画面内容 AI 撰写闸门（低于此值判不合格，标记失败待重试） */
+export const CONTENT_MIN_CHARS = 80
+
+/** 无边框硬规则结尾句（系统统一拼接的唯一禁止性表述） */
+export const SINGLE_PROMPT_BORDER_SUFFIX = "画面边缘干净，无任何边框或边缘装饰"
+
+/**
+ * 【四阶段流程】提示词拼装（确定性，不经 LLM）：画面内容 + 固定风格提示词
+ * （整套逐字一致，用于固定画面风格）+ 无边框句。风格由系统拼接而非让 LLM
+ * 逐张抄写，杜绝整套 78 张的风格漂移。
+ */
+export function composeStyleFixedPrompt(content: string, stylePrompt: string): string {
+  const body = stripGuardrailMarker(content).trim().replace(/[。]+$/, "")
+  const style = stripGuardrailMarker(stylePrompt).trim().replace(/[。；;，,]+$/, "")
+  return `${body}，${style}。${SINGLE_PROMPT_BORDER_SUFFIX}`
 }
 
-/** 【新流程】确定性兜底终稿（design_finals 失败批回退用：风格总述 + 兜底画面描述） */
-export function fallbackFinalPrompt(card: { name: string; hint: string }, styleSummary: string): string {
-  return composeFinalPrompt(styleSummary, fallbackCardBody(card))
+/**
+ * 【四阶段流程】单卡提示词就绪判据（进度条/确认门槛的统一口径）：
+ * promptSource="initial"（待写/生成中/失败——建清单即为此态，撰写失败保留
+ * 此态并落 errorMessage）不算就绪；其余来源（final=AI 终稿、manual=用户
+ * 编辑、ai/auto_revise=生产期改写）文本达标即就绪。存量结构化两段终稿
+ * （final 归并的 run）按两段结构判定。
+ */
+export function isPromptItemReady(item: {
+  promptSource?: string | null
+  currentPrompt?: string | null
+}): boolean {
+  if (item.promptSource === "initial") return false
+  const text = (item.currentPrompt ?? "").trim()
+  return isStructuredFinalPrompt(text) || text.length >= SINGLE_PROMPT_MIN_CHARS
+}
+
+/**
+ * 【四阶段流程】提示词确认门槛：78 张齐备、顺序牌名精确、每张提示词达标。
+ * 兼容三种形态：拼接式单段提示词（新流程，≥60 字）、结构化两段终稿（存量，
+ * [画面内容] ≥60 字）、旧式自由文本（存量过渡，同 ≥60 字）。
+ */
+export function validateTarotPromptPlan(
+  items: readonly { index: number; name: string; prompt: string }[],
+): void {
+  if (items.length !== 78) throw new Error(`塔罗卡牌清单必须为 78 张，当前 ${items.length} 张`)
+  for (const [index, item] of items.entries()) {
+    const expected = TAROT_CARDS[index]
+    if (!expected || item.index !== index || item.name !== expected.name) {
+      throw new Error(`第 ${index + 1} 张卡牌顺序或牌名不正确`)
+    }
+    const prompt = item.prompt.trim()
+    const segments = splitFinalPromptSegments(prompt)
+    if (segments) {
+      if (segments.content.length < FINAL_CONTENT_MIN_CHARS) {
+        throw new Error(`「${item.name}」的提示词过短，请先完成撰写（可用「重新生成此张」）`)
+      }
+    } else if (prompt.length < SINGLE_PROMPT_MIN_CHARS) {
+      throw new Error(
+        `「${item.name}」的提示词过短（画面内容建议 ${CONTENT_TARGET.min}-${CONTENT_TARGET.max} 字，固定风格提示词由系统拼接）`,
+      )
+    }
+  }
 }
 
 export function buildTarotCardPlan(input: {
@@ -80,31 +141,17 @@ export function buildTarotCardPlan(input: {
 }): TarotCardPlanItem[] {
   return TAROT_CARDS.map((card) => {
     const meaning = input.meanings?.[card.name]?.trim() || `${card.name}的核心象征与成长课题`
-    const visualBrief = input.visualBriefs?.[card.name]?.trim() || fallbackCardBody(card)
+    // 画面提示词不预填任何兜底：必须由 AI 撰写（promptSource="initial"、
+    // 正文为空 = 待写），失败以 errorMessage 留痕供一键重试
+    const visualBrief = input.visualBriefs?.[card.name]?.trim() ?? ""
     return {
       index: card.index,
       name: card.name,
       meaning,
       visualBrief,
-      // 新流程拼装口径：初稿直通（无风格前缀、无负向约束）——若 design_drafts
-      // 整体失败中断，这些兜底初稿直接流入生产也不会带旧式负向段
       prompt: composeDraftPrompt(visualBrief),
     }
   })
-}
-
-/** 【新流程】初稿确认门槛：78 张齐备且每张初稿 ≥ DRAFT_PROMPT_MIN_CHARS 字 */
-export function validateTarotDraftPlan(items: readonly { index: number; name: string; visualBrief: string }[]): void {
-  if (items.length !== 78) throw new Error(`塔罗卡牌清单必须为 78 张，当前 ${items.length} 张`)
-  for (const [index, item] of items.entries()) {
-    const expected = TAROT_CARDS[index]
-    if (!expected || item.index !== index || item.name !== expected.name) {
-      throw new Error(`第 ${index + 1} 张卡牌顺序或牌名不正确`)
-    }
-    if (item.visualBrief.trim().length < DRAFT_PROMPT_MIN_CHARS) {
-      throw new Error(`「${item.name}」的初稿过短（至少 ${DRAFT_PROMPT_MIN_CHARS} 字，建议 40-80 字），请补充主体与场景描述`)
-    }
-  }
 }
 
 /**

@@ -6,7 +6,7 @@ import {
   DEFAULT_REVIEWER_PROMPT,
   DEFAULT_TAROT_TEMPLATE_CONFIG,
   buildTemplateProductionGraph,
-  composeFinalRefinerPrompt,
+  composePromptDesignerPrompt,
   templateProductionMissingSlots,
   type DirectionConfig,
 } from "@/lib/agent/pipelines"
@@ -148,8 +148,8 @@ describe("buildTemplateProductionGraph", () => {
     const copywriterDefault = defaultGraph.nodes.find(
       (n) => n.id === PIPELINE_NODE_IDS.copywriter,
     )!.config as unknown as Record<string, unknown>
-    // 默认：终稿细化师角色提示词 + 画面规则（design_finals 与打回重细化同源）
-    expect(copywriterDefault.rolePrompt).toBe(composeFinalRefinerPrompt(null))
+    // 默认：提示词设计师角色提示词 + 画面规则（design_drafts 与打回重写同源）
+    expect(copywriterDefault.rolePrompt).toBe(composePromptDesignerPrompt(null))
     expect(String(copywriterDefault.rolePrompt)).toContain(DEFAULT_ART_RULES)
     const reviewerDefault = reviewerNodes(defaultGraph)[0]!.config as unknown as Record<string, unknown>
     expect(reviewerDefault.reviewPromptOverride).toBe(DEFAULT_REVIEWER_PROMPT)
@@ -159,7 +159,7 @@ describe("buildTemplateProductionGraph", () => {
         templateConfig: {
           ...DEFAULT_TAROT_TEMPLATE_CONFIG,
           reviewerModelIds: ["00000000-0000-4000-8000-0000000000aa"],
-          rolePrompts: { final_refiner: "覆盖版终稿细化师", reviewer: "覆盖版评审" },
+          rolePrompts: { prompt_designer: "覆盖版提示词设计师", reviewer: "覆盖版评审" },
           artRules: "覆盖版画面规则",
         },
       }),
@@ -167,9 +167,117 @@ describe("buildTemplateProductionGraph", () => {
     const copywriterOverride = overrideGraph.nodes.find(
       (n) => n.id === PIPELINE_NODE_IDS.copywriter,
     )!.config as unknown as Record<string, unknown>
-    expect(copywriterOverride.rolePrompt).toBe("覆盖版终稿细化师\n\n覆盖版画面规则")
+    expect(copywriterOverride.rolePrompt).toBe("覆盖版提示词设计师\n\n覆盖版画面规则")
     const reviewerOverride = reviewerNodes(overrideGraph)[0]!.config as unknown as Record<string, unknown>
     expect(reviewerOverride.reviewPromptOverride).toBe("覆盖版评审")
+  })
+
+  it("用户模型覆盖：评审团/提示词撰写/卡面生图均优先于超管配置", () => {
+    const config = tarotConfig({
+      templateConfig: {
+        ...DEFAULT_TAROT_TEMPLATE_CONFIG,
+        reviewerModelIds: [
+          "00000000-0000-4000-8000-0000000000aa",
+          "00000000-0000-4000-8000-0000000000bb",
+        ],
+        copywriterChatModelId: "00000000-0000-4000-8000-0000000000cc",
+        cardImageModelId: "00000000-0000-4000-8000-0000000000ff",
+      },
+    })
+    const graph = buildTemplateProductionGraph(config, undefined, {
+      imageModelId: "10000000-0000-4000-8000-000000000001",
+      imageSize: "1024x1536",
+      copywriterChatModelId: "10000000-0000-4000-8000-000000000002",
+      reviewerModelIds: [
+        "10000000-0000-4000-8000-000000000003",
+        "10000000-0000-4000-8000-000000000004",
+        "10000000-0000-4000-8000-000000000005",
+      ],
+    })
+    // 评审团：用户 3 个覆盖超管 2 个
+    const reviewers = reviewerNodes(graph)
+    expect(reviewers).toHaveLength(3)
+    expect(
+      reviewers.map((n) => (n.config as unknown as Record<string, unknown>).chatModelId),
+    ).toEqual([
+      "10000000-0000-4000-8000-000000000003",
+      "10000000-0000-4000-8000-000000000004",
+      "10000000-0000-4000-8000-000000000005",
+    ])
+    // 提示词撰写：用户覆盖 → 超管模板 → 经典槽位
+    expect(
+      (graph.nodes.find((n) => n.id === PIPELINE_NODE_IDS.copywriter)!.config as unknown as Record<string, unknown>).chatModelId,
+    ).toBe("10000000-0000-4000-8000-000000000002")
+    // 卡面生图：用户覆盖优先
+    expect(
+      (graph.nodes.find((n) => n.id === PIPELINE_NODE_IDS.imagegen)!.config as unknown as Record<string, unknown>).imageModelId,
+    ).toBe("10000000-0000-4000-8000-000000000001")
+    expect(
+      (graph.nodes.find((n) => n.id === PIPELINE_NODE_IDS.imagegen)!.config as unknown as Record<string, unknown>).imageSize,
+    ).toBe("1024x1536")
+  })
+
+  it("用户覆盖为空串/空数组时回退超管配置（不误判为已覆盖）", () => {
+    const config = tarotConfig({
+      templateConfig: {
+        ...DEFAULT_TAROT_TEMPLATE_CONFIG,
+        reviewerModelIds: ["00000000-0000-4000-8000-0000000000aa"],
+        copywriterChatModelId: "00000000-0000-4000-8000-0000000000cc",
+      },
+    })
+    const graph = buildTemplateProductionGraph(config, undefined, {
+      imageModelId: null,
+      imageSize: null,
+      copywriterChatModelId: null,
+      reviewerModelIds: [],
+    })
+    expect(reviewerNodes(graph)).toHaveLength(1)
+    expect(
+      (reviewerNodes(graph)[0]!.config as unknown as Record<string, unknown>).chatModelId,
+    ).toBe("00000000-0000-4000-8000-0000000000aa")
+    expect(
+      (graph.nodes.find((n) => n.id === PIPELINE_NODE_IDS.copywriter)!.config as unknown as Record<string, unknown>).chatModelId,
+    ).toBe("00000000-0000-4000-8000-0000000000cc")
+  })
+
+  it("templateProductionMissingSlots：用户覆盖补齐的槽位不算缺失", () => {
+    // 超管三槽全缺（模板与经典配置均无），用户覆盖后可开跑
+    const emptyConfig = tarotConfig({
+      models: {
+        ...tarotConfig().models,
+        copywriterChatModelId: null,
+        imageModelId: null,
+        contentReviewModelId: null,
+        aestheticReviewModelId: null,
+        consistencyReviewModelId: null,
+      },
+      templateConfig: {
+        ...DEFAULT_TAROT_TEMPLATE_CONFIG,
+        copywriterChatModelId: null,
+        cardImageModelId: null,
+        reviewerModelIds: [],
+      },
+    })
+    expect(templateProductionMissingSlots(emptyConfig)).toEqual([
+      "提示词撰写模型",
+      "卡面生图模型",
+      "评审团模型（至少 1 个）",
+    ])
+    expect(
+      templateProductionMissingSlots(emptyConfig, {
+        imageModelId: "10000000-0000-4000-8000-000000000001",
+        copywriterChatModelId: "10000000-0000-4000-8000-000000000002",
+        reviewerModelIds: ["10000000-0000-4000-8000-000000000003"],
+      }),
+    ).toEqual([])
+    // 覆盖为空值时按超管配置判定（不误判为已补齐）
+    expect(
+      templateProductionMissingSlots(emptyConfig, {
+        imageModelId: null,
+        copywriterChatModelId: null,
+        reviewerModelIds: [],
+      }),
+    ).toEqual(["提示词撰写模型", "卡面生图模型", "评审团模型（至少 1 个）"])
   })
 
   it("用户质量覆盖：阈值与打回上限优先于 templateConfig", () => {
@@ -230,7 +338,7 @@ describe("templateProductionMissingSlots", () => {
   it("缺生图/终稿细化/评审模型时给出中文提示", () => {
     const base = DEFAULT_DIRECTION_CONFIGS.find((c) => c.direction === "tarot")!
     const missing = templateProductionMissingSlots(base)
-    expect(missing).toContain("终稿细化模型")
+    expect(missing).toContain("提示词撰写模型")
     expect(missing).toContain("卡面生图模型")
     expect(missing).toContain("评审团模型（至少 1 个）")
   })

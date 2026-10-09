@@ -172,7 +172,19 @@ export function ClarifyQuestionDialog({
           </div>
         ) : current ? (
           <div key={current.id} className="space-y-3">
-            <p className="text-lg font-semibold leading-snug">{current.question}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-lg font-semibold leading-snug">{current.question}</p>
+              {current.topic === "style" && (
+                <Badge variant="outline" className="border-violet-500/40 text-[10px] text-violet-600 dark:text-violet-300">
+                  风格轨
+                </Badge>
+              )}
+              {current.topic === "content" && (
+                <Badge variant="outline" className="border-sky-500/40 text-[10px] text-sky-600 dark:text-sky-300">
+                  内容轨
+                </Badge>
+              )}
+            </div>
             <div className="grid gap-2">
               {current.options.map((option) => (
                 <OptionCard

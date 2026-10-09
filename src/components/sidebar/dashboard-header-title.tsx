@@ -16,6 +16,7 @@ const ROUTE_TITLES: { prefix: string; title: string }[] = [
   // 业务模块（dashboard）
   { prefix: "/create", title: "自由创作" },
   { prefix: "/chat", title: "AI 对话" },
+  { prefix: "/agent", title: "AI Agent" },
   { prefix: "/weartry", title: "穿戴图片" },
   { prefix: "/assets", title: "资产管理" },
   { prefix: "/workspace", title: "批量生图" },

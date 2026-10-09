@@ -8,17 +8,17 @@
  * NODE_TO_TEMPLATE_ROLE / templateRoleForNode）：
  *
  * - style（创意总监）      ← 澄清 + 简报（澄清期等待用户，简报确认即完成）
- * - structure（风格策划）  ← 风格规范书 + 卡牌清单
- * - copywriter（初稿设计师/终稿细化师） ← 逐张提示词（按待执行动作细分：
- *   初稿期 design_drafts 打开初稿设计师，终稿/生产期打开终稿细化师）
+ * - structure（风格策划）  ← 风格规范书 + 示例图 + 卡牌清单
+ * - copywriter（提示词设计师） ← 逐张提示词（首次撰写即终稿；存量终稿期
+ *   design_finals 打开终稿细化师）
  * - imagegen（画师）       ← 有成图的卡（小样阶段按小样口径）
  * - review_*（评审面板）   ← 进入过评审的卡（三卡共用同一口径，近似）
  * - supervisor（总控裁决/合成师） ← 已定终版的卡（融合/资产期
  *   compose_* / asset_gen 细分打开合成师）
  *
- * 阶段归一：存量 run 的旧阶段名 world → draft、prompt → final 后再比对
- * （stagePos）；小样阶段（phase=sample）按小样子集统计，全套/交付按全部
- * （scopeOf）。
+ * 阶段归一：存量 run 的旧阶段名 world/prompt/final 归一化到合并后的
+ * draft 后再比对（stagePos）；小样阶段（phase=sample）按小样子集统计，
+ * 全套/交付按全部（scopeOf）。
  * 近似口径（与旧版逐节点实时的区别）已在注释标明；纯数据进出，可在
  * 服务端与单测中直接调用（输入类型为结构化最小面，同 team-status 先例）。
  */
@@ -97,7 +97,7 @@ const ERROR_NODE_BY_ACTION: Record<string, ClassicNodeKey> = {
 export const NODE_TO_TEMPLATE_ROLE: Record<ClassicNodeKey, string> = {
   style: "creative_director",
   structure: "style_director",
-  copywriter: "final_refiner",
+  copywriter: "prompt_designer",
   imagegen: "artist",
   review_content: "review_panel",
   review_aesthetic: "review_panel",
@@ -107,14 +107,13 @@ export const NODE_TO_TEMPLATE_ROLE: Record<ClassicNodeKey, string> = {
 
 /**
  * 节点卡点击 → 模板角色（按当前待执行动作细分）：
- * - copywriter：初稿期（design_drafts）打开初稿设计师，终稿/生产期打开终稿细化师；
+ * - copywriter：提示词撰写期（design_drafts/design_prompts）与生产打回期
+ *   打开提示词设计师；存量终稿期（design_finals）打开终稿细化师；
  * - supervisor：融合/资产期（compose_* / asset_gen）打开合成师，其余打开总控。
  */
 export function templateRoleForNode(nodeKey: ClassicNodeKey, pendingKind: string | null): string {
   if (nodeKey === "copywriter") {
-    return pendingKind === "design_drafts" || pendingKind === "design_prompts"
-      ? "prompt_designer"
-      : NODE_TO_TEMPLATE_ROLE.copywriter
+    return pendingKind === "design_finals" ? "final_refiner" : "prompt_designer"
   }
   if (nodeKey === "supervisor") {
     return pendingKind === "compose_preview" || pendingKind === "compose_batch" || pendingKind === "asset_gen"
@@ -124,12 +123,13 @@ export function templateRoleForNode(nodeKey: ClassicNodeKey, pendingKind: string
   return NODE_TO_TEMPLATE_ROLE[nodeKey]
 }
 
-/** 新五阶段顺序（存量 run 的 world/prompt 归一化后比对） */
-const STAGE_ORDER = ["clarify", "draft", "final", "art", "compose"]
+/** 四阶段顺序（存量 run 的 world/prompt/final 归一化到 draft 后比对） */
+const STAGE_ORDER = ["clarify", "draft", "art", "compose"]
 
 function stagePos(stage: string | null): number {
   if (!stage) return -1
-  const normalized = stage === "world" ? "draft" : stage === "prompt" ? "final" : stage
+  const normalized =
+    stage === "world" || stage === "prompt" || stage === "final" ? "draft" : stage
   return STAGE_ORDER.indexOf(normalized)
 }
 
@@ -198,7 +198,7 @@ export function deriveClassicNodeBoard(input: {
   // 完成判定用 scope 内全部终态（小样阶段只看小样，全套看全部）
   const scopeTerminal = scope.length > 0 && scope.every((item) => !isTransient(item.status))
   const productionBase = (): NodeBoardStatus => {
-    if (pos < 3) return "idle"
+    if (pos < 2) return "idle"
     if (busy && pendingKind === "produce_cards") return "running"
     if (!scopeTerminal) return "running" // 仍有在途卡（复述轮询期间的中断态）
     return "done"

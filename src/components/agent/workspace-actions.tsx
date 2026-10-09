@@ -24,11 +24,10 @@ import {
 } from "@/server/actions/agent-template"
 import {
   confirmTarotCardDraftsAction,
-  confirmTarotCardFinalsAction,
   regenerateCardPromptsAction,
   updateTarotCardPlanItemAction,
 } from "@/server/actions/agent-cards"
-import { confirmItemAction, getRunItemDetailAction, regenFailedItemsAction, regenItemAction, updateItemPromptAction } from "@/server/actions/agent"
+import { confirmItemAction, getRunItemDetailAction, regenFailedItemsAction, regenItemAction, regenSampleItemsAction, updateItemPromptAction } from "@/server/actions/agent"
 import { confirmTarotAssetAction, getTarotAssetPromptsAction, requestTarotAssetGenerationAction, saveTarotAssetAction } from "@/server/actions/agent-assets"
 
 export interface AgentWorkspaceActions {
@@ -48,11 +47,11 @@ export interface AgentWorkspaceActions {
   switchTemplateStage: typeof switchTemplateStageAction
   updateTarotCardPlanItem: typeof updateTarotCardPlanItemAction
   confirmTarotCardDrafts: typeof confirmTarotCardDraftsAction
-  confirmTarotCardFinals: typeof confirmTarotCardFinalsAction
   regenerateCardPrompts: typeof regenerateCardPromptsAction
   confirmItem: typeof confirmItemAction
   regenItem: typeof regenItemAction
   regenFailedItems: typeof regenFailedItemsAction
+  regenSampleItems: typeof regenSampleItemsAction
   updateItemPrompt: typeof updateItemPromptAction
   getRunItemDetail: typeof getRunItemDetailAction
   getTarotAssetPrompts: typeof getTarotAssetPromptsAction
@@ -78,11 +77,11 @@ export const realWorkspaceActions: AgentWorkspaceActions = {
   switchTemplateStage: switchTemplateStageAction,
   updateTarotCardPlanItem: updateTarotCardPlanItemAction,
   confirmTarotCardDrafts: confirmTarotCardDraftsAction,
-  confirmTarotCardFinals: confirmTarotCardFinalsAction,
   regenerateCardPrompts: regenerateCardPromptsAction,
   confirmItem: confirmItemAction,
   regenItem: regenItemAction,
   regenFailedItems: regenFailedItemsAction,
+  regenSampleItems: regenSampleItemsAction,
   updateItemPrompt: updateItemPromptAction,
   getRunItemDetail: getRunItemDetailAction,
   getTarotAssetPrompts: getTarotAssetPromptsAction,

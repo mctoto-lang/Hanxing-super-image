@@ -12,7 +12,7 @@
  * - 底部操作：确认当前轮为终版 / 手动重开。
  */
 import { useCallback, useEffect, useState } from "react"
-import { AlertTriangle, CheckCircle2, Circle, ExternalLink, Pencil, RefreshCcw, ShieldAlert } from "lucide-react"
+import { AlertTriangle, CheckCircle2, Circle, ExternalLink, Pencil, RefreshCcw, ShieldAlert, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -156,7 +156,12 @@ export function RunItemDetailDialog({
     if (!itemId) return
     setActing(true)
     try {
-      await regenItem({ itemId })
+      const result = await regenItem({ itemId })
+      // 业务失败以返回值传达（生产环境 throw 会被抹为 #441 占位文案）
+      if (!result.ok) {
+        toast.error(result.error)
+        return
+      }
       toast.success("已重新提交该卡执行流水线")
       onOpenChange(false)
       onChanged()
@@ -191,6 +196,62 @@ export function RunItemDetailDialog({
     : []
   const activeReviewRows = activeReviews.filter((r) => r.kind === "review")
   const activeVerdict = activeReviews.find((r) => r.kind === "verdict")
+  // 评审分组（按快照评审节点顺序「评审 N · 模型名」；快照缺失/旧数据回退单组平铺）
+  const reviewGroups = (() => {
+    if (!detail) return []
+    const groups = (detail.reviewModels ?? [])
+      .map((m) => ({
+        key: m.nodeKey,
+        label: m.label,
+        modelName: m.modelName,
+        rows: activeReviewRows.filter((r) => r.nodeKey === m.nodeKey),
+      }))
+      .filter((g) => g.rows.length > 0)
+    const knownKeys = new Set(groups.map((g) => g.key))
+    const orphanRows = activeReviewRows.filter((r) => !knownKeys.has(r.nodeKey))
+    if (orphanRows.length > 0) {
+      groups.push({ key: "__legacy__", label: "评审", modelName: "", rows: orphanRows })
+    }
+    return groups
+  })()
+  // 每维综合结果（多评审时展示：平均分 + 多数票 x/N，与 supervisor 判定同口径）
+  const reviewAggregate = detail
+    ? (
+        [
+          { key: "content", label: "内容审核" },
+          { key: "aesthetic", label: "审美" },
+          { key: "consistency", label: "一致性" },
+        ] as const
+      )
+        .map(({ key, label }) => {
+          const rows = activeReviewRows.filter((r) => (r.result as ReviewResultPayload).dimension === key)
+          if (rows.length === 0) return null
+          const scores = rows
+            .map((r) => (r.result as ReviewResultPayload).score)
+            .filter((s): s is number => typeof s === "number")
+          const passes = rows.filter((r) => (r.result as ReviewResultPayload).pass === true).length
+          const avg = scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null
+          const threshold =
+            key === "aesthetic"
+              ? detail.thresholds.aesthetic
+              : key === "consistency"
+                ? detail.thresholds.consistency
+                : (detail.thresholds.content ?? DEFAULT_SCORE_THRESHOLDS.content)
+          // 多数票：严格过半才通过（与 majorityVotePassed 一致）
+          const passed = passes > rows.length / 2
+          return {
+            key,
+            label,
+            avg,
+            passes,
+            total: rows.length,
+            threshold,
+            passed,
+            tone: avg !== null ? scoreTone(avg, threshold) : passed ? "pass" : "low",
+          }
+        })
+        .filter((a): a is NonNullable<typeof a> => a !== null)
+    : []
   const activeIsFinal = !!(detail && activeRound && detail.item.finalRoundId === activeRound.id)
 
   return (
@@ -347,63 +408,109 @@ export function RunItemDetailDialog({
                   </div>
                 )}
 
-                {/* 各维度评分（服务状态弹窗式无框列表）：状态图标 + 项目名 + 状态小字 +
-                    右侧大字分数（原「最后更新」位置）；下方分数条带；条下评审理由。
+                {/* 评审展示（多评审分组）：顶部每维综合结果（平均分 + 多数票，与
+                    supervisor 判定同口径）→ 按「评审 N · 模型名」分组的原始评分行。
                     绿=达到及格线 / 黄=未达线但 ≥60 / 红=<60 或不通过；
                     内容审核同样展示 0-100 分数柱（存量无分数据回退仅文字） */}
                 {activeReviewRows.length > 0 ? (
-                  <div className="space-y-2.5">
-                    {activeReviewRows.map((r, index) => {
-                      const res = r.result as ReviewResultPayload
-                      const threshold =
-                        res.dimension === "aesthetic"
-                          ? detail.thresholds.aesthetic
-                          : res.dimension === "consistency"
-                            ? detail.thresholds.consistency
-                            : detail.thresholds.content ?? DEFAULT_SCORE_THRESHOLDS.content
-                      const status =
-                        res.score !== null
-                          ? scoreTone(res.score, threshold)
-                          : res.pass === false
-                            ? "low"
-                            : "pass"
-                      const hasScore = res.score !== null
-                      const label =
-                        res.dimension === "content" ? "内容审核" : SCORE_DIMENSION_LABELS[res.dimension]
-                      const statusText =
-                        status === "pass" ? "通过" : status === "warn" ? "接近及格" : "未通过"
-                      return (
-                        <div
-                          key={r.id}
-                          className={cn("flex flex-col gap-1", index > 0 && "border-t pt-2.5")}
-                        >
-                          <div className="flex flex-wrap items-center gap-2">
-                            {status === "pass" ? (
-                              <CheckCircle2 className="size-4 shrink-0 text-green-500" />
-                            ) : status === "warn" ? (
-                              <AlertTriangle className="size-4 shrink-0 text-yellow-500" />
+                  <div className="space-y-3">
+                    {/* 综合判定（仅多评审时展示；单评审无需聚合） */}
+                    {reviewGroups.length > 1 && reviewAggregate.length > 0 && (
+                      <div className="space-y-1.5 rounded-lg border border-violet-500/30 bg-violet-500/[0.05] p-2.5">
+                        <p className="text-[11px] font-medium text-muted-foreground">
+                          综合判定（多数票，各维度过半数即通过）
+                        </p>
+                        {reviewAggregate.map((agg) => (
+                          <div key={agg.key} className="flex flex-wrap items-center gap-1.5 text-xs">
+                            {agg.passed ? (
+                              <CheckCircle2 className="size-3.5 shrink-0 text-green-500" />
                             ) : (
-                              <Circle className="size-4 shrink-0 text-red-500" />
+                              <Circle className="size-3.5 shrink-0 text-red-500" />
                             )}
-                            <span className="text-xs font-medium">{label}</span>
-                            <span className="text-[11px] text-muted-foreground">{statusText}</span>
-                            <span className="ml-auto text-sm font-semibold tabular-nums">
-                              {hasScore ? `${res.score} 分` : statusText}
+                            <span className="font-medium">{agg.label}</span>
+                            <span className="text-[11px] text-muted-foreground">
+                              {agg.avg !== null ? `平均 ${agg.avg} 分` : "无分数"} · 通过票 {agg.passes}/{agg.total}
+                              （及格线 {agg.threshold}）
+                            </span>
+                            <span
+                              className={cn(
+                                "ml-auto text-[11px]",
+                                agg.passed ? "text-green-600 dark:text-green-400" : "text-red-500",
+                              )}
+                            >
+                              {agg.passed ? "过半通过" : "未过半"}
                             </span>
                           </div>
-                          {hasScore && (
-                            <ScoreSegmentsBar
-                              label={label}
-                              score={res.score}
-                              threshold={threshold}
-                            />
-                          )}
-                          {res.reason && (
-                            <p className="text-[11px] leading-4 text-muted-foreground">{res.reason}</p>
+                        ))}
+                      </div>
+                    )}
+                    {/* 按评审员分组的原始评分行 */}
+                    {reviewGroups.map((group) => (
+                      <div key={group.key} className="space-y-2.5">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <Users className="size-3 text-violet-500" />
+                          <span className="text-[11px] font-semibold">{group.label}</span>
+                          {group.modelName && (
+                            <span className="min-w-0 truncate text-[11px] text-muted-foreground">
+                              · {group.modelName}
+                            </span>
                           )}
                         </div>
-                      )
-                    })}
+                        <div className="space-y-2.5">
+                          {group.rows.map((r, index) => {
+                            const res = r.result as ReviewResultPayload
+                            const threshold =
+                              res.dimension === "aesthetic"
+                                ? detail!.thresholds.aesthetic
+                                : res.dimension === "consistency"
+                                  ? detail!.thresholds.consistency
+                                  : (detail!.thresholds.content ?? DEFAULT_SCORE_THRESHOLDS.content)
+                            const status =
+                              res.score !== null
+                                ? scoreTone(res.score, threshold)
+                                : res.pass === false
+                                  ? "low"
+                                  : "pass"
+                            const hasScore = res.score !== null
+                            const label =
+                              res.dimension === "content" ? "内容审核" : SCORE_DIMENSION_LABELS[res.dimension]
+                            const statusText =
+                              status === "pass" ? "通过" : status === "warn" ? "接近及格" : "未通过"
+                            return (
+                              <div
+                                key={r.id}
+                                className={cn("flex flex-col gap-1", index > 0 && "border-t pt-2.5")}
+                              >
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {status === "pass" ? (
+                                    <CheckCircle2 className="size-4 shrink-0 text-green-500" />
+                                  ) : status === "warn" ? (
+                                    <AlertTriangle className="size-4 shrink-0 text-yellow-500" />
+                                  ) : (
+                                    <Circle className="size-4 shrink-0 text-red-500" />
+                                  )}
+                                  <span className="text-xs font-medium">{label}</span>
+                                  <span className="text-[11px] text-muted-foreground">{statusText}</span>
+                                  <span className="ml-auto text-sm font-semibold tabular-nums">
+                                    {hasScore ? `${res.score} 分` : statusText}
+                                  </span>
+                                </div>
+                                {hasScore && (
+                                  <ScoreSegmentsBar
+                                    label={label}
+                                    score={res.score}
+                                    threshold={threshold}
+                                  />
+                                )}
+                                {res.reason && (
+                                  <p className="text-[11px] leading-4 text-muted-foreground">{res.reason}</p>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 ) : (
                   activeRound && (

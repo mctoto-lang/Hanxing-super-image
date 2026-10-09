@@ -62,6 +62,12 @@ export function ArtStageView({
     setRetrying(true)
     try {
       const result = await regenFailedItems(data.run.id)
+      // 业务失败（处理中/无失败卡面等）以返回值传达：生产环境 Server Action
+      // 抛错会被抹为 #441 占位文案，客户端 toast 不到真实原因
+      if (!result.ok) {
+        toast.error(result.error)
+        return
+      }
       // 成功即报：重试动作本身已成功；若把刷新与动作放在同一个 try 里，
       // 刷新抛错会误报「批量重试失败」，诱导用户重复点击造成重复入队
       toast.success(`已重新排队 ${result.count} 张失败卡面`)
@@ -81,7 +87,7 @@ export function ArtStageView({
   return (
     <div className="space-y-4">
       {sampleGateReached(data) && (
-        <SampleConfirmBar data={data} busy={busy} onOpenItem={openItem} runAction={runAction} />
+        <SampleConfirmBar data={data} busy={busy} onOpenItem={openItem} onRefresh={onRefresh} runAction={runAction} />
       )}
 
       <Tabs defaultValue="cards">
