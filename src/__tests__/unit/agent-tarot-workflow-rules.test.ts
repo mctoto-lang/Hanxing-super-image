@@ -39,7 +39,7 @@ import {
  * - 阶段归一化（存量 world/prompt/final 映射到 draft）；
  * - 花色数量硬规则（Ace-10 恰好 N 个 + ≥2 件不描述具体摆放位置；宫廷牌/大阿卡纳无数量与牌名要求）；
  * - 单段短提示词（画面内容 120-200 字约 160 字、严禁风格词，系统在末尾拼接固定风格提示词；首次撰写即终稿）与存量两段结构兼容；
- * - 风格规范方向（总述 80-120 字 + 风格短语 20-50 字）；
+ * - 风格规范方向（总述 80-100 字简洁明了 + 风格短语 20-50 字）；
  * - 提示词无负向约束（默认角色提示词与画面规则不含禁令表述，无边框句除外）。
  */
 
@@ -91,6 +91,11 @@ describe("花色数量硬规则", () => {
     expect(suitCountRuleByIndex(31)).toContain("自然成组")
     expect(suitCountRuleByIndex(31)).toContain("不要描述具体的摆放方式与位置关系")
     expect(suitCountRuleByIndex(38)).toContain("摆放构图交给生图模型自由发挥")
+    // 高数量牌（≥6 件）：出现方式开放（任何自然合理方式），只点总数，
+    // 不逐件描述位置朝向——防逐件摆放描述造成画面崩坏
+    expect(suitCountRuleByIndex(31)).toContain("任何自然合理的方式")
+    expect(suitCountRuleByIndex(31)).toContain("不逐件描述每件物品的位置或朝向")
+    expect(suitCountRuleByIndex(26)).not.toContain("不逐件描述每件物品的位置或朝向")
     // 不再强制成组平衡摆放/交代位置关系
     expect(suitCountRuleByIndex(31)).not.toContain("成组平衡摆放")
     expect(suitCountRuleByIndex(22)).not.toContain("自然成组")
@@ -101,6 +106,8 @@ describe("花色数量硬规则", () => {
     expect(SUIT_COUNT_RULE_SUMMARY).toContain("Ace（王牌）至十")
     expect(SUIT_COUNT_RULE_SUMMARY).toContain("不要求画面体现牌名")
     expect(SUIT_COUNT_RULE_SUMMARY).toContain("不要描述具体的摆放方式与位置关系")
+    expect(SUIT_COUNT_RULE_SUMMARY).toContain("任何自然合理的方式")
+    expect(SUIT_COUNT_RULE_SUMMARY).toContain("不逐件描述每件物品的位置或朝向")
     expect(ROLE_PROMPTS.copywriter).toContain("恰好对应数量")
     expect(ROLE_PROMPTS.copywriter).not.toContain("成组平衡摆放")
     expect(ROLE_PROMPTS.finalRefiner).toContain("恰好对应数量")
@@ -309,10 +316,12 @@ describe("四阶段与角色编制", () => {
     expect(ids).toHaveLength(8)
   })
 
-  it("风格策划提示词为三候选口径并产出固定风格提示词（含格式范例）", () => {
+  it("风格策划提示词为三候选口径并产出固定风格提示词（80-100 字简洁明了，含格式范例）", () => {
     const stylist = TAROT_ROLES.find((role) => role.id === "style_director")!
     expect(stylist.duty).toContain("3 个候选")
     expect(stylist.systemPrompt).toContain("固定风格提示词")
+    expect(stylist.systemPrompt).toContain("80-100 字")
+    expect(stylist.systemPrompt).toContain("简洁明了")
     expect(stylist.systemPrompt).toContain("Rebecca Campbell")
     expect(stylist.systemPrompt).toContain("供用户选择")
   })
@@ -365,10 +374,10 @@ describe("四阶段与角色编制", () => {
     expect(DEFAULT_REVIEWER_PROMPT).toContain("不接受「美感不足」类空泛理由")
   })
 
-  it("画面规则含风格分离（含风格词类目）与内容篇幅（120-200 字，整体约 260 字）", () => {
+  it("画面规则含风格分离（含风格词类目）与内容篇幅（120-200 字，整体约 280 字）", () => {
     expect(DEFAULT_ART_RULES).toContain("风格分离")
     expect(DEFAULT_ART_RULES).toContain("120-200 字")
-    expect(DEFAULT_ART_RULES).toContain("260 字左右")
+    expect(DEFAULT_ART_RULES).toContain("280 字")
     expect(DEFAULT_ART_RULES).toContain("整体色调色系")
     expect(DEFAULT_ART_RULES).toContain("由系统自动拼接到每张提示词末尾")
     expect(DEFAULT_ART_RULES).toContain("英文画种词")
