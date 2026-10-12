@@ -9,6 +9,7 @@ import {
   matchesAllowedHost,
   sameSiteAsHost,
 } from "./config"
+import { parseDataImageUrl } from "./data-url"
 
 /**
  * 本地文件存储（手册 §3、§10.5）
@@ -165,6 +166,17 @@ export async function saveFromUrl(
   // 已是本服务 /uploads 对象（key 含本企业段）：直接复用，不重复落盘
   if (isOwnLocalObjectUrl(targetUrl, enterpriseId)) {
     return sourceUrl
+  }
+  // data: URL（模型 b64_json 回传）：内容自包含，直接解码落盘，
+  // 不走网络下载与域名白名单（data: 非 https 会被白名单误拒）
+  const dataImage = parseDataImageUrl(sourceUrl)
+  if (dataImage) {
+    return await saveFromBuffer(
+      dataImage.buffer,
+      enterpriseId,
+      dataImage.ext,
+      kind,
+    )
   }
   // 平台配置读取失败时回退为空（仅基础白名单生效），不阻断下载流程
   let extraHosts: string[] = []

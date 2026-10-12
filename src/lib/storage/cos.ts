@@ -15,6 +15,7 @@ import {
   toInternalCosFetchUrl,
   DEFAULT_DOWNLOAD_HOST_SUFFIXES,
 } from "./config"
+import { parseDataImageUrl } from "./data-url"
 
 /**
  * 腾讯云 COS 存储适配器（双桶 + category 路由）。
@@ -219,6 +220,17 @@ export function createCosAdapter(cfg: StorageConfig): CosAdapter {
       // 复用，省去每张图 2×（下载+上传）应用带宽与转存延迟
       if (isOwnCosObjectUrl(targetUrl, cfg, enterpriseId)) {
         return sourceUrl
+      }
+      // data: URL（模型 b64_json 回传）：内容自包含，直接解码上传，
+      // 不走网络下载与域名白名单（data: 非 https 会被白名单误拒）
+      const dataImage = parseDataImageUrl(sourceUrl)
+      if (dataImage) {
+        return this.saveFromBuffer(
+          dataImage.buffer,
+          enterpriseId,
+          dataImage.ext,
+          category,
+        )
       }
       if (!isAllowedDownloadHost(targetUrl, cfg, trustedHostHints)) {
         console.warn(

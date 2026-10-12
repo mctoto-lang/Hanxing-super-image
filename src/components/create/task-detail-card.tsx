@@ -37,6 +37,7 @@ import { deleteTaskAction, restoreTaskAction } from "@/server/actions/conversati
 import { submitTaskAction } from "@/server/actions/create"
 import { toast } from "sonner"
 import { ImageViewer, downloadImageFile } from "@/components/ui/image-viewer"
+import { Skeleton } from "@/components/ui/skeleton"
 
 /**
  * 单次生成消息项（自由创作页 §6 v6，扁平聊天消息样式）
@@ -198,6 +199,13 @@ export function TaskDetailCard({
     recordImgSize(i, e.currentTarget)
   }
 
+  // 图片加载失败（SmartImage 进入失效占位）：撤掉该格加载骨架，
+  // 否则骨架会永远盖在「图片已过期」占位上
+  const [imgFailed, setImgFailed] = React.useState<Record<number, boolean>>({})
+  const markImgFailed = (i: number) => {
+    setImgFailed((prev) => (prev[i] ? prev : { ...prev, [i]: true }))
+  }
+
   // 水合时序补偿：SSR HTML 中的 <img> 命中浏览器缓存时，在 React 水合完成前
   // 就已加载完毕，水合后附加的 onLoad 永远不触发 → 尺寸缺失 → 基准容器算不出。
   // ref 回调挂载时同步补查一次（缓存命中多数已 complete），再隔一帧补查解码
@@ -306,7 +314,9 @@ export function TaskDetailCard({
         modelId: task.modelId,
         prompt: task.prompt,
         imageSize: task.imageSize ?? "1024x1024",
-        imageCount: task.imageCount,
+        // task.imageCount 已是乘过 jimengN 的总张数，按总张数直传，
+        // 服务端不再乘（否则选 1 次 × N=4 的任务重生成会变 16 张）
+        totalImageCount: task.imageCount,
         referenceImages: refImages,
         conversationId,
       })
@@ -495,51 +505,63 @@ export function TaskDetailCard({
           className="mt-2 grid items-start gap-1.5"
           style={{ gridTemplateColumns: `repeat(4, minmax(0, 1fr))` }}
         >
-          {images.map((url, i) => (
-            <div
-              key={i}
-              className="group relative overflow-hidden rounded-md border bg-muted/50"
-              style={
-                baseline
-                  ? { aspectRatio: `${baseline.w} / ${baseline.h}` }
-                  : undefined
-              }
-            >
-              <SmartImage
-                ref={measureImgRef(i)}
-                src={toImageSrc(url, { width: 400 })}
-                alt={`生成图 ${i + 1}`}
-                className={baseline ? "size-full object-contain" : "w-full"}
-                loading="lazy"
-                onLoad={(e) => handleImageLoad(i, e)}
-              />
-              {/* 悬浮右上角操作：下载 / 放大（打开放大查看器）；
-                  触屏设备（无 hover）常显，保证可达 */}
-              <div className="absolute right-1 top-1 z-10 flex gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
-                <button
-                  type="button"
-                  title="下载"
-                  onClick={() =>
-                    downloadImageFile(url, `hanxing-${Date.now()}-${i + 1}`)
-                  }
-                  className="flex size-7 items-center justify-center rounded-md bg-black/55 text-white backdrop-blur-sm transition-colors hover:bg-black/75"
-                >
-                  <Download className="size-3.5" />
-                </button>
-                <button
-                  type="button"
-                  title="放大"
-                  onClick={() => {
-                    setViewerIndex(i)
-                    setViewerOpen(true)
-                  }}
-                  className="flex size-7 items-center justify-center rounded-md bg-black/55 text-white backdrop-blur-sm transition-colors hover:bg-black/75"
-                >
-                  <Maximize2 className="size-3.5" />
-                </button>
+          {images.map((url, i) => {
+            // 该格图片未完成加载（未实测到尺寸且未失败）：容器先按请求比例
+            // 占位并叠加 shadcn Skeleton 骨架；加载完成后移除，恢复自适应
+            // 布局（缓存命中由 measureImgRef 挂载补查立即撤掉，不闪烁）
+            const cellLoading = !imgSizes[i] && !imgFailed[i]
+            return (
+              <div
+                key={i}
+                className="group relative overflow-hidden rounded-md border bg-muted/50"
+                style={
+                  baseline
+                    ? { aspectRatio: `${baseline.w} / ${baseline.h}` }
+                    : cellLoading
+                      ? { aspectRatio: `${width} / ${height}` }
+                      : undefined
+                }
+              >
+                <SmartImage
+                  ref={measureImgRef(i)}
+                  src={toImageSrc(url, { width: 400 })}
+                  alt={`生成图 ${i + 1}`}
+                  className={baseline ? "size-full object-contain" : "w-full"}
+                  loading="lazy"
+                  onLoad={(e) => handleImageLoad(i, e)}
+                  onFallback={() => markImgFailed(i)}
+                />
+                {cellLoading && (
+                  <Skeleton className="absolute inset-0 z-[5] size-full rounded-none" />
+                )}
+                {/* 悬浮右上角操作：下载 / 放大（打开放大查看器）；
+                    触屏设备（无 hover）常显，保证可达 */}
+                <div className="absolute right-1 top-1 z-10 flex gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
+                  <button
+                    type="button"
+                    title="下载"
+                    onClick={() =>
+                      downloadImageFile(url, `hanxing-${Date.now()}-${i + 1}`)
+                    }
+                    className="flex size-7 items-center justify-center rounded-md bg-black/55 text-white backdrop-blur-sm transition-colors hover:bg-black/75"
+                  >
+                    <Download className="size-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    title="放大"
+                    onClick={() => {
+                      setViewerIndex(i)
+                      setViewerOpen(true)
+                    }}
+                    className="flex size-7 items-center justify-center rounded-md bg-black/55 text-white backdrop-blur-sm transition-colors hover:bg-black/75"
+                  >
+                    <Maximize2 className="size-3.5" />
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
           {Array.from({ length: missingCount }).map((_, i) => (
             <div
               key={`failed-${i}`}

@@ -752,7 +752,36 @@ export const FlipCard = memo(function FlipCard({
                         {generatedImageCount} 张
                       </div>
                     )}
-                    <div className="absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/10" />
+                    {/* 有展示图但存在失败图（如换模型重新生成失败）：
+                        正面无失败占位（hasFailedImage 要求无图），补一个
+                        警示角标，悬停看失败摘要、点击打开失败详情弹窗 */}
+                    {failedImageCount > 0 && (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  openErrorDialog()
+                                }}
+                                className="absolute left-2.5 top-2.5 flex h-7 w-7 items-center justify-center rounded-md bg-destructive/85 text-white shadow-sm backdrop-blur-sm transition-colors hover:bg-destructive"
+                                aria-label="部分图片生成失败"
+                              />
+                            }
+                          >
+                            <AlertCircle className="h-3.5 w-3.5" />
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom">
+                            {failedImageTooltip}
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    )}
+                    {/* 纯视觉 hover 变暗层：必须 pointer-events-none，
+                        否则盖在失败角标按钮上方、拦截其点击 */}
+                    <div className="pointer-events-none absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/10" />
                   </div>
                 ) : (
                   <div className="flex h-full cursor-pointer flex-col items-center justify-center gap-2">

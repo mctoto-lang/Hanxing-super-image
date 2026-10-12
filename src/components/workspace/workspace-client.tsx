@@ -325,6 +325,10 @@ const TaskCard = memo(function TaskCard({
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState(task.title)
   const isSavingTitleRef = useRef(false)
+  // 时间文本依赖浏览器时区（toLocaleString），SSR（容器时区）与客户端不一致
+  // 会导致 hydration mismatch（React #441）：挂载前渲染占位，挂载后再出真实时间
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => setMounted(true), [])
   const showTaskActions = shouldShowTaskActions(isEditingTitle)
   const { label, icon: Icon, className } = statusConfig[task.status]
   const thumbnailUrls = task.thumbnailUrls.length
@@ -499,12 +503,14 @@ const TaskCard = memo(function TaskCard({
           </div>
           <div className="mt-2 flex items-center gap-1.5">
             <span className="text-[10px] text-muted-foreground shrink-0 mr-auto">
-              {new Date(task.createdAt).toLocaleString("zh-CN", {
-                month: "2-digit",
-                day: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
-              })}
+              {mounted
+                ? new Date(task.createdAt).toLocaleString("zh-CN", {
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })
+                : "··/·· ··:··"}
             </span>
             <div className="flex items-center gap-1 shrink-0">
               {/* 细分状态图标（只显示图标） */}
@@ -605,23 +611,34 @@ export function WorkspaceClient({
   const [activeCardId, setActiveCardId] = useState<string | null>(null)
 
   // ─── 生成配置（localStorage 持久化） ───
+  // 初值保持确定性（与 SSR 一致），localStorage 回填放到挂载后的 effect：
+  // 惰性初始化直接读 localStorage 会让客户端首渲染偏离服务端输出
+  // （hydration mismatch，React #441）
   const [selectedFissionTemplate, setSelectedFissionTemplate] =
-    useState<TemplateRow | null>(() => loadStoredGenerationConfig().fissionTemplate)
+    useState<TemplateRow | null>(null)
   const [selectedDeepenTemplate, setSelectedDeepenTemplate] =
-    useState<TemplateRow | null>(() => loadStoredGenerationConfig().refineTemplate)
+    useState<TemplateRow | null>(null)
   const [selectedRegenTemplate, setSelectedRegenTemplate] =
-    useState<TemplateRow | null>(() => loadStoredGenerationConfig().regenTemplate)
+    useState<TemplateRow | null>(null)
   const [selectedExtractTemplate, setSelectedExtractTemplate] =
-    useState<TemplateRow | null>(() => loadStoredGenerationConfig().extractTemplate)
+    useState<TemplateRow | null>(null)
   const [selectedTranslateTemplate, setSelectedTranslateTemplate] =
-    useState<TemplateRow | null>(() => loadStoredGenerationConfig().translateTemplate)
+    useState<TemplateRow | null>(null)
   const [selectedImageModel, setSelectedImageModel] =
-    useState<ImageModelRow | null>(
-      () => loadStoredGenerationConfig().imageModel ?? initialModels[0] ?? null,
-    )
-  const [selectedSize, setSelectedSize] = useState<string | null>(
-    () => loadStoredGenerationConfig().size,
-  )
+    useState<ImageModelRow | null>(initialModels[0] ?? null)
+  const [selectedSize, setSelectedSize] = useState<string | null>(null)
+
+  useEffect(() => {
+    const stored = loadStoredGenerationConfig()
+    if (stored.fissionTemplate) setSelectedFissionTemplate(stored.fissionTemplate)
+    if (stored.refineTemplate) setSelectedDeepenTemplate(stored.refineTemplate)
+    if (stored.regenTemplate) setSelectedRegenTemplate(stored.regenTemplate)
+    if (stored.extractTemplate) setSelectedExtractTemplate(stored.extractTemplate)
+    if (stored.translateTemplate)
+      setSelectedTranslateTemplate(stored.translateTemplate)
+    if (stored.imageModel) setSelectedImageModel(stored.imageModel)
+    if (stored.size) setSelectedSize(stored.size)
+  }, [])
 
   // ─── 对话框状态 ───
   const router = useRouter()

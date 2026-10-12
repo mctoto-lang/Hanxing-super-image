@@ -1,7 +1,7 @@
 "use server"
 
 import { z } from "zod"
-import { and, eq, inArray, sql } from "drizzle-orm"
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import { cardImages, chatTasks, generationTasks, models, promptCards, workspaceTasks } from "@/db/schema"
 import { getCurrentEnterpriseScope, requireUserContext } from "@/lib/auth/session"
@@ -192,6 +192,29 @@ export async function batchGenerateImageAction(
           })),
         )
         .returning({ id: cardImages.id, cardId: cardImages.cardId })
+
+      // 已有选中图的卡片（重新生成场景）清空当前选中：成功后
+      // ensureCardSelection 兜底选最新完成图（即本次新图），卡面才会
+      // 从旧模型的图切到新结果；失败时三级回退仍显示旧图
+      const validCardIds = valid.map((v) => v.card.id)
+      await tx
+        .update(promptCards)
+        .set({ selectedImageId: null, updatedAt: new Date() })
+        .where(
+          and(
+            inArray(promptCards.id, validCardIds),
+            isNotNull(promptCards.selectedImageId),
+          ),
+        )
+      await tx
+        .update(cardImages)
+        .set({ isSelected: false, updatedAt: new Date() })
+        .where(
+          and(
+            inArray(cardImages.cardId, validCardIds),
+            eq(cardImages.isSelected, true),
+          ),
+        )
 
       return {
         taskIds,

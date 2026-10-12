@@ -191,6 +191,8 @@ export async function listWorkspaceTasksAction(opts?: {
 export async function createWorkspaceTaskAction(input: {
   mode?: "smart" | "extract" | "custom"
   theme?: string
+  /** 提取裂变长提示词（>500 字符走此字段；theme 兼容旧入参） */
+  longText?: string
   cardCount?: number
   templateId?: string
   prompts?: string[]
@@ -251,7 +253,11 @@ export async function createWorkspaceTaskAction(input: {
 
   // ── smart / extract：异步裂变 ──
   const isExtract = mode === "extract"
-  const theme = (input.theme ?? "").trim()
+  // 提取裂变用 longText（上限 10000）；theme（≤500）为智能裂变入参，
+  // 提取模式兼容旧调用方继续传 theme
+  const theme = (
+    (isExtract ? input.longText ?? input.theme : input.theme) ?? ""
+  ).trim()
   if (theme.length < 2) {
     return { ok: false, error: "主题至少 2 字符" }
   }

@@ -43,7 +43,13 @@ const templateTypeSchema = z.enum([
 
 export const createWorkspaceTaskSchema = z.object({
   mode: z.enum(["smart", "extract", "custom"]).optional(),
+  /** 智能裂变的主题提示词 */
   theme: z.string().max(500, "主题描述过长").optional(),
+  /** 提取裂变的长提示词（整段画面描述，上限高于主题） */
+  longText: z
+    .string()
+    .max(10_000, "长提示词过长（上限 10000 字符）")
+    .optional(),
   cardCount: z.number().int().min(1).max(200).optional(),
   templateId: wsIdSchema.optional(),
   prompts: z.array(promptSchema).max(200).optional(),

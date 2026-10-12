@@ -3,7 +3,7 @@
  * 模块，供同目录各 action 文件复用）
  */
 
-import { and, eq, sql } from "drizzle-orm"
+import { and, eq, isNotNull, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import { cardImages, chatApiConfigs, generationTasks, models, promptCards, workspaceTasks } from "@/db/schema"
 import { getCurrentEnterpriseScope, type UserContext } from "@/lib/auth/session"
@@ -258,6 +258,26 @@ export async function generateCardImageInternal(opts: {
           source: "generated",
         })
         .returning({ id: cardImages.id })
+
+      // 重新生成（卡片已有选中图）：清空当前选中，成功后
+      // ensureCardSelection 兜底选最新完成图（即本次新图）；否则卡面
+      // 永远停在旧图，换模型重生成后看不到新结果。失败时卡面经
+      // resolveCardDisplayImage 三级回退仍显示旧图，不会空白。
+      await tx
+        .update(promptCards)
+        .set({ selectedImageId: null, updatedAt: new Date() })
+        .where(
+          and(
+            eq(promptCards.id, card.id),
+            isNotNull(promptCards.selectedImageId),
+          ),
+        )
+      await tx
+        .update(cardImages)
+        .set({ isSelected: false, updatedAt: new Date() })
+        .where(
+          and(eq(cardImages.cardId, card.id), eq(cardImages.isSelected, true)),
+        )
 
       const [genTask] = await tx
         .insert(generationTasks)

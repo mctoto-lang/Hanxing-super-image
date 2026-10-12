@@ -255,7 +255,8 @@ export function NewTaskDialog({ open, onOpenChange, onCreated }: Props) {
         input.templateId = fissionTemplateId
         if (referenceImages.length) input.referenceImages = referenceImages
       } else if (mode === "extract") {
-        input.theme = longText.trim()
+        // 长提示词走 longText（服务端上限 10000；theme 上限 500 不够整段粘贴）
+        input.longText = longText.trim()
         input.cardCount = cardCount
         input.templateId = extractTemplateId
       } else {
@@ -381,7 +382,12 @@ export function NewTaskDialog({ open, onOpenChange, onCreated }: Props) {
                       : setLongText(e.target.value)
                   }
                   rows={mode === "smart" ? 4 : 7}
+                  maxLength={mode === "smart" ? 500 : 10000}
                 />
+                <p className="text-xs text-muted-foreground">
+                  {(mode === "smart" ? theme : longText).length} /{" "}
+                  {mode === "smart" ? 500 : 10000}
+                </p>
               </div>
             )}
 

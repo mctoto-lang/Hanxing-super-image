@@ -91,6 +91,8 @@ export async function submitTaskAction(input: {
   prompt: string
   imageSize: string
   imageCount?: number
+  /** 直接以总张数提交（重新生成用），跳过 jimengN 乘法 */
+  totalImageCount?: number
   referenceImages?: string[]
   /** 所属会话；未传则自动创建新会话 */
   conversationId?: string
@@ -172,6 +174,8 @@ export async function submitTaskAction(input: {
   // jimengN 张（1-8，>4 由适配器自动拆分多次 API 请求，单次上游上限 4 张）；
   // 总张数 = 次数 × N，按张计费。jimengN 缺省 1 = 行为与旧版一致。
   // 32 = 4 次 × 8 张的防御性上限（页面 zod 与模型 zod 已分别限制）。
+  // totalImageCount（重新生成）：任务行里的 imageCount 已是乘过的总张数，
+  // 直传跳过乘法，否则选 1 次 × N=4 的任务重生成会变 4×4=16 张。
   const batches = Math.max(1, d.imageCount ?? 1)
   const perBatch =
     model.apiFormat === "jimeng"
@@ -185,7 +189,10 @@ export async function submitTaskAction(input: {
           ),
         )
       : 1
-  const imageCount = Math.min(32, batches * perBatch)
+  const imageCount = Math.min(
+    32,
+    d.totalImageCount ?? batches * perBatch,
+  )
   const totalCost = model.costPerImage * imageCount
   if (ctx.user.creditsBalance < totalCost) {
     return {

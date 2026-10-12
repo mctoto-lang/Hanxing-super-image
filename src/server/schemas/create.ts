@@ -15,6 +15,9 @@ export const submitTaskSchema = z.object({
     .min(1, "请选择尺寸")
     .max(30),
   imageCount: z.number().int().min(1).max(4).optional(),
+  /** 直接以总张数提交（重新生成用）：跳过 jimengN 乘法，上限与乘法路径
+   *  的防御性上限一致（4 次 × 8 张） */
+  totalImageCount: z.number().int().min(1).max(32).optional(),
   referenceImages: z.array(z.string().url()).max(5).optional(),
 })
 
