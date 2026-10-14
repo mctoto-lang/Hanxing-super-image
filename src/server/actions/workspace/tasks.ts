@@ -48,6 +48,9 @@ export async function listWorkspaceTasksAction(opts?: {
   }
 
   const [tasks, totalRow, pinnedRows] = await Promise.all([
+    // 注意：agentWorkflowId 不在此 join——一任务可挂多条工作流（挂靠无唯一
+    // 约束），join 会按工作流把任务展开成多行，破坏 limit/offset 与 count(*)
+    // 的任务口径；最新一条改在下方按页内 taskIds 查后组装
     db
       .select({
         id: workspaceTasks.id,
@@ -56,7 +59,6 @@ export async function listWorkspaceTasksAction(opts?: {
         templateId: workspaceTasks.templateId,
         templateName: promptTemplates.name,
         source: workspaceTasks.source,
-        agentWorkflowId: workspaceAgentWorkflows.id,
         status: workspaceTasks.status,
         cardCount: workspaceTasks.cardCount,
         errorMessage: workspaceTasks.errorMessage,
@@ -67,14 +69,6 @@ export async function listWorkspaceTasksAction(opts?: {
       .leftJoin(
         promptTemplates,
         eq(workspaceTasks.templateId, promptTemplates.id),
-      )
-      .leftJoin(
-        workspaceAgentWorkflows,
-        and(
-          eq(workspaceAgentWorkflows.workspaceTaskId, workspaceTasks.id),
-          eq(workspaceAgentWorkflows.enterpriseId, scope.enterpriseId),
-          eq(workspaceAgentWorkflows.userId, ctx.user.id),
-        ),
       )
       .where(and(...conds))
       .orderBy(desc(workspaceTasks.createdAt))
@@ -104,9 +98,11 @@ export async function listWorkspaceTasksAction(opts?: {
     { completed: number; generating: number; failed: number }
   >()
   const thumbMap = new Map<string, string[]>()
+  // taskId → 最新工作流 id（多工作流时取 createdAt 最大的一条）
+  const latestWorkflowMap = new Map<string, string>()
 
   if (taskIds.length > 0) {
-    const [aggRows, thumbRows] = await Promise.all([
+    const [aggRows, thumbRows, workflowRows] = await Promise.all([
       db
         .select({
           taskId: promptCards.taskId,
@@ -138,6 +134,20 @@ export async function listWorkspaceTasksAction(opts?: {
           ),
         )
         .orderBy(desc(cardImages.createdAt)),
+      db
+        .select({
+          workspaceTaskId: workspaceAgentWorkflows.workspaceTaskId,
+          id: workspaceAgentWorkflows.id,
+        })
+        .from(workspaceAgentWorkflows)
+        .where(
+          and(
+            eq(workspaceAgentWorkflows.enterpriseId, scope.enterpriseId),
+            eq(workspaceAgentWorkflows.userId, ctx.user.id),
+            inArray(workspaceAgentWorkflows.workspaceTaskId, taskIds),
+          ),
+        )
+        .orderBy(desc(workspaceAgentWorkflows.createdAt)),
     ])
     for (const r of aggRows) {
       aggMap.set(r.taskId, {
@@ -150,6 +160,12 @@ export async function listWorkspaceTasksAction(opts?: {
       const arr = thumbMap.get(r.taskId) ?? []
       if (arr.length < 3) arr.push(r.imageUrl)
       thumbMap.set(r.taskId, arr)
+    }
+    // createdAt 倒序下首见即最新，与 loadLatestWorkflowForTask 的取值口径一致
+    for (const r of workflowRows) {
+      if (r.workspaceTaskId && !latestWorkflowMap.has(r.workspaceTaskId)) {
+        latestWorkflowMap.set(r.workspaceTaskId, r.id)
+      }
     }
   }
 
@@ -167,7 +183,7 @@ export async function listWorkspaceTasksAction(opts?: {
       templateId: t.templateId,
       templateName: t.templateName,
       source: t.source as WorkspaceTaskRow["source"],
-      agentWorkflowId: t.agentWorkflowId,
+      agentWorkflowId: latestWorkflowMap.get(t.id) ?? null,
       status: t.status as WorkspaceTaskRow["status"],
       cardCount: t.cardCount,
       thumbnailUrl: thumbs[0] ?? null,

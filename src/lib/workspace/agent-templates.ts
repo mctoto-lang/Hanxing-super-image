@@ -541,6 +541,11 @@ export function clampMaxRetries(value: number): number {
   return Math.max(MAX_RETRIES_MIN, Math.min(MAX_RETRIES_MAX, Math.round(value)))
 }
 
+/** 钳制到 [40, 95] 并就近取 5 分一档（评审唯一通过口径与单项及格线同档） */
+function clampThresholdToStep(value: number): number {
+  return clampThreshold(Math.round(value / 5) * 5)
+}
+
 /**
  * 构建冻结配置（发起时调用一次，结果随 input 落 jsonb）：
  * - cardCount 取模板骨架长度（模板演进不影响进行中的 workflow）；
@@ -554,11 +559,18 @@ export function buildFrozenConfig(input: {
   frozenAt: string
 }): WorkspaceAgentFrozenConfig {
   const defaults = defaultQuality()
+  const qualityThreshold = input.quality?.qualityThreshold
   const quality: WorkspaceAgentQuality = {
     contentThreshold: clampThreshold(input.quality?.contentThreshold ?? defaults.contentThreshold),
     aestheticThreshold: clampThreshold(input.quality?.aestheticThreshold ?? defaults.aestheticThreshold),
     consistencyThreshold: clampThreshold(input.quality?.consistencyThreshold ?? defaults.consistencyThreshold),
     maxRetries: clampMaxRetries(input.quality?.maxRetries ?? defaults.maxRetries),
+    // 评审唯一通过口径（加权总分线）：透传并钳制到 40-95、5 分一档；未提供
+    // 或非法（非有限数字）时保持缺省，读取侧回退链（input.ts
+    // readQualityThresholds）落 DEFAULT_REVIEW_THRESHOLD（jsonb 免迁移）
+    ...(typeof qualityThreshold === "number" && Number.isFinite(qualityThreshold)
+      ? { qualityThreshold: clampThresholdToStep(qualityThreshold) }
+      : {}),
   }
   return {
     templateKey: input.templateKey,

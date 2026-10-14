@@ -473,31 +473,32 @@ export function WorkspaceAgentFlowTimeline({
     }
   }
 
-  const handleConfirmStyle = async () => {
+  /** 风格确认（统一走 runAction 忙等守卫：acting 期间按钮禁用 + 成功后立即
+   *  刷新进度，双击不会并发触发两次 confirm + 生成主题链） */
+  const handleConfirmStyle = () => {
     if (!workflowId) return
     const original = input?.stylePrompt ?? ""
     const confirmedValue = styleDraft ?? input?.stylePrompt ?? input?.referenceStyleAnalysis ?? ""
     const changed = confirmedValue !== original
-    if (changed || !input?.styleConfirmedAt) {
-      const res = await confirmWorkspaceAgentStyleAction(workflowId, {
-        stylePrompt: confirmedValue,
-      })
-      if (!res.ok) {
-        toast.error(res.error || "风格确认失败")
-        return
-      }
-    }
-    if (!themesProduced && !busy) {
-      // 创建不再预排队主题任务：确认风格即触发生成 3 主题；
-      // busy（已有任务在跑，如重复点击）时仅推进视图
-      const res = await generateWorkspaceAgentThemesAction(workflowId, {})
-      if (!res.ok) {
-        toast.error(res.error || "生成主题失败")
-        return
-      }
-      toast.success("风格已确认，开始生成 3 个候选主题")
-    }
-    setViewStep(STEP_THEME)
+    void runAction(
+      "确认风格",
+      async () => {
+        if (changed || !input?.styleConfirmedAt) {
+          const res = await confirmWorkspaceAgentStyleAction(workflowId, {
+            stylePrompt: confirmedValue,
+          })
+          if (!res.ok) return res
+        }
+        if (!themesProduced && !busy) {
+          // 创建不再预排队主题任务：确认风格即触发生成 3 主题；
+          // busy（已有任务在跑，如重复点击）时仅推进视图
+          const res = await generateWorkspaceAgentThemesAction(workflowId, {})
+          if (!res.ok) return res
+        }
+        return { ok: true, error: null }
+      },
+      () => setViewStep(STEP_THEME),
+    )
   }
 
   const handleSelectTheme = (directionId: string) => {

@@ -115,30 +115,42 @@ async function enqueueWaJob(
   jobType: string,
   payload: Record<string, unknown>,
 ): Promise<void> {
-  const active = await db
-    .select({ id: workspaceAgentJobs.id })
-    .from(workspaceAgentJobs)
-    .where(
-      and(
-        eq(workspaceAgentJobs.workflowId, workflow.id),
-        inArray(workspaceAgentJobs.status, ["queued", "processing"]),
-      ),
-    )
-    .limit(1)
-  if (active.length > 0) {
-    throw new Error("已有排队中或执行中的任务，请等待完成后再操作")
-  }
-  await db.insert(workspaceAgentJobs).values({
-    enterpriseId: workflow.enterpriseId,
-    userId: workflow.userId,
-    workflowId: workflow.id,
-    jobType,
-    payload: { requestedAt: new Date().toISOString(), ...payload },
+  // 活跃检查 + 插入须原子：先锁工作流行再查活跃 job（参照本文件
+  // requestWorkspaceAgentReferenceStyleAnalysisAction 的事务内 for("update")
+  // 先例），否则并发双击可同时通过检查、插入两个同类 job，后执行者
+  // 因「没有待撰写提示词的卡牌」反复退避后转 failed
+  await db.transaction(async (tx) => {
+    const [locked] = await tx
+      .select({ id: workspaceAgentWorkflows.id })
+      .from(workspaceAgentWorkflows)
+      .where(eq(workspaceAgentWorkflows.id, workflow.id))
+      .for("update")
+    if (!locked) throw new Error("工作流不存在")
+    const [active] = await tx
+      .select({ id: workspaceAgentJobs.id })
+      .from(workspaceAgentJobs)
+      .where(
+        and(
+          eq(workspaceAgentJobs.workflowId, workflow.id),
+          inArray(workspaceAgentJobs.status, ["queued", "processing"]),
+        ),
+      )
+      .limit(1)
+    if (active) {
+      throw new Error("已有排队中或执行中的任务，请等待完成后再操作")
+    }
+    await tx.insert(workspaceAgentJobs).values({
+      enterpriseId: workflow.enterpriseId,
+      userId: workflow.userId,
+      workflowId: workflow.id,
+      jobType,
+      payload: { requestedAt: new Date().toISOString(), ...payload },
+    })
+    await tx
+      .update(workspaceAgentWorkflows)
+      .set({ status: "queued", error: null, updatedAt: new Date() })
+      .where(eq(workspaceAgentWorkflows.id, workflow.id))
   })
-  await db
-    .update(workspaceAgentWorkflows)
-    .set({ status: "queued", error: null, updatedAt: new Date() })
-    .where(eq(workspaceAgentWorkflows.id, workflow.id))
 }
 
 /** workflow.input 扩展字段增量更新（jsonb 整体写回；扩展形状见 input.ts） */

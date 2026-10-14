@@ -2178,6 +2178,12 @@ export function WorkspaceClient({
     selectedSize,
   ])
 
+  // ─── 可选卡数（排除锁定卡，与全选按钮/批量选择口径一致）───
+  const selectableCardsCount = useMemo(
+    () => cards.filter((card) => !card.isLocked).length,
+    [cards],
+  )
+
   // ─── 渲染 ───
 
   // 任务侧栏内容：桌面 aside 与移动端抽屉复用同一节点（P1-3）
@@ -2372,12 +2378,12 @@ export function WorkspaceClient({
                     size="sm"
                     className={cn(
                       "h-7 text-xs gap-1 rounded-md text-white",
-                      selectedCardIds.size === cards.filter((card) => !card.isLocked).length
+                      selectedCardIds.size === selectableCardsCount
                         ? "bg-gray-400 hover:bg-gray-500"
                         : "bg-green-600 hover:bg-green-700",
                     )}
                     onClick={() => {
-                      if (selectedCardIds.size === cards.length) {
+                      if (selectedCardIds.size === selectableCardsCount) {
                         setSelectedCardIds(new Set())
                         setFlipAllToImage(false)
                       } else {
@@ -2388,7 +2394,7 @@ export function WorkspaceClient({
                     }}
                   >
                     <CheckSquare className="h-3.5 w-3.5" />
-                    {selectedCardIds.size === cards.length
+                    {selectedCardIds.size === selectableCardsCount
                       ? "取消全选"
                       : "全部选择"}
                   </Button>

@@ -467,16 +467,18 @@ export const workspaceAgentOracleCopies = pgTable(
 /**
  * 用量账本（逐调用计费留痕：LLM 厘 / 生图积分）
  *
- * 业务行删除不连坐账本：userId/cardId/roundId/cardImageId/generationTaskId
- * 均 set null 或无 FK；对账以 enterpriseId + createdAt 为准。
+ * 业务行删除不连坐账本：workflowId/userId/cardId/roundId/cardImageId/
+ * generationTaskId 均 set null 或无 FK；对账以 enterpriseId + createdAt 为准。
  */
 export const workspaceAgentUsage = pgTable(
   "workspace_agent_usage",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    workflowId: uuid("workflow_id")
-      .notNull()
-      .references(() => workspaceAgentWorkflows.id, { onDelete: "cascade" }),
+    /** 关联工作流：账本不随业务行删除连坐（工作流删除仅置空，留痕保留对账） */
+    workflowId: uuid("workflow_id").references(
+      () => workspaceAgentWorkflows.id,
+      { onDelete: "set null" },
+    ),
     enterpriseId: uuid("enterprise_id")
       .notNull()
       .references(() => enterprises.id, { onDelete: "cascade" }),
@@ -617,6 +619,15 @@ export const workspaceAgentJobs = pgTable(
     index("waj_next_retry")
       .on(t.nextRetryAt)
       .where(sql`${t.status} = 'queued' AND ${t.nextRetryAt} IS NOT NULL`),
+    // 认领扫描入口（status 前导 + createdAt 有序）：覆盖 next_retry_at IS NULL
+    // 的主路径与排序，不必逐行回表过滤（同 waw_status_created 先例）；终态行
+    // 清理（cleanupTerminalWorkspaceAgentJobs）亦复用本索引做有界范围删除
+    index("waj_status_created").on(t.status, t.createdAt),
+    // 崩溃恢复扫描（processing + started_at 超时）：仅收录在途行（量级=并发
+    // 数，稳态近空），started_at 直达 cutoff 范围，不随终态行累积膨胀
+    index("waj_processing_started")
+      .on(t.startedAt)
+      .where(sql`${t.status} = 'processing'`),
     check(
       "workspace_agent_job_status_chk",
       sql`${t.status} IN ('queued', 'processing', 'completed', 'failed')`,

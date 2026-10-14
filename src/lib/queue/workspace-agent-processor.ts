@@ -15,6 +15,9 @@
  *
  * 计费安全：LLM 计费按「实际发生的调用」逐次入账（usage 账本），重试产生的
  * 新调用如实计费；原子认领保证同一 job 不会被两个 worker 同时执行。
+ *
+ * 另含终态行清理（cleanupTerminalWorkspaceAgentJobs）：completed/failed 行
+ * 按保留期删除，防表无限膨胀拖慢扫描；由 worker 恢复循环低频调用。
  */
 import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm"
 import { db } from "@/db/client"
@@ -50,6 +53,13 @@ const MAX_JOB_RETRIES = 3
 
 /** 重试退避基数：第 n 次失败后等待 BASE * 2^(n-1) 秒 */
 const RETRY_BACKOFF_BASE_SEC = 30
+
+/**
+ * 终态任务行保留时长（ms）：completed/failed 行到期定期清理，防止队列
+ * 扫描随表膨胀退化为全表顺序扫描。30 天为队列留痕行业常规保留期，
+ * 兼顾排障回溯（job.result/errorMessage）与表规模可控。
+ */
+const TERMINAL_JOB_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 
 // ---------------------------------------------------------------------------
 // 崩溃恢复
@@ -145,6 +155,24 @@ export async function recoverStaleWorkspaceAgentJobs(): Promise<void> {
 // ---------------------------------------------------------------------------
 // 主循环
 // ---------------------------------------------------------------------------
+
+/**
+ * 终态行清理：删除 completed/failed 且创建时间早于保留期的任务行。
+ * 任务从创建到终态在分钟级（重试上限 + 有界退避），按 createdAt 保留与按
+ * completedAt 保留等价，且可直接复用 waj_status_created(status, created_at)
+ * 索引做有界范围删除，不引入额外索引。由 worker 恢复循环低频调用。
+ */
+export async function cleanupTerminalWorkspaceAgentJobs(): Promise<void> {
+  const cutoff = new Date(Date.now() - TERMINAL_JOB_RETENTION_MS)
+  await db
+    .delete(workspaceAgentJobs)
+    .where(
+      and(
+        inArray(workspaceAgentJobs.status, ["completed", "failed"]),
+        lte(workspaceAgentJobs.createdAt, cutoff),
+      ),
+    )
+}
 
 export async function processWorkspaceAgentQueueOnce(): Promise<ProcessResult[]> {
   // ── 1. 崩溃恢复（认领前先扫；worker 另有独立定时通道） ──

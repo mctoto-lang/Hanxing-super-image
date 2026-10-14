@@ -88,6 +88,24 @@ export function AgentPlanning({
     }, {} as Record<string, boolean>),
   )
 
+  // 上面 useState 初始化器仅首次挂载执行：挂载后新增的步骤（如轮询推进
+  // 产生的步骤）不在 expandedSteps 中，渲染取 undefined → 恒折叠，
+  // defaultExpanded 被静默忽略。在此为新增 id 补初始化；
+  // 既有 id（含用户已手动展开/折叠的）不覆盖。
+  useEffect(() => {
+    setExpandedSteps((prev) => {
+      const added = steps.filter((step) => !(step.id in prev))
+      if (added.length === 0) return prev
+      return added.reduce(
+        (acc, step) => {
+          acc[step.id] = step.defaultExpanded || false
+          return acc
+        },
+        { ...prev },
+      )
+    })
+  }, [steps])
+
   useEffect(
     () => () => {
       if (unmountTimerRef.current) clearTimeout(unmountTimerRef.current)

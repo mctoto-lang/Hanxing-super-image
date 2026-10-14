@@ -54,6 +54,7 @@ void (async () => {
     const {
       processWorkspaceAgentQueueOnce,
       recoverStaleWorkspaceAgentJobs,
+      cleanupTerminalWorkspaceAgentJobs,
     } = await import("@/lib/queue/workspace-agent-processor")
     const { syncMockupJobs } = await import("@/server/services/mockup-service")
     const { sampleAllServices } = await import("@/server/services/status-service")
@@ -138,11 +139,13 @@ void (async () => {
     }
 
     // 工作台 Agent 崩溃恢复独立循环：write_prompts 长任务（全套分批撰写）
-    // 会阻塞 workspace-agent 主轮询，独立通道保证 stale job 恢复不被卡死
+    // 会阻塞 workspace-agent 主轮询，独立通道保证 stale job 恢复不被卡死；
+    // 顺带低频执行终态 job 行清理（保留期见 TERMINAL_JOB_RETENTION_MS）
     const workspaceAgentRecoveryLoop = async (): Promise<void> => {
       while (running) {
         try {
           await recoverStaleWorkspaceAgentJobs()
+          await cleanupTerminalWorkspaceAgentJobs()
         } catch (err) {
           console.error(
             "[worker:workspace-agent-recovery] 恢复循环异常:",
