@@ -15,7 +15,8 @@ import { revalidatePath } from "next/cache"
 import { requireActionGuard } from "@/server/actions/action-kit"
 import { getGenerationPrompt, normalizeReferenceImages } from "@/lib/workspace/helpers"
 import type { BatchGenerationLanguage, CardImageRow } from "@/lib/workspace/types"
-import { PromptMutationKind, fetchOwnedCard, fetchOwnedTask } from "./shared"
+import { PromptMutationKind, fetchOwnedCard, fetchOwnedTask, lockedWorkspaceAgentCardError } from "./shared"
+import { generateAgentCardImageForAction } from "@/server/services/workspace-agent/production"
 
 
 // ═══════════════ 批量操作 ═══════════════
@@ -30,8 +31,11 @@ import { PromptMutationKind, fetchOwnedCard, fetchOwnedTask } from "./shared"
 export async function batchGenerateImageAction(
   cardIds: string[],
   input: {
-    apiId: string
-    size: string
+    /** Agent 管线（task.source = "agent"）忽略 apiId/size（一律用冻结值），
+     *  Agent 任务视图无生成配置入口，两者允许缺省；纯 Agent 批次可在模型
+     *  缺省时直接提交 */
+    apiId?: string
+    size?: string
     languagePreference?: BatchGenerationLanguage
   },
 ): Promise<{
@@ -62,12 +66,94 @@ export async function batchGenerateImageAction(
   const uniqueIds = [...new Set(cardIds)]
   if (uniqueIds.length === 0) return { ok: true, submitted: 0, tasks, errors }
 
-  // ── 模型查询 + 权限校验（整个批次只做一次，规则同 generateCardImageInternal）──
-  const [model] = await db
-    .select()
-    .from(models)
-    .where(eq(models.id, input.apiId))
-    .limit(1)
+  // ── 批量取归属卡片（一次查询复刻 fetchOwnedCard 的归属校验；
+  //    附带任务 source，用于把 Agent 任务卡片分流到 Agent 生图管线）──
+  const ownedRows = await db
+    .select({ card: promptCards, taskSource: workspaceTasks.source, taskId: workspaceTasks.id })
+    .from(promptCards)
+    .innerJoin(workspaceTasks, eq(promptCards.taskId, workspaceTasks.id))
+    .where(
+      and(
+        inArray(promptCards.id, uniqueIds),
+        eq(promptCards.enterpriseId, enterpriseId),
+        eq(workspaceTasks.userId, ctx.user.id),
+      ),
+    )
+
+  // ── Agent 任务卡片（task.source = "agent"）：强制走冻结模型 + kind 尺寸的
+  //    Agent 管线（generation_task source = "agent" + round + 终态自动评审），
+  //    不进入下方普通批量管线；同一批次卡类（face/back/box/border）必须严格
+  //    相同，混类批次整组拒绝 ──
+  const agentRows = ownedRows.filter((r) => r.taskSource === "agent")
+  const normalRows = ownedRows.filter((r) => r.taskSource !== "agent")
+  if (agentRows.length > 0) {
+    const agentKinds = new Set(
+      agentRows.map((r) => r.card.agentKind ?? "face"),
+    )
+    if (agentKinds.size > 1) {
+      // 混类批次（如卡面 + 牌背混选）：同批严格同类的硬规则，整组拒绝
+      for (const row of agentRows) {
+        errors.push({
+          cardId: row.card.id,
+          error: "Agent 批量生图禁止混类：face/back/box/border 须同批严格相同",
+        })
+      }
+    } else {
+      for (const row of agentRows) {
+        if (row.card.isLocked && row.card.agentKind) {
+          errors.push({
+            cardId: row.card.id,
+            error: "Agent 工作流尚未完成提示词阶段，卡片暂不可操作",
+          })
+          continue
+        }
+        const prompt = getGenerationPrompt(
+          {
+            prompt: row.card.prompt,
+            translatedPrompt: row.card.translatedPrompt,
+            displayLanguage: row.card.displayLanguage as "zh" | "en",
+          },
+          input.languagePreference,
+        )
+        if (!prompt.trim()) {
+          errors.push({ cardId: row.card.id, error: "提示词为空，请先填写提示词" })
+          continue
+        }
+        const res = await generateAgentCardImageForAction({
+          ctx,
+          enterpriseId,
+          taskId: row.taskId,
+          promptCardId: row.card.id,
+          prompt,
+        })
+        if (res.ok) {
+          tasks.push({
+            cardId: row.card.id,
+            cardImageId: res.cardImageId,
+            generationTaskId: res.generationTaskId,
+          })
+        } else {
+          errors.push({ cardId: row.card.id, error: res.error })
+        }
+      }
+    }
+  }
+  const agentSubmitted = tasks.length
+  const missingIdErrors = uniqueIds
+    .filter((id) => !ownedRows.some((r) => r.card.id === id))
+    .map((cardId) => ({ cardId, error: "卡片不存在" }))
+
+  // ── 模型查询 + 权限校验（普通卡片整个批次只做一次；Agent 卡片走冻结模型
+  //    不受此处影响——模型不可用时仅普通卡片报错）。apiId 缺省（Agent 任务
+  //    视图无生成配置入口）不查库，直接按模型不可用处理；纯 Agent 批次在
+  //    下方提前返回，普通卡片逐卡收到明确报错 ──
+  const [model] = input.apiId
+    ? await db
+        .select()
+        .from(models)
+        .where(eq(models.id, input.apiId))
+        .limit(1)
+    : []
   let modelError: string | null = null
   if (!model || !model.isActive || !model.visibleInWorkspace) {
     modelError = "模型不存在或不可用"
@@ -81,39 +167,44 @@ export async function batchGenerateImageAction(
       modelError = "该平台预置模型未对本企业开放"
     }
   }
-  if (!modelError) modelError = checkModelAccess(ctx, input.apiId)
+  if (!modelError && input.apiId) modelError = checkModelAccess(ctx, input.apiId)
+  if (modelError && normalRows.length === 0) {
+    // 全部为 Agent 卡：Agent 结果已就绪（成功或错误均在 tasks/errors 中）
+    return { ok: true, submitted: agentSubmitted, tasks, errors: [...errors, ...missingIdErrors] }
+  }
   if (modelError) {
     return {
       ok: true,
-      submitted: 0,
+      submitted: agentSubmitted,
       tasks,
-      errors: uniqueIds.map((cardId) => ({ cardId, error: modelError! })),
+      errors: [
+        ...errors,
+        ...normalRows.map((r) => ({ cardId: r.card.id, error: modelError! })),
+        ...missingIdErrors,
+      ],
     }
   }
 
-  // ── 批量取归属卡片（一次查询复刻 fetchOwnedCard 的归属校验）──
-  const ownedRows = await db
-    .select({ card: promptCards })
-    .from(promptCards)
-    .innerJoin(workspaceTasks, eq(promptCards.taskId, workspaceTasks.id))
-    .where(
-      and(
-        inArray(promptCards.id, uniqueIds),
-        eq(promptCards.enterpriseId, enterpriseId),
-        eq(workspaceTasks.userId, ctx.user.id),
-      ),
-    )
-  const ownedMap = new Map(ownedRows.map((r) => [r.card.id, r.card]))
+  const ownedMap = new Map(normalRows.map((r) => [r.card.id, r.card]))
+  // Agent 卡已在上方分流处理（成功入 tasks 或错误入 errors），不得再进普通
+  // 卡校验循环——否则已成功提交的 Agent 卡会被误报「卡片不存在」（与成功
+  // 记录同卡并存，前端批量结果展示错乱）
+  const agentCardIds = new Set(agentRows.map((r) => r.card.id))
 
-  // ── 内存中逐卡校验提示词 ──
+  // ── 内存中逐卡校验提示词（普通卡片） ──
   const valid: Array<{
     card: typeof promptCards.$inferSelect
     prompt: string
   }> = []
   for (const cardId of uniqueIds) {
+    if (agentCardIds.has(cardId)) continue
     const card = ownedMap.get(cardId)
     if (!card) {
       errors.push({ cardId, error: "卡片不存在" })
+      continue
+    }
+    if (card.isLocked && card.agentKind) {
+      errors.push({ cardId, error: "Agent 工作流尚未完成提示词阶段，卡片暂不可操作" })
       continue
     }
     const prompt = getGenerationPrompt(
@@ -130,7 +221,7 @@ export async function batchGenerateImageAction(
     }
     valid.push({ card, prompt })
   }
-  if (valid.length === 0) return { ok: true, submitted: 0, tasks, errors }
+  if (valid.length === 0) return { ok: true, submitted: agentSubmitted, tasks, errors }
 
   // ── 一次性总额扣费 + 建任务/图片行（单事务，任一步失败整体回滚）。
   // 此前先扣费提交、再插行：崩溃在中间窗口会出现「已扣费但无任务行」，
@@ -228,11 +319,12 @@ export async function batchGenerateImageAction(
   } catch (err) {
     const msg = err instanceof Error ? err.message : "批量提交失败"
     console.error("[workspace] 批量生图扣费/建行失败（事务已回滚）:", msg)
+    // Agent 卡片已各自独立提交成功（独立事务/扣费），不随普通批次回滚丢弃
     return {
       ok: true,
-      submitted: 0,
-      tasks: [],
-      errors: valid.map((v) => ({ cardId: v.card.id, error: msg })),
+      submitted: agentSubmitted,
+      tasks,
+      errors: [...errors, ...valid.map((v) => ({ cardId: v.card.id, error: msg }))],
     }
   }
 
@@ -263,7 +355,12 @@ export async function batchGenerateImageAction(
     }))
 
     revalidatePath("/workspace")
-    return { ok: true, submitted: valid.length, tasks: resultTasks, errors }
+    return {
+      ok: true,
+      submitted: agentSubmitted + valid.length,
+      tasks: [...tasks, ...resultTasks],
+      errors,
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : "批量提交失败"
     console.error("[workspace] 批量生图入队失败，执行补偿:", msg)
@@ -298,9 +395,9 @@ export async function batchGenerateImageAction(
     }
     return {
       ok: true,
-      submitted: 0,
-      tasks: [],
-      errors: valid.map((v) => ({ cardId: v.card.id, error: msg })),
+      submitted: agentSubmitted,
+      tasks,
+      errors: [...errors, ...valid.map((v) => ({ cardId: v.card.id, error: msg }))],
     }
   }
 }
@@ -373,6 +470,11 @@ async function batchMutatePrompt(
       continue
     }
     const c = owned.card
+    const lockedError = lockedWorkspaceAgentCardError(owned)
+    if (lockedError) {
+      errors.push({ cardId, error: lockedError })
+      continue
+    }
     // 翻译跳过已有有效译文（译文存在 + 源提示词未变 + 状态已同步）
     if (isTranslate) {
       const hasValid =
@@ -473,6 +575,9 @@ export async function batchReplacePromptsAction(
   const task = await fetchOwnedTask(ctx, taskId)
   if (!task) {
     return { ok: false, updatedCount: 0, createdCount: 0, conflictCount: 0, cardCount: 0 }
+  }
+  if (task.source === "agent") {
+    return { ok: false, updatedCount: 0, createdCount: 0, conflictCount: 0, cardCount: task.cardCount }
   }
 
   const allCards = await db

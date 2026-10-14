@@ -22,11 +22,16 @@ import {
   AlertCircle,
   RefreshCw,
   Sparkles,
+  Compass,
+  Lightbulb,
+  PenLine,
   ArrowUp,
   Replace,
   Languages,
   LibraryBig,
   ListTodo,
+  Activity,
+  Bot,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { MorphingInfinity } from "@/components/ui/morphing-infinity"
@@ -63,7 +68,7 @@ import { toast } from "sonner"
 import { Spinner } from "@/components/workspace/spinner"
 import { NewTaskDialog } from "@/components/workspace/new-task-dialog"
 import { CardGrid } from "@/components/workspace/card-grid"
-import { ToolPanel } from "@/components/workspace/tool-panel"
+import { ToolPanel, type WorkspaceCardReviewPayload } from "@/components/workspace/tool-panel"
 import { TemplateSelectDialog } from "@/components/workspace/template-select-dialog"
 import { ModelSelectDialog } from "@/components/workspace/model-select-dialog"
 import { SizeSelectDialog } from "@/components/workspace/size-select-dialog"
@@ -72,6 +77,18 @@ import { BatchConfirmDialog } from "@/components/workspace/batch-confirm-dialog"
 import { GenerationConfigDialog } from "@/components/workspace/generation-config-dialog"
 import { BatchReplacePromptDialog } from "@/components/workspace/batch-replace-prompt-dialog"
 import { BatchImageUploadDialog } from "@/components/workspace/batch-image-upload-dialog"
+import {
+  WorkspaceAgentDialog,
+  type WorkspaceAgentStatsInput,
+  type WorkspaceAgentCardSummaryInput,
+  type WorkspaceAgentItemInput,
+} from "@/components/workspace/workspace-agent-dialog"
+import { WorkspaceAgentProgressDialog } from "@/components/workspace/workspace-agent-progress-dialog"
+import type {
+  PipelineStage,
+  StageStatus,
+} from "@/components/ui/build-pipeline"
+import { WORKSPACE_AGENT_TEMPLATES } from "@/lib/workspace/agent-templates"
 import {
   listWorkspaceTasksAction,
   getTaskStatusAction,
@@ -87,12 +104,23 @@ import {
   batchDeepenAction,
   batchRegeneratePromptAction,
   batchTranslatePromptAction,
+  getWorkspaceAgentProgressAction,
+  getWorkspaceAgentCardReviewAction,
+  restartWorkspaceAgentCardAction,
+  downloadWorkspaceAgentOracleCsvAction,
 } from "@/server/actions/workspace"
+import {
+  WORKSPACE_AGENT_STAGES,
+  type WorkspaceAgentCardStatus,
+  type WorkspaceAgentStage,
+  type WorkspaceAgentStageProgress,
+} from "@/lib/workspace/agent-types"
+import type { WorkspaceAgentProgressPayload } from "@/server/services/workspace-agent/progress"
 import {
   findCountMismatch,
   getBatchGenerationLanguageSummary,
+  mergeCardsWithImageSummary,
   mergeImageRows,
-  sameCardDisplay,
 } from "@/lib/workspace/helpers"
 import type {
   WorkspaceTaskRow,
@@ -141,81 +169,8 @@ function saveStoredGenerationConfig(config: StoredGenerationConfig) {
   localStorage.setItem(GENERATION_CONFIG_STORAGE_KEY, JSON.stringify(config))
 }
 
-// ─── 卡片合并辅助（轮询时保留本地 prompt 编辑 + 身份稳定） ───
-
-function mergeCardsWithImageSummary(
-  fetchedCards: PromptCardRow[],
-  payload: TaskCardImagesPayload,
-  previousCards: PromptCardRow[] = [],
-): PromptCardRow[] {
-  const previousCardMap = new Map(previousCards.map((card) => [card.id, card]))
-
-  // 按 card.id 去重，避免后端 JOIN 膨胀导致重复渲染
-  const dedupedCards = Array.from(
-    fetchedCards.reduce(
-      (map, card) => map.set(card.id, card),
-      new Map<string, PromptCardRow>(),
-    ).values(),
-  )
-
-  return dedupedCards.map((card) => {
-    const summary = payload.cards[card.id]
-    const selected = summary?.selectedImage
-    const previousCard = previousCardMap.get(card.id)
-
-    let merged: PromptCardRow
-    if (!selected) {
-      merged = !previousCard
-        ? card
-        : {
-            ...previousCard,
-            ...card,
-            // 轮询期间保留本地 prompt，避免覆盖用户正在编辑的内容
-            prompt: previousCard.prompt,
-            translatedPrompt: previousCard.translatedPrompt,
-            translationSourcePrompt: previousCard.translationSourcePrompt,
-            translationStatus: previousCard.translationStatus,
-            selectedImageId: card.selectedImageId ?? previousCard.selectedImageId,
-            selImgId: card.selImgId ?? previousCard.selImgId,
-            selImgUrl: card.selImgUrl ?? previousCard.selImgUrl,
-            selImgModelName: card.selImgModelName ?? previousCard.selImgModelName,
-            selImgSize: card.selImgSize ?? previousCard.selImgSize,
-            selImgStartedAt: card.selImgStartedAt ?? previousCard.selImgStartedAt,
-            selImgCompletedAt:
-              card.selImgCompletedAt ?? previousCard.selImgCompletedAt,
-            selImgCreatedAt: card.selImgCreatedAt ?? previousCard.selImgCreatedAt,
-          }
-    } else {
-      merged = {
-        ...previousCard,
-        ...card,
-        prompt: previousCard ? previousCard.prompt : card.prompt,
-        translatedPrompt: previousCard
-          ? previousCard.translatedPrompt
-          : card.translatedPrompt,
-        translationSourcePrompt: previousCard
-          ? previousCard.translationSourcePrompt
-          : card.translationSourcePrompt,
-        translationStatus: previousCard
-          ? previousCard.translationStatus
-          : card.translationStatus,
-        selectedImageId: selected.id,
-        selImgId: selected.id,
-        selImgUrl: selected.imageUrl,
-        selImgModelName: selected.modelName,
-        selImgSize: selected.size,
-        selImgStartedAt: selected.startedAt,
-        selImgCompletedAt: selected.completedAt,
-        selImgCreatedAt: selected.createdAt,
-      }
-    }
-    // 渲染相关字段未变化 → 复用旧对象引用，FlipCard memo 跳过重渲染
-    if (previousCard && sameCardDisplay(previousCard, merged)) {
-      return previousCard
-    }
-    return merged
-  })
-}
+// ─── 卡片合并辅助：轮询合并已迁至 lib/workspace/helpers（mergeCardsWithImageSummary，
+//     含 Agent 解锁瞬间采信服务端 prompt 的回填规则），可被单测覆盖 ───
 
 function buildCardImagesMap(
   payload: TaskCardImagesPayload,
@@ -273,6 +228,148 @@ function getRenamedTaskTitle(title: string): string | null {
 
 function shouldShowTaskActions(isEditingTitle: boolean): boolean {
   return !isEditingTitle
+}
+
+// ─── 工作台 Agent（source = agent 任务的四阶段进度视图） ───
+
+/** 严格四阶段标题（顺序对齐 WORKSPACE_AGENT_STAGES；进度弹窗/主区共用） */
+const AGENT_PROGRESS_STAGE_TITLES = [
+  "主题选择",
+  "想象力程度",
+  "落地方向",
+  "提示词撰写",
+] as const
+
+/** 阶段 → 归属日志的节点 key（与服务端 dialog 日志归集同口径） */
+const STAGE_LOG_NODE_KEYS: Record<WorkspaceAgentStage, string[]> = {
+  clarify: ["creative_director", "style_director", "supervisor"],
+  draft: ["creative_director", "supervisor"],
+  art: ["style_director", "supervisor"],
+  compose: ["prompt_designer", "supervisor"],
+}
+
+/** 阶段语义图标（进度弹窗站点/列表行） */
+const STAGE_ICONS = {
+  clarify: Lightbulb,
+  draft: Sparkles,
+  art: Compass,
+  compose: PenLine,
+} as const
+
+/** workflow 终态（Agent 进度轮询停止条件） */
+function isTerminalAgentStatus(status: string | null | undefined): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled"
+}
+
+/** Agent 进度视图（弹窗入参形状；由 getWorkspaceAgentProgressAction 载荷归一） */
+interface AgentProgressEvent {
+  nodeKey: string | null
+  status: string | null
+  detail: string | null
+  createdAt: string
+}
+
+interface AgentProgressView {
+  workflowId: string | null
+  status: string | null
+  currentStage: WorkspaceAgentStage
+  stages: WorkspaceAgentStageProgress[]
+  /** 服务端算好的阶段展示状态（locked/active/done；缺省客户端重算） */
+  stageStatuses: Partial<
+    Record<WorkspaceAgentStage, "locked" | "active" | "done">
+  > | null
+  /** 单卡状态计数（byStatus 签名对比 → 静默补拉卡片行，驱动状态实时推进） */
+  cardsByStatus: Partial<Record<WorkspaceAgentCardStatus, number>>
+  /** 工作流创建时间（ISO；进度弹窗页脚） */
+  createdAt: string | null
+  /** 发起模板 key（进度弹窗上下文条取模板名） */
+  templateKey: string | null
+  /** 事件留痕（进度弹窗阶段日志源；升序由读取侧排） */
+  events: AgentProgressEvent[]
+  stats: WorkspaceAgentStatsInput | null
+  cardSummary: WorkspaceAgentCardSummaryInput | null
+  agents: WorkspaceAgentItemInput[] | null
+  /** 神谕文案交付进度（oracle58；null = 非神谕任务） */
+  oracleCopy: { written: number; total: number; confirmed: boolean } | null
+  updatedAt: string | null
+}
+
+/** getWorkspaceAgentProgressAction 返回类型（action 契约自动对齐） */
+type AgentProgressResult = Awaited<
+  ReturnType<typeof getWorkspaceAgentProgressAction>
+>
+
+/**
+ * 轮询载荷 → 弹窗视图（宽松归一）：
+ * - 兼容 ActionResult<{ progress }> 包装与扁平载荷两种形状（服务端契约迭代期）；
+ * - 弹窗数据取载荷的 dialog 兼容投影（stats/cardSummary/agents/阶段日志）；
+ * - 阶段展示状态优先取服务端 stageStatuses，缺省客户端用 resolveStageStatuses
+ *   按阶段进度重算；空载荷（工作流不存在/无权限）返回 null 按空态处理。
+ */
+function normalizeAgentProgress(
+  raw: AgentProgressResult | null | undefined,
+): AgentProgressView | null {
+  if (!raw) return null
+  // 解包：{ ok, progress } 包装 → progress；扁平载荷原样
+  const wrapper = raw as { progress?: unknown }
+  const payload = (
+    typeof wrapper === "object" &&
+    "progress" in wrapper &&
+    wrapper.progress &&
+    typeof wrapper.progress === "object"
+      ? wrapper.progress
+      : raw
+  ) as unknown as WorkspaceAgentProgressPayload
+  const workflow = payload.workflow
+  const currentStage = WORKSPACE_AGENT_STAGES.includes(
+    workflow?.currentStage as WorkspaceAgentStage,
+  )
+    ? (workflow?.currentStage as WorkspaceAgentStage)
+    : "clarify"
+  const stageList = (
+    Array.isArray(payload.stages) ? payload.stages : []
+  ) as WorkspaceAgentStageProgress[]
+  const byStage = new Map(stageList.map((s) => [s.stage, s] as const))
+  return {
+    workflowId: workflow?.id ?? null,
+    status: workflow?.status ?? null,
+    currentStage,
+    stages: WORKSPACE_AGENT_STAGES.map(
+      (stage): WorkspaceAgentStageProgress =>
+        byStage.get(stage) ?? {
+          stage,
+          total: 0,
+          completed: 0,
+          failed: 0,
+          inFlight: 0,
+        },
+    ),
+    stageStatuses:
+      payload.stageStatuses && typeof payload.stageStatuses === "object"
+        ? (payload.stageStatuses as Partial<
+            Record<WorkspaceAgentStage, "locked" | "active" | "done">
+          >)
+        : null,
+    cardsByStatus: payload.cards?.byStatus ?? {},
+    createdAt: workflow?.createdAt ?? null,
+    templateKey: payload.input?.templateKey ?? null,
+    events: Array.isArray(payload.events)
+      ? payload.events.map((ev) => ({
+          nodeKey: ev.nodeKey ?? null,
+          status: ev.status ?? null,
+          detail: ev.detail ?? null,
+          createdAt: ev.createdAt ?? "",
+        }))
+      : [],
+    stats: payload.dialog?.stats ?? null,
+    cardSummary: payload.dialog?.cardSummary ?? null,
+    agents:
+      payload.dialog?.agents && Array.isArray(payload.dialog.agents)
+        ? payload.dialog.agents
+        : null,
+    oracleCopy: payload.oracleCopy ?? null,
+    updatedAt: workflow?.updatedAt ?? null,
+  }
 }
 
 // ─── 侧边栏骨架屏 ───
@@ -655,6 +752,21 @@ export function WorkspaceClient({
   const [showModelDialog, setShowModelDialog] = useState(false)
   const [showSizeDialog, setShowSizeDialog] = useState(false)
 
+  // ─── Agent 任务（source = agent）：总览 / 工作流向导弹窗 ───
+  const [showAgentDialog, setShowAgentDialog] = useState(false)
+  // 工作流向导（可操作四阶段）；初建任务自动打开时 startAtStyle = true 从风格确认步骤开始，
+  // 其余入口（执行进度按钮等）打开时从轮询载荷恢复到 current stage
+  // 独立执行进度弹窗（只读流水线视图 + 阶段日志；向导仍承担四阶段交互操作）
+  const [showAgentProgressDialog, setShowAgentProgressDialog] = useState(false)
+  const [agentFlowStartAtStyle, setAgentFlowStartAtStyle] = useState(false)
+  const [agentProgressView, setAgentProgressView] =
+    useState<AgentProgressView | null>(null)
+  // 桥接：taskId → workflowId（Agent 发起响应带回；任务行 source 字段
+  // 未由服务端列表返回前的兜底，让创建后立即识别 Agent 任务并开始轮询）
+  const [agentWorkflowByTask, setAgentWorkflowByTask] = useState<
+    Map<string, string>
+  >(new Map())
+
   // ─── 确认对话框 ───
   const [batchConfirm, setBatchConfirm] = useState<BatchConfirmState>(null)
   const [deleteConfirmTask, setDeleteConfirmTask] =
@@ -685,6 +797,12 @@ export function WorkspaceClient({
   const cardImagesPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const batchPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const translatePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // Agent 进度轮询定时器（source = agent 的任务；终态自停）
+  const agentProgressPollRef = useRef<ReturnType<typeof setInterval> | null>(
+    null,
+  )
+  // 单卡状态计数签名（byStatus 变化 → 静默补拉卡片行，驱动撰写/生图/评审状态实时推进）
+  const agentCardsSignatureRef = useRef("")
   // 增量轮询游标（上一轮 serverTime）；null = 下次全量拉取
   const cardImagesSinceRef = useRef<string | null>(null)
   // cardImagesMap 镜像：轮询对账需要在 setState 后立即读取最新 map（不等 effect）
@@ -700,10 +818,10 @@ export function WorkspaceClient({
   const activeTaskIdRef = useRef<string | null>(null)
   const tasksRef = useRef(tasks)
   const cardsRef = useRef(cards)
-  const fetchTasksRef = useRef<(_page?: number, _append?: boolean) => Promise<void>>(
-    async () => {},
-  )
-  const fetchCardsRef = useRef<(_taskId: string) => Promise<void>>(
+  const fetchTasksRef = useRef<
+    (_page?: number, _append?: boolean, _opts?: { silent?: boolean }) => Promise<void>
+  >(async () => {})
+  const fetchCardsRef = useRef<(_taskId: string, _opts?: { silent?: boolean }) => Promise<void>>(
     async () => {},
   )
   const pollTaskStatusRef = useRef<(_taskId: string) => Promise<void>>(
@@ -712,6 +830,9 @@ export function WorkspaceClient({
   const pollCardImagesRef = useRef<() => Promise<void>>(async () => {})
   const stopCardImagesPollRef = useRef<() => void>(() => {})
   const startCardImagesPollRef = useRef<() => void>(() => {})
+  const pollAgentProgressRef = useRef<(_taskId: string) => Promise<void>>(
+    async () => {},
+  )
   const activeCardIdRef = useRef<string | null>(null)
 
   useEffect(() => {
@@ -755,8 +876,9 @@ export function WorkspaceClient({
   // ─── 数据获取 ───
 
   const fetchTasks = useCallback(
-    async (page = 1, append = false) => {
-      setLoadingTasks(true)
+    async (page = 1, append = false, opts?: { silent?: boolean }) => {
+      // silent：不置 loading（后台刷新，避免列表/主区加载态闪动）
+      if (!opts?.silent) setLoadingTasks(true)
       try {
         const data = await listWorkspaceTasksAction({
           page,
@@ -772,14 +894,16 @@ export function WorkspaceClient({
       } catch {
         toast.error("获取任务列表失败")
       } finally {
-        setLoadingTasks(false)
+        if (!opts?.silent) setLoadingTasks(false)
       }
     },
     [debouncedSearch],
   )
 
-  const fetchCards = useCallback(async (taskId: string) => {
-    setLoadingCards(true)
+  const fetchCards = useCallback(async (taskId: string, opts?: { silent?: boolean }) => {
+    // silent：不置全屏加载态，且以现有卡片为基线合并（保留本地编辑 + memo 身份）
+    const silent = opts?.silent === true
+    if (!silent) setLoadingCards(true)
     try {
       const [cardsData, imagesData] = await Promise.all([
         getTaskCardsAction(taskId, { pageSize: WORKSPACE_CARDS_PAGE_SIZE }),
@@ -788,7 +912,9 @@ export function WorkspaceClient({
       // 竞态保护：如果请求返回后 activeTaskId 已变化，丢弃本次结果
       if (activeTaskIdRef.current !== taskId) return
       const fetchedCards = cardsData.cards
-      setCards(mergeCardsWithImageSummary(fetchedCards, imagesData, []))
+      setCards((prev) =>
+        mergeCardsWithImageSummary(fetchedCards, imagesData, silent ? prev : []),
+      )
       const nextMap = buildCardImagesMap(imagesData)
       setCardImagesMap(nextMap)
       cardImagesMapRef.current = nextMap
@@ -803,7 +929,7 @@ export function WorkspaceClient({
     } catch {
       toast.error("获取卡片列表失败")
     } finally {
-      setLoadingCards(false)
+      if (!silent) setLoadingCards(false)
     }
   }, [])
 
@@ -926,9 +1052,10 @@ export function WorkspaceClient({
         cardImagesPollRef.current = null
         setGeneratingImageCardIds(new Set())
         setBatchGeneratingImageCardIds(new Set())
-        void fetchTasksRef.current(1)
+        // 静默刷新：避免生成收尾时全屏 Spinner 替换卡片网格（闪烁）
+        void fetchTasksRef.current(1, false, { silent: true })
         // 末轮全量刷新卡片行，补齐 selImg/选中信息
-        void fetchCardsRef.current(currentTaskId)
+        void fetchCardsRef.current(currentTaskId, { silent: true })
       }
 
       // 清除已完成的单张生图状态
@@ -986,6 +1113,204 @@ export function WorkspaceClient({
   useEffect(() => {
     startCardImagesPollRef.current = startCardImagesPoll
   }, [startCardImagesPoll])
+
+  // ─── Agent 进度轮询（source = agent 的激活任务；3s 一拍，终态自停） ───
+
+  const stopAgentProgressPoll = useCallback(() => {
+    if (agentProgressPollRef.current) {
+      clearInterval(agentProgressPollRef.current)
+      agentProgressPollRef.current = null
+    }
+  }, [])
+
+  const pollAgentProgress = useCallback(
+    async (taskId: string) => {
+      try {
+        const data = await getWorkspaceAgentProgressAction(taskId)
+        // 竞态保护：请求返回后任务已切换则丢弃
+        if (activeTaskIdRef.current !== taskId) return
+        const view = normalizeAgentProgress(data)
+        setAgentProgressView(view)
+        // 单卡状态计数变化（撰写/生图/评审/落定推进）→ 静默补拉卡片行
+        const signature = JSON.stringify(view?.cardsByStatus ?? {})
+        if (signature !== agentCardsSignatureRef.current) {
+          agentCardsSignatureRef.current = signature
+          if (view) void fetchCardsRef.current(taskId, { silent: true })
+        }
+        if (view && isTerminalAgentStatus(view.status)) {
+          stopAgentProgressPoll()
+          // 终态后补拉任务列表与卡片（产出物落回工作台任务；静默防闪烁）
+          void fetchTasksRef.current(1, false, { silent: true })
+          void fetchCardsRef.current(taskId, { silent: true })
+        }
+      } catch {
+        // 轮询失败不中断，下次间隔重试
+      }
+    },
+    [stopAgentProgressPoll],
+  )
+
+  useEffect(() => {
+    pollAgentProgressRef.current = pollAgentProgress
+  }, [pollAgentProgress])
+
+  /** 当前激活任务是否为 Agent 任务（source = agent；兼容 agentWorkflowId 冗余字段与发起桥接） */
+  const isAgentTask =
+    activeTask?.source === "agent" ||
+    Boolean(activeTask?.agentWorkflowId) ||
+    (activeTaskId != null && agentWorkflowByTask.has(activeTaskId))
+
+  // Agent 任务激活时启动轮询；切走 / 非任务态停止并清空视图
+  useEffect(() => {
+    if (!activeTaskId || !isAgentTask) {
+      stopAgentProgressPoll()
+      setAgentProgressView(null)
+      return
+    }
+    const taskId = activeTaskId
+    setAgentProgressView(null)
+    agentCardsSignatureRef.current = ""
+    void pollAgentProgressRef.current(taskId)
+    agentProgressPollRef.current = setInterval(
+      () => void pollAgentProgressRef.current(taskId),
+      3000,
+    )
+    return () => stopAgentProgressPoll()
+  }, [activeTaskId, isAgentTask, stopAgentProgressPoll])
+
+  /** 主区运行态文案：当前阶段标题（按 WORKSPACE_AGENT_STAGES 序位映射） */
+  const agentCurrentStageTitle = agentProgressView
+    ? (AGENT_PROGRESS_STAGE_TITLES[
+        Math.max(0, WORKSPACE_AGENT_STAGES.indexOf(agentProgressView.currentStage))
+      ] ??
+      AGENT_PROGRESS_STAGE_TITLES[0])
+    : null
+
+  /** 独立进度弹窗 stages：阶段标题 × stageStatuses × 事件日志（工作流失败时当前阶段标红） */
+  const agentProgressStages = useMemo<PipelineStage[] | null>(() => {
+    if (!agentProgressView) return null
+    const statuses = agentProgressView.stageStatuses
+    const workflowFailed = agentProgressView.status === "failed"
+    const eventsAsc = [...agentProgressView.events].sort((a, b) =>
+      a.createdAt.localeCompare(b.createdAt),
+    )
+    return WORKSPACE_AGENT_STAGES.map((stage, index) => {
+      const state = statuses?.[stage]
+      let status: StageStatus =
+        state === "done" ? "passed" : state === "active" ? "running" : "queued"
+      // 阶段状态本身不产 failed：工作流失败时把运行中/当前阶段标红
+      if (
+        workflowFailed &&
+        (status === "running" || stage === agentProgressView.currentStage)
+      ) {
+        status = "failed"
+      }
+      const nodeKeys = STAGE_LOG_NODE_KEYS[stage]
+      const logs = eventsAsc
+        .filter((ev) => ev.nodeKey && nodeKeys.includes(ev.nodeKey) && ev.detail)
+        .slice(-20)
+        .map((ev) => ({
+          time: new Date(ev.createdAt).toLocaleTimeString("zh-CN", {
+            hour12: false,
+          }),
+          message: ev.detail ?? "",
+          level:
+            ev.status === "error"
+              ? ("error" as const)
+              : ev.status === "warn"
+                ? ("warning" as const)
+                : ("info" as const),
+        }))
+      return {
+        id: stage,
+        name: AGENT_PROGRESS_STAGE_TITLES[index] ?? stage,
+        icon: STAGE_ICONS[stage],
+        status,
+        logs,
+      }
+    })
+  }, [agentProgressView])
+
+  /** 进度弹窗上下文条：任务标题 · 卡牌模板名 · #工作流ID */
+  const agentPipelineContext = useMemo(() => {
+    if (!agentProgressView) return undefined
+    const templateName = agentProgressView.templateKey
+      ? WORKSPACE_AGENT_TEMPLATES.find(
+          (t) => t.meta.key === agentProgressView.templateKey,
+        )?.meta.name ?? null
+      : null
+    return [
+      activeTask?.title ?? null,
+      templateName,
+      agentProgressView.workflowId
+        ? `#${agentProgressView.workflowId.slice(0, 8)}`
+        : null,
+    ].filter((value): value is string => Boolean(value && value.trim()))
+  }, [agentProgressView, activeTask?.title])
+
+  // ─── 画面评审（按当前活动卡片查询跨轮留痕） ───
+  const [cardReview, setCardReview] = useState<WorkspaceCardReviewPayload | null>(null)
+  const activeAgentCard = activeCardId
+    ? cards.find((card) => card.id === activeCardId) ?? null
+    : null
+  // Agent 单卡状态：优先取卡片行 agentStatus（评审 effect 在锁定态会清空 cardReview，
+  // 后者仅作旧数据回退）；ToolPanel 据此显示撰写中/评审中并禁用操作
+  const agentCardStatus = (
+    activeAgentCard?.agentStatus ?? cardReview?.card?.status ?? null
+  ) as WorkspaceAgentCardStatus | null
+  useEffect(() => {
+    if (!isAgentTask || !activeCardId || activeAgentCard?.isLocked) {
+      setCardReview(null)
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const result = await getWorkspaceAgentCardReviewAction(activeCardId)
+        if (!cancelled && result.ok) {
+          const rounds = result.review.rounds
+          const lastRound = rounds.at(-1)
+          const reviews = lastRound?.reviews ?? []
+          const average = (key: "content" | "aesthetic" | "consistency") => {
+            const values = reviews.map((review) => review.scores[key]).filter((value): value is number => value != null)
+            return values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null
+          }
+          const verdict = lastRound?.verdict?.verdict ?? null
+          const records = rounds.flatMap((round) => round.reviews.map((review) => ({
+            id: `${round.roundId}:${review.reviewerId}`,
+            workflowId: result.review.card.id,
+            cardId: result.review.card.id,
+            roundNumber: round.roundNumber,
+            reviewerId: review.reviewerId,
+            reviewerName: review.reviewerName,
+            scores: review.scores,
+            violations: review.violations,
+            verdict: round.verdict?.verdict ?? null,
+            reason: Object.values(review.reasons).filter(Boolean).join("；"),
+            createdAt: review.createdAt,
+          })))
+          setCardReview({
+            card: {
+              status: result.review.card.status,
+              qualityThreshold: result.review.card.qualityThreshold,
+            },
+            averageScores: { content: average("content"), aesthetic: average("aesthetic"), consistency: average("consistency") },
+            weightedTotal: lastRound?.weightedTotalScore ?? null,
+            verdict,
+            summary: lastRound?.verdict?.detail ?? lastRound?.reviews.map((review) => Object.values(review.reasons).filter(Boolean).join("；")).filter(Boolean).join("\n") ?? null,
+            records,
+          })
+        } else if (!cancelled) {
+          setCardReview(null)
+        }
+      } catch {
+        if (!cancelled) setCardReview(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [activeCardId, activeAgentCard?.isLocked, isAgentTask, cardImagesMap])
 
   // ─── 搜索防抖 ───
   useEffect(() => {
@@ -1105,6 +1430,10 @@ export function WorkspaceClient({
         clearInterval(translatePollRef.current)
         translatePollRef.current = null
       }
+      if (agentProgressPollRef.current) {
+        clearInterval(agentProgressPollRef.current)
+        agentProgressPollRef.current = null
+      }
       if (taskRefreshTimeoutRef.current) {
         clearTimeout(taskRefreshTimeoutRef.current)
         taskRefreshTimeoutRef.current = null
@@ -1125,6 +1454,9 @@ export function WorkspaceClient({
     // 切换任务同样退出工具面板（与批量模式行为一致）
     setToolPanelOpen(false)
     setActiveCardId(null)
+    // 切换任务关闭执行进度弹窗（含内嵌向导；均按当前激活任务取数，避免串显）
+    setShowAgentProgressDialog(false)
+    setAgentFlowStartAtStyle(false)
     setActiveTaskId(task.id)
   }, [])
 
@@ -1200,21 +1532,40 @@ export function WorkspaceClient({
     }
   }, [])
 
-  const handleTaskCreated = useCallback((taskId: string, _cardCount: number) => {
-    void fetchTasksRef.current(1)
-    setActiveTaskId(taskId)
-    setCards([])
-    setShowNewTask(false)
-    // 清理已有轮询再启动新轮询，避免多个 interval 并行
-    if (pollingRef.current) {
-      clearInterval(pollingRef.current)
-      pollingRef.current = null
-    }
-    pollingRef.current = setInterval(
-      () => void pollTaskStatusRef.current(taskId),
-      3000,
-    )
-  }, [])
+  const handleTaskCreated = useCallback(
+    (
+      taskId: string,
+      _cardCount: number,
+      options?: { source?: "manual" | "agent"; workflowId?: string },
+    ) => {
+      // Agent 任务：记录 taskId → workflowId 桥接（进度轮询按 workflowId 查询）
+      if (options?.source === "agent" && options.workflowId) {
+        setAgentWorkflowByTask(
+          (prev) => new Map(prev).set(taskId, options.workflowId!),
+        )
+        // 初建任务自动打开执行进度弹窗，向导折叠区自动展开、从风格确认步骤开始
+        // （随后四阶段可操作）
+        setAgentFlowStartAtStyle(true)
+        setShowAgentProgressDialog(true)
+      } else {
+        setAgentFlowStartAtStyle(false)
+      }
+      void fetchTasksRef.current(1)
+      setActiveTaskId(taskId)
+      setCards([])
+      setShowNewTask(false)
+      // 清理已有轮询再启动新轮询，避免多个 interval 并行
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current)
+        pollingRef.current = null
+      }
+      pollingRef.current = setInterval(
+        () => void pollTaskStatusRef.current(taskId),
+        3000,
+      )
+    },
+    [],
+  )
 
   // ─── 卡片操作 ───
 
@@ -1272,6 +1623,42 @@ export function WorkspaceClient({
     )
   }, [])
 
+  /** 重新 Agent 生成（打回耗尽卡的新周期入口）：重置打回轮数并按当前提示词
+   *  重新进入生图 → 自动评审循环；完成后补拉卡片与进度 */
+  const handleRestartAgentCard = useCallback(async (cardId: string) => {
+    try {
+      const result = await restartWorkspaceAgentCardAction(cardId)
+      if (!result.ok) throw new Error(result.error || "重新 Agent 生成失败")
+      toast.success("已重新开启 Agent 生图与评审周期")
+      const taskId = activeTaskIdRef.current
+      if (taskId) await fetchCardsRef.current(taskId)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "重新 Agent 生成失败")
+    }
+  }, [])
+
+  /** 神谕文案 CSV 下载：action 返回 CSV 文本，前端 Blob 触发浏览器下载 */
+  const handleDownloadOracleCsv = useCallback(async () => {
+    const taskId = activeTaskIdRef.current
+    if (!taskId) return
+    try {
+      const result = await downloadWorkspaceAgentOracleCsvAction(taskId)
+      if (!result.ok) throw new Error(result.error || "下载神谕文案失败")
+      const blob = new Blob([`\uFEFF${result.csv}`], {
+        type: "text/csv;charset=utf-8",
+      })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement("a")
+      anchor.href = url
+      anchor.download = result.filename
+      anchor.click()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      toast.success("神谕文案 CSV 已开始下载")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "下载神谕文案失败")
+    }
+  }, [])
+
   /** 添加空白卡片：直接落库（提示词为空），新卡自动翻到提示词面编辑 */
   const handleAddCard = useCallback(
     async (): Promise<PromptCardRow | null> => {
@@ -1315,6 +1702,12 @@ export function WorkspaceClient({
   )
 
   const toggleCardSelection = useCallback((cardId: string) => {
+    const card = cardsRef.current.find((item) => item.id === cardId)
+    if (!card) return
+    if (card.isLocked) {
+      toast.info("该卡片正在等待 Agent 撰写提示词")
+      return
+    }
     setSelectedCardIds((prev) => {
       const next = new Set(prev)
       if (next.has(cardId)) next.delete(cardId)
@@ -1555,7 +1948,9 @@ export function WorkspaceClient({
   const handleBatchGenerateImage = async (
     languagePreference?: BatchGenerationLanguage,
   ) => {
-    if (!selectedImageModel || !selectedSize) {
+    // Agent 任务批量生图走冻结模型 + kind 尺寸管线（服务端忽略 apiId/size），
+    // 且 Agent 任务视图无生成配置入口，不做所选模型/尺寸强校验
+    if (!isAgentTask && (!selectedImageModel || !selectedSize)) {
       toast.error("请先选择图片模型和尺寸")
       return
     }
@@ -1563,8 +1958,8 @@ export function WorkspaceClient({
     setBatchGeneratingImageCardIds(new Set(ids))
     try {
       const result = await batchGenerateImageAction(ids, {
-        apiId: selectedImageModel.id,
-        size: selectedSize,
+        apiId: selectedImageModel?.id,
+        size: selectedSize ?? undefined,
         ...(languagePreference ? { languagePreference } : {}),
       })
       if (!result.ok) throw new Error("批量生图提交失败")
@@ -1926,17 +2321,41 @@ export function WorkspaceClient({
                 <ListTodo className="h-3.5 w-3.5" />
                 任务
               </Button>
-              <Button
-                size="sm"
-                className="h-7 text-xs gap-1 rounded-md bg-blue-600 text-white hover:bg-blue-700"
-                onClick={() => setShowGenerationConfigDialog(true)}
-              >
-                生成配置
-                <span className="max-w-[180px] truncate text-white/80">
-                  {configSummary}
-                </span>
-                <ChevronDown className="h-3 w-3" />
-              </Button>
+              {isAgentTask ? (
+                /* Agent 任务：独立 Agent 总览 + 执行进度入口（不显示生成配置） */
+                <>
+                  <Button
+                    size="sm"
+                    className="h-7 text-xs gap-1 rounded-md bg-violet-600 text-white hover:bg-violet-700"
+                    onClick={() => setShowAgentDialog(true)}
+                  >
+                    <Bot className="h-3.5 w-3.5" />
+                    Agent
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs gap-1 rounded-md"
+                    onClick={() => setShowAgentProgressDialog(true)}
+                  >
+                    <Activity className="h-3.5 w-3.5" />
+                    执行进度
+                  </Button>
+                </>
+              ) : (
+                /* 普通任务：保持生成配置入口 */
+                <Button
+                  size="sm"
+                  className="h-7 text-xs gap-1 rounded-md bg-blue-600 text-white hover:bg-blue-700"
+                  onClick={() => setShowGenerationConfigDialog(true)}
+                >
+                  生成配置
+                  <span className="max-w-[180px] truncate text-white/80">
+                    {configSummary}
+                  </span>
+                  <ChevronDown className="h-3 w-3" />
+                </Button>
+              )}
               <Button
                 variant="outline"
                 size="sm"
@@ -1953,7 +2372,7 @@ export function WorkspaceClient({
                     size="sm"
                     className={cn(
                       "h-7 text-xs gap-1 rounded-md text-white",
-                      selectedCardIds.size === cards.length
+                      selectedCardIds.size === cards.filter((card) => !card.isLocked).length
                         ? "bg-gray-400 hover:bg-gray-500"
                         : "bg-green-600 hover:bg-green-700",
                     )}
@@ -1962,7 +2381,8 @@ export function WorkspaceClient({
                         setSelectedCardIds(new Set())
                         setFlipAllToImage(false)
                       } else {
-                        setSelectedCardIds(new Set(cards.map((c) => c.id)))
+                        const selectable = cards.filter((card) => !card.isLocked)
+                        setSelectedCardIds(new Set(selectable.map((c) => c.id)))
                         setFlipAllToImage(true)
                       }
                     }}
@@ -2138,13 +2558,25 @@ export function WorkspaceClient({
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={() => {
-                              if (!selectedImageModel || !selectedSize) {
+                              // Agent 任务批量生图走冻结模型 + kind 尺寸管线
+                              // （服务端忽略 apiId/size），无生成配置入口不强校验
+                              if (
+                                !isAgentTask &&
+                                (!selectedImageModel || !selectedSize)
+                              ) {
                                 toast.error("请先在生成配置中选择图片模型和尺寸")
                                 return
                               }
                               const selectedCards = cards.filter((card) =>
                                 selectedCardIds.has(card.id),
                               )
+                              const selectedKinds = new Set(
+                                selectedCards.map((card) => card.agentKind).filter(Boolean),
+                              )
+                              if (selectedKinds.size > 1) {
+                                toast.error("Agent 批量生成不能混合牌面、牌背、牌盒和边框，请分类型选择")
+                                return
+                              }
                               const languageSummary =
                                 getBatchGenerationLanguageSummary(
                                   selectedCards,
@@ -2206,6 +2638,26 @@ export function WorkspaceClient({
                 <div className="flex items-center justify-center h-full">
                   <Spinner />
                 </div>
+              ) : activeTask?.status === "generating" && isAgentTask ? (
+                /* Agent 任务运行态：四阶段流水线提示 + 执行进度入口 */
+                <div className="flex items-center justify-center h-full">
+                  <div className="text-center space-y-3">
+                    <MorphingInfinity className="h-10 w-10 mx-auto text-primary" />
+                    <p className="text-sm text-muted-foreground">
+                      {agentCurrentStageTitle
+                        ? `Agent 四阶段流水线运行中（${agentCurrentStageTitle}）...`
+                        : "Agent 正在生产卡牌，请稍候..."}
+                    </p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowAgentProgressDialog(true)}
+                    >
+                      <Activity className="h-3.5 w-3.5" />
+                      查看执行进度
+                    </Button>
+                  </div>
+                </div>
               ) : activeTask?.status === "generating" ? (
                 <div className="flex items-center justify-center h-full">
                   <div className="text-center space-y-3">
@@ -2219,11 +2671,23 @@ export function WorkspaceClient({
                 <div className="flex items-center justify-center h-full">
                   <div className="text-center space-y-3">
                     <XCircle className="h-10 w-10 mx-auto text-destructive opacity-60" />
-                    <p className="text-sm text-muted-foreground">裂变失败</p>
+                    <p className="text-sm text-muted-foreground">
+                      {isAgentTask ? "Agent 生产失败" : "裂变失败"}
+                    </p>
                     {activeTask.errorMessage && (
                       <p className="text-xs text-muted-foreground max-w-sm">
                         {activeTask.errorMessage}
                       </p>
+                    )}
+                    {isAgentTask && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowAgentProgressDialog(true)}
+                      >
+                        <Activity className="h-3.5 w-3.5" />
+                        查看执行进度
+                      </Button>
                     )}
                   </div>
                 </div>
@@ -2256,10 +2720,12 @@ export function WorkspaceClient({
                   onCardDeleted={handleCardDeleted}
                   onAddCard={handleAddCard}
                   onCardGeneratingImage={handleCardGeneratingImage}
+                  onRestartAgent={handleRestartAgentCard}
                   batchDeepeningCardIds={batchDeepeningCardIds}
                   batchRegeneratingCardIds={batchRegeneratingCardIds}
                   batchTranslatingCardIds={batchTranslatingCardIds}
                   batchGeneratingImageCardIds={batchGeneratingImageCardIds}
+                  locked={isAgentTask}
                 />
               )}
 
@@ -2313,6 +2779,9 @@ export function WorkspaceClient({
           onCardDeleted={handleCardDeleted}
           onCardGeneratingImage={handleCardGeneratingImage}
           onCardImageSelected={handleCardImageSelected}
+          cardReview={cardReview}
+          agentCardStatus={agentCardStatus}
+          onRestartAgent={handleRestartAgentCard}
         />
       )}
 
@@ -2322,6 +2791,47 @@ export function WorkspaceClient({
         open={showNewTask}
         onOpenChange={setShowNewTask}
         onCreated={handleTaskCreated}
+      />
+
+      {/* ─── Agent 总览 / 工作流向导弹窗（Agent 任务专属；数据来自进度轮询） ─── */}
+      <WorkspaceAgentDialog
+        open={showAgentDialog}
+        onOpenChange={setShowAgentDialog}
+        stats={agentProgressView?.stats ?? null}
+        cardSummary={agentProgressView?.cardSummary ?? null}
+        agents={agentProgressView?.agents ?? null}
+        oracleCopy={agentProgressView?.oracleCopy ?? null}
+        onDownloadOracleCsv={handleDownloadOracleCsv}
+        onOpenProgress={() => {
+          setShowAgentDialog(false)
+          setShowAgentProgressDialog(true)
+        }}
+      />
+
+      {/*
+       * 执行进度弹窗（受控）：固定高度 3D 流水线 + 阶段日志（数据来自 Agent
+       * 进度轮询视图）+ 内嵌可折叠「工作流向导」（完整交互，默认收起，创建
+       * 任务时自动展开并从风格确认步骤开始；taskId 按当前激活的 Agent 任务
+       * 轮询）。关闭时重开标记复位，并补拉任务列表与卡片（提示词撰写结果落
+       * 回工作台卡片，生图/评审未接入不会自动推进）。
+       */}
+      <WorkspaceAgentProgressDialog
+        open={showAgentProgressDialog}
+        onOpenChange={(next) => {
+          setShowAgentProgressDialog(next)
+          if (!next) {
+            setAgentFlowStartAtStyle(false)
+            // 静默补拉：撰写结果落回卡片，不触发全屏加载态（防关闭闪烁）
+            void fetchTasksRef.current(1, false, { silent: true })
+            const taskId = activeTaskIdRef.current
+            if (taskId) void fetchCardsRef.current(taskId, { silent: true })
+          }
+        }}
+        stages={agentProgressStages}
+        context={agentPipelineContext}
+        startedAt={agentProgressView?.createdAt ?? null}
+        taskId={isAgentTask ? activeTaskId : null}
+        startAtStyle={agentFlowStartAtStyle}
       />
 
       <BatchImageUploadDialog

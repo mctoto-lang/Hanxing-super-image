@@ -104,6 +104,98 @@ export function getGenerationPrompt(
 
 // ─── 轮询合并（身份稳定，保证 FlipCard memo 生效） ───
 
+/**
+ * 静默轮询合并卡片行：以服务端行为基准叠加图片摘要，渲染相关字段未变化的卡
+ * 复用旧对象引用（FlipCard memo 跳过重渲染）。
+ *
+ * prompt 四字段默认保留本地值（防抖保存窗口内的用户编辑不被轮询覆盖）；
+ * Agent 占位卡例外——锁定期间（isLocked）输入框被禁用、不存在本地编辑，
+ * 锁定态与解锁瞬间（previous 锁定 → 服务端已解锁 = Agent 刚写入新提示词）
+ * 均采信服务端值，否则撰写结果要刷新页面才能回填到输入框。
+ */
+export function mergeCardsWithImageSummary(
+  fetchedCards: PromptCardRow[],
+  payload: TaskCardImagesPayload,
+  previousCards: PromptCardRow[] = [],
+): PromptCardRow[] {
+  const previousCardMap = new Map(previousCards.map((card) => [card.id, card]))
+
+  // 按 card.id 去重，避免后端 JOIN 膨胀导致重复渲染
+  const dedupedCards = Array.from(
+    fetchedCards.reduce(
+      (map, card) => map.set(card.id, card),
+      new Map<string, PromptCardRow>(),
+    ).values(),
+  )
+
+  return dedupedCards.map((card) => {
+    const summary = payload.cards[card.id]
+    const selected = summary?.selectedImage
+    const previousCard = previousCardMap.get(card.id)
+    const preferServerPrompt =
+      card.isLocked === true || previousCard?.isLocked === true
+    const promptFields = preferServerPrompt
+      ? {
+          prompt: card.prompt,
+          translatedPrompt: card.translatedPrompt,
+          translationSourcePrompt: card.translationSourcePrompt,
+          translationStatus: card.translationStatus,
+        }
+      : {
+          // 轮询期间保留本地 prompt，避免覆盖用户正在编辑的内容
+          prompt: previousCard ? previousCard.prompt : card.prompt,
+          translatedPrompt: previousCard
+            ? previousCard.translatedPrompt
+            : card.translatedPrompt,
+          translationSourcePrompt: previousCard
+            ? previousCard.translationSourcePrompt
+            : card.translationSourcePrompt,
+          translationStatus: previousCard
+            ? previousCard.translationStatus
+            : card.translationStatus,
+        }
+
+    let merged: PromptCardRow
+    if (!selected) {
+      merged = !previousCard
+        ? card
+        : {
+            ...previousCard,
+            ...card,
+            ...promptFields,
+            selectedImageId: card.selectedImageId ?? previousCard.selectedImageId,
+            selImgId: card.selImgId ?? previousCard.selImgId,
+            selImgUrl: card.selImgUrl ?? previousCard.selImgUrl,
+            selImgModelName: card.selImgModelName ?? previousCard.selImgModelName,
+            selImgSize: card.selImgSize ?? previousCard.selImgSize,
+            selImgStartedAt: card.selImgStartedAt ?? previousCard.selImgStartedAt,
+            selImgCompletedAt:
+              card.selImgCompletedAt ?? previousCard.selImgCompletedAt,
+            selImgCreatedAt: card.selImgCreatedAt ?? previousCard.selImgCreatedAt,
+          }
+    } else {
+      merged = {
+        ...(previousCard ?? {}),
+        ...card,
+        ...promptFields,
+        selectedImageId: selected.id,
+        selImgId: selected.id,
+        selImgUrl: selected.imageUrl,
+        selImgModelName: selected.modelName,
+        selImgSize: selected.size,
+        selImgStartedAt: selected.startedAt,
+        selImgCompletedAt: selected.completedAt,
+        selImgCreatedAt: selected.createdAt,
+      }
+    }
+    // 渲染相关字段未变化 → 复用旧对象引用，FlipCard memo 跳过重渲染
+    if (previousCard && sameCardDisplay(previousCard, merged)) {
+      return previousCard
+    }
+    return merged
+  })
+}
+
 const sameDate = (a: Date | null, b: Date | null): boolean =>
   a === b || (a != null && b != null && a.getTime() === b.getTime())
 
@@ -115,6 +207,9 @@ export function sameCardDisplay(a: PromptCardRow, b: PromptCardRow): boolean {
     a.translationSourcePrompt === b.translationSourcePrompt &&
     a.translationStatus === b.translationStatus &&
     a.displayLanguage === b.displayLanguage &&
+    a.isLocked === b.isLocked &&
+    a.agentKind === b.agentKind &&
+    a.agentStatus === b.agentStatus &&
     a.selectedImageId === b.selectedImageId &&
     a.selImgId === b.selImgId &&
     a.selImgUrl === b.selImgUrl &&

@@ -1,9 +1,10 @@
 /**
  * 独立队列消费者 worker（手册 §5.4 / §5.6）
  *
- * 周期性消费两个队列：生图任务（Redis 队列）+ 对话任务（DB 表）；
+ * 周期性消费队列：生图任务（Redis 队列）+ 对话任务（DB 表）+ Agent 工坊
+ * 模板任务 + 工作台 Agent 任务（workspace_agent_job 表）；
  * 另含低频服务可用性采样循环（5 分钟，见 statusLoop）与 Agent 崩溃恢复
- * 独立循环（60 秒，长任务阻塞主轮询时其他企业仍能被恢复）。
+ * 独立循环 ×2（60 秒，长任务阻塞主轮询时其他企业仍能被恢复）。
  * 解决「任务永久卡在 queued」——补齐队列消费者的触发器，与 Web 进程解耦，
  * 避免长耗时 AI 任务拖累用户请求响应。
  *
@@ -15,11 +16,11 @@
  *   - .env 加载必须早于 import processor（后者会触发 env.ts 校验），故用同步
  *     loadEnvFile + 动态 import（静态 import 会被提升到 loadEnvFile 之前）。
  *   - 生图队列用常驻滑动窗口循环（任务完成即补位，慢任务不阻塞后续任务，
- *     高并发下吞吐稳定）；对话队列保持 while+sleep 串行轮询。两个循环
+ *     高并发下吞吐稳定）；其余队列保持 while+sleep 串行轮询。各循环
  *     async IO 交错，互不阻塞。
  *   - 单轮异常不退出（catch 后继续下一轮），保证长期可用。
  *   - SIGINT/SIGTERM 优雅退出：置 running=false，生图循环等待在途任务结束后
- *     退出，对话循环当前轮结束后退出。
+ *     退出，其余循环当前轮结束后退出。
  */
 
 // 先加载本地 .env（开发），生产靠容器注入 env；文件不存在时忽略。
@@ -50,6 +51,10 @@ void (async () => {
     const { processQueueContinuous } = await import("@/lib/queue/processor")
     const { processChatQueueOnce } = await import("@/lib/queue/chat-processor")
     const { processAgentQueueOnce, recoverStaleAgentRuns } = await import("@/lib/queue/agent-processor")
+    const {
+      processWorkspaceAgentQueueOnce,
+      recoverStaleWorkspaceAgentJobs,
+    } = await import("@/lib/queue/workspace-agent-processor")
     const { syncMockupJobs } = await import("@/server/services/mockup-service")
     const { sampleAllServices } = await import("@/server/services/status-service")
 
@@ -132,6 +137,22 @@ void (async () => {
       }
     }
 
+    // 工作台 Agent 崩溃恢复独立循环：write_prompts 长任务（全套分批撰写）
+    // 会阻塞 workspace-agent 主轮询，独立通道保证 stale job 恢复不被卡死
+    const workspaceAgentRecoveryLoop = async (): Promise<void> => {
+      while (running) {
+        try {
+          await recoverStaleWorkspaceAgentJobs()
+        } catch (err) {
+          console.error(
+            "[worker:workspace-agent-recovery] 恢复循环异常:",
+            err instanceof Error ? err.message : err,
+          )
+        }
+        await sleep(agentRecoveryInterval)
+      }
+    }
+
     // 订阅套餐周期发放：扫描到期未发放的订阅，把套餐积分发到企业池
     // （幂等由 plan_credit_grant 唯一索引保证；企业停用期间跳过，恢复后按锚点补发）
     const { grantAllDueSubscriptions } = await import(
@@ -166,6 +187,8 @@ void (async () => {
       runLoop("chat", processChatQueueOnce),
       runLoop("agent", processAgentQueueOnce),
       agentRecoveryLoop(),
+      runLoop("workspace-agent", processWorkspaceAgentQueueOnce),
+      workspaceAgentRecoveryLoop(),
       runLoop("mockup", async () => {
         const r = await syncMockupJobs()
         return [{ processed: r.finalized, failed: 0 }]

@@ -95,6 +95,8 @@ interface FlipCardProps {
   onCardUpdated: (card: PromptCardRow) => void
   onCardDeleted?: (cardId: string) => void
   onCardGeneratingImage?: (cardId: string, generating: boolean) => void
+  /** Agent 打回耗尽卡的唯一重开入口（新周期重置打回轮数） */
+  onRestartAgent?: (cardId: string) => void
   batchDeepening?: boolean
   batchRegenerating?: boolean
   batchGeneratingImage?: boolean
@@ -127,16 +129,42 @@ export const FlipCard = memo(function FlipCard({
   onCardUpdated,
   onCardDeleted,
   onCardGeneratingImage,
+  onRestartAgent,
   batchDeepening = false,
   batchRegenerating = false,
   batchGeneratingImage = false,
   batchTranslating = false,
 }: FlipCardProps) {
   // 初始翻面状态：有可展示图片（含未显式选中的已完成图，刷新/切换任务后
-  // 仍默认图片面）则图片面，否则提示词面；生成中的卡片由生成开始效果统一翻面
+  // 仍默认图片面）则图片面；已处于任一生成状态（生图/Agent 撰写·评审）也
+  // 直接图片面展示状态文字，避免挂载后再翻转的闪挂；否则提示词面
   const displayImage = resolveCardDisplayImage(card, images)
   const initialHasImage = Boolean(card.selImgUrl || displayImage?.imageUrl)
-  const [isFlipped, setIsFlipped] = useState(!initialHasImage)
+  const isAgentLocked = card.isLocked === true
+  // 打回耗尽：普通生成入口让位给「重新 Agent 生成」（新周期）
+  const isAgentExhausted = card.agentStatus === "fallback"
+  // Agent 流水线在途状态：排队中/撰写中统一展示「撰写中」（不向用户区分是否
+  // 已轮到撰写）；与「生图中」同款——翻到图片面 + 流光边框 + 脉冲状态文字
+  const isAgentDrafting =
+    card.agentStatus === "pending" || card.agentStatus === "drafting"
+  const isAgentGenerating = card.agentStatus === "generating"
+  const isAgentReviewing = card.agentStatus === "reviewing"
+  // Agent 管线卡（服务端按 task.source 分流到冻结模型 + kind 尺寸，忽略
+  // 用户所选 apiId/size）
+  const isAgentCard = card.agentKind != null || card.agentStatus != null
+  // 撰写锁定（骨架卡）、生图中与评审中统一禁用卡片交互（与 ToolPanel 的
+  // agentBusy 口径一致：生成中可被删除会让评审打回循环对已删卡继续跑完，
+  // 空耗生图/评审额度）
+  const agentInteractionLocked =
+    isAgentLocked || isAgentGenerating || isAgentReviewing
+  // 挂载时已处于任一在途状态（含图片行 pending）直接初始在图片面，避免先渲染
+  // 提示词面再翻转的闪挂
+  const initialBusyVisual =
+    isAgentDrafting ||
+    isAgentGenerating ||
+    isAgentReviewing ||
+    images.some((i) => i.status === "pending" || i.status === "generating")
+  const [isFlipped, setIsFlipped] = useState(!initialHasImage && !initialBusyVisual)
   const [prompt, setPrompt] = useState(card.prompt)
   const [displayLanguage, setDisplayLanguage] = useState<"zh" | "en">(
     card.displayLanguage === "en" && card.translatedPrompt ? "en" : "zh",
@@ -168,7 +196,7 @@ export const FlipCard = memo(function FlipCard({
   const onCardUpdatedRef = useRef(onCardUpdated)
   const previousDisplayImageUrlRef = useRef<string | null>(null)
   const isEditingPromptRef = useRef(false)
-  const manuallyFlippedToBackRef = useRef(!initialHasImage)
+  const manuallyFlippedToBackRef = useRef(!initialHasImage && !initialBusyVisual)
 
   const completedImages = images.filter((i) => i.status === "completed")
   const completedImageUrls = completedImages.map((i) => i.imageUrl)
@@ -264,6 +292,7 @@ export const FlipCard = memo(function FlipCard({
   }, [])
 
   const handlePromptChange = (val: string) => {
+    if (agentInteractionLocked) return
     isEditingPromptRef.current = true
     setPrompt(val)
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
@@ -365,13 +394,29 @@ export const FlipCard = memo(function FlipCard({
   }
 
   const handleGenerateImage = async () => {
-    if (!selectedImageModel) {
-      toast.error("请先在操作栏选择图片模型")
+    if (isAgentLocked) {
+      toast.info("提示词撰写完成后才能生成图片")
       return
     }
-    if (!selectedSize) {
-      toast.error("请先在操作栏选择尺寸")
+    if (isAgentReviewing) {
+      toast.info("图片评审中，暂时不能操作卡片")
       return
+    }
+    if (isAgentExhausted) {
+      toast.info("自动评审已耗尽，请点击「重新 Agent 生成」开启新周期")
+      return
+    }
+    // Agent 卡走冻结模型 + kind 尺寸管线（服务端忽略 apiId/size），而 Agent
+    // 任务视图没有生成配置入口，不做所选模型/尺寸强校验
+    if (!isAgentCard) {
+      if (!selectedImageModel) {
+        toast.error("请先在操作栏选择图片模型")
+        return
+      }
+      if (!selectedSize) {
+        toast.error("请先在操作栏选择尺寸")
+        return
+      }
     }
     setGeneratingImage(true)
     onCardGeneratingImage?.(card.id, true)
@@ -386,8 +431,8 @@ export const FlipCard = memo(function FlipCard({
         : generateCardImageAction
       const res = await action(card.id, {
         prompt: generationPrompt,
-        apiId: selectedImageModel.id,
-        size: selectedSize,
+        apiId: selectedImageModel?.id,
+        size: selectedSize ?? undefined,
       })
       if (!res.ok) throw new Error(res.error || "提交生图失败")
       toast.success("已提交生图任务")
@@ -401,7 +446,7 @@ export const FlipCard = memo(function FlipCard({
   }
 
   const handleLanguageChange = async (language: "zh" | "en") => {
-    if (language === displayLanguage) return
+    if (agentInteractionLocked || language === displayLanguage) return
     setDisplayLanguage(language)
     try {
       const res = await updateCardAction(card.id, {
@@ -470,6 +515,17 @@ export const FlipCard = memo(function FlipCard({
   const handleUploadReference = async (
     event: React.ChangeEvent<HTMLInputElement>,
   ) => {
+    if (agentInteractionLocked) {
+      event.target.value = ""
+      toast.info(
+        isAgentGenerating
+          ? "图片生成中，暂时不能操作卡片"
+          : isAgentReviewing
+            ? "图片评审中，暂时不能操作卡片"
+            : "提示词撰写完成后才能操作卡片",
+      )
+      return
+    }
     const files = Array.from(event.target.files || [])
     event.target.value = ""
     if (!files.length) return
@@ -512,6 +568,16 @@ export const FlipCard = memo(function FlipCard({
   }
 
   const handleDeleteCard = async () => {
+    if (agentInteractionLocked) {
+      toast.info(
+        isAgentGenerating
+          ? "图片生成中，暂时不能删除卡片"
+          : isAgentReviewing
+            ? "图片评审中，暂时不能删除卡片"
+            : "Agent 工作流卡片不可删除",
+      )
+      return
+    }
     setDeleting(true)
     try {
       const res = await deleteCardAction(card.id)
@@ -561,7 +627,11 @@ export const FlipCard = memo(function FlipCard({
   const hasFailedImage =
     !hasImage && pendingImageCount === 0 && failedImages.length > 0
   const hasGeneratingImage =
-    generatingImage || pendingImageCount > 0 || batchGeneratingImage
+    generatingImage ||
+    pendingImageCount > 0 ||
+    batchGeneratingImage ||
+    // Agent 生图：即使图片 pending 行尚未被轮询到也先展示「生成中」
+    isAgentGenerating
   const isLoading =
     deepening ||
     regeneratingPrompt ||
@@ -618,24 +688,37 @@ export const FlipCard = memo(function FlipCard({
         }
     : undefined
 
-  // 生成开始（单张提交或批量提交波及本卡，含挂载时已在生成中）默认翻到图片面
-  // 展示「生成中」+ 流光边框；期间手动翻回背面则尊重（flipToBack 置手动标记）
-  const wasGeneratingImageRef = useRef(false)
+  // 进入任一生成状态（单张/批量生图提交波及本卡，或 Agent 撰写/生图/评审，
+  // 含挂载时已在生成中）默认翻到图片面，统一展示脉冲状态文字 + 流光边框；
+  // 期间手动翻回背面则尊重（flipToBack 置手动标记）
+  const busyVisual = hasGeneratingImage || isAgentDrafting || isAgentReviewing
+  const wasBusyVisualRef = useRef(false)
   useEffect(() => {
-    const started = hasGeneratingImage && !wasGeneratingImageRef.current
-    wasGeneratingImageRef.current = hasGeneratingImage
+    const started = busyVisual && !wasBusyVisualRef.current
+    wasBusyVisualRef.current = busyVisual
     if (started) {
       manuallyFlippedToBackRef.current = false
       setIsFlipped(false)
     }
-  }, [hasGeneratingImage])
+  }, [busyVisual])
+
+  // 撰写完成（pending/drafting → 等待确认/失败，含打回改写完成）翻回提示词面：
+  // 轮询会把 Agent 写好的提示词回填到输入框，翻面让用户立刻看到终稿。
+  // 直接衔接生图/评审（drafting → generating/reviewing，busyVisual 保持 true）
+  // 时不翻——卡片继续留在图片面展示「生成中/评审中」
+  const wasAgentDraftingRef = useRef(false)
+  useEffect(() => {
+    const finished = wasAgentDraftingRef.current && !isAgentDrafting
+    wasAgentDraftingRef.current = isAgentDrafting
+    if (finished && !busyVisual) setIsFlipped(true)
+  }, [isAgentDrafting, busyVisual])
 
   return (
     <>
-      {/* 流光边框常开（生成中）；屏外动画暂停由 border-beam 包内置的
+      {/* 流光边框常开（生成中 / Agent 撰写中（含排队）/ Agent 评审中）；屏外动画暂停由 border-beam 包内置的
           IntersectionObserver（data-paused）+ 卡片 content-visibility 处理 */}
       <BeamWrapper
-        active={hasGeneratingImage}
+        active={hasGeneratingImage || isAgentDrafting || isAgentReviewing}
         colorVariant="colorful"
         size="md"
         borderRadius={18}
@@ -678,10 +761,14 @@ export const FlipCard = memo(function FlipCard({
                 }}
                 aria-hidden={isFlipped}
               >
-                {hasGeneratingImage ? (
+                {hasGeneratingImage || isAgentReviewing || isAgentDrafting ? (
                   <div className="flex h-full items-center justify-center">
                     <span className="animate-pulse bg-gradient-to-r from-muted-foreground to-foreground bg-clip-text text-sm font-medium text-transparent">
-                      生成中
+                      {hasGeneratingImage
+                        ? "生成中"
+                        : isAgentReviewing
+                          ? "评审中"
+                          : "撰写中"}
                     </span>
                   </div>
                 ) : hasFailedImage ? (
@@ -1108,28 +1195,43 @@ export const FlipCard = memo(function FlipCard({
                   onChange={(e) => handlePromptChange(e.target.value)}
                   onBlur={handlePromptBlur}
                   className="min-h-0 flex-1 resize-none text-xs leading-relaxed"
-                  placeholder="提示词..."
-                  disabled={isLoading || batchMode || displayLanguage === "en"}
+                  placeholder={isAgentLocked ? "等待 Agent 撰写提示词..." : "提示词..."}
+                  disabled={agentInteractionLocked || isLoading || batchMode || displayLanguage === "en"}
                 />
 
                 {!batchMode && (
                   <div className="flex shrink-0 items-center justify-end gap-1.5">
-                    <Button
-                      size="sm"
-                      className="h-8 gap-1.5 rounded-md bg-primary px-3 text-[11px] text-primary-foreground shadow-sm hover:bg-primary/90"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        void handleGenerateImage()
-                      }}
-                      disabled={isLoading || generatingImage}
-                    >
-                      {generatingImage ? (
-                        <MorphingInfinity className="h-3.5 w-3.5" />
-                      ) : (
-                        <ImagePlus className="h-3.5 w-3.5" />
-                      )}
-                      {hasImage ? "重新生成图片" : "生成图片"}
-                    </Button>
+                    {isAgentExhausted ? (
+                      <Button
+                        size="sm"
+                        className="h-8 gap-1.5 rounded-md bg-violet-600 px-3 text-[11px] text-white shadow-sm hover:bg-violet-700"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onRestartAgent?.(card.id)
+                        }}
+                        disabled={isLoading || generatingImage}
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                        重新 Agent 生成
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        className="h-8 gap-1.5 rounded-md bg-primary px-3 text-[11px] text-primary-foreground shadow-sm hover:bg-primary/90"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void handleGenerateImage()
+                        }}
+                        disabled={agentInteractionLocked || isLoading || generatingImage}
+                      >
+                        {generatingImage ? (
+                          <MorphingInfinity className="h-3.5 w-3.5" />
+                        ) : (
+                          <ImagePlus className="h-3.5 w-3.5" />
+                        )}
+                        {hasImage ? "重新生成图片" : "生成图片"}
+                      </Button>
+                    )}
                     <DropdownMenu>
                       <DropdownMenuTrigger
                         className="inline-flex size-8 items-center justify-center rounded-md border border-border/60 bg-card/80 text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground"
@@ -1147,6 +1249,7 @@ export const FlipCard = memo(function FlipCard({
                         {card.translatedPrompt && (
                           <DropdownMenuCheckboxItem
                             checked={displayLanguage === "en"}
+                            disabled={agentInteractionLocked}
                             onCheckedChange={() =>
                               void handleLanguageChange(
                                 displayLanguage === "en" ? "zh" : "en",
@@ -1177,7 +1280,7 @@ export const FlipCard = memo(function FlipCard({
                         )}
                         <DropdownMenuItem
                           className="h-8"
-                          disabled={isLoading || regeneratingPrompt}
+                          disabled={agentInteractionLocked || isLoading || regeneratingPrompt}
                           onClick={() => void handleRegeneratePrompt()}
                         >
                           {regeneratingPrompt ? (
@@ -1189,7 +1292,7 @@ export const FlipCard = memo(function FlipCard({
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           className="h-8"
-                          disabled={isLoading || deepening}
+                          disabled={agentInteractionLocked || isLoading || deepening}
                           onClick={() => void handleDeepen()}
                         >
                           {deepening ? (
@@ -1201,7 +1304,7 @@ export const FlipCard = memo(function FlipCard({
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           className="h-8"
-                          disabled={isLoading || translating}
+                          disabled={agentInteractionLocked || isLoading || translating}
                           onClick={() => void handleTranslate()}
                         >
                           {translating ? (
@@ -1214,7 +1317,7 @@ export const FlipCard = memo(function FlipCard({
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
                           className="h-8"
-                          disabled={uploadingRefImages}
+                          disabled={agentInteractionLocked || uploadingRefImages}
                           onClick={() => uploadInputRef.current?.click()}
                         >
                           {uploadingRefImages ? (
@@ -1227,6 +1330,7 @@ export const FlipCard = memo(function FlipCard({
                         <DropdownMenuItem
                           variant="destructive"
                           className="h-8"
+                          disabled={agentInteractionLocked}
                           onClick={() => setDeleteDialogOpen(true)}
                         >
                           <Trash2 className="size-3.5" />

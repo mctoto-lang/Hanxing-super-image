@@ -57,6 +57,8 @@ export const cardRowSelectFields = {
   displayLanguage: promptCards.displayLanguage,
   selectedImageId: promptCards.selectedImageId,
   referenceImages: promptCards.referenceImages,
+  isLocked: promptCards.isLocked,
+  agentKind: promptCards.agentKind,
   selImgId: cardImages.id,
   selImgUrl: cardImages.imageUrl,
   selImgModelName: models.displayName,
@@ -130,6 +132,16 @@ export async function fetchOwnedCard(ctx: UserContext, cardId: string) {
     )
     .limit(1)
   return row ?? null
+}
+
+/** Agent 占位卡统一写保护：提示词阶段完成前，普通 workspace action 不得绕过锁。 */
+export function lockedWorkspaceAgentCardError(owned: {
+  card: { isLocked?: boolean | null }
+  task: { source?: string | null }
+}): string | null {
+  return owned.task.source === "agent" && owned.card.isLocked
+    ? "Agent 工作流尚未完成提示词阶段，卡片暂不可操作"
+    : null
 }
 
 /** 重算任务 cardCount */

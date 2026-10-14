@@ -48,10 +48,14 @@ interface CardGridProps {
   onCardDeleted?: (cardId: string) => void
   onAddCard: () => Promise<PromptCardRow | null>
   onCardGeneratingImage?: (cardId: string, generating: boolean) => void
+  /** Agent 打回耗尽卡的「重新 Agent 生成」入口（透传给 FlipCard） */
+  onRestartAgent?: (cardId: string) => void
   batchDeepeningCardIds?: Set<string>
   batchRegeneratingCardIds?: Set<string>
   batchTranslatingCardIds?: Set<string>
   batchGeneratingImageCardIds?: Set<string>
+  /** Agent 工作流锁定占位卡 / 固定骨架时隐藏添加卡片入口 */
+  locked?: boolean
 }
 
 function CardSkeleton({ indexLabel }: { indexLabel?: number }) {
@@ -93,10 +97,12 @@ export const CardGrid = memo(function CardGrid({
   onCardDeleted,
   onAddCard,
   onCardGeneratingImage,
+  onRestartAgent,
   batchDeepeningCardIds = EMPTY_SET,
   batchRegeneratingCardIds = EMPTY_SET,
   batchTranslatingCardIds = EMPTY_SET,
   batchGeneratingImageCardIds = EMPTY_SET,
+  locked = false,
 }: CardGridProps) {
   const sentinelRef = useRef<HTMLDivElement | null>(null)
   const addTileRef = useRef<HTMLDivElement | null>(null)
@@ -254,6 +260,7 @@ export const CardGrid = memo(function CardGrid({
                 onCardUpdated={onCardUpdated}
                 onCardDeleted={onCardDeleted}
                 onCardGeneratingImage={onCardGeneratingImage}
+                onRestartAgent={onRestartAgent}
             batchDeepening={batchDeepeningCardIds.has(card.id)}
             batchRegenerating={batchRegeneratingCardIds.has(card.id)}
             batchTranslating={batchTranslatingCardIds.has(card.id)}
@@ -263,27 +270,29 @@ export const CardGrid = memo(function CardGrid({
         {bottomSkeletonIndexes.map((indexLabel, index) => (
           <CardSkeleton key={`bottom-skeleton-${index}`} indexLabel={indexLabel} />
         ))}
-        {/* 添加卡片：点击直接创建空白卡片（自动翻到提示词面编辑） */}
-        <div
-          ref={addTileRef}
-          className="group relative flex cursor-pointer items-center justify-center rounded-2xl border-2 border-dashed border-border bg-muted/30 transition-all duration-200 hover:border-primary/40 hover:bg-muted/50"
-          style={{ aspectRatio: "3 / 5" }}
-          role="button"
-          aria-label="添加空白卡片"
-          onClick={() => void handleAddCard()}
-        >
-          {addingCard ? (
-            <div className="flex flex-col items-center gap-2 text-muted-foreground">
-              <MorphingInfinity className="h-7 w-7" />
-              <span className="text-xs">添加中</span>
-            </div>
-          ) : (
-            <div className="flex flex-col items-center gap-2 text-muted-foreground transition-colors group-hover:text-primary">
-              <Plus className="h-8 w-8" />
-              <span className="text-xs">添加卡片</span>
-            </div>
-          )}
-        </div>
+        {/* Agent 模板卡片数量固定，隐藏普通任务的添加卡片入口 */}
+        {!locked && (
+          <div
+            ref={addTileRef}
+            className="group relative flex cursor-pointer items-center justify-center rounded-2xl border-2 border-dashed border-border bg-muted/30 transition-all duration-200 hover:border-primary/40 hover:bg-muted/50"
+            style={{ aspectRatio: "3 / 5" }}
+            role="button"
+            aria-label="添加空白卡片"
+            onClick={() => void handleAddCard()}
+          >
+            {addingCard ? (
+              <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                <MorphingInfinity className="h-7 w-7" />
+                <span className="text-xs">添加中</span>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center gap-2 text-muted-foreground transition-colors group-hover:text-primary">
+                <Plus className="h-8 w-8" />
+                <span className="text-xs">添加卡片</span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
       {hasMore && (
         <div className="px-5 pb-5">

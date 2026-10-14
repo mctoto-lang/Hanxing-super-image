@@ -29,6 +29,7 @@ import { mergeImageResults } from "@/lib/ai/image-model-config"
 import { env } from "@/lib/env"
 import { getStorage } from "@/lib/storage"
 import { refundFailedTask } from "@/server/services/credits-service"
+import { maybeEnqueueWorkspaceAgentReview, maybeCompleteWorkspaceAgentPreview } from "@/server/services/workspace-agent/production"
 
 /**
  * 队列消费核心逻辑（手册 §5.4）
@@ -216,6 +217,25 @@ async function ensureCardSelection(
       WHERE ${promptCards}.id = data.card AND ${promptCards}.enterprise_id = ${enterpriseId}
     `),
   ])
+}
+
+/**
+ * 工作台 Agent 终态钩子隔离执行（预览回写 + 自动评审入队）。调用时任务已落
+ * completed/failed 终态，钩子属附带动作：任何 DB 异常只记日志，不得冒泡——
+ * 否则异常会经 runTaskSafely 进入 handleTaskFailure，把已完成的任务改回
+ * queued 重新入队并按全量张数重复生图（重复 API 调用 / api_call_log /
+ * 转存与二次退款判定）。
+ */
+async function runAgentTerminalHooksSafely(generationTaskId: string): Promise<void> {
+  try {
+    await maybeCompleteWorkspaceAgentPreview(generationTaskId)
+    await maybeEnqueueWorkspaceAgentReview(generationTaskId)
+  } catch (err) {
+    console.error(
+      `[queue] 任务 ${generationTaskId} Agent 终态钩子异常（不影响任务终态）:`,
+      err instanceof Error ? err.message : err,
+    )
+  }
 }
 
 /**
@@ -765,6 +785,13 @@ async function processOneTask(
       imageUrls: resultImages,
     })
 
+    // 工作台 Agent 正式生图（source = "agent"）终态 → 触发自动评审 job
+    // （非 agent 任务/用户上传图在该钩子内直接空返回，互不影响）。
+    // 隔离执行：任务已写 completed，钩子异常不得复活任务重跑
+    if (taskRow.source === "agent") {
+      await runAgentTerminalHooksSafely(task.taskId)
+    }
+
     // 回写会话缩略图（取第一张生成图）+ updatedAt，供左侧列表展示；
     // 已软删会话不再回写（保持「删除即冻结」语义）
     if (task.conversationId && resultImages.length > 0) {
@@ -814,6 +841,24 @@ async function handleTaskFailure(
   if (!current || current.deletedAt) {
     // 任务行已被删除（硬删或软删）：无退款对象，也不允许重试（否则已删任务
     // 被反复重新入队），直接把 Redis 元数据收尾为终态
+    await failTask(task.enterpriseId, task.taskId, false)
+    return
+  }
+  // 终态防复活：任务已是 completed/failed（如终态后置动作异常晚到、或与
+  // 孤儿回收重入队的任务竞争收尾）时，不得重试/退款/改状态——否则已完成
+  // 任务会被改回 queued 按全量张数重复生图、失败任务被二次退款。仅按
+  // DB 终态同步 Redis 元数据收尾（与 processOneTask 的终态防重同口径）
+  if (current.status === "completed") {
+    console.warn(
+      `[queue] 任务 ${task.taskId} 已是终态 completed，跳过失败处理（不重试不退款）`,
+    )
+    await completeTask(task.enterpriseId, task.taskId)
+    return
+  }
+  if (current.status === "failed") {
+    console.warn(
+      `[queue] 任务 ${task.taskId} 已是终态 failed，跳过失败处理（不重试不退款）`,
+    )
     await failTask(task.enterpriseId, task.taskId, false)
     return
   }
@@ -873,6 +918,12 @@ async function handleTaskFailure(
       errorMessage: partialMsg,
     })
 
+    // Agent 任务部分成功终态同样触发评审（评审可用图缺失时按生图失败收尾）；
+    // 任务已落 completed，钩子异常不得复活任务重跑/二次退款
+    if (current?.source === "agent") {
+      await runAgentTerminalHooksSafely(task.taskId)
+    }
+
     if (task.conversationId && (current?.resultImages ?? []).length > 0) {
       await db
         .update(conversations)
@@ -904,6 +955,11 @@ async function handleTaskFailure(
       status: "failed",
       errorMessage: finalMsg,
     })
+    // Agent 任务全部失败终态：评审 job 按「生图失败」分支收尾（修正记账 + 卡状态）；
+    // 任务已落 failed，钩子异常不得复活任务重跑/二次退款
+    if (current?.source === "agent") {
+      await runAgentTerminalHooksSafely(task.taskId)
+    }
     await failTask(task.enterpriseId, task.taskId, false)
   }
 }

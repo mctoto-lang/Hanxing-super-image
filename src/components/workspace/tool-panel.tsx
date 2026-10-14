@@ -68,6 +68,12 @@ import type {
   PromptCardRow,
   TemplateRow,
 } from "@/lib/workspace/types"
+import type {
+  WorkspaceAgentCardStatus,
+  WorkspaceAgentDimensionScores,
+  WorkspaceAgentReviewRecord,
+  WorkspaceAgentVerdict,
+} from "@/lib/workspace/agent-types"
 
 // ─── 常量 ───
 
@@ -147,6 +153,26 @@ function computeInitialPos(): PanelPos {
 
 type LibraryTab = "generated" | "uploaded"
 
+/**
+ * 画面评审只读载荷（工具面板「画面评审」段；按当前选中图片聚合）。
+ * 数据由父级 workspace-client 调 getWorkspaceAgentCardReviewAction 聚合后
+ * 经 props 下发（跨轮评审明细 + 裁决 + 质量线）。
+ */
+export interface WorkspaceCardReviewPayload {
+  /** Agent 卡状态与质量线（服务端跨轮查询载荷；qualityThreshold = 总分通过线） */
+  card?: { status: string; qualityThreshold?: number | null }
+  /** 三项均分（多评审员聚合；null = 该维度未评分） */
+  averageScores: WorkspaceAgentDimensionScores
+  /** 加权总分（0-100；null = 未评定） */
+  weightedTotal: number | null
+  /** 总控裁决（approve 通过 / retry 打回 / fallback 耗尽兜底；null = 未裁决） */
+  verdict: WorkspaceAgentVerdict | null
+  /** 评审意见（聚合结论文案；null = 无） */
+  summary: string | null
+  /** 各评审模型明细记录（展开查看） */
+  records: WorkspaceAgentReviewRecord[]
+}
+
 interface ToolPanelProps {
   cards: PromptCardRow[]
   activeCardId: string | null
@@ -163,10 +189,124 @@ interface ToolPanelProps {
   onCardGeneratingImage: (cardId: string, generating: boolean) => void
   /** 设为展示图后同步父级 cardImagesMap 的单选状态（清除旧图 isSelected） */
   onCardImageSelected: (cardId: string, imageId: string) => void
+  /** 当前选中图片的画面评审载荷（null/缺省 = 无评审数据；只读展示） */
+  cardReview?: WorkspaceCardReviewPayload | null
+  /** Agent 单卡状态（fallback = 打回耗尽自动兜底，提示重新生成） */
+  agentCardStatus?: WorkspaceAgentCardStatus | null
+  /** 耗尽后重新开启 Agent 生图/评审周期 */
+  onRestartAgent?: (cardId: string) => void
 }
 
 const HEADER_ICON_BUTTON_CLASS =
   "flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+
+/** 裁决徽章（通过 / 打回 / 耗尽；配色对齐 statusConfig 口径） */
+const REVIEW_VERDICT_META: Record<
+  WorkspaceAgentVerdict,
+  { label: string; className: string }
+> = {
+  approve: {
+    label: "通过",
+    className:
+      "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300",
+  },
+  retry: {
+    label: "打回",
+    className:
+      "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300",
+  },
+  fallback: {
+    label: "耗尽",
+    className:
+      "border-red-200 bg-red-50 text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300",
+  },
+}
+
+/** 评审单项得分格（三项均分；null = 未评分显示 —。中性配色——通过与否只看加权总分） */
+function ReviewScoreCell({
+  label,
+  value,
+}: {
+  label: string
+  value: number | null
+}) {
+  return (
+    <div className="rounded-md border border-border/70 bg-muted/30 px-1.5 py-1 text-center">
+      <div className="text-[9px] leading-tight text-muted-foreground">
+        {label}
+      </div>
+      <div
+        className={cn(
+          "mt-0.5 text-xs font-medium tabular-nums leading-none",
+          value == null && "text-muted-foreground/50",
+        )}
+      >
+        {value != null ? value : "—"}
+      </div>
+    </div>
+  )
+}
+
+/** 加权总分条（独立一行）：与质量线比较——通过绿 / 未通过红 / 未评中性 */
+function AgentTotalScoreBar({
+  value,
+  threshold,
+}: {
+  value: number | null
+  threshold: number | null
+}) {
+  const tone =
+    value == null || threshold == null
+      ? "neutral"
+      : value >= threshold
+        ? "pass"
+        : "fail"
+  return (
+    <div
+      className={cn(
+        "flex items-center justify-between gap-2 rounded-md border px-2.5 py-1.5",
+        tone === "pass" &&
+          "border-emerald-300/70 bg-emerald-50/60 dark:border-emerald-900/60 dark:bg-emerald-950/30",
+        tone === "fail" &&
+          "border-red-300/70 bg-red-50/60 dark:border-red-900/60 dark:bg-red-950/30",
+        tone === "neutral" && "border-border/70 bg-muted/30",
+      )}
+    >
+      <span className="text-xs text-muted-foreground">
+        加权总分
+        {threshold != null && (
+          <span className="ml-1 text-[10px] text-muted-foreground/70">
+            （≥ {threshold} 通过）
+          </span>
+        )}
+      </span>
+      <span className="flex items-center gap-2">
+        <span
+          className={cn(
+            "text-lg font-semibold leading-none tabular-nums",
+            tone === "pass" && "text-emerald-600 dark:text-emerald-400",
+            tone === "fail" && "text-red-600 dark:text-red-400",
+            value == null && "text-muted-foreground/50",
+          )}
+        >
+          {value != null ? value : "—"}
+        </span>
+        {tone !== "neutral" && (
+          <span
+            className={cn(
+              "rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
+              tone === "pass"
+                ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300"
+                : "border-red-200 bg-red-50 text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300",
+            )}
+          >
+            {tone === "pass" ? "通过" : "未通过"}
+          </span>
+        )}
+      </span>
+    </div>
+  )
+}
 
 export function ToolPanel({
   cards,
@@ -182,6 +322,9 @@ export function ToolPanel({
   onCardDeleted,
   onCardGeneratingImage,
   onCardImageSelected,
+  cardReview,
+  agentCardStatus,
+  onRestartAgent,
 }: ToolPanelProps) {
   const cardIndex = cards.findIndex((c) => c.id === activeCardId)
   const card = cardIndex >= 0 ? cards[cardIndex] : null
@@ -308,10 +451,36 @@ export function ToolPanel({
   const displayImage = card ? resolveCardDisplayImage(card, images) : null
   const hasImage = Boolean(card?.selImgUrl || displayImage?.imageUrl)
 
+  // ─── 画面评审（只读；载荷与 Agent 卡状态经 props 由父级下发） ───
+  const [reviewExpanded, setReviewExpanded] = useState(false)
+  // Agent 流水线在途（待写/撰写/生图/评审）：面板操作全部禁用（fallback 另有专属横幅）
+  const agentBusy =
+    agentCardStatus === "pending" ||
+    agentCardStatus === "drafting" ||
+    agentCardStatus === "generating" ||
+    agentCardStatus === "reviewing"
+  // 选中图完整行（空态按上传/生成图区分提示文案）
+  const selectedImageRow = displayImage
+    ? (images.find((i) => i.id === displayImage.id) ?? null)
+    : null
+  const hasReviewRecords = Boolean(
+    cardReview && cardReview.records.length > 0,
+  )
+  // 无记录时的空态提示（fallback 由专属横幅提示，不再叠加空态）
+  const reviewEmptyHint =
+    agentCardStatus === "fallback"
+      ? null
+      : selectedImageRow?.source === "uploaded"
+        ? "上传图片无评审记录，请人工决定"
+        : selectedImageRow
+          ? "当前图片暂无评审记录"
+          : "暂无展示图片，生成后可查看评审结果"
+
   // 切卡 / 数据变化时重置分页与本地覆盖
   useEffect(() => {
     setPage(0)
     setSelectedOverrideId(null)
+    setReviewExpanded(false)
   }, [activeCardId, tab])
 
   // ─── 悬浮预览（面板旁浮动，贴边翻转） ───
@@ -553,13 +722,17 @@ export function ToolPanel({
 
   const handleGenerateImage = async () => {
     if (!card) return
-    if (!selectedImageModel) {
-      toast.error("请先在生成配置中选择图片模型")
-      return
-    }
-    if (!selectedSize) {
-      toast.error("请先在生成配置中选择尺寸")
-      return
+    // Agent 卡走冻结模型 + kind 尺寸管线（服务端忽略 apiId/size），Agent 任务
+    // 视图没有生成配置入口，不做所选模型/尺寸强校验
+    if (agentCardStatus == null) {
+      if (!selectedImageModel) {
+        toast.error("请先在生成配置中选择图片模型")
+        return
+      }
+      if (!selectedSize) {
+        toast.error("请先在生成配置中选择尺寸")
+        return
+      }
     }
     setGeneratingImage(true)
     onCardGeneratingImage(card.id, true)
@@ -574,8 +747,8 @@ export function ToolPanel({
         : generateCardImageAction
       const res = await action(card.id, {
         prompt: generationPrompt,
-        apiId: selectedImageModel.id,
-        size: selectedSize,
+        apiId: selectedImageModel?.id,
+        size: selectedSize ?? undefined,
       })
       if (!res.ok) throw new Error(res.error || "提交生图失败")
       toast.success("已提交生图任务")
@@ -900,7 +1073,7 @@ export function ToolPanel({
         </div>
 
         {!collapsed && (
-          <div className="max-h-[calc(100vh-140px)] overflow-y-auto">
+          <div className="max-h-[calc(100vh-140px)] overflow-y-auto scrollbar-hide">
             {cards.length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-2 px-6 py-10 text-center">
                 <Images className="h-8 w-8 opacity-30" />
@@ -1006,7 +1179,7 @@ export function ToolPanel({
                         ? `/${referenceLimit}`
                         : ""}
                     </span>
-                    <div className="flex min-w-0 flex-1 gap-1.5 overflow-x-auto">
+                    <div className="flex min-w-0 flex-1 gap-1.5 overflow-x-auto scrollbar-hide">
                       {referenceImages.map((url, index) => (
                         <button
                           key={url}
@@ -1054,6 +1227,12 @@ export function ToolPanel({
                     <span className="text-xs font-medium text-muted-foreground">
                       提示词
                     </span>
+                    {agentCardStatus === "drafting" && (
+                      <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:border-violet-900/60 dark:bg-violet-950/30 dark:text-violet-300">
+                        <MorphingInfinity className="size-3" />
+                        撰写中
+                      </span>
+                    )}
                     {card.translatedPrompt &&
                       card.translationSourcePrompt !== card.prompt && (
                         <span className="text-[10px] text-amber-600 dark:text-amber-400">
@@ -1067,8 +1246,154 @@ export function ToolPanel({
                     onBlur={handlePromptBlur}
                     className="min-h-[88px] resize-none text-xs leading-relaxed"
                     placeholder="输入提示词，修改后自动保存..."
-                    disabled={isLoading}
+                    disabled={isLoading || agentBusy}
                   />
+                </section>
+
+                {/* 画面评审（只读：三项均分 + 加权总分 + 评审意见 + 裁决与各模型记录；
+                    不提供手动评审与重启入口——对应 action 未实现，不臆造） */}
+                <section className="border-b px-3 py-2.5">
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      画面评审
+                    </span>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      {agentCardStatus === "reviewing" && (
+                        <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
+                          <MorphingInfinity className="size-3" />
+                          评审中
+                        </span>
+                      )}
+                      {cardReview?.verdict ? (
+                        <span
+                          className={cn(
+                            "inline-flex shrink-0 items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
+                            REVIEW_VERDICT_META[cardReview.verdict].className,
+                          )}
+                        >
+                          {REVIEW_VERDICT_META[cardReview.verdict].label}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  {/* Agent 卡打回耗尽（fallback）：自动评审已兜底放行，提示重新生成 */}
+                  {agentCardStatus === "fallback" && (
+                    <div className="space-y-1.5 rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-[11px] leading-relaxed text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
+                      <div className="flex items-start gap-1.5">
+                        <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+                        自动评审已耗尽，请重新 Agent 生成
+                      </div>
+                      {onRestartAgent && card && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 w-full border-red-300 bg-background text-[11px] text-red-700 hover:bg-red-100 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950"
+                          onClick={() => onRestartAgent(card.id)}
+                        >
+                          <RefreshCw className="size-3" />
+                          重新 Agent 生成
+                        </Button>
+                      )}
+                    </div>
+                  )}
+
+                  {hasReviewRecords && cardReview ? (
+                    <div className="space-y-2">
+                      {/* 三维均分一行 + 加权总分独立一行（总分与质量线比较红绿着色） */}
+                      <div className="grid grid-cols-3 gap-1.5">
+                        <ReviewScoreCell
+                          label="内容对齐"
+                          value={cardReview.averageScores.content}
+                        />
+                        <ReviewScoreCell
+                          label="审美风格"
+                          value={cardReview.averageScores.aesthetic}
+                        />
+                        <ReviewScoreCell
+                          label="成套一致"
+                          value={cardReview.averageScores.consistency}
+                        />
+                      </div>
+                      <AgentTotalScoreBar
+                        value={cardReview.weightedTotal}
+                        threshold={cardReview.card?.qualityThreshold ?? null}
+                      />
+
+                      {/* 评审意见 */}
+                      {cardReview.summary && (
+                        <p className="rounded-md bg-muted/40 px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                          {cardReview.summary}
+                        </p>
+                      )}
+
+                      {/* 展开各模型评审记录 */}
+                      <button
+                        type="button"
+                        className="flex w-full items-center justify-between rounded-md border border-border/60 bg-muted/30 px-2 py-1 text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                        aria-expanded={reviewExpanded}
+                        onClick={() => setReviewExpanded((v) => !v)}
+                      >
+                        <span>各模型评审记录 {cardReview.records.length}</span>
+                        {reviewExpanded ? (
+                          <ChevronUp className="h-3 w-3 shrink-0" />
+                        ) : (
+                          <ChevronDown className="h-3 w-3 shrink-0" />
+                        )}
+                      </button>
+                      {reviewExpanded && (
+                        <div className="space-y-1.5">
+                          {cardReview.records.map((record) => (
+                            <div
+                              key={record.id}
+                              className="rounded-md border border-border/70 bg-muted/20 px-2 py-1.5"
+                            >
+                              <div className="flex items-center justify-between gap-1">
+                                <span className="min-w-0 truncate text-[11px] font-medium">
+                                  {record.reviewerName || record.reviewerId}
+                                </span>
+                                <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                                  第 {record.roundNumber} 轮
+                                </span>
+                              </div>
+                              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] tabular-nums text-muted-foreground">
+                                <span>内容对齐 {record.scores.content ?? "—"}</span>
+                                <span>审美风格 {record.scores.aesthetic ?? "—"}</span>
+                                <span>成套一致 {record.scores.consistency ?? "—"}</span>
+                                {record.verdict ? (
+                                  <span
+                                    className={cn(
+                                      "rounded-sm border px-1",
+                                      REVIEW_VERDICT_META[record.verdict]
+                                        .className,
+                                    )}
+                                  >
+                                    {REVIEW_VERDICT_META[record.verdict].label}
+                                  </span>
+                                ) : null}
+                              </div>
+                              {record.violations.length > 0 && (
+                                <div className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">
+                                  违规：{record.violations.join("、")}
+                                </div>
+                              )}
+                              {record.reason && (
+                                <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
+                                  {record.reason}
+                                </p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    reviewEmptyHint && (
+                      <div className="rounded-md border border-dashed border-border/70 px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                        {reviewEmptyHint}
+                      </div>
+                    )
+                  )}
                 </section>
 
                 {/* 操作按钮 */}
@@ -1077,7 +1402,7 @@ export function ToolPanel({
                     size="sm"
                     className="h-8 flex-1 gap-1.5 rounded-md bg-primary px-3 text-[11px] text-primary-foreground shadow-sm hover:bg-primary/90"
                     onClick={() => void handleGenerateImage()}
-                    disabled={isLoading}
+                    disabled={isLoading || agentBusy || agentCardStatus === "fallback"}
                   >
                     {generatingImage ? (
                       <MorphingInfinity className="h-3.5 w-3.5" />
@@ -1091,7 +1416,7 @@ export function ToolPanel({
                     size="sm"
                     className="h-8 gap-1.5 rounded-md px-3 text-[11px]"
                     onClick={() => void handleDeepen()}
-                    disabled={isLoading}
+                    disabled={isLoading || agentBusy}
                   >
                     {deepening ? (
                       <MorphingInfinity className="h-3.5 w-3.5" />
@@ -1116,7 +1441,7 @@ export function ToolPanel({
                       {previousPrompt && (
                         <DropdownMenuItem
                           className="h-8"
-                          disabled={isLoading}
+                          disabled={isLoading || agentBusy}
                           onClick={() => void handleUndoPrompt()}
                         >
                           <Undo2 className="size-3.5" />
@@ -1125,7 +1450,7 @@ export function ToolPanel({
                       )}
                       <DropdownMenuItem
                         className="h-8"
-                        disabled={isLoading}
+                        disabled={isLoading || agentBusy}
                         onClick={() => void handleRegeneratePrompt()}
                       >
                         {regeneratingPrompt ? (
@@ -1137,7 +1462,7 @@ export function ToolPanel({
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         className="h-8"
-                        disabled={isLoading}
+                        disabled={isLoading || agentBusy}
                         onClick={() => void handleTranslate()}
                       >
                         {translating ? (
@@ -1150,7 +1475,7 @@ export function ToolPanel({
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         className="h-8"
-                        disabled={uploadingRefImages}
+                        disabled={uploadingRefImages || agentBusy}
                         onClick={() => uploadInputRef.current?.click()}
                       >
                         {uploadingRefImages ? (
@@ -1163,6 +1488,7 @@ export function ToolPanel({
                       <DropdownMenuItem
                         variant="destructive"
                         className="h-8"
+                        disabled={agentBusy}
                         onClick={() => setDeleteDialogOpen(true)}
                       >
                         <Trash2 className="size-3.5" />

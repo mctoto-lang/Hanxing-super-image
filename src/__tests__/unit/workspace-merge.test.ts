@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import {
   findCountMismatch,
+  mergeCardsWithImageSummary,
   mergeImageRows,
   sameCardDisplay,
   sameImageRow,
@@ -278,6 +279,126 @@ describe("findCountMismatch", () => {
       },
     })
     expect(findCountMismatch(p, new Map())).toEqual(["card-1"])
+  })
+})
+
+describe("mergeCardsWithImageSummary（Agent 提示词回填）", () => {
+  const emptyPayload: TaskCardImagesPayload = { cards: {} }
+
+  it("Agent 解锁瞬间（previous 锁定 → 服务端已解锁）采信服务端新提示词", () => {
+    const previous = [
+      makeCard({
+        isLocked: true,
+        agentStatus: "drafting",
+        prompt: "【骨架】占位提示",
+      }),
+    ]
+    const fetched = [
+      makeCard({
+        isLocked: false,
+        agentStatus: "waiting_human",
+        prompt: "Agent 写好的新提示词",
+        updatedAt: new Date("2026-01-01T00:01:00Z"),
+      }),
+    ]
+    const merged = mergeCardsWithImageSummary(fetched, emptyPayload, previous)
+    expect(merged[0].prompt).toBe("Agent 写好的新提示词")
+    expect(merged[0].agentStatus).toBe("waiting_human")
+  })
+
+  it("持续锁定（骨架卡在途/打回改写中）同样采信服务端 prompt", () => {
+    const previous = [
+      makeCard({ isLocked: true, agentStatus: "drafting", prompt: "本地旧值" }),
+    ]
+    const fetched = [
+      makeCard({
+        isLocked: true,
+        agentStatus: "drafting",
+        prompt: "服务端骨架新值",
+      }),
+    ]
+    const merged = mergeCardsWithImageSummary(fetched, emptyPayload, previous)
+    expect(merged[0].prompt).toBe("服务端骨架新值")
+  })
+
+  it("已解锁卡保留本地 prompt（防抖保存窗口内的用户编辑不被轮询覆盖）", () => {
+    const previous = [
+      makeCard({
+        isLocked: false,
+        agentStatus: "waiting_human",
+        prompt: "用户正在输入",
+      }),
+    ]
+    const fetched = [
+      makeCard({
+        isLocked: false,
+        agentStatus: "waiting_human",
+        prompt: "服务端上次保存值",
+      }),
+    ]
+    const merged = mergeCardsWithImageSummary(fetched, emptyPayload, previous)
+    expect(merged[0].prompt).toBe("用户正在输入")
+  })
+
+  it("无 Agent 字段的普通卡行为不变：保留本地 prompt", () => {
+    const previous = [makeCard({ prompt: "本地编辑值" })]
+    const fetched = [makeCard({ prompt: "服务端值" })]
+    const merged = mergeCardsWithImageSummary(fetched, emptyPayload, previous)
+    expect(merged[0].prompt).toBe("本地编辑值")
+    expect(merged[0].isLocked).toBeUndefined()
+  })
+
+  it("有选中图分支同样在解锁瞬间采信服务端 prompt 并取摘要选中图", () => {
+    const previous = [
+      makeCard({ isLocked: true, agentStatus: "drafting", prompt: "【骨架】占位" }),
+    ]
+    const fetched = [
+      makeCard({
+        isLocked: false,
+        agentStatus: "waiting_human",
+        prompt: "Agent 终稿",
+        updatedAt: new Date("2026-01-01T00:01:00Z"),
+      }),
+    ]
+    const payload: TaskCardImagesPayload = {
+      cards: {
+        "card-1": {
+          cardId: "card-1",
+          pendingCount: 0,
+          completedCount: 1,
+          failedCount: 0,
+          selectedImage: {
+            id: "img-sel",
+            imageUrl: "https://bucket.cos.ap-guangzhou.myqcloud.com/image/sel.png",
+            modelName: "Test Model",
+            size: "1024x1024",
+            startedAt: null,
+            completedAt: new Date("2026-01-01T00:01:00Z"),
+            createdAt: new Date("2026-01-01T00:00:30Z"),
+          },
+          images: [],
+        },
+      },
+    }
+    const merged = mergeCardsWithImageSummary(fetched, payload, previous)
+    expect(merged[0].prompt).toBe("Agent 终稿")
+    expect(merged[0].selImgUrl).toBe(
+      "https://bucket.cos.ap-guangzhou.myqcloud.com/image/sel.png",
+    )
+  })
+
+  it("内容未变化时复用旧对象引用（FlipCard memo 身份稳定）", () => {
+    const previous = [makeCard()]
+    const merged = mergeCardsWithImageSummary([makeCard()], emptyPayload, previous)
+    expect(merged[0]).toBe(previous[0])
+  })
+
+  it("服务端返回的新卡（本地无基线）直接采用服务端数据", () => {
+    const fetched = [makeCard({ id: "card-new", prompt: "服务端新卡" })]
+    const merged = mergeCardsWithImageSummary(fetched, emptyPayload, [makeCard()])
+    expect(merged.map((c) => c.id)).toEqual(["card-new"])
+    expect(merged[0].prompt).toBe("服务端新卡")
+    expect(merged[0]).toBe(fetched[0])
   })
 })
 

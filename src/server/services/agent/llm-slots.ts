@@ -19,7 +19,18 @@ import { db } from "@/db/client"
 import { enterprises, permissionGroups, users } from "@/db/schema"
 import { redis } from "@/lib/redis"
 import { ACQUIRE_SLOT_LUA, RELEASE_SLOT_LUA } from "@/lib/queue/task-queue"
-import type { AgentLlmContext, ChatModelRow } from "./llm"
+import type { ChatModelRow } from "./llm"
+
+/**
+ * 槽位所需的最小运行上下文。AgentLlmContext（agent/llm.ts）是其超集，
+ * 结构兼容直接传入；其他服务（如工作台 Agent）只需提供 userId/enterpriseId
+ * 即可共享同一套三层并发预算。
+ */
+export interface AgentLlmSlotContext {
+  run: { userId: string; enterpriseId: string }
+  /** 对话槽位限额缓存（llm-slots 惰性加载后回填；运行期视为不变） */
+  llmLimits?: AgentLlmLimits
+}
 
 /** 轮询间隔（200ms：槽位释放到被拾取的平均延迟减半，排队吞吐更高） */
 const SLOT_POLL_MS = 200
@@ -43,7 +54,7 @@ export interface AgentLlmLimits {
   entChatMaxConcurrent: number
 }
 
-async function loadLlmLimits(ctx: AgentLlmContext): Promise<AgentLlmLimits> {
+async function loadLlmLimits(ctx: AgentLlmSlotContext): Promise<AgentLlmLimits> {
   if (ctx.llmLimits) return ctx.llmLimits
   const [userRow] = await db
     .select({ groupId: users.groupId })
@@ -85,7 +96,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
  * 与 withAgentLlmSlot 同款限额来源（ctx 缓存，运行期视为不变）。
  */
 export async function resolveAgentLlmSlotLimit(
-  ctx: AgentLlmContext,
+  ctx: AgentLlmSlotContext,
   model: ChatModelRow,
 ): Promise<number | null> {
   const limits = await loadLlmLimits(ctx)
@@ -102,7 +113,7 @@ export async function resolveAgentLlmSlotLimit(
  * 槽位一致：排队语义），超过 30s 打一条 warn 便于观测限流瓶颈。
  */
 export async function withAgentLlmSlot<T>(
-  ctx: AgentLlmContext,
+  ctx: AgentLlmSlotContext,
   model: ChatModelRow,
   fn: () => Promise<T>,
 ): Promise<T> {

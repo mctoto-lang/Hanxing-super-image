@@ -428,6 +428,20 @@
       "when": 1791342477698,
       "tag": "0060_solid_junta",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1791870807854,
+      "tag": "0061_workspace_agent_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1791872520133,
+      "tag": "0062_breezy_molly_hayes",
+      "breakpoints": true
     }
   ]
 }

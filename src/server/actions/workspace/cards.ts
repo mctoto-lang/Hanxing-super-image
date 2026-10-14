@@ -3,7 +3,7 @@
 import { z } from "zod"
 import { and, desc, eq, gt, inArray, or, sql } from "drizzle-orm"
 import { db } from "@/db/client"
-import { cardImages, generationTasks, models, promptCards } from "@/db/schema"
+import { cardImages, generationTasks, models, promptCards, workspaceAgentCards } from "@/db/schema"
 import { getCurrentEnterpriseScope, requireUserContext } from "@/lib/auth/session"
 import { checkModuleAccess, isEnterpriseAdmin } from "@/lib/auth/permissions"
 import { deepenPrompt, getExecutableTemplate, translatePrompt } from "@/server/services/workspace-ai"
@@ -13,7 +13,8 @@ import { revalidatePath } from "next/cache"
 import { requireActionGuard } from "@/server/actions/action-kit"
 import { getReferenceImageLimit, normalizeReferenceImages } from "@/lib/workspace/helpers"
 import type { CardImageRow, PromptCardRow, TaskCardImagesPayload } from "@/lib/workspace/types"
-import { PromptMutationKind, cardImageSelectFields, cardRowSelectFields, fetchOwnedCard, fetchOwnedTask, generateCardImageInternal, updateTaskCardCount } from "./shared"
+import { PromptMutationKind, cardImageSelectFields, cardRowSelectFields, fetchOwnedCard, fetchOwnedTask, generateCardImageInternal, lockedWorkspaceAgentCardError, updateTaskCardCount } from "./shared"
+import { generateAgentCardImageForAction } from "@/server/services/workspace-agent/production"
 
 
 /**
@@ -208,13 +209,25 @@ export async function getTaskCardsAction(
 
   const [cards, totalRow] = await Promise.all([
     db
-      .select(cardRowSelectFields)
+      .select({
+        ...cardRowSelectFields,
+        // Agent 单卡状态（pending/drafting/.../fallback）：耗尽（fallback）卡在
+        // 前端只保留「重新 Agent 生成」入口；普通任务该列为 null
+        agentStatus: workspaceAgentCards.status,
+      })
       .from(promptCards)
       .leftJoin(cardImages, eq(promptCards.selectedImageId, cardImages.id))
       .leftJoin(models, eq(cardImages.imageApiId, models.id))
       .leftJoin(
         generationTasks,
         eq(cardImages.generationTaskId, generationTasks.id),
+      )
+      .leftJoin(
+        workspaceAgentCards,
+        and(
+          eq(workspaceAgentCards.promptCardId, promptCards.id),
+          eq(workspaceAgentCards.enterpriseId, scope.enterpriseId),
+        ),
       )
       .where(
         and(
@@ -301,6 +314,8 @@ export async function updateCardAction(
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   const owned = await fetchOwnedCard(ctx, cardId)
   if (!owned) return { ok: false, error: "卡片不存在" }
+  const lockedError = lockedWorkspaceAgentCardError(owned)
+  if (lockedError) return { ok: false, error: lockedError }
   await db
     .update(promptCards)
     .set({
@@ -330,6 +345,8 @@ export async function deleteCardAction(cardId: string) {
   const scope = getCurrentEnterpriseScope(ctx)
   const owned = await fetchOwnedCard(ctx, cardId)
   if (!owned) return { ok: false, error: "卡片不存在" }
+  const lockedError = lockedWorkspaceAgentCardError(owned)
+  if (lockedError) return { ok: false, error: lockedError }
   const taskId = owned.task.id
   await db
     .delete(promptCards)
@@ -359,7 +376,7 @@ export async function batchDeleteCardsAction(cardIds: string[]) {
   const taskIds = new Set<string>()
   for (const id of cardIds) {
     const owned = await fetchOwnedCard(ctx, id)
-    if (owned) {
+    if (owned && !lockedWorkspaceAgentCardError(owned)) {
       validIds.push(id)
       taskIds.add(owned.task.id)
     }
@@ -420,6 +437,8 @@ async function mutateCardPrompt(
   const { ctx, enterpriseId } = g
   const owned = await fetchOwnedCard(ctx, cardId)
   if (!owned) return { ok: false, error: "卡片不存在" }
+  const lockedError = lockedWorkspaceAgentCardError(owned)
+  if (lockedError) return { ok: false, error: lockedError }
   try {
     const tpl = await getExecutableTemplate({
       templateId: input.templateId,
@@ -519,10 +538,11 @@ export async function translateCardPromptAction(
 
 
 
-/** 单卡生图 */
+/** 单卡生图（普通任务走用户所选模型；Agent 任务强制走冻结模型 + kind 尺寸的 Agent 管线，
+ *  忽略 apiId/size——Agent 任务视图无生成配置入口，两者允许缺省） */
 export async function generateCardImageAction(
   cardId: string,
-  input: { prompt: string; apiId: string; size: string },
+  input: { prompt: string; apiId?: string; size?: string },
 ): Promise<{
   ok: boolean
   error: string | null
@@ -538,6 +558,33 @@ export async function generateCardImageAction(
   const scope = getCurrentEnterpriseScope(ctx)
   const owned = await fetchOwnedCard(ctx, cardId)
   if (!owned) return { ok: false, error: "卡片不存在" }
+  const lockedError = lockedWorkspaceAgentCardError(owned)
+  if (lockedError) return { ok: false, error: lockedError }
+  // Agent 任务（task.source = "agent"）正式生图：忽略用户所选 apiId/size，
+  // 一律使用 workflow 冻结 imageModelId 与该卡 kind 对应冻结尺寸；产出
+  // generation_task（source = "agent"）+ card_image + workspace_agent_round，
+  // 终态由队列自动触发评审。普通任务（manual）不受影响。
+  if (owned.task.source === "agent") {
+    const res = await generateAgentCardImageForAction({
+      ctx,
+      enterpriseId: scope.enterpriseId,
+      taskId: owned.task.id,
+      promptCardId: owned.card.id,
+      prompt: input.prompt,
+    })
+    if (!res.ok) return { ok: false, error: res.error }
+    revalidatePath("/workspace")
+    return {
+      ok: true,
+      error: null,
+      cardImageId: res.cardImageId,
+      generationTaskId: res.generationTaskId,
+    }
+  }
+  // 普通管线必须显式选择模型与尺寸（Agent 分支已在上方返回）
+  if (!input.apiId || !input.size) {
+    return { ok: false, error: "请先选择图片模型和尺寸" }
+  }
   const res = await generateCardImageInternal({
     ctx,
     enterpriseId: scope.enterpriseId,
@@ -563,7 +610,7 @@ export async function generateCardImageAction(
 /** 重新生成卡片图片 */
 export async function regenerateCardImageAction(
   cardId: string,
-  input: { prompt: string; apiId: string; size: string },
+  input: { prompt: string; apiId?: string; size?: string },
 ): Promise<{
   ok: boolean
   error: string | null
@@ -673,6 +720,8 @@ export async function updateCardReferenceImagesAction(
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   const owned = await fetchOwnedCard(ctx, cardId)
   if (!owned) return { ok: false, error: "卡片不存在" }
+  const lockedError = lockedWorkspaceAgentCardError(owned)
+  if (lockedError) return { ok: false, error: lockedError }
   const [model] = await db
     .select()
     .from(models)
@@ -719,6 +768,8 @@ export async function addUploadedCardImageAction(
   const scope = getCurrentEnterpriseScope(ctx)
   const owned = await fetchOwnedCard(ctx, cardId)
   if (!owned) return { ok: false, error: "卡片不存在" }
+  const lockedError = lockedWorkspaceAgentCardError(owned)
+  if (lockedError) return { ok: false, error: lockedError }
   const imageUrl = input.imageUrl.trim()
   if (!imageUrl) return { ok: false, error: "图片地址无效" }
   // 图片归属校验：上传图 URL 会被参考图链路转给上游、被导出链路在服务端

@@ -171,6 +171,8 @@ export const workspaceTasks = pgTable(
     templateId: uuid("template_id").references(() => promptTemplates.id, {
       onDelete: "set null",
     }),
+    /** manual = 旧工作台模式；agent = 成套卡牌 Agent 工作流 */
+    source: varchar("source", { length: 12 }).default("manual").notNull(),
     status: varchar("status", { length: 20 }).default("generating").notNull(), // generating | completed | failed
     cardCount: integer("card_count").default(0).notNull(),
     errorMessage: text("error_message"),
@@ -188,6 +190,7 @@ export const workspaceTasks = pgTable(
       "workspace_task_status_chk",
       sql`${t.status} IN ('generating', 'completed', 'failed')`,
     ),
+    check("workspace_task_source_chk", sql`${t.source} IN ('manual', 'agent')`),
   ],
 )
 
@@ -243,6 +246,10 @@ export const promptCards = pgTable(
     displayLanguage: varchar("display_language", { length: 5 })
       .default("zh")
       .notNull(), // zh | en
+    /** Agent 占位卡在提示词阶段锁定；提示词完成后解锁 */
+    isLocked: boolean("is_locked").default(false).notNull(),
+    /** Agent 交付用途：face / back / box / border；普通卡片为空 */
+    agentKind: varchar("agent_kind", { length: 12 }),
     referenceImages: jsonb("reference_images").$type<string[]>().default([]).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -258,6 +265,10 @@ export const promptCards = pgTable(
       sql`${t.translationStatus} IN ('none', 'translating', 'synced', 'outdated', 'failed')`,
     ),
     check("prompt_card_display_language_chk", sql`${t.displayLanguage} IN ('zh', 'en')`),
+    check(
+      "prompt_card_agent_kind_chk",
+      sql`${t.agentKind} IS NULL OR ${t.agentKind} IN ('face', 'back', 'box', 'border')`,
+    ),
   ],
 )
 

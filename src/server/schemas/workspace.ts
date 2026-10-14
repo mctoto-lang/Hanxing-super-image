@@ -92,15 +92,17 @@ export const extractNumberedPromptsSchema = z.object({
   input: z.string().min(1, "待提取内容不能为空").max(100_000, "内容过长"),
 })
 
+/** Agent 管线（task.source = "agent"）忽略 apiId/size（一律用冻结值），故两者
+ * 可选；普通管线在 action 内显式要求非空 */
 export const generateCardImageSchema = z.object({
   prompt: promptSchema,
-  apiId: wsIdSchema,
-  size: sizeSchema,
+  apiId: wsIdSchema.optional(),
+  size: sizeSchema.optional(),
 })
 
 export const batchGenerateImageSchema = z.object({
-  apiId: wsIdSchema,
-  size: sizeSchema,
+  apiId: wsIdSchema.optional(),
+  size: sizeSchema.optional(),
   languagePreference: languagePreferenceSchema.optional(),
 })
 

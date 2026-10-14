@@ -53,6 +53,13 @@ export interface ImageModelRow {
   costPerImage: number
 }
 
+/**
+ * 任务来源：
+ * - manual：普通新建（smart 智能裂变 / extract 提取裂变 / custom 自定义）；
+ * - agent：工作台 Agent 智能体发起（成套卡牌四阶段流水线，产出回写本任务）。
+ */
+export type WorkspaceTaskSource = "manual" | "agent"
+
 /** 工作台任务 */
 export interface WorkspaceTaskRow {
   id: string
@@ -71,6 +78,10 @@ export interface WorkspaceTaskRow {
   errorMessage: string | null
   createdAt: Date
   updatedAt: Date
+  /** 任务来源（source = agent 时前端切换为 Agent 视图；缺省视为 manual） */
+  source?: WorkspaceTaskSource
+  /** Agent 工作流 id（source = agent 时存在；进度轮询 / 弹窗用，可缺省） */
+  agentWorkflowId?: string | null
 }
 
 /** 提示词卡片 */
@@ -96,6 +107,12 @@ export interface PromptCardRow {
   selImgCreatedAt: Date | null
   createdAt: Date
   updatedAt: Date
+  /** Agent 产出卡锁定标记（true = 提示词由 Agent 流水线管理，前端禁止编辑；缺省未锁定） */
+  isLocked?: boolean
+  /** Agent 交付用途，用于禁止混合类型批量操作 */
+  agentKind?: "face" | "back" | "box" | "border" | null
+  /** Agent 单卡状态（fallback = 打回耗尽，只保留「重新 Agent 生成」入口） */
+  agentStatus?: string | null
 }
 
 /** 卡片图片 */

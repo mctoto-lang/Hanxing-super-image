@@ -2,7 +2,7 @@
 
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm"
 import { db } from "@/db/client"
-import { cardImages, chatApiConfigs, chatTasks, promptCards, promptTemplates, workspaceApiLogs, workspacePinnedTasks, workspaceTasks } from "@/db/schema"
+import { cardImages, chatApiConfigs, chatTasks, promptCards, promptTemplates, workspaceAgentWorkflows, workspaceApiLogs, workspacePinnedTasks, workspaceTasks } from "@/db/schema"
 import { getCurrentEnterpriseScope, requireUserContext } from "@/lib/auth/session"
 import { checkModuleAccess, isEnterpriseAdmin } from "@/lib/auth/permissions"
 import { DEFAULT_FISSION_TEMPLATE, extractPromptDescriptions, fissionPrompts, getExecutableTemplate, type ChatApiConfig } from "@/server/services/workspace-ai"
@@ -55,6 +55,8 @@ export async function listWorkspaceTasksAction(opts?: {
         themePrompt: workspaceTasks.themePrompt,
         templateId: workspaceTasks.templateId,
         templateName: promptTemplates.name,
+        source: workspaceTasks.source,
+        agentWorkflowId: workspaceAgentWorkflows.id,
         status: workspaceTasks.status,
         cardCount: workspaceTasks.cardCount,
         errorMessage: workspaceTasks.errorMessage,
@@ -65,6 +67,14 @@ export async function listWorkspaceTasksAction(opts?: {
       .leftJoin(
         promptTemplates,
         eq(workspaceTasks.templateId, promptTemplates.id),
+      )
+      .leftJoin(
+        workspaceAgentWorkflows,
+        and(
+          eq(workspaceAgentWorkflows.workspaceTaskId, workspaceTasks.id),
+          eq(workspaceAgentWorkflows.enterpriseId, scope.enterpriseId),
+          eq(workspaceAgentWorkflows.userId, ctx.user.id),
+        ),
       )
       .where(and(...conds))
       .orderBy(desc(workspaceTasks.createdAt))
@@ -156,6 +166,8 @@ export async function listWorkspaceTasksAction(opts?: {
       themePrompt: t.themePrompt,
       templateId: t.templateId,
       templateName: t.templateName,
+      source: t.source as WorkspaceTaskRow["source"],
+      agentWorkflowId: t.agentWorkflowId,
       status: t.status as WorkspaceTaskRow["status"],
       cardCount: t.cardCount,
       thumbnailUrl: thumbs[0] ?? null,

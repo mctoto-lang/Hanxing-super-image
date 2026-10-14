@@ -229,7 +229,7 @@ export function BatchReplacePromptDialog({
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
-        className="flex max-w-4xl max-h-[88vh] flex-col overflow-hidden"
+        className="flex max-h-[88vh] flex-col overflow-hidden sm:max-w-4xl"
         showCloseButton={!busy}
       >
         <DialogHeader>
