@@ -308,11 +308,6 @@ export interface WorkspaceAgentInput {
    * 缺省 = 自由张数模式，不套模板骨架）。
    */
   templateKey?: WorkspaceAgentTemplateKey | null
-  /**
-   * 发起时冻结配置（模板默认 + 用户选择合成，见 agent-templates.buildFrozenConfig；
-   * 落库后模板/平台默认值变更不影响进行中的 workflow）。
-   */
-  frozen?: WorkspaceAgentFrozenConfig
 }
 
 /** 生图候选（workspace_agent_round.candidates 数组元素；多候选评分选优留档） */
