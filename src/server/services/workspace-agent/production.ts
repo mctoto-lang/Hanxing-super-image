@@ -1169,28 +1169,40 @@ export async function hasPendingReviewJob(cardId: string): Promise<boolean> {
 }
 
 /**
- * 打回续跑：改写提示词 → 写回 prompt_card / agent 卡 → 同一冻结模型与
- * kind 尺寸自动生成下一轮（terminal 后再次自动评审）。
+ * 按意见改写提示词 → 写回 prompt_card → 同一冻结模型与 kind 尺寸自动生成
+ * 下一轮（terminal 后再次自动评审）。打回续跑（按评审意见）与「重新
+ * Agent 生成（带修改意见）」共用；startAgentCardGeneration 事务内会同步
+ * 更新 agent 卡 currentPrompt / 状态 generating。
  * 生成失败（余额不足/入队失败等）时卡标 failed 并留痕，不虚标兜底。
  */
-async function continueWithRetry(
-  workflow: WorkspaceAgentWorkflowRow,
-  card: WorkspaceAgentCardRow,
-  round: typeof workspaceAgentRounds.$inferSelect,
-  feedback: string,
-): Promise<{ outcome: string; roundId?: string }> {
+async function reviseAndRegenerate(input: {
+  workflow: WorkspaceAgentWorkflowRow
+  card: WorkspaceAgentCardRow
+  currentPrompt: string
+  feedback: string
+  /** 打回续跑传当前轮号（日志展示 N → N+1）；重新 Agent 生成传 null */
+  roundNumber: number | null
+  /** 场景标签（打回续跑 / 重新 Agent 生成），仅用于事件日志 */
+  scenario: "review_retry" | "manual_restart"
+}): Promise<{ outcome: string; roundId?: string }> {
+  const { workflow, card, currentPrompt, feedback, roundNumber, scenario } = input
+  const isRetry = scenario === "review_retry"
+  // 打回续跑必带轮数；manual_restart 无轮次概念（0 不参与其文案分支）
+  const rn = roundNumber ?? 0
   await logWaEvent({
     workflowId: workflow.id,
     enterpriseId: workflow.enterpriseId,
     nodeKey: "prompt_designer",
     action: "retry",
     status: "warn",
-    detail: `评审未过线，提示词设计师开始按评审意见改写（第 ${round.roundNumber} 轮 → 第 ${round.roundNumber + 1} 轮）`,
+    detail: isRetry
+      ? `评审未过线，提示词设计师开始按评审意见改写（第 ${rn} 轮 → 第 ${rn + 1} 轮）`
+      : "重新 Agent 生成：提示词设计师开始按修改意见改写提示词",
     cardId: card.id,
   })
   const nextPrompt = await rewritePromptWithFeedback({
     workflow,
-    currentPrompt: round.prompt,
+    currentPrompt,
     feedback,
   })
   if (card.promptCardId) {
@@ -1217,7 +1229,11 @@ async function continueWithRetry(
   if (!res.ok) {
     await db
       .update(workspaceAgentCards)
-      .set({ status: "failed", errorMessage: `打回后重生成失败：${res.error}`, updatedAt: new Date() })
+      .set({
+        status: "failed",
+        errorMessage: `${isRetry ? "打回后" : "重新生成"}重生成失败：${res.error}`.slice(0, 500),
+        updatedAt: new Date(),
+      })
       .where(eq(workspaceAgentCards.id, card.id))
     await logWaEvent({
       workflowId: workflow.id,
@@ -1225,7 +1241,7 @@ async function continueWithRetry(
       nodeKey: "supervisor",
       action: "fail",
       status: "error",
-      detail: `打回后自动重生成失败：${res.error}`,
+      detail: `${isRetry ? "打回后" : "重新 Agent 生成"}自动重生成失败：${res.error}`,
       cardId: card.id,
     })
     return { outcome: "retry_aborted" }
@@ -1236,10 +1252,88 @@ async function continueWithRetry(
     nodeKey: "prompt_designer",
     action: "done",
     status: "ok",
-    detail: `已按评审意见改写提示词并自动重新生图（第 ${round.roundNumber + 1} 轮，同模型同尺寸）`,
+    detail: `已按${isRetry ? "评审意见" : "修改意见"}改写提示词并自动重新生图${
+      isRetry ? `（第 ${rn + 1} 轮，同模型同尺寸）` : "（同模型同尺寸）"
+    }`,
     cardId: card.id,
   })
   return { outcome: "retry", roundId: res.roundId }
+}
+
+/**
+ * revise_prompt job：「重新 Agent 生成（带修改意见）」的异步执行体。
+ * action 侧已完成轮数重置并把卡片置 drafting；此处按用户意见改写提示词
+ * 并自动生图（终态自动进评审循环）。job 重试恢复时先把卡片复位 drafting。
+ */
+export async function runRevisePromptJob(
+  workflow: WorkspaceAgentWorkflowRow,
+  job: WorkspaceAgentJobRow,
+): Promise<Record<string, unknown>> {
+  const cardId = String(job.payload?.cardId ?? "")
+  const feedback = String(job.payload?.feedback ?? "").trim()
+  if (!cardId) throw new Error("revise_prompt 任务缺少 cardId")
+  if (!feedback) throw new Error("revise_prompt 任务缺少修改意见")
+  const [card] = await db
+    .select()
+    .from(workspaceAgentCards)
+    .where(
+      and(
+        eq(workspaceAgentCards.id, cardId),
+        eq(workspaceAgentCards.workflowId, workflow.id),
+      ),
+    )
+    .limit(1)
+  if (!card) throw new Error("卡片不存在或不属于当前工作流")
+  // 在途守卫：job 排队/重试期间用户可能已手动触发生成，避免双开轮次
+  if (["generating", "reviewing"].includes(card.status)) {
+    throw new Error(`卡片当前为「${card.status}」，已跳过按意见改写（请等待本轮完成）`)
+  }
+  // 当前提示词：优先回链 prompt_card（用户可能手改过），缺省用卡片初稿
+  let currentPrompt = card.currentPrompt ?? ""
+  if (card.promptCardId) {
+    const [pc] = await db
+      .select({ prompt: promptCards.prompt })
+      .from(promptCards)
+      .where(eq(promptCards.id, card.promptCardId))
+      .limit(1)
+    if (pc?.prompt?.trim()) currentPrompt = pc.prompt
+  }
+  if (!currentPrompt.trim()) throw new Error("当前提示词为空，无法按意见改写")
+  // 幂等复位「撰写中」（job 重试时卡片可能已被上一轮失败标 failed）
+  await db
+    .update(workspaceAgentCards)
+    .set({ status: "drafting", errorMessage: null, updatedAt: new Date() })
+    .where(eq(workspaceAgentCards.id, card.id))
+  const r = await reviseAndRegenerate({
+    workflow,
+    card,
+    currentPrompt,
+    feedback,
+    roundNumber: null,
+    scenario: "manual_restart",
+  })
+  return { outcome: r.outcome, roundId: r.roundId ?? null }
+}
+
+/**
+ * 打回续跑：改写提示词 → 写回 prompt_card / agent 卡 → 同一冻结模型与
+ * kind 尺寸自动生成下一轮（terminal 后再次自动评审）。
+ * 生成失败（余额不足/入队失败等）时卡标 failed 并留痕，不虚标兜底。
+ */
+async function continueWithRetry(
+  workflow: WorkspaceAgentWorkflowRow,
+  card: WorkspaceAgentCardRow,
+  round: typeof workspaceAgentRounds.$inferSelect,
+  feedback: string,
+): Promise<{ outcome: string; roundId?: string }> {
+  return reviseAndRegenerate({
+    workflow,
+    card,
+    currentPrompt: round.prompt,
+    feedback,
+    roundNumber: round.roundNumber,
+    scenario: "review_retry",
+  })
 }
 
 /** 耗尽兜底：跨全部尝试选最高加权分的已评图轮为终图 */
@@ -1480,11 +1574,14 @@ export async function runReviewImageJob(
     .join("\n\n")
 
   const votes: ReviewerVote[] = []
+  // 评审员缺失/失败原因（全失败时落卡展示给用户）
+  const reviewerFailures: string[] = []
   for (const reviewerId of reviewerIds) {
     let model: WorkspaceAgentChatModelRow
     try {
       model = await loadWorkspaceAgentChatModel(reviewerId, workflow.enterpriseId)
     } catch {
+      reviewerFailures.push(`评审员 ${reviewerId} 不可用`)
       await logWaEvent({
         workflowId: workflow.id,
         enterpriseId: workflow.enterpriseId,
@@ -1497,6 +1594,7 @@ export async function runReviewImageJob(
       continue
     }
     if (!model.supportsVision) {
+      reviewerFailures.push(`评审员 ${model.displayName} 不支持读图`)
       await logWaEvent({
         workflowId: workflow.id,
         enterpriseId: workflow.enterpriseId,
@@ -1528,6 +1626,7 @@ export async function runReviewImageJob(
       votes.push(parseReviewerVote(reviewerId, model.displayName, parsed))
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
+      reviewerFailures.push(`评审员 ${model.displayName} 调用失败：${message.slice(0, 120)}`)
       await recordWorkspaceAgentLlmFailure({
         workflow,
         model,
@@ -1552,7 +1651,19 @@ export async function runReviewImageJob(
       .where(eq(workspaceAgentJobs.id, job.id))
   }
   if (votes.length === 0) {
-    throw new Error("全部评审员调用失败，本轮评审未产生结论")
+    const summary = `全部评审员评审失败：${reviewerFailures.join("；").slice(0, 400) || "未知原因"}`
+    // 错误落卡：状态置 failed（卡面红色角标可展示原因，且可重新 Agent 生成），
+    // 避免卡片永久停在「评审中」且无错误可查；job 照常 throw 留痕重试，
+    // 重试恢复后评审流程会重新把卡片置回 reviewing，两者不冲突
+    await db
+      .update(workspaceAgentCards)
+      .set({
+        status: "failed",
+        errorMessage: summary.slice(0, 500),
+        updatedAt: new Date(),
+      })
+      .where(eq(workspaceAgentCards.id, card.id))
+    throw new Error(summary)
   }
 
   // 聚合 + 加权总分（等权平均三维分 → round(0.4×审美 + 0.3×一致性 + 0.3×内容)）

@@ -64,6 +64,7 @@ import {
 } from "@/components/ui/tooltip"
 import { cn, toImageSrc } from "@/lib/utils"
 import { SmartImage } from "@/components/ui/smart-image"
+import { Textarea } from "@/components/ui/textarea"
 import { toast } from "sonner"
 import { Spinner } from "@/components/workspace/spinner"
 import { NewTaskDialog } from "@/components/workspace/new-task-dialog"
@@ -321,10 +322,13 @@ function normalizeAgentProgress(
       : raw
   ) as unknown as WorkspaceAgentProgressPayload
   const workflow = payload.workflow
+  // 优先服务端聚合推导的 currentStage（与 stageStatuses 同口径）；DB
+  // workflow.currentStage 写入时机不保证同步，仅作缺省回退
+  const rawStage = payload.currentStage ?? workflow?.currentStage
   const currentStage = WORKSPACE_AGENT_STAGES.includes(
-    workflow?.currentStage as WorkspaceAgentStage,
+    rawStage as WorkspaceAgentStage,
   )
-    ? (workflow?.currentStage as WorkspaceAgentStage)
+    ? (rawStage as WorkspaceAgentStage)
     : "clarify"
   const stageList = (
     Array.isArray(payload.stages) ? payload.stages : []
@@ -1623,19 +1627,51 @@ export function WorkspaceClient({
     )
   }, [])
 
-  /** 重新 Agent 生成（打回耗尽卡的新周期入口）：重置打回轮数并按当前提示词
-   *  重新进入生图 → 自动评审循环；完成后补拉卡片与进度 */
-  const handleRestartAgentCard = useCallback(async (cardId: string) => {
+  /** 重新 Agent 生成（打回耗尽卡的新周期入口）：打开意见弹窗——可填修改
+   *  意见（Agent 参考意见改写画面提示词后自动生图评审），也可留空直接按
+   *  当前提示词重新评审生成 */
+  const [restartAgentCardId, setRestartAgentCardId] = useState<string | null>(null)
+  const [restartFeedback, setRestartFeedback] = useState("")
+  const [restartingAgent, setRestartingAgent] = useState(false)
+
+  const handleRestartAgentCard = useCallback(
+    (cardId: string) => {
+      setRestartFeedback("")
+      setRestartAgentCardId(cardId)
+    },
+    [setRestartFeedback, setRestartAgentCardId],
+  )
+
+  const confirmRestartAgentCard = useCallback(async () => {
+    if (!restartAgentCardId || restartingAgent) return
+    const cardId = restartAgentCardId
+    const feedback = restartFeedback.trim()
+    setRestartingAgent(true)
     try {
-      const result = await restartWorkspaceAgentCardAction(cardId)
+      const result = await restartWorkspaceAgentCardAction(cardId, {
+        feedback: feedback || undefined,
+      })
       if (!result.ok) throw new Error(result.error || "重新 Agent 生成失败")
-      toast.success("已重新开启 Agent 生图与评审周期")
+      toast.success(
+        feedback
+          ? "已提交：Agent 将按修改意见改写提示词并重新生图评审"
+          : "已重新开启 Agent 生图与评审周期",
+      )
+      setRestartAgentCardId(null)
       const taskId = activeTaskIdRef.current
       if (taskId) await fetchCardsRef.current(taskId)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "重新 Agent 生成失败")
+    } finally {
+      setRestartingAgent(false)
     }
-  }, [])
+  }, [
+    restartAgentCardId,
+    restartingAgent,
+    restartFeedback,
+    setRestartAgentCardId,
+    setRestartingAgent,
+  ])
 
   /** 神谕文案 CSV 下载：action 返回 CSV 文本，前端 Blob 触发浏览器下载 */
   const handleDownloadOracleCsv = useCallback(async () => {
@@ -2979,6 +3015,61 @@ export function WorkspaceClient({
               }}
             >
               确认删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 重新 Agent 生成（可带修改意见）：意见交提示词设计师参考改写画面
+          提示词，留空则按当前提示词直接重新生图评审 */}
+      <Dialog
+        open={restartAgentCardId != null}
+        onOpenChange={(open) => {
+          if (!open && !restartingAgent) setRestartAgentCardId(null)
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <RefreshCw className="h-4 w-4 text-violet-500" />
+              重新 Agent 生成
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-1">
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              将重置该卡片的打回轮数并开启新一轮生图与自动评审。可填写修改意见，Agent
+              会参考意见改写画面提示词后重新生成；留空则按当前提示词直接重新评审生成。
+            </p>
+            <Textarea
+              value={restartFeedback}
+              onChange={(e) => setRestartFeedback(e.target.value)}
+              maxLength={500}
+              className="min-h-[96px] resize-none text-sm leading-relaxed"
+              placeholder="可选：修改意见，如「主体更贴近牌义、背景简化、光影更柔和」…"
+            />
+            <div className="text-right text-[11px] text-muted-foreground">
+              {restartFeedback.length}/500
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setRestartAgentCardId(null)}
+              disabled={restartingAgent}
+            >
+              取消
+            </Button>
+            <Button
+              onClick={() => void confirmRestartAgentCard()}
+              disabled={restartingAgent}
+              className="gap-1.5"
+            >
+              {restartingAgent ? (
+                <Spinner className="size-3.5" />
+              ) : (
+                <RefreshCw className="size-3.5" />
+              )}
+              {restartingAgent ? "提交中…" : "重新生成"}
             </Button>
           </DialogFooter>
         </DialogContent>

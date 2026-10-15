@@ -212,8 +212,11 @@ export async function getTaskCardsAction(
       .select({
         ...cardRowSelectFields,
         // Agent 单卡状态（pending/drafting/.../fallback）：耗尽（fallback）卡在
-        // 前端只保留「重新 Agent 生成」入口；普通任务该列为 null
+        // 前端只保留「重新 Agent 生成」入口；普通任务该列为 null。
+        // roundsUsed/errorMessage 供卡面左上角红色角标展示耗尽轮数与失败原因
         agentStatus: workspaceAgentCards.status,
+        agentRoundsUsed: workspaceAgentCards.roundsUsed,
+        agentErrorMessage: workspaceAgentCards.errorMessage,
       })
       .from(promptCards)
       .leftJoin(cardImages, eq(promptCards.selectedImageId, cardImages.id))

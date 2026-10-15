@@ -1037,15 +1037,28 @@ export async function cancelWorkspaceAgentWorkflowAction(
  * 重新 Agent 生成：唯一允许重置 roundsUsed 开启新评审周期的入口。
  * - 前置：提示词卡已解锁（提示词阶段完成）且卡片无在途生图轮；
  * - 动作：manualRegenCount + 1（成本软限流计数）、roundsUsed → 0、
- *   兜底警示复位，随后按当前提示词（prompt_card.prompt）走冻结模型 +
- *   kind 尺寸的 Agent 生图管线，终态自动进入评审循环。
+ *   兜底警示复位；
+ * - 不带意见：按当前提示词（prompt_card.prompt）走冻结模型 + kind 尺寸的
+ *   Agent 生图管线，终态自动进入评审循环；
+ * - 带修改意见（feedback）：入队 revise_prompt job——提示词设计师按意见
+ *   改写提示词（保留原意做最小必要修改）后自动生图评审，卡片先置
+ *   drafting 展示「撰写中」。
  */
 export async function restartWorkspaceAgentCardAction(
   cardId: string,
+  input: { feedback?: string } = {},
 ): Promise<
-  ActionResult<{ roundId: string; generationTaskId: string; cardImageId: string }>
+  ActionResult<{
+    /** 同步生图路径返回；带意见路径为空（异步改写后由 job 侧产生） */
+    roundId?: string
+    generationTaskId?: string
+    cardImageId?: string
+    /** true = 带修改意见，已入队异步改写 */
+    queuedRevision?: boolean
+  }>
 > {
   try {
+    const feedback = (input.feedback ?? "").trim().slice(0, 500) || undefined
     const { ctx, enterpriseId } = await requireWaContext()
     if (!wsIdSchema.safeParse(cardId).success) {
       return { ok: false, error: "参数错误（id 非法）" }
@@ -1076,8 +1089,16 @@ export async function restartWorkspaceAgentCardAction(
     const prompt = promptCard.prompt.trim()
     if (!prompt) return { ok: false, error: "提示词为空，请先填写提示词" }
 
-    if (["pending", "drafting"].includes(card.status)) {
+    if (card.status === "pending") {
       return { ok: false, error: "该卡片尚未完成提示词撰写，请先生成提示词" }
+    }
+    // drafting 含「按修改意见改写中」（revise_prompt 入队后即置 drafting），
+    // 文案与初稿撰写区分，避免用户误以为要重新点生成提示词
+    if (card.status === "drafting") {
+      return {
+        ok: false,
+        error: "该卡片提示词撰写/按意见改写中，请等待完成后再操作",
+      }
     }
     if (["generating", "reviewing"].includes(card.status)) {
       return { ok: false, error: "该卡片正在生成/评审中，请等待本轮完成" }
@@ -1090,15 +1111,33 @@ export async function restartWorkspaceAgentCardAction(
     }
 
     // 新周期：roundsUsed 复位 + 兜底警示复位 + 手动重开计数 +1
+    // （带意见路径同时置 drafting：卡片立即显示「撰写中」＝改写中）
     await db
       .update(workspaceAgentCards)
       .set({
         roundsUsed: 0,
         fallbackContentWarning: false,
         manualRegenCount: card.manualRegenCount + 1,
+        ...(feedback ? { status: "drafting", errorMessage: null } : {}),
         updatedAt: new Date(),
       })
       .where(eq(workspaceAgentCards.id, card.id))
+
+    if (feedback) {
+      // 带修改意见：异步改写（LLM 调用不在 action 内同步等待，避免长阻塞）
+      await enqueueWaJob(workflow, "revise_prompt", {
+        cardId: card.id,
+        feedback,
+      })
+      await logEvent(workflow, {
+        nodeKey: "supervisor",
+        action: "regen",
+        status: "ok",
+        detail: `重新 Agent 生成（带修改意见）：已重置打回轮数（第 ${card.manualRegenCount + 1} 次手动重开），提示词设计师将按意见改写后自动生图评审`,
+      })
+      revalidatePath("/workspace")
+      return { ok: true, error: null, queuedRevision: true }
+    }
 
     const res = await startAgentCardGeneration({
       enterpriseId,

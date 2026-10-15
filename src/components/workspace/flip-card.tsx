@@ -143,6 +143,9 @@ export const FlipCard = memo(function FlipCard({
   const isAgentLocked = card.isLocked === true
   // 打回耗尽：普通生成入口让位给「重新 Agent 生成」（新周期）
   const isAgentExhausted = card.agentStatus === "fallback"
+  // Agent 失败（撰写失败/打回后重生成失败/评审员全失败）：卡面左上角红色
+  // 角标展示错误原因（agentErrorMessage）
+  const isAgentFailed = card.agentStatus === "failed"
   // Agent 流水线在途状态：排队中/撰写中统一展示「撰写中」（不向用户区分是否
   // 已轮到撰写）；与「生图中」同款——翻到图片面 + 流光边框 + 脉冲状态文字
   const isAgentDrafting =
@@ -626,6 +629,20 @@ export const FlipCard = memo(function FlipCard({
   const hasImage = !!displayImageUrl
   const hasFailedImage =
     !hasImage && pendingImageCount === 0 && failedImages.length > 0
+  // 左上角红色角标文案：图片失败摘要 + 评审耗尽轮数 + Agent 失败原因（按态拼接）
+  const agentBadgeTooltip = [
+    failedImageCount > 0 ? failedImageTooltip : null,
+    isAgentExhausted
+      ? `卡片评审耗尽：自动评审已打回 ${card.agentRoundsUsed ?? "?"} 轮未达质量线，已保留最高分图；可翻转卡片点「重新 Agent 生成」`
+      : null,
+    isAgentFailed
+      ? card.agentErrorMessage
+        ? `Agent 执行失败：${card.agentErrorMessage}`
+        : "Agent 执行失败"
+      : null,
+  ]
+    .filter(Boolean)
+    .join("\n")
   const hasGeneratingImage =
     generatingImage ||
     pendingImageCount > 0 ||
@@ -727,9 +744,10 @@ export const FlipCard = memo(function FlipCard({
           onClick={handleCardClick}
           style={{ aspectRatio: "3 / 5" }}
           className={cn(
-            "relative overflow-hidden rounded-2xl border transition-all duration-200 [content-visibility:auto] [contain-intrinsic-size:auto_300px]",
+            "relative overflow-hidden rounded-2xl border transition-[border-color,background-color,box-shadow] duration-200 [content-visibility:auto] [contain-intrinsic-size:auto_300px]",
             batchMode && "cursor-pointer",
-            // 批量选中 / 工具面板活动卡片：同一套蓝色选中效果
+            // 批量选中 / 工具面板活动卡片：同一套蓝色选中效果；
+            // 耗尽/失败提示由图片面左上角的红色角标承接（见 agentBadge 段）
             (isSelected && batchMode) || isActiveCard
               ? "border-blue-600 bg-blue-50/20 ring-2 ring-blue-600"
               : "border-border bg-card",
@@ -839,35 +857,8 @@ export const FlipCard = memo(function FlipCard({
                         {generatedImageCount} 张
                       </div>
                     )}
-                    {/* 有展示图但存在失败图（如换模型重新生成失败）：
-                        正面无失败占位（hasFailedImage 要求无图），补一个
-                        警示角标，悬停看失败摘要、点击打开失败详情弹窗 */}
-                    {failedImageCount > 0 && (
-                      <TooltipProvider>
-                        <Tooltip>
-                          <TooltipTrigger
-                            render={
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  openErrorDialog()
-                                }}
-                                className="absolute left-2.5 top-2.5 flex h-7 w-7 items-center justify-center rounded-md bg-destructive/85 text-white shadow-sm backdrop-blur-sm transition-colors hover:bg-destructive"
-                                aria-label="部分图片生成失败"
-                              />
-                            }
-                          >
-                            <AlertCircle className="h-3.5 w-3.5" />
-                          </TooltipTrigger>
-                          <TooltipContent side="bottom">
-                            {failedImageTooltip}
-                          </TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
-                    )}
                     {/* 纯视觉 hover 变暗层：必须 pointer-events-none，
-                        否则盖在失败角标按钮上方、拦截其点击 */}
+                        否则盖在角标按钮上方、拦截其点击 */}
                     <div className="pointer-events-none absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/10" />
                   </div>
                 ) : (
@@ -884,6 +875,39 @@ export const FlipCard = memo(function FlipCard({
                     </span>
                   </div>
                 )}
+
+                {/* 左上角红色角标（公共层，有图/无图分支之外）：图片失败 /
+                    评审耗尽 / Agent 失败。悬停看拼接详情；有失败图时点击打开
+                    失败详情弹窗。hasFailedImage（无图全失败）由中央大三角
+                    占位承接，不重复叠角标 */}
+                {!hasFailedImage &&
+                  (isAgentExhausted || isAgentFailed || failedImageCount > 0) && (
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                if (failedImageCount > 0) openErrorDialog()
+                              }}
+                              className="absolute left-2.5 top-2.5 z-10 flex h-7 w-7 items-center justify-center rounded-md bg-destructive/85 text-white shadow-sm backdrop-blur-sm transition-colors hover:bg-destructive"
+                              aria-label={agentBadgeTooltip}
+                            />
+                          }
+                        >
+                          <AlertCircle className="h-3.5 w-3.5" />
+                        </TooltipTrigger>
+                        <TooltipContent
+                          side="bottom"
+                          className="max-w-56 whitespace-pre-line text-left leading-relaxed"
+                        >
+                          {agentBadgeTooltip}
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  )}
 
                 {/* 操作按钮 */}
                 {!batchMode && !hasGeneratingImage && (

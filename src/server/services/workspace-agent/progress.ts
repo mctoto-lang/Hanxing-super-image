@@ -92,6 +92,8 @@ export interface WorkspaceAgentProgressPayload {
     referenceImages: string[]
   }
   stages: WorkspaceAgentStageProgress[]
+  /** 服务端聚合推导的当前阶段（与 stageStatuses 同口径；优先于 DB workflow.currentStage） */
+  currentStage: WorkspaceAgentStage
   stageStatuses: Record<WorkspaceAgentStage, WorkspaceAgentStageStatus>
   roles: WorkspaceAgentRoleState[]
   usage: {
@@ -330,56 +332,52 @@ export async function loadWorkspaceAgentProgress(
   const processing = Number(jobRows.find((r) => r.status === "processing")?.count ?? 0)
   const completedJobs = Number(jobRows.find((r) => r.status === "completed")?.count ?? 0)
 
-  // ── 阶段推导（clarify → draft → art；compose 交付阶段本期未接入恒 locked）──
+  // ── 阶段推导（对齐向导五步语义：主题选择 → 想象力程度 → 落地方向 → 提示词撰写）──
+  // 每阶段对应一个业务里程碑：主题已选（clarify）/ 想象力档位已选（draft）/
+  // 方向已定稿（art）/ 提示词全部写完（compose）。compose 写完即 done——
+  // 生图/评审进度由卡片网格与工具面板承接，流水线不再等卡片落定。
   const cardCount = input.frozenConfig?.cardCount ?? input.cardCount ?? total
-  const clarifyDone = !!workflow.styleDoc && !!workflow.selectedDirectionId
-  const draftDone = cardCount > 0 && promptsWritten >= cardCount
   const drafting = byStatus.drafting ?? 0
-  const artCompleted =
-    (byStatus.approved_by_ai ?? 0) + (byStatus.fallback ?? 0) + (byStatus.confirmed ?? 0)
   const artInFlight = (byStatus.generating ?? 0) + (byStatus.reviewing ?? 0)
-  const currentStage: WorkspaceAgentStage = !clarifyDone
+  const themeDone = selectedTheme != null
+  const imaginationDone = !!input.imaginationLevel
+  const directionDone = !!workflow.selectedDirectionId && !!workflow.styleDoc
+  const promptsDone = cardCount > 0 && promptsWritten >= cardCount
+  const workflowCompleted = workflow.status === "completed"
+  const currentStage: WorkspaceAgentStage = !themeDone
     ? "clarify"
-    : !draftDone
+    : !imaginationDone
       ? "draft"
-      : "art"
+      : !directionDone
+        ? "art"
+        : "compose"
   const stages: WorkspaceAgentStageProgress[] = [
     {
       stage: "clarify",
       total: 0,
       completed: 0,
       failed: 0,
-      inFlight: processing > 0 && !clarifyDone ? 1 : 0,
+      inFlight: processing > 0 && !themeDone ? 1 : 0,
     },
+    { stage: "draft", total: 0, completed: 0, failed: 0, inFlight: 0 },
+    { stage: "art", total: 0, completed: 0, failed: 0, inFlight: 0 },
     {
-      stage: "draft",
+      stage: "compose",
       total: cardCount,
       completed: promptsWritten,
       failed: byStatus.failed ?? 0,
       inFlight: drafting,
     },
-    {
-      stage: "art",
-      total: cardCount,
-      completed: artCompleted,
-      failed: byStatus.failed ?? 0,
-      inFlight: artInFlight,
-    },
-    { stage: "compose", total: 0, completed: 0, failed: 0, inFlight: 0 },
   ]
   const stageStatuses: Record<WorkspaceAgentStage, WorkspaceAgentStageStatus> = {
-    clarify: clarifyDone ? "done" : "active",
-    draft: !clarifyDone ? "locked" : draftDone && drafting === 0 ? "done" : "active",
-    // 生图/评审阶段：提示词完成后激活；有在途（generating/reviewing）进行中，
-    // 全部落定（过审/兜底/失败均计已落定）后 done
-    art: !clarifyDone || !draftDone
+    clarify: themeDone ? "done" : "active",
+    draft: !themeDone ? "locked" : imaginationDone ? "done" : "active",
+    art: !imaginationDone ? "locked" : directionDone ? "done" : "active",
+    compose: !directionDone
       ? "locked"
-      : artInFlight > 0
-        ? "active"
-        : artCompleted + (byStatus.failed ?? 0) > 0
-          ? "done"
-          : "active",
-    compose: "locked",
+      : workflowCompleted || (promptsDone && drafting === 0)
+        ? "done"
+        : "active",
   }
 
   // ── 角色推导（按角色最新事件；supervisor 跟随 job 状态） ──
@@ -484,6 +482,7 @@ export async function loadWorkspaceAgentProgress(
       referenceImages: input.referenceImages ?? [],
     },
     stages,
+    currentStage,
     stageStatuses,
     roles,
     usage: {

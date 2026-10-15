@@ -210,6 +210,8 @@ export function sameCardDisplay(a: PromptCardRow, b: PromptCardRow): boolean {
     a.isLocked === b.isLocked &&
     a.agentKind === b.agentKind &&
     a.agentStatus === b.agentStatus &&
+    a.agentRoundsUsed === b.agentRoundsUsed &&
+    a.agentErrorMessage === b.agentErrorMessage &&
     a.selectedImageId === b.selectedImageId &&
     a.selImgId === b.selImgId &&
     a.selImgUrl === b.selImgUrl &&

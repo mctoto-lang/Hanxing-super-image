@@ -34,7 +34,7 @@ import {
   runGenDirectionsJob,
   runWritePromptsJob,
 } from "@/server/services/workspace-agent/run"
-import { runReviewImageJob } from "@/server/services/workspace-agent/production"
+import { runReviewImageJob, runRevisePromptJob } from "@/server/services/workspace-agent/production"
 import { runWriteOracleCopyJob } from "@/server/services/workspace-agent/oracle"
 
 /**
@@ -358,6 +358,11 @@ async function dispatchJob(
       // fallback / generation_failed / skipped 等，评分与 Token 已在
       // workspace_agent_usage 真实入账
       return runReviewImageJob(workflow, job)
+    }
+    case "revise_prompt": {
+      // 「重新 Agent 生成（带修改意见）」：按用户意见改写提示词后自动生图，
+      // 终态同样自动进评审循环
+      return runRevisePromptJob(workflow, job)
     }
     default:
       // 开放集合的未知类型：显式失败（不静默标完成）

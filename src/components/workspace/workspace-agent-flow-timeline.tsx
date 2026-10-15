@@ -149,14 +149,16 @@ function isTerminalStatus(status: string | null | undefined): boolean {
 
 /**
  * 从轮询载荷恢复当前步骤（刷新后重开 / 主动作推进后跟随服务端状态）：
- * 方向定稿（styleDoc/selectedDirectionId）→ 提示词撰写；有创作方向候选或
+ * 方向定稿（styleDoc 与 selectedDirectionId 均就绪）→ 提示词撰写；有创作方向候选或
  * 已选想象力 → 落地方向；已选主题 → 想象力程度；否则 → 主题选择。
  * 风格确认步骤不参与推导（发起即确认，仅初建自动打开时从该步开始）。
  */
 function deriveActiveStep(payload: WorkspaceAgentProgressPayload): number {
   // 风格未确认（发起未随表单确认的遗留/边缘工作流）→ 停在风格确认步骤
   if (!payload.input.styleConfirmedAt) return STEP_STYLE
-  if (payload.selectedDirectionId || payload.workflow.styleDoc) {
+  // 方向定稿 = 已选方向且 styleDoc 落定（与服务端 directionDone 同口径），
+  // 过渡瞬间（二者只其一时）不抢跳提示词步骤
+  if (payload.selectedDirectionId && payload.workflow.styleDoc) {
     return STEP_PROMPT
   }
   const hasDirectionCandidates = payload.directions.some(

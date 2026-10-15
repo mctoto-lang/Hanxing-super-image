@@ -113,6 +113,10 @@ export interface PromptCardRow {
   agentKind?: "face" | "back" | "box" | "border" | null
   /** Agent 单卡状态（fallback = 打回耗尽，只保留「重新 Agent 生成」入口） */
   agentStatus?: string | null
+  /** Agent 卡已用打回轮数（卡面耗尽角标展示；普通任务为 null） */
+  agentRoundsUsed?: number | null
+  /** Agent 卡错误信息（撰写/评审失败原因；普通任务为 null） */
+  agentErrorMessage?: string | null
 }
 
 /** 卡片图片 */
