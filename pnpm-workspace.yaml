@@ -6,3 +6,5 @@ allowBuilds:
   esbuild: true
   sharp: true
   unrs-resolver: true
+patchedDependencies:
+  border-beam@1.3.0: patches/border-beam@1.3.0.patch

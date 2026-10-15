@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  border-beam@1.3.0: a8bddbea352d2449d1b03ad4f676ad4baa7972119abeab19580dfd2948c2be80
+
 importers:
 
   .:
@@ -34,7 +37,7 @@ importers:
         version: 3.0.3
       border-beam:
         specifier: ^1.3.0
-        version: 1.3.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        version: 1.3.0(patch_hash=a8bddbea352d2449d1b03ad4f676ad4baa7972119abeab19580dfd2948c2be80)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -6417,7 +6420,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  border-beam@1.3.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
+  border-beam@1.3.0(patch_hash=a8bddbea352d2449d1b03ad4f676ad4baa7972119abeab19580dfd2948c2be80)(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
     dependencies:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)

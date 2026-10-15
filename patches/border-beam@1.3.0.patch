@@ -1,0 +1,84 @@
+diff --git a/dist/index.cjs.js b/dist/index.cjs.js
+index 6dcf7b905ecb35267f8ff301965e69316231311b..f63267b820dc07b8ce01cdee4a7b44113205e9df 100644
+--- a/dist/index.cjs.js
++++ b/dist/index.cjs.js
+@@ -895,4 +895,4 @@ ${A(e)}
+ }
+ ${W}
+ ${A(e)}
+-`}const J=new Set;let E=null,ce=0;const oa=1e3/30-2,sa=Math.PI*2;function ye(t){return(1-Math.cos(sa*t))/2}function Xe(t){if(E=requestAnimationFrame(Xe),t-ce<oa)return;ce=t;const e=t/1e3;J.forEach(({el:a,config:r})=>{for(const o of r.oscillators){const s=(e-o.delay)/o.period,i=o.a+(o.b-o.a)*ye(s);a.style.setProperty(o.prop,o.unit==="px"?`${i.toFixed(2)}px`:i.toFixed(4))}if(r.hue){const{prop:o,range:s,period:i,continuous:c}=r.hue,p=c?e/i%1*s:-s+2*s*ye(e/i);a.style.setProperty(o,`${p.toFixed(2)}deg`)}})}function ia(){E==null&&(ce=0,E=requestAnimationFrame(Xe))}function na(){J.size===0&&E!=null&&(cancelAnimationFrame(E),E=null)}function ca(t,e){const a={el:t,config:e};return J.add(a),ia(),()=>{J.delete(a),na()}}function ba(){const[t,e]=k.useState(()=>typeof window>"u"||window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");return k.useEffect(()=>{if(typeof window>"u")return;const a=window.matchMedia("(prefers-color-scheme: dark)"),r=o=>{e(o.matches?"dark":"light")};return a.addEventListener("change",r),()=>a.removeEventListener("change",r)},[]),t}function pa(t,e){return t==="auto"?e:t}const Ye=k.forwardRef(function({children:e,size:a="md",colorVariant:r="colorful",theme:o="dark",staticColors:s=!1,duration:i,active:c=!0,borderRadius:p,brightness:b,saturation:m,hueRange:n=30,strength:l=1,className:f,style:w,onActivate:d,onDeactivate:g,onAnimationEnd:H,...O},z){const $=k.useId().replace(/:/g,"-"),W=ba(),y=k.useRef(null),[x,Y]=k.useState(c),[u,v]=k.useState(!1),[R,ee]=k.useState(!0),[G,ae]=k.useState(null),[j,L]=k.useState({x:1,y:1});k.useEffect(()=>{if(p!=null)return;const h=y.current;if(!h)return;const F=()=>{const P=h.firstElementChild;if(!P)return;const ie=getComputedStyle(P),B=parseFloat(ie.borderTopLeftRadius);!isNaN(B)&&B>0&&ae(B)};F();const I=new MutationObserver(F);return I.observe(h,{childList:!0,subtree:!1}),()=>I.disconnect()},[p,e]),k.useEffect(()=>{c&&!x&&!u?Y(!0):!c&&x&&!u&&v(!0)},[c,x,u]),k.useEffect(()=>{const h=y.current;if(!h||typeof IntersectionObserver>"u")return;const F=new IntersectionObserver(I=>{for(const P of I)ee(P.isIntersecting)},{rootMargin:"256px"});return F.observe(h),()=>F.disconnect()},[]),k.useEffect(()=>{if(a!=="pulse-outside"){L({x:1,y:1});return}const h=y.current;if(!h)return;const F=350,I=140,P=.35,ie=4,B=D=>Math.max(P,Math.min(ie,D)),ge=()=>{const D=h.firstElementChild;if(!D)return;const U=D.getBoundingClientRect();if(!U.width||!U.height)return;const ue=+B(U.width/F).toFixed(3),xe=+B(U.height/I).toFixed(3);L(ne=>ne.x===ue&&ne.y===xe?ne:{x:ue,y:xe})};if(ge(),typeof ResizeObserver>"u")return;const me=h.firstElementChild;if(!me)return;const $e=new ResizeObserver(ge);return $e.observe(me),()=>$e.disconnect()},[a,e]);const re=k.useCallback(h=>{const F=h.animationName;F.includes("fade-out")?(Y(!1),v(!1),g==null||g()):F.includes("fade-in")&&(d==null||d()),H==null||H(h)},[d,g,H]),M=pa(o,W),S=Q[a][M],te=ve[a],oe=a==="pulse-inner"||a==="pulse-outside",le=p??G??te.borderRadius,T=i??(a==="line"?3.1:oe?2.3:1.96),fe=m??S.saturation,de=b??S.brightness??1.3,N=a==="line"?Math.min(n,13):n,V=r==="mono"?!0:s,Oe=k.useMemo(()=>Ze({id:$,borderRadius:le,borderWidth:te.borderWidth,duration:T,strokeOpacity:S.strokeOpacity,innerOpacity:S.innerOpacity,bloomOpacity:S.bloomOpacity,innerShadow:S.innerShadow,size:a,colorVariant:r,staticColors:V,brightness:de,saturation:fe,hueRange:N,theme:M,hairlineOpacity:S.hairlineOpacity}),[$,le,te.borderWidth,T,S.strokeOpacity,S.innerOpacity,S.bloomOpacity,S.innerShadow,S.hairlineOpacity,a,r,V,de,fe,N,M]),se=k.useMemo(()=>oe?Qe(a,M,T,N,V,$):null,[oe,a,M,T,N,V,$]);k.useEffect(()=>{var F;if(!se||!(x||u)||!R)return;const h=y.current;if(h&&!(typeof window<"u"&&((F=window.matchMedia)!=null&&F.call(window,"(prefers-reduced-motion: reduce)").matches)))return ca(h,se)},[se,x,u,R]);const Se=k.useCallback(h=>{y.current=h,typeof z=="function"?z(h):z&&(z.current=h)},[z]),Fe={...w??{},"--beam-strength":Math.max(0,Math.min(1,l)),...a==="pulse-outside"?{"--pulse-glow-sx":j.x,"--pulse-glow-sy":j.y}:{}};return _.jsxs(_.Fragment,{children:[_.jsx("style",{children:Oe}),_.jsxs("div",{...O,ref:Se,"data-beam":$,"data-active":x&&!u?"":void 0,"data-fading":u?"":void 0,"data-paused":x&&!u&&!R?"":void 0,className:f,style:Fe,onAnimationEnd:re,children:[e,_.jsx("div",{"data-beam-bloom":!0})]})]})});exports.BorderBeam=Ye;exports.default=Ye;exports.sizePresets=ve;exports.sizeThemePresets=Q;exports.themeColors=Re;
++`}const injectedBeamStyles=new Set;const J=new Set;let E=null,ce=0;const oa=1e3/30-2,sa=Math.PI*2;function ye(t){return(1-Math.cos(sa*t))/2}function Xe(t){if(E=requestAnimationFrame(Xe),t-ce<oa)return;ce=t;const e=t/1e3;J.forEach(({el:a,config:r})=>{for(const o of r.oscillators){const s=(e-o.delay)/o.period,i=o.a+(o.b-o.a)*ye(s);a.style.setProperty(o.prop,o.unit==="px"?`${i.toFixed(2)}px`:i.toFixed(4))}if(r.hue){const{prop:o,range:s,period:i,continuous:c}=r.hue,p=c?e/i%1*s:-s+2*s*ye(e/i);a.style.setProperty(o,`${p.toFixed(2)}deg`)}})}function ia(){E==null&&(ce=0,E=requestAnimationFrame(Xe))}function na(){J.size===0&&E!=null&&(cancelAnimationFrame(E),E=null)}function ca(t,e){const a={el:t,config:e};return J.add(a),ia(),()=>{J.delete(a),na()}}function ba(){const[t,e]=k.useState(()=>typeof window>"u"||window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");return k.useEffect(()=>{if(typeof window>"u")return;const a=window.matchMedia("(prefers-color-scheme: dark)"),r=o=>{e(o.matches?"dark":"light")};return a.addEventListener("change",r),()=>a.removeEventListener("change",r)},[]),t}function pa(t,e){return t==="auto"?e:t}const Ye=k.forwardRef(function({children:e,size:a="md",colorVariant:r="colorful",theme:o="dark",staticColors:s=!1,duration:i,active:c=!0,borderRadius:p,brightness:b,saturation:m,hueRange:n=30,strength:l=1,className:f,style:w,onActivate:d,onDeactivate:g,onAnimationEnd:H,beamId:beamIdShared,...O},z){const $=beamIdShared||k.useId().replace(/:/g,"-"),W=ba(),y=k.useRef(null),[x,Y]=k.useState(c),[u,v]=k.useState(!1),[R,ee]=k.useState(!0),[G,ae]=k.useState(null),[j,L]=k.useState({x:1,y:1});k.useEffect(()=>{if(p!=null)return;const h=y.current;if(!h)return;const F=()=>{const P=h.firstElementChild;if(!P)return;const ie=getComputedStyle(P),B=parseFloat(ie.borderTopLeftRadius);!isNaN(B)&&B>0&&ae(B)};F();const I=new MutationObserver(F);return I.observe(h,{childList:!0,subtree:!1}),()=>I.disconnect()},[p,e]),k.useEffect(()=>{c&&!x&&!u?Y(!0):!c&&x&&!u&&v(!0)},[c,x,u]),k.useEffect(()=>{const h=y.current;if(!h||typeof IntersectionObserver>"u")return;const F=new IntersectionObserver(I=>{for(const P of I)ee(P.isIntersecting)},{rootMargin:"64px"});return F.observe(h),()=>F.disconnect()},[]),k.useEffect(()=>{if(a!=="pulse-outside"){L({x:1,y:1});return}const h=y.current;if(!h)return;const F=350,I=140,P=.35,ie=4,B=D=>Math.max(P,Math.min(ie,D)),ge=()=>{const D=h.firstElementChild;if(!D)return;const U=D.getBoundingClientRect();if(!U.width||!U.height)return;const ue=+B(U.width/F).toFixed(3),xe=+B(U.height/I).toFixed(3);L(ne=>ne.x===ue&&ne.y===xe?ne:{x:ue,y:xe})};if(ge(),typeof ResizeObserver>"u")return;const me=h.firstElementChild;if(!me)return;const $e=new ResizeObserver(ge);return $e.observe(me),()=>$e.disconnect()},[a,e]);const re=k.useCallback(h=>{const F=h.animationName;F.includes("fade-out")?(Y(!1),v(!1),g==null||g()):F.includes("fade-in")&&(d==null||d()),H==null||H(h)},[d,g,H]),M=pa(o,W),S=Q[a][M],te=ve[a],oe=a==="pulse-inner"||a==="pulse-outside",le=p??G??te.borderRadius,T=i??(a==="line"?3.1:oe?2.3:1.96),fe=m??S.saturation,de=b??S.brightness??1.3,N=a==="line"?Math.min(n,13):n,V=r==="mono"?!0:s,Oe=k.useMemo(()=>Ze({id:$,borderRadius:le,borderWidth:te.borderWidth,duration:T,strokeOpacity:S.strokeOpacity,innerOpacity:S.innerOpacity,bloomOpacity:S.bloomOpacity,innerShadow:S.innerShadow,size:a,colorVariant:r,staticColors:V,brightness:de,saturation:fe,hueRange:N,theme:M,hairlineOpacity:S.hairlineOpacity}),[$,le,te.borderWidth,T,S.strokeOpacity,S.innerOpacity,S.bloomOpacity,S.innerShadow,S.hairlineOpacity,a,r,V,de,fe,N,M]),se=k.useMemo(()=>oe?Qe(a,M,T,N,V,$):null,[oe,a,M,T,N,V,$]);k.useEffect(()=>{var F;if(!se||!(x||u)||!R)return;const h=y.current;if(h&&!(typeof window<"u"&&((F=window.matchMedia)!=null&&F.call(window,"(prefers-reduced-motion: reduce)").matches)))return ca(h,se)},[se,x,u,R]);k.useInsertionEffect(function(){if(typeof document>"u")return;var css=String(Oe),bh=5381;for(var bi2=0;bi2<css.length;bi2++)bh=(bh*33+css.charCodeAt(bi2))>>>0;var bk=$+"#"+bh.toString(36);if(injectedBeamStyles.has(bk))return;injectedBeamStyles.add(bk);var styleEl=document.createElement("style");styleEl.dataset.beamId=$;styleEl.textContent=css;document.head.appendChild(styleEl)},[Oe,$]);const Se=k.useCallback(h=>{y.current=h,typeof z=="function"?z(h):z&&(z.current=h)},[z]),Fe={...w??{},"--beam-strength":Math.max(0,Math.min(1,l)),...a==="pulse-outside"?{"--pulse-glow-sx":j.x,"--pulse-glow-sy":j.y}:{}};return _.jsxs(_.Fragment,{children:[_.jsxs("div",{...O,ref:Se,"data-beam":$,"data-active":x&&!u?"":void 0,"data-fading":u?"":void 0,"data-paused":x&&!u&&!R?"":void 0,className:f,style:Fe,onAnimationEnd:re,children:[e,_.jsx("div",{"data-beam-bloom":!0})]})]})});exports.BorderBeam=Ye;exports.default=Ye;exports.sizePresets=ve;exports.sizeThemePresets=Q;exports.themeColors=Re;
+diff --git a/dist/index.es.js b/dist/index.es.js
+index f059a1d92d4ae6343a0b8b8f058af09d1328291d..cf482b0e4c4e377b80ab09e843f27b7f3c5eff1e 100644
+--- a/dist/index.es.js
++++ b/dist/index.es.js
+@@ -1,5 +1,5 @@
+ import { jsxs as he, Fragment as Ce, jsx as ze } from "react/jsx-runtime";
+-import { forwardRef as Ge, useId as Me, useRef as Ie, useState as P, useEffect as B, useCallback as ye, useMemo as ve } from "react";
++import { forwardRef as Ge, useId as Me, useRef as Ie, useState as P, useEffect as B, useCallback as ye, useMemo as ve, useInsertionEffect as Ins } from "react";
+ const Le = {
+   sm: {
+     borderRadius: 32,
+@@ -1718,6 +1718,9 @@ ${_(e)}
+ const Z = /* @__PURE__ */ new Set();
+ let E = null, ce = 0;
+ const pa = 1e3 / 30 - 2, la = Math.PI * 2;
++// [patch] 全局已注入 beam 样式（id#cssHash 去重）：同参数实例共享一份 CSS，
++// 避免 N 个实例各注入 ~15KB 重复样式表撑爆 CSSOM
++const injectedBeamStyles = /* @__PURE__ */ new Set();
+ function We(t) {
+   return (1 - Math.cos(la * t)) / 2;
+ }
+@@ -1783,9 +1786,10 @@ const za = Ge(
+     onActivate: f,
+     onDeactivate: g,
+     onAnimationEnd: W,
++    beamId: beamIdShared,
+     ...Y
+   }, z) {
+-    const $ = Me().replace(/:/g, "-"), w = ma(), y = Ie(null), [x, X] = P(c), [u, v] = P(!1), [S, J] = P(!0), [G, ee] = P(null), [j, A] = P({ x: 1, y: 1 });
++    const $ = beamIdShared || Me().replace(/:/g, "-"), w = ma(), y = Ie(null), [x, X] = P(c), [u, v] = P(!1), [S, J] = P(!0), [G, ee] = P(null), [j, A] = P({ x: 1, y: 1 });
+     B(() => {
+       if (p != null) return;
+       const h = y.current;
+@@ -1809,7 +1813,8 @@ const za = Ge(
+           for (const I of M) J(I.isIntersecting);
+         },
+         // Start animating slightly before the element scrolls into view.
+-        { rootMargin: "256px" }
++        // [patch] 256px → 64px：视口外即时暂停动画，多卡列表滚动场景减少同时在跑的重绘
++        { rootMargin: "64px" }
+       );
+       return F.observe(h), () => F.disconnect();
+     }, []), B(() => {
+@@ -1887,6 +1892,22 @@ const za = Ge(
+       if (h && !(typeof window < "u" && ((F = window.matchMedia) != null && F.call(window, "(prefers-reduced-motion: reduce)").matches)))
+         return ga(h, oe);
+     }, [oe, x, u, S]);
++    // [patch] 样式经 document.head 全局注入并按 id+内容哈希去重（替代每实例渲染
++    // <style>）；useInsertionEffect 保证 paint 前生效。主题切换生成新 CSS 时按
++    // 新哈希追加一份（选择器相同，后者在级联中覆盖前者）
++    Ins(() => {
++      if (typeof document > "u") return;
++      const css = String(Se);
++      let hash = 5381;
++      for (let i = 0; i < css.length; i++) hash = (hash * 33 + css.charCodeAt(i)) >>> 0;
++      const key = $ + "#" + hash.toString(36);
++      if (injectedBeamStyles.has(key)) return;
++      injectedBeamStyles.add(key);
++      const styleEl = document.createElement("style");
++      styleEl.dataset.beamId = $;
++      styleEl.textContent = css;
++      document.head.appendChild(styleEl);
++    }, [Se, $]);
+     const Re = ye(
+       (h) => {
+         y.current = h, typeof z == "function" ? z(h) : z && (z.current = h);
+@@ -1898,7 +1919,6 @@ const za = Ge(
+       ...a === "pulse-outside" ? { "--pulse-glow-sx": j.x, "--pulse-glow-sy": j.y } : {}
+     };
+     return /* @__PURE__ */ he(Ce, { children: [
+-      /* @__PURE__ */ ze("style", { children: Se }),
+       /* @__PURE__ */ he(
+         "div",
+         {
