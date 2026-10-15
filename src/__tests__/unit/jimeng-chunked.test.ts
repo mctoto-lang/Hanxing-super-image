@@ -123,6 +123,63 @@ describe("callJimengApi 请求拆分", () => {
   })
 })
 
+describe("即梦参考图出站字段", () => {
+  /**
+   * jimeng-free-api 反代的 /v1/images/generations 只解析 filePath/filePaths
+   * 参考图字段，images 会被静默忽略（按纯文生图出图）——默认必须发 filePaths。
+   */
+  function requestBody(i = 0): Record<string, unknown> {
+    return JSON.parse(String((fetchMock.mock.calls[i]![1] as RequestInit).body))
+  }
+
+  function callWithRefs(
+    referenceImages: string[],
+    referenceImageField?: string,
+  ) {
+    return callJimengApi({
+      model: {
+        name: "jimeng-5.0",
+        apiEndpoint: "https://api.example.com/gen",
+        apiTimeout: 5,
+        referenceImageField,
+      },
+      task: {
+        prompt: "p",
+        imageSize: "1024x1024",
+        imageCount: 1,
+        referenceImages,
+      },
+      extraConfig: {},
+      apiKey: "k",
+      downloadAndUpload: dl,
+    })
+  }
+
+  it("默认发 filePaths 数组字段，不再发 images", async () => {
+    fetchMock.mockResolvedValue(okResponse(["a"]))
+    await callWithRefs(["https://cos.example.com/e1/2026/10/u.png"])
+    const body = requestBody()
+    expect(body.filePaths).toEqual([
+      "https://cos.example.com/e1/2026/10/u.png",
+    ])
+    expect(body.images).toBeUndefined()
+  })
+
+  it("referenceImageField 覆盖时按覆盖字段名发送", async () => {
+    fetchMock.mockResolvedValue(okResponse(["a"]))
+    await callWithRefs(["https://cos.example.com/e1/u.png"], "filePath")
+    expect(requestBody().filePath).toEqual(["https://cos.example.com/e1/u.png"])
+  })
+
+  it("无参考图时请求体不含参考图字段", async () => {
+    fetchMock.mockResolvedValue(okResponse(["a"]))
+    await callWithRefs([])
+    const body = requestBody()
+    expect(body.filePaths).toBeUndefined()
+    expect(body.images).toBeUndefined()
+  })
+})
+
 describe("validateImageModelConfig jimengN 范围 1-8", () => {
   it("8 通过；9 拒绝（文案 1 到 8）", () => {
     expect(() =>

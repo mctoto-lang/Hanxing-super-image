@@ -759,7 +759,7 @@ export function ModelFormDialog({
                       id="referenceImageField"
                       value={state.referenceImageField}
                       onChange={(e) => up("referenceImageField", e.target.value)}
-                      placeholder="留空按格式默认：openai→image，即梦/grsai→images"
+                      placeholder="留空按格式默认：openai→image，即梦→filePaths"
                     />
                   </div>
                 )}

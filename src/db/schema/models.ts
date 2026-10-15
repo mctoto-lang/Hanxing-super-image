@@ -104,9 +104,11 @@ export const models = pgTable(
       .default(false)
       .notNull(),
     maxReferenceImages: integer("max_reference_images").default(0).notNull(),
+    // 无列级默认：各接口格式默认不同（openai→image、即梦→filePaths），
+    // NULL 时由读取端按格式取默认（见 image-model-config.ts）
     referenceImageField: varchar("reference_image_field", {
       length: 50,
-    }).default("images"),
+    }),
     maxConcurrent: integer("max_concurrent").default(2).notNull(),
     maxRetries: integer("max_retries").default(2).notNull(),
     apiTimeout: integer("api_timeout").default(120).notNull(),

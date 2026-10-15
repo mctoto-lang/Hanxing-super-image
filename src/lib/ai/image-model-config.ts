@@ -10,8 +10,13 @@
 export type ImageApiFormat = "openai" | "jimeng" | "gemini" | "grsai"
 
 export const DEFAULT_IMAGE_API_FORMAT: ImageApiFormat = "openai"
-/** 即梦参考图字段缺省名 */
-export const DEFAULT_REFERENCE_IMAGE_FIELD = "images"
+/**
+ * 即梦参考图字段缺省名。
+ * jimeng-free-api 反代的 /v1/images/generations 只解析 filePath（单张，向后
+ * 兼容）/ filePaths（数组）两个参考图字段（另支持 multipart 上传），其余字段名
+ * （如 images）会被静默忽略、按纯文生图出图，故默认取数组形式的 filePaths。
+ */
+export const DEFAULT_JIMENG_REFERENCE_IMAGE_FIELD = "filePaths"
 /** OpenAI 生图参考图字段缺省名（参考图以 URL 链接数组传入 image 字段） */
 export const DEFAULT_OPENAI_REFERENCE_IMAGE_FIELD = "image"
 /** gemini 格式比例参数字段缺省名（管理员可按中转站约定覆盖） */
@@ -258,6 +263,13 @@ export function buildOpenAiRequestBody(
   return body
 }
 
+/**
+ * 即梦生图请求体：POST {model.apiEndpoint}（jimeng-free-api 反代）
+ *
+ * - 尺寸不发像素 size，走 ratio（gcd 归约比例）+ resolution（1k/2k/4k 档位）
+ * - 参考图以 URL 数组传入 filePaths 字段（字段名可由 referenceImageField 覆盖）；
+ *   反代侧自行拉取 http(s) URL 或解析 data:URL，上传后走混合生成（blend）模式
+ */
 export function buildJimengRequestBody(
   input: BuildJimengRequestInput,
 ): Record<string, unknown> {
@@ -270,7 +282,8 @@ export function buildJimengRequestBody(
   }
   if (input.referenceImages.length > 0) {
     const field =
-      input.referenceImageField?.trim() || DEFAULT_REFERENCE_IMAGE_FIELD
+      input.referenceImageField?.trim() ||
+      DEFAULT_JIMENG_REFERENCE_IMAGE_FIELD
     body[field] = input.referenceImages
   }
   return body
