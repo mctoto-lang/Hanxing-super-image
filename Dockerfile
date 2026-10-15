@@ -18,8 +18,11 @@ RUN corepack enable && corepack prepare pnpm@11.20.0 --activate
 WORKDIR /app
 
 # 仅复制 manifest（含 workspace 文件——pnpm 11 依赖它读取 allowBuilds 构建
-# 许可，缺它 sharp/esbuild 等原生依赖构建会被跳过），利用 Docker 层缓存
+# 许可，缺它 sharp/esbuild 等原生依赖构建会被跳过），利用 Docker 层缓存。
+# patches/ 必须随行复制：frozen install 要读取 patchedDependencies 引用的
+# patch 文件应用并校验哈希，缺失直接失败（增删补丁时与 workspace 同步维护）。
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml ./
+COPY patches/ ./patches/
 RUN pnpm install --frozen-lockfile
 
 
