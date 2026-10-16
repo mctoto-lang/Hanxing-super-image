@@ -93,7 +93,7 @@ const KIT_REPLACEMENT: KitSpec<"replacement"> = {
   kind: "replacement",
   key: "kit-replacement",
   name: "替换牌面",
-  hint: "印制备用替换牌面：与标准牌面同规格同比例，任选一张点数牌样式重制，不出现文字与字母",
+  hint: "印制备用替换牌面：与标准牌面同规格同比例，任选一张卡面样式重制，不出现文字与字母",
 }
 
 /** 模板卡片类型 → 中文标签（CSV 导出与列表筛选共用） */
@@ -239,22 +239,25 @@ export interface Poker58CardSkeleton extends WorkspaceAgentCardSkeleton {
 
 const POKER_KIT = [KIT_REPLACEMENT, KIT_BACK, KIT_BORDER, KIT_BOX] as const
 
+/** 主题卡面统一骨架提示（纯主题卡口径：无花色/点数语义，主体由选定主题发散） */
+const POKER_THEME_CARD_HINT =
+  "主题卡片：围绕选定主题与方向，构思一个独立、明确的画面主体（人物/动物/物品或其组合）并作场景化演绎，与整套其他卡面明显区分"
+
 /**
- * 扑克 58 张骨架：0-51 花色牌（黑桃/红心/方块/梅花各 A-K）→ 52-53 大小王
- * → 54 替换牌面 → 55-57 套件交付物（牌背/边框/牌盒）。
+ * 扑克 58 张骨架（LLM 侧按主题卡片处理，不携带花色/点数语义）：
+ * 0-51 主题卡 01-52（key 保留 poker-{花色}-{点数} 以稳定结构）→ 52-53 主角卡
+ * /主角对卡 → 54 替换牌面 → 55-57 套件交付物（牌背/边框/牌盒）。
  */
 export const POKER58_CARDS: Poker58CardSkeleton[] = [
   ...POKER_SUITS.flatMap((suit, suitIndex): Poker58CardSkeleton[] =>
     POKER_RANKS.map((rank, rankIndex): Poker58CardSkeleton => {
       const pipCount = RANK_PIP_VALUES[rank] ?? null
+      const index = suitIndex * POKER_RANKS.length + rankIndex
       return {
-        index: suitIndex * POKER_RANKS.length + rankIndex,
+        index,
         key: `poker-${suit.id}-${rank}`,
-        name: `${suit.name}${rank}`,
-        hint:
-          pipCount != null
-            ? `花色牌 · ${suit.name}（${suit.symbol}）· ${rank}，画面呈现恰好 ${pipCount} 个花色符号`
-            : `花色牌 · ${suit.name}（${suit.symbol}）· ${rank}，人物牌：呈现对应身份的角色形象`,
+        name: `主题卡 ${pad2(index + 1)}`,
+        hint: POKER_THEME_CARD_HINT,
         kind: pipCount != null ? "number" : "court",
         suit: suit.id,
         pipCount,
@@ -266,8 +269,8 @@ export const POKER58_CARDS: Poker58CardSkeleton[] = [
   {
     index: 52,
     key: "joker-big",
-    name: "大王",
-    hint: "王牌 · 大王（彩色 Joker）：全套唯一主角化形象，画面醒目、无文字",
+    name: "主角卡",
+    hint: "主角卡：全套唯一的主角化形象，画面醒目、无文字",
     kind: "joker",
     suit: null,
     pipCount: null,
@@ -277,8 +280,8 @@ export const POKER58_CARDS: Poker58CardSkeleton[] = [
   {
     index: 53,
     key: "joker-small",
-    name: "小王",
-    hint: "王牌 · 小王（黑白 Joker）：与大王成对的收敛版本，去色处理",
+    name: "主角对卡",
+    hint: "主角对卡：与主角卡成对的收敛版本，去色处理",
     kind: "joker",
     suit: null,
     pipCount: null,
@@ -485,13 +488,13 @@ export const SHARED_PROMPT_WRITING_RULES: readonly string[] = [
   "7. 套件交付物按各自定位撰写：牌背严格 180° 旋转对称、无方向性光源与文字；边框四边纹样连续对称、中心预留区完全干净；牌盒主视觉呈现整套氛围并预留标题排版区（塔罗为 3/4 视图，需呈现盒体立体感）。",
 ]
 
-/** 各模板专属规则（花色数量 / 点数数量 / 位置语义） */
+/** 各模板专属规则（塔罗花色数量 / 扑克主题卡片 / 神谕位置语义） */
 const TEMPLATE_PROMPT_RULES: Record<WorkspaceAgentTemplateKey, readonly string[]> = {
   tarot81: [
     "【花色数量硬规则】权杖/圣杯/宝剑/星币的王牌至十：画面必须包含恰好对应数量（1-10）的花色物品，并把数量明确写进描述（量词按物品形态选择，如「五只圣杯」「三根权杖」）；花色物品只写数量与形态细节，不描述具体的摆放方式与位置关系；数量较多（六件及以上）时以一句自然的整体呈现交代、只点明总数，不逐件描述位置朝向。侍从/骑士/王后/国王与大阿卡纳不要求画面体现牌名或身份文字，只需主题明确、贴合牌义。",
   ],
   poker58: [
-    "【点数数量硬规则】黑桃/红心/方块/梅花的 A 至 10：画面必须包含恰好对应数量（A=1，2-10 按面值）的花色符号，并把数量明确写进描述；花色符号成组出现、有支撑或落点、不悬空漂浮，不规定精确排列（摆放构图交给生图模型自由发挥）。J/Q/K 为人物牌：呈现对应身份的宫廷/角色人物形象，不要求出现字母。大小王画面自由（小丑/戏拟形象均可），须醒目且与整套风格统一。替换牌面为印制备用规格：与标准牌面同规格同比例，任选一张点数牌样式重制，不出现文字与字母。",
+    "【主题卡片规则】整套按主题卡片撰写：每张卡面围绕选定主题构思一个独立、明确的画面主体，整套 54 张卡面主体互不重复，从主题的不同侧面（角色/生物/器物/场景切片等）取材。两张主角卡中，一张为全套唯一的主角化形象（画面醒目），另一张为其去色收敛对卡。替换牌面为印制备用规格：与标准牌面同规格同比例，任选一张卡面样式重制，不出现文字与字母。",
   ],
   oracle58: [
     "【位置语义规则】每张位置牌的画面必须呈现该位置原型的核心象征（见骨架提示），并融入所属组的主题意象；同组 11 张在色彩母题与元素选择上相互呼应，跨组共享整套风格。",
@@ -503,6 +506,25 @@ export function promptWritingRulesFor(key: WorkspaceAgentTemplateKey): readonly 
   const specific = TEMPLATE_PROMPT_RULES[key]
   if (!specific) throw new Error(`未注册的工作台 Agent 模板：${key}`)
   return [...SHARED_PROMPT_WRITING_RULES, ...specific]
+}
+
+/**
+ * LLM 视角的产品线文案（风格策划【产品线】行用）：
+ * - tarot81 / oracle58 沿用 meta 原文；
+ * - poker58 中性化为主题卡牌口径——方向/主题不得渗入扑克语义，
+ *   模板选择页 UI 仍展示 meta 原文（产品入口口径不变）。
+ */
+export const TEMPLATE_LLM_PRODUCT_LINES: Record<
+  WorkspaceAgentTemplateKey,
+  { name: string; description: string }
+> = {
+  tarot81: { name: TAROT81_META.name, description: TAROT81_META.description },
+  poker58: {
+    name: "主题卡牌 58 张全套",
+    description:
+      "54 张主题卡面（纯主题卡片，无固定牌面语义）+ 替换卡面/牌背/边框/牌盒 4 项套件交付物，四阶段流水线产出可直接印刷的整套设计稿。",
+  },
+  oracle58: { name: ORACLE58_META.name, description: ORACLE58_META.description },
 }
 
 // ---------------------------------------------------------------------------

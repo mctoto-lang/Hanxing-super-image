@@ -16,6 +16,7 @@ import {
   oracleCardsToCsv,
   POKER58_CARDS,
   promptWritingRulesFor,
+  TEMPLATE_LLM_PRODUCT_LINES,
   resolveStageStatus,
   resolveStageStatuses,
   resolveCompatibleTemplateSizes,
@@ -139,27 +140,36 @@ describe("扑克 58 骨架", () => {
     expect(new Set(POKER58_CARDS.map((c) => c.key)).size).toBe(58)
   })
 
-  it("0-51 花色牌：四花色各 13，A=1 … 10 按面值，J/Q/K 为人物牌", () => {
+  it("0-51 主题卡：四系列各 13，结构字段保留（suit/pipCount/rank），卡名中性化", () => {
     const suitCards = POKER58_CARDS.slice(0, 52)
     expect(POKER58_CARDS[0]).toMatchObject({
       key: "poker-spades-A",
-      name: "黑桃A",
+      name: "主题卡 01",
       suit: "spades",
       pipCount: 1,
       kind: "number",
     })
-    expect(POKER58_CARDS[9]).toMatchObject({ name: "黑桃10", pipCount: 10 })
-    expect(POKER58_CARDS[10]).toMatchObject({ name: "黑桃J", pipCount: null, kind: "court" })
-    expect(POKER58_CARDS[12]).toMatchObject({ name: "黑桃K", pipCount: null })
-    expect(POKER58_CARDS[13]).toMatchObject({ name: "红心A", suit: "hearts" })
-    expect(POKER58_CARDS[51]).toMatchObject({ name: "梅花K", suit: "clubs" })
+    expect(POKER58_CARDS[9]).toMatchObject({ name: "主题卡 10", pipCount: 10 })
+    expect(POKER58_CARDS[10]).toMatchObject({ name: "主题卡 11", pipCount: null, kind: "court" })
+    expect(POKER58_CARDS[12]).toMatchObject({ name: "主题卡 13", pipCount: null })
+    expect(POKER58_CARDS[13]).toMatchObject({ name: "主题卡 14", suit: "hearts" })
+    expect(POKER58_CARDS[51]).toMatchObject({ name: "主题卡 52", suit: "clubs" })
     expect(suitCards.filter((c) => c.kind === "number")).toHaveLength(40)
     expect(suitCards.filter((c) => c.kind === "court")).toHaveLength(12)
   })
 
-  it("52-53 大小王、54 替换牌面 + 55-57 套件交付物（牌背/边框/牌盒）", () => {
-    expect(POKER58_CARDS[52]).toMatchObject({ key: "joker-big", name: "大王", joker: "big", kind: "joker" })
-    expect(POKER58_CARDS[53]).toMatchObject({ key: "joker-small", name: "小王", joker: "small" })
+  it("卡名与 hint 不携带扑克语义（无花色/点数/字母，主题卡片口径）", () => {
+    const forbidden = [/黑桃|红心|方块|梅花|花色|点数|大王|小王|王牌|Joker|扑克/, /[♠♥♦♣]/, /(?<![a-zA-Z])[AJQK](?![a-zA-Z])/]
+    for (const card of POKER58_CARDS) {
+      for (const pattern of forbidden) {
+        expect(`${card.name}\n${card.hint}`).not.toMatch(pattern)
+      }
+    }
+  })
+
+  it("52-53 主角卡/主角对卡、54 替换牌面 + 55-57 套件交付物（牌背/边框/牌盒）", () => {
+    expect(POKER58_CARDS[52]).toMatchObject({ key: "joker-big", name: "主角卡", joker: "big", kind: "joker" })
+    expect(POKER58_CARDS[53]).toMatchObject({ key: "joker-small", name: "主角对卡", joker: "small" })
     expect(POKER58_CARDS[54]).toMatchObject({
       key: "kit-replacement",
       name: "替换牌面",
@@ -221,8 +231,25 @@ describe("模板提示词写作规则", () => {
       expect(rules.length).toBeGreaterThan(SHARED_PROMPT_WRITING_RULES.length)
     }
     expect(promptWritingRulesFor("tarot81").join("\n")).toContain("花色数量硬规则")
-    expect(promptWritingRulesFor("poker58").join("\n")).toContain("点数数量硬规则")
+    expect(promptWritingRulesFor("poker58").join("\n")).toContain("主题卡片规则")
     expect(promptWritingRulesFor("oracle58").join("\n")).toContain("位置语义规则")
+  })
+
+  it("poker58 规则不含扑克语义（无点数数量硬规则，也无禁令式扑克词元）", () => {
+    const rules = promptWritingRulesFor("poker58").join("\n")
+    expect(rules).not.toContain("点数数量硬规则")
+    expect(rules).not.toContain("恰好对应数量")
+    // 不描述即可：规则文本本身也不得出现扑克词元（含负向禁令句式）
+    expect(rules).not.toMatch(/花色|点数|扑克|Joker|[♠♥♦♣]|(?<![a-zA-Z])[AJQK](?![a-zA-Z])/)
+  })
+
+  it("poker58 的 LLM 产品线文案中性化（方向/主题不渗入扑克语义）", () => {
+    const poker = TEMPLATE_LLM_PRODUCT_LINES.poker58
+    expect(poker.name).toBe("主题卡牌 58 张全套")
+    expect(poker.description).not.toMatch(/扑克|花色|点数|大小王|[♠♥♦♣]/)
+    // 其余模板沿用 meta 原文
+    expect(TEMPLATE_LLM_PRODUCT_LINES.tarot81.name).toBe("塔罗牌 81 张全套")
+    expect(TEMPLATE_LLM_PRODUCT_LINES.oracle58.name).toBe("神谕卡 58 张全套")
   })
 
   it("共享规则保留风格分离与无边框硬规则口径", () => {
