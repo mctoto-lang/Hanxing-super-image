@@ -583,6 +583,7 @@ export function PresetModelFormDialog({
                 id="p-maxConcurrent"
                 type="number"
                 min={1}
+                max={9999}
                 value={state.maxConcurrent}
                 onChange={(e) => up("maxConcurrent", Number(e.target.value))}
               />

@@ -24,7 +24,7 @@ import { updateEnterpriseConcurrencyAction } from "@/server/actions/platform"
  *
  * - 生图并发：生图任务企业级并发上限（Redis 槽位跨副本强制，图片级计数）
  * - 对话并发：AI 对话同时在途流数上限（超出返回「已达并发上限」）
- * 两项均 1-100；与模型级「最大并发」、权限组并发叠加生效（取最小）。
+ * 两项均 1-9999；与模型级「最大并发」、权限组并发叠加生效（取最小）。
  */
 export function EnterpriseConcurrencyDialog({
   enterpriseId,
@@ -76,7 +76,7 @@ export function EnterpriseConcurrencyDialog({
                 name="maxConcurrent"
                 type="number"
                 min={1}
-                max={100}
+                max={9999}
                 defaultValue={maxConcurrent}
               />
               <p className="text-xs text-muted-foreground">
@@ -90,7 +90,7 @@ export function EnterpriseConcurrencyDialog({
                 name="chatMaxConcurrent"
                 type="number"
                 min={1}
-                max={100}
+                max={9999}
                 defaultValue={chatMaxConcurrent}
               />
               <p className="text-xs text-muted-foreground">

@@ -157,6 +157,7 @@ export function GroupEditDialog({
                   name="maxConcurrent"
                   type="number"
                   min={1}
+                  max={9999}
                   defaultValue={group.maxConcurrent}
                 />
               </div>

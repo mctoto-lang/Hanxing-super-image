@@ -34,7 +34,7 @@ export const permissionGroupSchema = z.object({
   allowedModels: z.array(z.string().uuid()).default([]),
   allowedChatModels: z.array(z.string().uuid()).default([]),
   allowedPages: z.array(z.enum(MODULE_NAMES)).default([]),
-  maxConcurrent: z.number().int().min(1).max(100).default(2),
+  maxConcurrent: z.number().int().min(1).max(9999).default(2),
   priority: z.number().int().min(0).max(100).default(0),
 })
 
@@ -90,7 +90,7 @@ export const modelConfigSchema = z.object({
   supportsReferenceImage: z.boolean().default(false),
   maxReferenceImages: z.number().int().min(0).max(10).default(0),
   referenceImageField: z.string().max(50).optional(),
-  maxConcurrent: z.number().int().min(1).default(2),
+  maxConcurrent: z.number().int().min(1).max(9999).default(2),
   maxRetries: z.number().int().min(0).default(2),
   apiTimeout: z.number().int().min(1).default(120),
   taskTimeout: z.number().int().min(0).default(300),
@@ -167,7 +167,7 @@ export const chatModelConfigSchema = z.object({
       }),
     )
     .optional(),
-  maxConcurrent: z.number().int().min(1).default(5),
+  maxConcurrent: z.number().int().min(1).max(9999).default(5),
   maxRetries: z.number().int().min(0).default(3),
   apiTimeout: z.number().int().min(1).default(120),
   taskTimeout: z.number().int().min(0).default(300),

@@ -99,6 +99,7 @@ export function GroupCreateDialog({
                 name="maxConcurrent"
                 type="number"
                 min={1}
+                max={9999}
                 defaultValue={2}
               />
             </div>

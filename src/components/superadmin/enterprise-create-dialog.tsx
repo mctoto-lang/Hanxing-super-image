@@ -117,6 +117,7 @@ export function EnterpriseCreateDialog() {
                 name="maxConcurrent"
                 type="number"
                 min={1}
+                max={9999}
                 defaultValue={5}
               />
             </div>
@@ -127,6 +128,7 @@ export function EnterpriseCreateDialog() {
                 name="chatMaxConcurrent"
                 type="number"
                 min={1}
+                max={9999}
                 defaultValue={5}
               />
             </div>

@@ -17,8 +17,8 @@ export const createEnterpriseSchema = z.object({
     .max(50)
     .regex(slugRegex, "slug 只能含小写字母、数字、短横线"),
   enabledModules: z.array(z.enum(MODULE_NAMES)).optional(),
-  maxConcurrent: z.number().int().min(1).max(100).optional(),
-  chatMaxConcurrent: z.number().int().min(1).max(100).optional(),
+  maxConcurrent: z.number().int().min(1).max(9999).optional(),
+  chatMaxConcurrent: z.number().int().min(1).max(9999).optional(),
   initialCredits: z.number().int().min(0).optional(),
   allowCustomModels: z.boolean().optional(),
   visiblePresetModels: z.array(z.string().uuid()).optional(),
@@ -68,12 +68,12 @@ export const updateEnterpriseConcurrencySchema = z.object({
     .number()
     .int("生图并发必须为整数")
     .min(1, "生图并发至少 1")
-    .max(100, "生图并发不能超过 100"),
+    .max(9999, "生图并发不能超过 9999"),
   chatMaxConcurrent: z
     .number()
     .int("对话并发必须为整数")
     .min(1, "对话并发至少 1")
-    .max(100, "对话并发不能超过 100"),
+    .max(9999, "对话并发不能超过 9999"),
 })
 
 /** 企业级模型配置（需求 2b）：是否允许自建私有模型 + 可见平台预置模型白名单 */
