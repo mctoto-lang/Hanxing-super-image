@@ -16,6 +16,7 @@ import {
   oracleCardsToCsv,
   POKER58_CARDS,
   promptWritingRulesFor,
+  stageOfJobType,
   TEMPLATE_LLM_PRODUCT_LINES,
   resolveStageStatus,
   resolveStageStatuses,
@@ -35,6 +36,7 @@ import {
 } from "@/lib/workspace/agent-templates"
 import {
   WORKSPACE_AGENT_CARD_STATUSES,
+  WORKSPACE_AGENT_EVENT_STAGES,
   WORKSPACE_AGENT_STAGES,
   WORKSPACE_AGENT_TEMPLATE_KEYS,
   type WorkspaceAgentTemplateKey,
@@ -257,6 +259,44 @@ describe("模板提示词写作规则", () => {
     expect(all).toContain("风格分离")
     expect(all).toContain("无边框硬规则")
     expect(all).toContain("120-200 字")
+  })
+})
+
+describe("事件 stage 模块映射", () => {
+  it("stage 词表：六个模块，值长度不超列宽 16", () => {
+    expect([...WORKSPACE_AGENT_EVENT_STAGES]).toEqual([
+      "style_confirm",
+      "theme",
+      "imagination",
+      "direction",
+      "prompt_writing",
+      "art",
+    ])
+    for (const stage of WORKSPACE_AGENT_EVENT_STAGES) {
+      expect(stage.length).toBeLessThanOrEqual(16)
+    }
+  })
+
+  it("stageOfJobType：gen_directions 按 payload.round 区分主题轮/方向轮（缺省主题轮，同 run.ts）", () => {
+    expect(stageOfJobType("gen_directions", "themes")).toBe("theme")
+    expect(stageOfJobType("gen_directions", "directions")).toBe("direction")
+    expect(stageOfJobType("gen_directions")).toBe("theme")
+  })
+
+  it("stageOfJobType：撰写类归 prompt_writing，生图评审类归 art，参考图分析归 style_confirm", () => {
+    expect(stageOfJobType("analyze_reference_style")).toBe("style_confirm")
+    expect(stageOfJobType("write_prompts")).toBe("prompt_writing")
+    expect(stageOfJobType("write_oracle_copy")).toBe("prompt_writing")
+    expect(stageOfJobType("revise_prompt")).toBe("prompt_writing")
+    expect(stageOfJobType("review_image")).toBe("art")
+    expect(stageOfJobType("produce_cards")).toBe("art")
+    expect(stageOfJobType("regen_image")).toBe("art")
+  })
+
+  it("stageOfJobType：无法可靠归档的类型返回 null（前端回退白名单）", () => {
+    expect(stageOfJobType("gen_previews")).toBeNull()
+    expect(stageOfJobType("translate_copy" as never)).toBe("prompt_writing")
+    expect(stageOfJobType("totally_unknown")).toBeNull()
   })
 })
 

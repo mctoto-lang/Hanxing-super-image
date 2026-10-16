@@ -169,6 +169,7 @@ export async function runWriteOracleCopyJob(
       nodeKey: "prompt_designer",
       action: "start",
       status: "ok",
+      stage: "prompt_writing",
       detail: `开始撰写神谕卡英文文案（${targets.length} 张待写 / 共 ${total} 张，英文标题 + 一句正文）`,
     })
 
@@ -254,6 +255,7 @@ export async function runWriteOracleCopyJob(
         nodeKey: "prompt_designer",
         action: "start",
         status: "ok",
+        stage: "prompt_writing",
         detail: `神谕文案撰写进度：${done}/${targets.length} 张待写已完成`,
       })
     }
@@ -292,6 +294,7 @@ export async function runWriteOracleCopyJob(
     nodeKey: "prompt_designer",
     action: "done",
     status: "ok",
+    stage: "prompt_writing",
     detail: `神谕文案撰写完成：${total} 组英文标题/正文已定稿，可在 Agent 总览下载 CSV`,
   })
   return { written: targets.length, skipped: doneSet.size, total }

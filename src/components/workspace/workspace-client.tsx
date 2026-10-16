@@ -26,6 +26,7 @@ import {
   Lightbulb,
   PenLine,
   ArrowUp,
+  ArrowDown,
   Replace,
   Languages,
   LibraryBig,
@@ -241,12 +242,24 @@ const AGENT_PROGRESS_STAGE_TITLES = [
   "提示词撰写",
 ] as const
 
-/** 阶段 → 归属日志的节点 key（与服务端 dialog 日志归集同口径） */
+/** 存量事件的 nodeKey 白名单（stage 列上线前的旧行回退口径） */
 const STAGE_LOG_NODE_KEYS: Record<WorkspaceAgentStage, string[]> = {
   clarify: ["creative_director", "style_director", "supervisor"],
   draft: ["creative_director", "supervisor"],
   art: ["style_director", "supervisor"],
   compose: ["prompt_designer", "supervisor"],
+}
+
+/**
+ * 阶段 → 事件 stage 模块（新口径，写入侧按业务动作标注）：
+ * 主题选择面板含风格确认前置段；想象力程度仅档位选定；落地方向含示例图
+ * 与定稿；提示词撰写含批次进度与打回改写。stage 为空的旧行回退白名单。
+ */
+const STAGE_EVENT_STAGES: Record<WorkspaceAgentStage, string[]> = {
+  clarify: ["style_confirm", "theme"],
+  draft: ["imagination"],
+  art: ["direction"],
+  compose: ["prompt_writing"],
 }
 
 /** 阶段语义图标（进度弹窗站点/列表行） */
@@ -267,6 +280,8 @@ interface AgentProgressEvent {
   nodeKey: string | null
   status: string | null
   detail: string | null
+  /** 所属流水线模块（style_confirm/theme/…/art；旧行与系统级事件为空） */
+  stage?: string | null
   createdAt: string
 }
 
@@ -362,6 +377,7 @@ function normalizeAgentProgress(
           nodeKey: ev.nodeKey ?? null,
           status: ev.status ?? null,
           detail: ev.detail ?? null,
+          stage: ev.stage ?? null,
           createdAt: ev.createdAt ?? "",
         }))
       : [],
@@ -795,6 +811,7 @@ export function WorkspaceClient({
 
   // ─── UI 状态 ───
   const [showScrollToTop, setShowScrollToTop] = useState(false)
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
 
   // ─── Refs（轮询定时器 + 防竞态） ───
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -1209,9 +1226,15 @@ export function WorkspaceClient({
       ) {
         status = "failed"
       }
-      const nodeKeys = STAGE_LOG_NODE_KEYS[stage]
+      const stageModules = STAGE_EVENT_STAGES[stage]
+      const legacyNodeKeys = STAGE_LOG_NODE_KEYS[stage]
       const logs = eventsAsc
-        .filter((ev) => ev.nodeKey && nodeKeys.includes(ev.nodeKey) && ev.detail)
+        .filter((ev) => {
+          if (!ev.detail) return false
+          // 新口径按 stage 模块归档；旧行（stage 为空）回退 nodeKey 白名单
+          if (ev.stage != null) return stageModules.includes(ev.stage)
+          return Boolean(ev.nodeKey) && legacyNodeKeys.includes(ev.nodeKey!)
+        })
         .slice(-20)
         .map((ev) => ({
           time: new Date(ev.createdAt).toLocaleTimeString("zh-CN", {
@@ -1340,6 +1363,10 @@ export function WorkspaceClient({
 
     const handleScroll = () => {
       setShowScrollToTop(container.scrollTop > 240)
+      // 距底部超过 240 才显示「到底部」（与回顶阈值对称：贴底隐藏、在顶部即显示）
+      setShowScrollToBottom(
+        container.scrollHeight - container.scrollTop - container.clientHeight > 240,
+      )
     }
 
     handleScroll()
@@ -1445,9 +1472,15 @@ export function WorkspaceClient({
     }
   }, [])
 
-  // ─── 滚动到顶部 ───
+  // ─── 滚动到顶部 / 底部 ───
   const handleScrollToTop = useCallback(() => {
     cardScrollContainerRef.current?.scrollTo({ top: 0, behavior: "smooth" })
+  }, [])
+
+  const handleScrollToBottom = useCallback(() => {
+    const container = cardScrollContainerRef.current
+    if (!container) return
+    container.scrollTo({ top: container.scrollHeight, behavior: "smooth" })
   }, [])
 
   // ─── 任务操作 ───
@@ -2771,20 +2804,37 @@ export function WorkspaceClient({
                 />
               )}
 
-              <button
-                type="button"
-                onClick={handleScrollToTop}
-                className={cn(
-                  "sticky ml-auto mr-5 mb-5 bottom-5 flex h-12 w-12 items-center justify-center rounded-full border border-border/70 bg-background/95 text-foreground shadow-lg backdrop-blur transition-all duration-300 ease-out hover:-translate-y-0.5 hover:bg-accent",
-                  showScrollToTop
-                    ? "translate-y-0 opacity-100 pointer-events-auto"
-                    : "translate-y-3 opacity-0 pointer-events-none",
-                )}
-                aria-label="回到顶部"
-                title="回到顶部"
-              >
-                <ArrowUp className="h-5 w-5" />
-              </button>
+              {/* 回顶 / 到底：右下角纵向叠加，显隐过渡样式一致 */}
+              <div className="sticky bottom-5 ml-auto mr-5 mb-5 flex w-fit flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={handleScrollToTop}
+                  className={cn(
+                    "flex h-12 w-12 items-center justify-center rounded-full border border-border/70 bg-background/95 text-foreground shadow-lg backdrop-blur transition-all duration-300 ease-out hover:-translate-y-0.5 hover:bg-accent",
+                    showScrollToTop
+                      ? "translate-y-0 opacity-100 pointer-events-auto"
+                      : "translate-y-3 opacity-0 pointer-events-none",
+                  )}
+                  aria-label="回到顶部"
+                  title="回到顶部"
+                >
+                  <ArrowUp className="h-5 w-5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleScrollToBottom}
+                  className={cn(
+                    "flex h-12 w-12 items-center justify-center rounded-full border border-border/70 bg-background/95 text-foreground shadow-lg backdrop-blur transition-all duration-300 ease-out hover:-translate-y-0.5 hover:bg-accent",
+                    showScrollToBottom
+                      ? "translate-y-0 opacity-100 pointer-events-auto"
+                      : "translate-y-3 opacity-0 pointer-events-none",
+                  )}
+                  aria-label="跳转到底部"
+                  title="跳转到底部"
+                >
+                  <ArrowDown className="h-5 w-5" />
+                </button>
+              </div>
             </div>
           </>
         )}

@@ -61,6 +61,7 @@ export {
   chooseWorkspaceAgentImaginationAction,
   generateWorkspaceAgentDirectionsAction,
   selectWorkspaceAgentDirectionAction,
+  rollbackWorkspaceAgentStageAction,
   generateWorkspaceAgentPromptsAction,
   cancelWorkspaceAgentWorkflowAction,
   restartWorkspaceAgentCardAction,

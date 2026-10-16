@@ -559,6 +559,8 @@ export const workspaceAgentEvents = pgTable(
     /** 关联卡牌/轮次（无 FK，同 agent_event.itemId 先例） */
     cardId: uuid("card_id"),
     roundId: uuid("round_id"),
+    /** 所属流水线模块（style_confirm/theme/imagination/direction/prompt_writing/art；旧行与系统级事件为空） */
+    stage: varchar("stage", { length: 16 }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

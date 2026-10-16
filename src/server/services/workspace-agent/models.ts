@@ -63,6 +63,8 @@ export interface WorkspaceAgentImageModelOption {
   id: string
   name: string
   displayName: string
+  /** 模型图标（经存储代理加载；发起弹窗下拉展示） */
+  iconUrl: string | null
   /** 启用尺寸预设（"WxH"；空 = 模型未配置启用预设） */
   sizes: string[]
   /** 结构化尺寸预设（含未启用项；发起弹窗优先展示比例标签） */
@@ -92,6 +94,7 @@ export async function listWorkspaceAgentImageModels(
       id: models.id,
       name: models.name,
       displayName: models.displayName,
+      iconUrl: models.iconUrl,
       sizePresets: models.sizePresets,
       costPerImage: models.costPerImage,
       supportsReferenceImage: models.supportsReferenceImage,
@@ -120,6 +123,7 @@ export async function listWorkspaceAgentImageModels(
     id: m.id,
     name: m.name,
     displayName: m.displayName,
+    iconUrl: m.iconUrl,
     sizes: enabledSizeValues(m.sizePresets),
     sizePresets: m.sizePresets ?? null,
     costPerImage: m.costPerImage,

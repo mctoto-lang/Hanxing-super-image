@@ -355,6 +355,7 @@ export async function startAgentCardGeneration(
     nodeKey: "artist",
     action: "start",
     status: "ok",
+    stage: "art",
     detail: `画师开始绘制「${card.name ?? `第 ${card.cardIndex + 1} 张`}」（${WORKSPACE_AGENT_KIND_LABELS[card.kind]}，第 ${roundNumber} 轮，${model.displayName} ${size}，${cost} 积分/张）`,
     cardId: card.id,
   })
@@ -690,6 +691,7 @@ export async function maybeCompleteWorkspaceAgentPreview(
       nodeKey: "style_director",
       action: "fail",
       status: "warn",
+      stage: "direction",
       detail: `方向示例图生成失败：${(genTask.errorMessage ?? "未知原因").slice(0, 200)}（积分已退还）`,
     })
     return
@@ -721,6 +723,7 @@ export async function maybeCompleteWorkspaceAgentPreview(
     nodeKey: "style_director",
     action: "done",
     status: "ok",
+    stage: "direction",
     detail: "方向示例图已生成（卡面尺寸，不计入卡片网格）",
   })
 }
@@ -988,6 +991,7 @@ async function handleGenerationFailure(
     nodeKey: "artist",
     action: "fail",
     status: "error",
+    stage: "art",
     detail: `第 ${round.roundNumber} 轮生图失败（积分已退还）：${message}`,
     cardId: card.id,
   })
@@ -1083,6 +1087,7 @@ async function applyApproval(
     nodeKey: "review_panel",
     action: "done",
     status: "ok",
+    stage: "art",
     detail: `第 ${round.roundNumber} 轮评审通过：加权总分 ${weightedTotalScore ?? "?"} ≥ 质量线 ${qualityThreshold}，已选为本卡终图`,
     cardId: card.id,
   })
@@ -1195,6 +1200,7 @@ async function reviseAndRegenerate(input: {
     nodeKey: "prompt_designer",
     action: "retry",
     status: "warn",
+    stage: "prompt_writing",
     detail: isRetry
       ? `评审未过线，提示词设计师开始按评审意见改写（第 ${rn} 轮 → 第 ${rn + 1} 轮）`
       : "重新 Agent 生成：提示词设计师开始按修改意见改写提示词",
@@ -1241,6 +1247,7 @@ async function reviseAndRegenerate(input: {
       nodeKey: "supervisor",
       action: "fail",
       status: "error",
+      stage: "art",
       detail: `${isRetry ? "打回后" : "重新 Agent 生成"}自动重生成失败：${res.error}`,
       cardId: card.id,
     })
@@ -1252,6 +1259,7 @@ async function reviseAndRegenerate(input: {
     nodeKey: "prompt_designer",
     action: "done",
     status: "ok",
+    stage: "prompt_writing",
     detail: `已按${isRetry ? "评审意见" : "修改意见"}改写提示词并自动重新生图${
       isRetry ? `（第 ${rn + 1} 轮，同模型同尺寸）` : "（同模型同尺寸）"
     }`,
@@ -1376,6 +1384,7 @@ async function applyFallback(
     nodeKey: "supervisor",
     action: "fallback",
     status: "warn",
+    stage: "art",
     detail:
       `打回次数已耗尽（${card.roundsUsed}/${thresholds.maxRetries}），自动选用历史最高加权分兜底` +
       (best
@@ -1540,6 +1549,7 @@ export async function runReviewImageJob(
     nodeKey: "review_panel",
     action: "start",
     status: "ok",
+    stage: "art",
     detail: `评审团开始评审「${card.name ?? `第 ${card.cardIndex + 1} 张`}」（${WORKSPACE_AGENT_KIND_LABELS[card.kind]}，第 ${round.roundNumber} 轮，${reviewerIds.length} 位评审员）`,
     cardId: card.id,
   })
@@ -1590,6 +1600,7 @@ export async function runReviewImageJob(
         status: "warn",
         detail: `评审员 ${reviewerId} 不可用，本轮跳过`,
         cardId: card.id,
+        stage: "art",
       })
       continue
     }
@@ -1603,6 +1614,7 @@ export async function runReviewImageJob(
         status: "warn",
         detail: `评审员 ${model.displayName} 不支持读图，本轮跳过`,
         cardId: card.id,
+        stage: "art",
       })
       continue
     }
@@ -1642,6 +1654,7 @@ export async function runReviewImageJob(
         status: "warn",
         detail: `评审员 ${model.displayName} 调用失败：${message.slice(0, 200)}`,
         cardId: card.id,
+        stage: "art",
       })
     }
     // 心跳：续期 job 认领时间，防多评审长任务被 stale 恢复误判重排

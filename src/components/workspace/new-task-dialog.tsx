@@ -19,6 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Combobox } from "@/components/ui/combobox"
 import { Spinner } from "@/components/workspace/spinner"
 import { MorphingInfinity } from "@/components/ui/morphing-infinity"
 import { cn } from "@/lib/utils"
@@ -103,6 +104,10 @@ interface AgentImageModelOption {
   id: string
   name?: string
   displayName?: string | null
+  /** 模型图标（下拉展示；服务端选项已补该字段） */
+  iconUrl?: string | null
+  /** 单张积分（下拉徽章展示） */
+  costPerImage?: number | null
   sizes?: string[] | null
   sizePresets?: ModelSizePreset[] | null
   supportsReferenceImage?: boolean | null
@@ -220,8 +225,9 @@ export function NewTaskDialog({ open, onOpenChange, onCreated }: Props) {
   const [submitting, setSubmitting] = useState(false)
 
   // ─── Agent 表单状态 ───
+  // 卡牌模板不预选（"" = 未选，提交校验强制用户确认）
   const [agentTemplateKey, setAgentTemplateKey] =
-    useState<WorkspaceAgentTemplateKey>("tarot81")
+    useState<WorkspaceAgentTemplateKey | "">("")
   const [agentStyle, setAgentStyle] = useState("")
   const [agentChatModels, setAgentChatModels] = useState<
     AgentChatModelOption[]
@@ -247,7 +253,7 @@ export function NewTaskDialog({ open, onOpenChange, onCreated }: Props) {
   // 此对话框未关联图片模型，无模型时参考图上限默认 5（普通模式）
   const referenceLimit = getReferenceImageLimit(null) || 5
 
-  // Agent 生图模型选中项（"" = 平台默认配置）
+  // Agent 生图模型选中项（必选，提交校验强制选择）
   const selectedAgentImageModel =
     agentImageModels.find((m) => m.id === agentImageModelId) ?? null
   // Agent 参考图上限按所选生图模型（不支持参考图 = 0 → 隐藏上传）；
@@ -263,7 +269,7 @@ export function NewTaskDialog({ open, onOpenChange, onCreated }: Props) {
             getReferenceImageLimit(selectedAgentImageModel),
           )
   // 四类尺寸可选项：结构化预设（带比例标签）优先，其次启用 "WxH" 字符串，
-  // 最后回退所选模板默认尺寸
+  // 最后回退所选模板默认尺寸（模板未选时暂无选项，选定模板即重置默认值）
   const agentSizeOptions = useMemo(() => {
     if (
       selectedAgentImageModel?.sizePresets &&
@@ -282,6 +288,7 @@ export function NewTaskDialog({ open, onOpenChange, onCreated }: Props) {
         label: ratioLabelOf(value),
       }))
     }
+    if (!agentTemplateKey) return []
     return templateDefaultSizeOptions(agentTemplateKey)
   }, [selectedAgentImageModel, agentTemplateKey])
   // 评审模型候选：服务端 reviewerModels（视觉过滤；缺省回退 chatModels）
@@ -355,7 +362,7 @@ export function NewTaskDialog({ open, onOpenChange, onCreated }: Props) {
     setCustomPrompts("")
     setCardCount(4)
     setExtractTemplateId("")
-    setAgentTemplateKey("tarot81")
+    setAgentTemplateKey("")
     setAgentStyle("")
     setChatModelId("")
     setReviewerChatModelIds([])
@@ -459,7 +466,11 @@ export function NewTaskDialog({ open, onOpenChange, onCreated }: Props) {
   /** Agent 模式校验（返回错误文案；通过返回 null） */
   const validateAgentForm = (): string | null => {
     if (!theme.trim()) return "请输入主题提示词"
-    if (!getWorkspaceAgentTemplate(agentTemplateKey)) return "请选择卡牌模板"
+    if (!agentTemplateKey || !getWorkspaceAgentTemplate(agentTemplateKey)) {
+      return "请选择卡牌模板"
+    }
+    if (!chatModelId) return "请选择主对话模型"
+    if (!agentImageModelId) return "请选择生图模型"
     if (reviewerChatModelIds.length > AGENT_REVIEWER_MAX) {
       return `评审模型最多选择 ${AGENT_REVIEWER_MAX} 个`
     }
@@ -471,6 +482,7 @@ export function NewTaskDialog({ open, onOpenChange, onCreated }: Props) {
 
   /** Agent 模式提交：上传参考图 → createWorkspaceAgentTaskAction */
   const submitAgent = async () => {
+    if (!agentTemplateKey) throw new Error("请选择卡牌模板")
     const template = getWorkspaceAgentTemplate(agentTemplateKey)
     if (!template) throw new Error("模板不存在")
 
@@ -759,71 +771,54 @@ export function NewTaskDialog({ open, onOpenChange, onCreated }: Props) {
                   </div>
                 ) : (
                   <>
-                    {/* 主对话模型 / 评审模型 */}
+                    {/* 主对话模型 / 生图模型（必选；与生成配置同款可搜索下拉） */}
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <div className="space-y-1.5">
-                        <Label>主对话模型</Label>
+                        <Label>
+                          主对话模型<span className="text-destructive">*</span>
+                        </Label>
                         {agentChatModels.length === 0 ? (
                           <p className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
                             暂无可用主对话模型（须为支持视觉的对话模型）
                           </p>
                         ) : (
-                          <Select
-                            value={chatModelId}
-                            onValueChange={(v) => setChatModelId(v ?? "")}
-                          >
-                            <SelectTrigger className="w-full">
-                              <SelectValue placeholder="平台默认配置">
-                                {chatModelId
-                                  ? chatModelName(
-                                      agentChatModels.find(
-                                        (m) => m.id === chatModelId,
-                                      ) ?? { id: chatModelId },
-                                    )
-                                  : "平台默认配置"}
-                              </SelectValue>
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="">平台默认配置</SelectItem>
-                              {agentChatModels.map((m) => (
-                                <SelectItem key={m.id} value={m.id}>
-                                  {chatModelName(m)}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                          <Combobox
+                            value={chatModelId || null}
+                            onChange={(v) => setChatModelId(v)}
+                            options={agentChatModels.map((m) => ({
+                              value: m.id,
+                              label: chatModelName(m),
+                              description: m.name,
+                            }))}
+                            placeholder="请选择主对话模型"
+                            searchPlaceholder="搜索模型..."
+                          />
                         )}
                         <p className="text-[11px] leading-4 text-muted-foreground">
-                          主控模型需支持视觉（参考图直接进入主对话）；未选 = 平台默认
+                          主控模型需支持视觉（参考图直接进入主对话）
                         </p>
                       </div>
 
                       <div className="space-y-1.5">
-                        <Label>生图模型</Label>
-                        <Select
-                          value={agentImageModelId}
-                          onValueChange={(v) => setAgentImageModelId(v ?? "")}
-                        >
-                          <SelectTrigger className="w-full">
-                            <SelectValue placeholder="平台默认配置">
-                              {agentImageModelId
-                                ? imageModelName(
-                                    agentImageModels.find(
-                                      (m) => m.id === agentImageModelId,
-                                    ) ?? { id: agentImageModelId },
-                                  )
-                                : "平台默认配置"}
-                            </SelectValue>
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="">平台默认配置</SelectItem>
-                            {agentImageModels.map((m) => (
-                              <SelectItem key={m.id} value={m.id}>
-                                {imageModelName(m)}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        <Label>
+                          生图模型<span className="text-destructive">*</span>
+                        </Label>
+                        <Combobox
+                          value={agentImageModelId || null}
+                          onChange={(v) => setAgentImageModelId(v)}
+                          options={agentImageModels.map((m) => ({
+                            value: m.id,
+                            label: imageModelName(m),
+                            description: m.name,
+                            iconUrl: m.iconUrl,
+                            badge:
+                              m.costPerImage != null
+                                ? `${m.costPerImage} 积分/张`
+                                : null,
+                          }))}
+                          placeholder="请选择生图模型"
+                          searchPlaceholder="搜索模型..."
+                        />
                       </div>
                     </div>
 
@@ -872,29 +867,24 @@ export function NewTaskDialog({ open, onOpenChange, onCreated }: Props) {
                       {SIZE_KIND_LABELS.map(({ kind, label }) => (
                         <div key={kind} className="space-y-1.5">
                           <Label>{label}</Label>
-                          <Select
-                            value={agentSizes[kind]}
-                            onValueChange={(v) =>
+                          <Combobox
+                            value={agentSizes[kind] || null}
+                            onChange={(v) =>
                               v &&
                               setAgentSizes((prev) => ({
                                 ...prev,
                                 [kind]: v,
                               }))
                             }
-                          >
-                            <SelectTrigger className="w-full">
-                              <SelectValue placeholder="选择尺寸">
-                                {agentSizes[kind] || "选择尺寸"}
-                              </SelectValue>
-                            </SelectTrigger>
-                            <SelectContent>
-                              {agentSizeOptions.map((s) => (
-                                <SelectItem key={s.value} value={s.value}>
-                                  {s.label}（{s.value}）
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                            options={agentSizeOptions.map((s) => ({
+                              value: s.value,
+                              label: s.label,
+                              description: s.value,
+                            }))}
+                            placeholder="选择尺寸"
+                            searchPlaceholder="搜索尺寸..."
+                            emptyText="请先选择生图模型（或卡牌模板）"
+                          />
                         </div>
                       ))}
                     </div>

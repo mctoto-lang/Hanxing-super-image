@@ -39,6 +39,14 @@ export interface WorkspaceAgentInputExt extends WorkspaceAgentInput {
   imaginationLevel?: WorkspaceAgentImaginationLevel
   /** 第一轮（主题）批次的方向 id 留档：区分主题行与第二轮方向行 */
   themeDirectionIds?: string[]
+  /** 第二轮（创作方向）批次的方向 id 留档：回退到落地方向时按批恢复候选 */
+  directionBatchIds?: string[]
+  /** 回退到主题选择时记录的原选中主题 id（UI 显示「上次选择」徽标） */
+  lastSelectedThemeId?: string
+  /** 回退到落地方向时记录的原选中方向 id（UI 显示「上次选择」徽标） */
+  lastSelectedDirectionId?: string
+  /** 回退次数（单调递增；前端据此把视图步骤跟随服务端推导回跳） */
+  rollbackCount?: number
   /** 风格确认时间（ISO；确认后才触发主题生成） */
   styleConfirmedAt?: string
 }

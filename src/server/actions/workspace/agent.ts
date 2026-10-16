@@ -17,14 +17,18 @@
  * 异步执行全部经 workspace_agent_job 队列由独立 worker（scripts/worker.ts）
  * 原子认领。
  */
-import { and, eq, inArray, sql } from "drizzle-orm"
+import { and, eq, inArray, notInArray, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import {
+  cardImages,
   promptCards,
   workspaceAgentCards,
   workspaceAgentDirections,
   workspaceAgentEvents,
   workspaceAgentJobs,
+  workspaceAgentOracleCopies,
+  workspaceAgentReviews,
+  workspaceAgentRounds,
   workspaceAgentWorkflows,
   workspaceTasks,
   type WorkspaceAgentWorkflowRow,
@@ -32,6 +36,7 @@ import {
 import { getCurrentEnterpriseScope, requireUserContext, type UserContext } from "@/lib/auth/session"
 import { checkModuleAccess } from "@/lib/auth/permissions"
 import type {
+  WorkspaceAgentEventStage,
   WorkspaceAgentQuality,
   WorkspaceAgentTemplateKey,
   WorkspaceAgentTemplateSizes,
@@ -174,7 +179,13 @@ async function patchWorkflowInput(
 
 async function logEvent(
   workflow: WorkspaceAgentWorkflowRow,
-  input: { nodeKey?: string | null; action: string; status: "ok" | "warn" | "error"; detail: string },
+  input: {
+    nodeKey?: string | null
+    action: string
+    status: "ok" | "warn" | "error"
+    detail: string
+    stage?: WorkspaceAgentEventStage | null
+  },
 ): Promise<void> {
   await db.insert(workspaceAgentEvents).values({
     workflowId: workflow.id,
@@ -183,6 +194,7 @@ async function logEvent(
     action: input.action.slice(0, 12),
     status: input.status,
     detail: input.detail,
+    stage: input.stage ?? null,
   })
 }
 
@@ -582,6 +594,7 @@ export async function createWorkspaceAgentTaskAction(
       nodeKey: "creative_director",
       action: "start",
       status: "ok",
+      stage: "style_confirm",
       detail: `工作流已创建（${template.meta.name}，骨架 ${template.meta.cardCount} 张已就绪），等待风格确认后生成 3 个候选主题`,
     })
 
@@ -689,6 +702,7 @@ export async function confirmWorkspaceAgentStyleAction(
       nodeKey: "creative_director",
       action: "confirm",
       status: "ok",
+      stage: "style_confirm",
       detail: stylePrompt
         ? `风格已确认（风格描述：${stylePrompt.slice(0, 60)}），等待生成主题`
         : "风格已确认（无附加风格描述），等待生成主题",
@@ -799,6 +813,7 @@ export async function selectWorkspaceAgentThemeAction(
       nodeKey: "creative_director",
       action: "confirm",
       status: "ok",
+      stage: "theme",
       detail: `已选定主题「${direction.name}」，请选择想象力档位后生成创作方向`,
     })
     return { ok: true, error: null }
@@ -843,6 +858,7 @@ export async function chooseWorkspaceAgentImaginationAction(
       nodeKey: "creative_director",
       action: "confirm",
       status: "ok",
+      stage: "imagination",
       detail: `想象力档位已选定为「${level}」，开始生成 3 个创作方向`,
     })
     await enqueueWaJob(workflow, "gen_directions", {
@@ -937,6 +953,7 @@ export async function selectWorkspaceAgentDirectionAction(
       nodeKey: "style_director",
       action: "confirm",
       status: "ok",
+      stage: "direction",
       detail: `风格规范书已定稿（方向「${direction.name}」），可开始生成卡牌提示词`,
     })
     // 神谕模板：方向定稿即自动入队 55 组英文文案撰写（与提示词撰写并行；
@@ -1031,7 +1048,269 @@ export async function cancelWorkspaceAgentWorkflowAction(
   }
 }
 
-// ═══════════════════ 12. 重新 Agent 生成（单卡新周期：重置打回轮数） ═══════════════════
+// ═══════════════════ 12. 阶段回退（主题/想象力/方向：清空下游产出） ═══════════════════
+
+/** 可回退到的向导阶段（风格确认不参与；提示词撰写为末步无需回退） */
+const WORKSPACE_AGENT_ROLLBACK_TARGETS = ["theme", "imagination", "direction"] as const
+type WorkspaceAgentRollbackTarget = (typeof WORKSPACE_AGENT_ROLLBACK_TARGETS)[number]
+
+function isWorkspaceAgentRollbackTarget(
+  value: unknown,
+): value is WorkspaceAgentRollbackTarget {
+  return (
+    typeof value === "string" &&
+    (WORKSPACE_AGENT_ROLLBACK_TARGETS as readonly string[]).includes(value)
+  )
+}
+
+/**
+ * 阶段回退：主题选择 / 想象力程度 / 落地方向 三步允许回退重选。
+ * - 前置守卫：非 cancelled、无排队/执行中 job、无 drafting/generating/
+ *   reviewing 在途卡片，目标阶段须当前已达成；
+ * - 效果（按目标递进包含）：目标步之后的选择复位（原选中恢复为候选并留
+ *   「上次选择」标记）、方向轮行按目标作废或整批恢复候选、styleDoc /
+ *   selectedDirectionId 清空；
+ * - 卡片回到「刚创建」初始态：删评审 / 生图轮次 / 卡片图片（先清
+ *   prompt_card.selectedImageId 引用）/ Oracle 文案，提示词卡重写为锁定
+ *   【骨架】占位；
+ * - 永不触碰：workspace_agent_event 日志、generation_task 与物理图片
+ *   （资产管理数据源）、workspace_agent_usage 费用、方向示例图 preview。
+ */
+export async function rollbackWorkspaceAgentStageAction(
+  workflowId: string,
+  target: string,
+): Promise<ActionResult> {
+  try {
+    if (!isWorkspaceAgentRollbackTarget(target)) {
+      return { ok: false, error: "回退目标须为 theme / imagination / direction" }
+    }
+    const { ctx, enterpriseId } = await requireWaContext()
+    const workflow = await loadOwnedWorkflowOrError(ctx, enterpriseId, workflowId)
+    if (!isWorkflowRow(workflow)) return workflow
+    if (workflow.status === "cancelled") {
+      return { ok: false, error: "工作流已取消，不可回退" }
+    }
+    if (workflow.status === "queued" || workflow.status === "running") {
+      return { ok: false, error: "工作流正在执行任务，请等待完成后再回退" }
+    }
+    const [activeJob] = await db
+      .select({ id: workspaceAgentJobs.id })
+      .from(workspaceAgentJobs)
+      .where(
+        and(
+          eq(workspaceAgentJobs.workflowId, workflowId),
+          inArray(workspaceAgentJobs.status, ["queued", "processing"]),
+        ),
+      )
+      .limit(1)
+    if (activeJob) {
+      return { ok: false, error: "已有排队中或执行中的任务，请等待完成后再回退" }
+    }
+    const [busyCard] = await db
+      .select({ id: workspaceAgentCards.id })
+      .from(workspaceAgentCards)
+      .where(
+        and(
+          eq(workspaceAgentCards.workflowId, workflowId),
+          inArray(workspaceAgentCards.status, ["drafting", "generating", "reviewing"]),
+        ),
+      )
+      .limit(1)
+    if (busyCard) {
+      return { ok: false, error: "仍有卡片在生图或评审中，请等待完成后再回退" }
+    }
+
+    const ext = readWorkflowInput(workflow)
+    const themeIds = ext.themeDirectionIds ?? []
+    const [selectedTheme] = themeIds.length > 0
+      ? await db
+          .select({ id: workspaceAgentDirections.id, name: workspaceAgentDirections.name })
+          .from(workspaceAgentDirections)
+          .where(
+            and(
+              eq(workspaceAgentDirections.workflowId, workflowId),
+              eq(workspaceAgentDirections.status, "selected"),
+              inArray(workspaceAgentDirections.id, themeIds),
+            ),
+          )
+      : []
+    if (target === "theme" && !selectedTheme) {
+      return { ok: false, error: "主题尚未选定，无需回退" }
+    }
+    if (target === "imagination") {
+      if (!ext.imaginationLevel) {
+        return { ok: false, error: "想象力档位尚未选定，无需回退" }
+      }
+      if (!selectedTheme) {
+        return { ok: false, error: "主题尚未选定，请先回退到主题选择" }
+      }
+    }
+    if (target === "direction" && !workflow.selectedDirectionId) {
+      return { ok: false, error: "落地方向尚未定稿，无需回退" }
+    }
+
+    // 模板骨架（卡片提示词/meaning 重置回创建态占位）
+    const template = requireWorkspaceAgentTemplate(
+      ext.frozenConfig?.templateKey ?? "tarot81",
+    )
+    const skeletonByIndex = new Map(
+      template.cards.map((card) => [card.index, card] as const),
+    )
+    const cardRows = await db
+      .select({
+        id: workspaceAgentCards.id,
+        promptCardId: workspaceAgentCards.promptCardId,
+        cardIndex: workspaceAgentCards.cardIndex,
+        name: workspaceAgentCards.name,
+      })
+      .from(workspaceAgentCards)
+      .where(eq(workspaceAgentCards.workflowId, workflowId))
+    const cardIds = cardRows.map((card) => card.id)
+
+    await db.transaction(async (tx) => {
+      // ── 1. 清空卡片下游产出（回「刚创建」初始态） ──
+      if (cardIds.length > 0) {
+        await tx
+          .delete(workspaceAgentReviews)
+          .where(inArray(workspaceAgentReviews.cardId, cardIds))
+        await tx
+          .delete(workspaceAgentRounds)
+          .where(inArray(workspaceAgentRounds.cardId, cardIds))
+        await tx
+          .delete(workspaceAgentOracleCopies)
+          .where(inArray(workspaceAgentOracleCopies.cardId, cardIds))
+      }
+      const promptCardIds = cardRows
+        .map((card) => card.promptCardId)
+        .filter((id): id is string => !!id)
+      if (promptCardIds.length > 0) {
+        // selectedImageId 无外键约束，删 card_image 前先显式清引用
+        await tx
+          .update(promptCards)
+          .set({ selectedImageId: null })
+          .where(inArray(promptCards.id, promptCardIds))
+        await tx
+          .delete(cardImages)
+          .where(inArray(cardImages.cardId, promptCardIds))
+      }
+      for (const card of cardRows) {
+        const hint = skeletonByIndex.get(card.cardIndex)?.hint ?? card.name
+        await tx
+          .update(workspaceAgentCards)
+          .set({
+            status: "pending",
+            meaning: hint,
+            visualBrief: null,
+            currentPrompt: null,
+            promptSource: null,
+            directionId: null,
+            finalRoundId: null,
+            roundsUsed: 0,
+            fallbackContentWarning: false,
+            errorMessage: null,
+            isLocked: false,
+            updatedAt: new Date(),
+          })
+          .where(eq(workspaceAgentCards.id, card.id))
+        if (card.promptCardId) {
+          await tx
+            .update(promptCards)
+            .set({
+              prompt: `【骨架】${card.name}：${hint}`,
+              isLocked: true,
+              translatedPrompt: null,
+              translationSourcePrompt: null,
+              translationStatus: "none",
+              updatedAt: new Date(),
+            })
+            .where(eq(promptCards.id, card.promptCardId))
+        }
+      }
+
+      // ── 2. 目标步之后的决策复位 ──
+      if (target === "direction") {
+        // 方向整批恢复候选（旧批次数据缺 directionBatchIds 时仅恢复原选中行）
+        const batchIds = ext.directionBatchIds?.length
+          ? ext.directionBatchIds
+          : [workflow.selectedDirectionId!]
+        await tx
+          .update(workspaceAgentDirections)
+          .set({ status: "candidate", updatedAt: new Date() })
+          .where(
+            and(
+              eq(workspaceAgentDirections.workflowId, workflowId),
+              inArray(workspaceAgentDirections.id, batchIds),
+            ),
+          )
+      } else {
+        // 回退到主题/想象力：第二轮方向行全部作废（基于其后的选择生成）
+        const directionRoundWhere =
+          themeIds.length > 0
+            ? and(
+                eq(workspaceAgentDirections.workflowId, workflowId),
+                notInArray(workspaceAgentDirections.id, themeIds),
+              )
+            : eq(workspaceAgentDirections.workflowId, workflowId)
+        await tx
+          .update(workspaceAgentDirections)
+          .set({ status: "rejected", updatedAt: new Date() })
+          .where(directionRoundWhere)
+        if (target === "theme" && selectedTheme) {
+          await tx
+            .update(workspaceAgentDirections)
+            .set({ status: "candidate", updatedAt: new Date() })
+            .where(eq(workspaceAgentDirections.id, selectedTheme.id))
+        }
+      }
+
+      // ── 3. 工作流游标复位（undefined 键经 JSON 序列化即剔除） ──
+      const nextInput: WorkspaceAgentInputExt = {
+        ...ext,
+        rollbackCount: (ext.rollbackCount ?? 0) + 1,
+        ...(target === "theme"
+          ? {
+              lastSelectedThemeId: selectedTheme?.id,
+              imaginationLevel: undefined,
+              lastSelectedDirectionId: undefined,
+            }
+          : target === "imagination"
+            ? { imaginationLevel: undefined, lastSelectedDirectionId: undefined }
+            : { lastSelectedDirectionId: workflow.selectedDirectionId ?? undefined }),
+      }
+      await tx
+        .update(workspaceAgentWorkflows)
+        .set({
+          styleDoc: null,
+          selectedDirectionId: null,
+          status: "waiting_human",
+          error: null,
+          input: nextInput,
+          updatedAt: new Date(),
+        })
+        .where(eq(workspaceAgentWorkflows.id, workflowId))
+    })
+
+    const targetLabel =
+      target === "theme" ? "主题选择" : target === "imagination" ? "想象力程度" : "落地方向"
+    await logEvent(workflow, {
+      nodeKey: "supervisor",
+      action: "rollback",
+      status: "warn",
+      stage: target,
+      detail:
+        `已回退到「${targetLabel}」：该步之后的选择已复位（${
+          target === "direction" || (target === "theme" && selectedTheme)
+            ? "原选中项恢复为候选并标记上次选择"
+            : "想象力档位已清空"
+        }），卡片提示词、卡片图片、评审与 Oracle 文案已清空；日志、资产管理图片与费用记录保留`,
+    })
+    return { ok: true, error: null }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "回退失败" }
+  }
+}
+
+// ═══════════════════ 13. 重新 Agent 生成（单卡新周期：重置打回轮数） ═══════════════════
 
 /**
  * 重新 Agent 生成：唯一允许重置 roundsUsed 开启新评审周期的入口。
@@ -1171,7 +1450,7 @@ export async function restartWorkspaceAgentCardAction(
   }
 }
 
-// ═══════════════════ 13. 单卡评审查询（跨轮评分 / 裁决 / 阈值） ═══════════════════
+// ═══════════════════ 14. 单卡评审查询（跨轮评分 / 裁决 / 阈值） ═══════════════════
 
 /**
  * 评审查询：返回该卡全部生成轮的评审明细（每轮各评审员三维分 + 加权总分 +
@@ -1202,7 +1481,7 @@ export async function getWorkspaceAgentCardReviewAction(
   }
 }
 
-// ═══════════════════ 14. 神谕文案 CSV 下载（oracle58 交付物） ═══════════════════
+// ═══════════════════ 15. 神谕文案 CSV 下载（oracle58 交付物） ═══════════════════
 
 /**
  * 神谕文案 CSV 下载：按 taskId 取最新工作流（双租户过滤）→ 校验 oracle58

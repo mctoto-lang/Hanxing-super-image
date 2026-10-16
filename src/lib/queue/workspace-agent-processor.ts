@@ -27,6 +27,7 @@ import {
   type WorkspaceAgentJobRow,
 } from "@/db/schema"
 import type { ProcessResult } from "@/lib/queue/processor"
+import { stageOfJobType } from "@/lib/workspace/agent-templates"
 import {
   logWaEvent,
   markReferenceStyleAnalysisFailed,
@@ -80,6 +81,7 @@ export async function recoverStaleWorkspaceAgentJobs(): Promise<void> {
       enterpriseId: workspaceAgentJobs.enterpriseId,
       retryCount: workspaceAgentJobs.retryCount,
       jobType: workspaceAgentJobs.jobType,
+      payload: workspaceAgentJobs.payload,
     })
     .from(workspaceAgentJobs)
     .where(
@@ -124,6 +126,7 @@ export async function recoverStaleWorkspaceAgentJobs(): Promise<void> {
         nodeKey: "supervisor",
         action: "retry",
         status: "warn",
+        stage: stageOfJobType(row.jobType, typeof row.payload?.round === "string" ? row.payload.round : null),
         detail: `任务 ${row.jobType} 心跳超时（worker 重启或中断），已重新排队重试（第 ${row.retryCount + 1} 次）`,
       })
     } else {
@@ -146,6 +149,7 @@ export async function recoverStaleWorkspaceAgentJobs(): Promise<void> {
         nodeKey: "supervisor",
         action: "fail",
         status: "error",
+        stage: stageOfJobType(row.jobType, typeof row.payload?.round === "string" ? row.payload.round : null),
         detail: `任务 ${row.jobType} 心跳超时且重试次数已用尽，已标记失败（可重新发起）`,
       })
     }
@@ -288,6 +292,7 @@ async function runClaimedJob(job: WorkspaceAgentJobRow): Promise<boolean> {
       nodeKey: "supervisor",
       action: "fail",
       status: "error",
+      stage: stageOfJobType(job.jobType, typeof job.payload?.round === "string" ? job.payload.round : null),
       detail: `任务 ${job.jobType} 执行失败：${message}`,
     })
     // 指数退避重排；耗尽则终态 failed

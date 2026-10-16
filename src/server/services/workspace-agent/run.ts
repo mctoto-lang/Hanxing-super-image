@@ -25,11 +25,13 @@ import {
   type WorkspaceAgentWorkflowRow,
 } from "@/db/schema"
 import type {
+  WorkspaceAgentEventStage,
   WorkspaceAgentSampleCard,
 } from "@/lib/workspace/agent-types"
 import { LlmValidationError } from "@/server/services/agent/llm-errors"
 import {
   promptWritingRulesFor,
+  TEMPLATE_LLM_PRODUCT_LINES,
   workspaceAgentReferenceStyleLines,
 } from "@/lib/workspace/agent-templates"
 import { isFaceCard, requireWorkspaceAgentTemplate } from "./templates"
@@ -50,7 +52,7 @@ import {
 // 公共小件
 // ---------------------------------------------------------------------------
 
-/** 事件时间线（nodeKey 用七角色 id，团队面板按角色归组） */
+/** 事件时间线（nodeKey 用七角色 id，团队面板按角色归组；stage 标注流水线模块） */
 export async function logWaEvent(input: {
   workflowId: string
   enterpriseId: string
@@ -59,6 +61,7 @@ export async function logWaEvent(input: {
   status: "ok" | "warn" | "error"
   detail: string
   cardId?: string | null
+  stage?: WorkspaceAgentEventStage | null
 }): Promise<void> {
   await db.insert(workspaceAgentEvents).values({
     workflowId: input.workflowId,
@@ -68,6 +71,7 @@ export async function logWaEvent(input: {
     status: input.status,
     detail: input.detail,
     cardId: input.cardId ?? null,
+    stage: input.stage ?? null,
   })
 }
 
@@ -258,6 +262,7 @@ export async function runAnalyzeReferenceStyleJob(
     action: "done",
     status: "ok",
     detail: `已提取参考图艺术风格，等待用户确认：${styleDescription.slice(0, 100)}`,
+    stage: "style_confirm",
   })
   return { styleDescription }
 }
@@ -291,9 +296,13 @@ export async function runGenDirectionsJob(
   const input = readWorkflowInput(workflow)
   const round = job.payload?.round === "directions" ? "directions" : "themes"
   const nodeKey = "style_director"
+  // 事件归属模块：主题轮归「主题选择」面板，方向轮归「落地方向」面板
+  const eventStage: WorkspaceAgentEventStage = round === "themes" ? "theme" : "direction"
   const model = await loadMainModel(workflow)
   const templateKey = input.frozenConfig?.templateKey ?? "tarot81"
   const template = requireWorkspaceAgentTemplate(templateKey)
+  // LLM 视角产品线文案（poker58 中性化为主题卡牌，方向/主题不渗入扑克语义）
+  const llmProductLine = TEMPLATE_LLM_PRODUCT_LINES[templateKey]
   const thresholds = readQualityThresholds(input)
 
   await logWaEvent({
@@ -302,6 +311,7 @@ export async function runGenDirectionsJob(
     nodeKey,
     action: "start",
     status: "ok",
+    stage: eventStage,
     detail:
       round === "themes"
         ? `风格策划开始拟定 3 个主题方向（${template.meta.name}，共 ${template.meta.cardCount} 张，含套件交付物 ${template.meta.kitCount} 项）`
@@ -316,7 +326,7 @@ export async function runGenDirectionsJob(
     const lines = [
       `【用户需求】${input.prompt}`,
       ...workspaceAgentReferenceStyleLines(input),
-      `【产品线】${template.meta.name}（${template.meta.description}；成品 ${template.meta.cardCount} 张，其中套件交付物 ${template.meta.kitCount} 项）`,
+      `【产品线】${llmProductLine.name}（${llmProductLine.description}；成品 ${template.meta.cardCount} 张，其中套件交付物 ${template.meta.kitCount} 项）`,
       `【质量要求】内容对齐及格线 ${thresholds.contentThreshold}，审美及格线 ${thresholds.aestheticThreshold}，成套一致性及格线 ${thresholds.consistencyThreshold}，打回上限 ${thresholds.maxRetries} 轮`,
       job.payload?.feedback
         ? `【用户反馈】请围绕以下意见重新拟定：${String(job.payload.feedback).slice(0, 500)}`
@@ -349,7 +359,7 @@ export async function runGenDirectionsJob(
       `【想象力档位】${
         IMAGINATION_PROMPTS[input.imaginationLevel ?? "balanced"]
       }`,
-      `【产品线】${template.meta.name}（成品 ${template.meta.cardCount} 张，其中套件交付物 ${template.meta.kitCount} 项）`,
+      `【产品线】${llmProductLine.name}（${llmProductLine.description}；成品 ${template.meta.cardCount} 张，其中套件交付物 ${template.meta.kitCount} 项）`,
       `【骨架采样（理解牌面语义用）】${template.cards
         .filter(isFaceCard)
         .slice(0, 8)
@@ -386,6 +396,7 @@ export async function runGenDirectionsJob(
       nodeKey,
       action: "fail",
       status: "warn",
+      stage: eventStage,
       detail: `主控模型不支持读图，${referenceImages.length} 张参考图未纳入本轮生成（仅按文本分析）`,
     })
   }
@@ -462,6 +473,7 @@ export async function runGenDirectionsJob(
         nodeKey,
         action: "fail",
         status: "warn",
+        stage: eventStage,
         detail: `方向「${d.name}」示例图入队失败：${res.error}`,
       })
     }
@@ -471,24 +483,27 @@ export async function runGenDirectionsJob(
       nodeKey,
       action: "start",
       status: queued > 0 ? "ok" : "warn",
+      stage: eventStage,
       detail:
         `已为 ${queued} 个方向入队示例图（卡面尺寸，生成完成后在向导中展示）` +
         (failedCount > 0 ? `；${failedCount} 个方向入队失败（不影响方向选择）` : ""),
     })
   }
 
-  // 主题轮：留档批次 id（区分主题行与第二轮方向行）。先落 typed 变量再赋值，
-  // 避免 jsonb 列类型（WorkspaceAgentInput）对对象字面量做多余属性检查。
-  if (round === "themes") {
-    const nextInput: WorkspaceAgentInputExt = {
-      ...input,
-      themeDirectionIds: inserted.map((row) => row.id),
-    }
-    await db
-      .update(workspaceAgentWorkflows)
-      .set({ input: nextInput, updatedAt: new Date() })
-      .where(eq(workspaceAgentWorkflows.id, workflow.id))
+  // 批次 id 留档：主题轮记 themeDirectionIds（区分两轮行），方向轮记
+  // directionBatchIds（回退到落地方向时按批恢复候选、UI 只展示当前批次）。
+  // 先落 typed 变量再赋值，避免 jsonb 列类型（WorkspaceAgentInput）对对象
+  // 字面量做多余属性检查。
+  const nextInput: WorkspaceAgentInputExt = {
+    ...input,
+    ...(round === "themes"
+      ? { themeDirectionIds: inserted.map((row) => row.id) }
+      : { directionBatchIds: inserted.map((row) => row.id) }),
   }
+  await db
+    .update(workspaceAgentWorkflows)
+    .set({ input: nextInput, updatedAt: new Date() })
+    .where(eq(workspaceAgentWorkflows.id, workflow.id))
 
   await heartbeat(workflow.id, job.id)
   await logWaEvent({
@@ -497,6 +512,7 @@ export async function runGenDirectionsJob(
     nodeKey,
     action: "done",
     status: "ok",
+    stage: eventStage,
     detail: `已拟定 ${directions.length} 个候选${round === "themes" ? "主题" : "创作"}方向：${directions
       .map((d) => d.name)
       .join(" / ")}，等待选择`,
@@ -587,6 +603,7 @@ export async function runWritePromptsJob(
     nodeKey,
     action: "start",
     status: "ok",
+    stage: "prompt_writing",
     detail: job.payload?.feedback
       ? `提示词设计师开始按反馈撰写 ${targets.length} 张卡牌提示词`
       : `提示词设计师开始撰写 ${targets.length} 张卡牌提示词（固定风格提示词由系统统一拼接）`,
@@ -724,6 +741,7 @@ export async function runWritePromptsJob(
         nodeKey,
         action: "fail",
         status: "warn",
+        stage: "prompt_writing",
         detail: `第 ${batch[0]!.cardIndex + 1}-${batch[batch.length - 1]!.cardIndex + 1} 张 AI 撰写失败（${reason}），已标记失败可重试`,
       })
     } finally {
@@ -737,6 +755,7 @@ export async function runWritePromptsJob(
         nodeKey,
         action: "start",
         status: "ok",
+        stage: "prompt_writing",
         detail: `卡牌提示词撰写进度：${done}/${targets.length} 张（已写 ${written}，失败 ${failed}）`,
       })
     }
@@ -748,6 +767,7 @@ export async function runWritePromptsJob(
     nodeKey,
     action: "done",
     status: failed > 0 ? "warn" : "ok",
+    stage: "prompt_writing",
     detail:
       `卡牌提示词撰写完成：已写 ${written} 张` +
       (failed > 0 ? `，失败 ${failed} 张（可重试）` : "") +

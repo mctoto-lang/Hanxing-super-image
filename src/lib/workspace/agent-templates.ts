@@ -24,6 +24,7 @@ import type {
   WorkspaceAgentCandidate,
   WorkspaceAgentCardSkeleton,
   WorkspaceAgentCardStatus,
+  WorkspaceAgentEventStage,
   WorkspaceAgentFrozenConfig,
   WorkspaceAgentQuality,
   WorkspaceAgentSizeKind,
@@ -899,6 +900,37 @@ export function pickBestScoredRound<T extends ScoredRoundLike>(
 // ---------------------------------------------------------------------------
 // 阶段状态映射（单卡状态 → 阶段；阶段进度 → 阶段展示状态）
 // ---------------------------------------------------------------------------
+
+/**
+ * 任务类型（+方向轮次）→ 事件所属流水线模块：
+ * supervisor 随 job 执行/重试/超时的事件按此归档到对应模块面板；
+ * gen_directions 用 payload.round 区分主题轮（theme）与方向轮（direction）；
+ * 无法可靠归档的类型返回 null（前端回退 nodeKey 白名单，不丢日志）。
+ */
+export function stageOfJobType(
+  jobType: string,
+  round?: string | null,
+): WorkspaceAgentEventStage | null {
+  switch (jobType) {
+    case "analyze_reference_style":
+      return "style_confirm"
+    case "gen_directions":
+      // 缺省按主题轮（与 run.ts 的 round 缺省口径一致）
+      return round === "directions" ? "direction" : "theme"
+    case "write_prompts":
+    case "write_oracle_copy":
+    case "translate_copy":
+    case "revise_prompt":
+    case "revise_card":
+      return "prompt_writing"
+    case "review_image":
+    case "produce_cards":
+    case "regen_image":
+      return "art"
+    default:
+      return null
+  }
+}
 
 /**
  * 阶段 → 该阶段归集的单卡状态（对 WORKSPACE_AGENT_CARD_STATUSES 的完整划分）：

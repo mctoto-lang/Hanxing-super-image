@@ -19,7 +19,9 @@
  * - 挂载即按 taskId 轮询（3s 一拍），卸载/切任务即停止并重置本地状态；
  * - 服务端队列运行中（queued/processing > 0 或 workflow queued/running）时
  *   全部操作禁用，仅轮询进度；
- * - 主题/想象力/方向一经选定，前后端均拒绝改选（时间线仅可回看）；
+ * - 主题/想象力/方向选定后历史只读，但支持「回退到本步」重选（确认弹窗
+ *   二次确认；服务端清空下游产出并留「上次选择」标记，日志/资产/费用不
+ *   动）；风格确认与提示词撰写不提供回退；
  * - 提示词完成后进入卡片阶段的生图/评审循环（由卡片网格与工具面板承接）；
  * - 折叠区收起即卸载本组件，重展开由「执行进度」重新打开时，从轮询载荷
  *   恢复到 current stage。
@@ -38,11 +40,20 @@ import {
   RefreshCw,
   Settings2,
   Sparkles,
+  Undo2,
 } from "lucide-react"
 import { cn, toImageSrc } from "@/lib/utils"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import {
   Select,
   SelectContent,
@@ -70,6 +81,7 @@ import {
   getWorkspaceAgentProgressAction,
   selectWorkspaceAgentDirectionAction,
   selectWorkspaceAgentThemeAction,
+  rollbackWorkspaceAgentStageAction,
 } from "@/server/actions/workspace"
 import type {
   WorkspaceAgentProgressDirection,
@@ -86,6 +98,15 @@ const STEP_PROMPT = 4
 const STEP_COUNT = 5
 /** viewStep 收起哨兵：全部步骤收起（轮询不自动展开，点步骤头再展开） */
 const STEP_COLLAPSED = -1
+
+/** 可回退的向导目标（风格确认不参与；提示词撰写为末步） */
+type RollbackTarget = "theme" | "imagination" | "direction"
+
+const ROLLBACK_TARGET_STEPS: Record<RollbackTarget, number> = {
+  theme: STEP_THEME,
+  imagination: STEP_IMAGINATION,
+  direction: STEP_DIRECTION,
+}
 
 const SIZE_KIND_LABELS: Array<{ kind: keyof WorkspaceAgentTemplateSizes; label: string }> = [
   { kind: "card", label: "卡面" },
@@ -222,6 +243,10 @@ export function WorkspaceAgentFlowTimeline({
   const [selectedSizes, setSelectedSizes] = useState<WorkspaceAgentTemplateSizes | null>(null)
   const [configSaving, setConfigSaving] = useState(false)
   const [analysisRequested, setAnalysisRequested] = useState(false)
+  /** 待确认的回退目标（null = 弹窗关闭） */
+  const [rollbackTarget, setRollbackTarget] = useState<RollbackTarget | null>(null)
+  /** 上一拍回退计数：发现服务端回退（计数增加）即让视图跟随推导步回跳 */
+  const rollbackCountRef = useRef(0)
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const viewingHistoryRef = useRef(false)
@@ -239,6 +264,9 @@ export function WorkspaceAgentFlowTimeline({
       setSelectedImageModelId((prev) => prev || next.input.imageModelId || "")
       setSelectedSizes((prev) => prev ?? asTemplateSizes(next.input.sizes))
       const derived = deriveActiveStep(next)
+      const rollbackAdvanced =
+        (next.input.rollbackCount ?? 0) > rollbackCountRef.current
+      rollbackCountRef.current = next.input.rollbackCount ?? 0
       setViewStep((prev) => {
         if (prev == null) return initialStepRef.current ?? derived
         // 用户手动收起全部步骤：保持收起，轮询不自动展开。
@@ -246,6 +274,12 @@ export function WorkspaceAgentFlowTimeline({
         // 用户正在查看历史步骤时，轮询不能把视图强行跳回当前步骤。
         if (viewingHistoryRef.current) return prev
         if (prev === STEP_STYLE) return prev
+        // 服务端回退后推导步回退：视图必须跟随跳回，否则下方单调钳制会把
+        // 视图永远卡在回退前的高位步骤
+        if (rollbackAdvanced) {
+          viewingHistoryRef.current = false
+          return derived
+        }
         return Math.max(prev, derived)
       })
     },
@@ -393,14 +427,31 @@ export function WorkspaceAgentFlowTimeline({
     )
   }, [payload])
 
-  const themeRows = useMemo(
-    () => (payload?.directions ?? []).filter((d) => d.round === "theme" && d.status !== "rejected"),
-    [payload],
-  )
-  const directionRows = useMemo(
-    () => (payload?.directions ?? []).filter((d) => d.round === "direction" && d.status !== "rejected"),
-    [payload],
-  )
+  // 当前批次的 3 张全展示：选定后同批未选项置灰保留可查看（「未选择」徽标），
+  // 更早批次（重新生成淘汰）的 rejected 行不展示。主题批次 = themeDirectionIds
+  // 留档；方向批次 = directionBatchIds 留档（旧数据缺失时退回隐藏 rejected）。
+  const themeRows = useMemo(() => {
+    const rows = payload?.directions ?? []
+    const batchIds = input?.themeDirectionIds
+    if (!batchIds?.length) {
+      return rows.filter((d) => d.round === "theme" && d.status !== "rejected")
+    }
+    const batch = new Set(batchIds)
+    return rows.filter(
+      (d) => d.round === "theme" && (d.status !== "rejected" || batch.has(d.id)),
+    )
+  }, [payload, input])
+  const directionRows = useMemo(() => {
+    const rows = payload?.directions ?? []
+    const batchIds = input?.directionBatchIds
+    if (!batchIds?.length) {
+      return rows.filter((d) => d.round === "direction" && d.status !== "rejected")
+    }
+    const batch = new Set(batchIds)
+    return rows.filter(
+      (d) => d.round === "direction" && (d.status !== "rejected" || batch.has(d.id)),
+    )
+  }, [payload, input])
   const selectedTheme = useMemo(
     () =>
       (payload?.directions ?? []).find(
@@ -545,9 +596,25 @@ export function WorkspaceAgentFlowTimeline({
     )
   }
 
+  /** 回退确认：服务端清空下游产出后视图直接跳回目标步（rollbackCount 追踪
+   *  兜底轮询竞态：陈旧载荷不会把视图卡在回退前的高位步骤） */
+  const handleConfirmRollback = () => {
+    if (!workflowId || !rollbackTarget) return
+    const target = rollbackTarget
+    void runAction(
+      "回退",
+      () => rollbackWorkspaceAgentStageAction(workflowId, target),
+      () => {
+        setRollbackTarget(null)
+        viewingHistoryRef.current = false
+        setViewStep(ROLLBACK_TARGET_STEPS[target])
+      },
+    )
+  }
+
   // ─── 渲染片段 ───
 
-  /** 方向/主题候选卡片 */
+  /** 方向/主题候选卡片（rejected = 同批未选项，置灰 + 「未选择」徽标保留可查看） */
   const renderDirectionCard = (
     d: WorkspaceAgentProgressDirection,
     kind: "theme" | "direction",
@@ -555,6 +622,12 @@ export function WorkspaceAgentFlowTimeline({
   ) => {
     const isTheme = kind === "theme"
     const selectable = !readOnly && !busy && !acting && !terminal
+    const unselected = d.status === "rejected"
+    const lastSelectedId = isTheme
+      ? input?.lastSelectedThemeId
+      : input?.lastSelectedDirectionId
+    const wasLastSelected =
+      d.status === "candidate" && !!lastSelectedId && d.id === lastSelectedId
     return (
       <div
         key={d.id}
@@ -563,12 +636,30 @@ export function WorkspaceAgentFlowTimeline({
           selectable
             ? "border-border hover:border-violet-400 hover:bg-violet-50/40 dark:hover:bg-violet-950/20"
             : "border-border/70 opacity-80",
+          unselected && "opacity-60 grayscale-[0.35]",
         )}
       >
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <div className="truncate text-sm font-semibold text-foreground">
-              {d.name}
+            <div className="flex items-center gap-1.5">
+              <div className="truncate text-sm font-semibold text-foreground">
+                {d.name}
+              </div>
+              {d.status === "selected" && (
+                <span className="shrink-0 rounded-full border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300">
+                  已选择
+                </span>
+              )}
+              {unselected && (
+                <span className="shrink-0 rounded-full border bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  未选择
+                </span>
+              )}
+              {wasLastSelected && (
+                <span className="shrink-0 rounded-full border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:border-violet-900/60 dark:bg-violet-950/30 dark:text-violet-300">
+                  上次选择
+                </span>
+              )}
             </div>
             {d.concept && (
               <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
@@ -849,6 +940,35 @@ export function WorkspaceAgentFlowTimeline({
             </div>
           </button>
 
+          {/* 回退入口：已完成的历史决策步（主题/想象力/方向）可回退重选；
+              风格确认不参与、提示词撰写为末步。在途（busy）时禁用。 */}
+          {isDone &&
+            (step === STEP_THEME ||
+              step === STEP_IMAGINATION ||
+              step === STEP_DIRECTION) &&
+            workflow?.status !== "cancelled" && (
+              <div className="mt-0.5 flex justify-end">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 gap-1 px-2 text-[11px] text-rose-600 hover:bg-rose-50 hover:text-rose-700 dark:text-rose-400 dark:hover:bg-rose-950/30"
+                  disabled={busy || acting}
+                  onClick={() =>
+                    setRollbackTarget(
+                      step === STEP_THEME
+                        ? "theme"
+                        : step === STEP_IMAGINATION
+                          ? "imagination"
+                          : "direction",
+                    )
+                  }
+                >
+                  <Undo2 className="h-3 w-3" />
+                  回退到本步
+                </Button>
+              </div>
+            )}
+
         {/* 展开体（grid-rows 过渡；min-h-0 + overflow-hidden 必须在 grid 子项上，
             0fr 行高才能真正塌到 0；收起 invisible 移出焦点序） */}
         {!isLocked && (
@@ -1024,7 +1144,9 @@ export function WorkspaceAgentFlowTimeline({
                 {themeRows.length > 0 ? (
                   <>
                     <p className="text-xs leading-5 text-muted-foreground">
-                      {readOnly ? "已生成的主题候选（历史步骤，仅供查看）" : "从 3 个候选主题中选定 1 个，选定后进入想象力程度选择。"}
+                      {readOnly
+                        ? "已生成的主题候选（历史步骤，仅供查看；未选择项置灰保留）"
+                        : "从 3 个候选主题中选定 1 个，选定后进入想象力程度选择。"}
                     </p>
                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                       {themeRows.map((d) =>
@@ -1290,7 +1412,7 @@ export function WorkspaceAgentFlowTimeline({
         ) : loadError ? (
           <span className="truncate">进度加载失败：{loadError}</span>
         ) : (
-          <span className="truncate">风格确认 → 主题选择 → 想象力程度 → 落地方向 → 提示词撰写；历史阶段只读。</span>
+          <span className="truncate">风格确认 → 主题选择 → 想象力程度 → 落地方向 → 提示词撰写；历史阶段只读，主题 / 想象力 / 方向可回退重选。</span>
         )}
       </div>
 
@@ -1310,6 +1432,79 @@ export function WorkspaceAgentFlowTimeline({
       ) : (
         payload != null && Array.from({ length: STEP_COUNT }, (_, i) => renderStep(i))
       )}
+
+      {/* 回退确认弹窗：列明将清空与不受影响的内容，destructive 确认 */}
+      <Dialog
+        open={rollbackTarget != null}
+        onOpenChange={(open) => {
+          if (!open && !acting) setRollbackTarget(null)
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Undo2 className="h-4 w-4 text-destructive" />
+              回退到「
+              {rollbackTarget
+                ? STEP_TITLES[ROLLBACK_TARGET_STEPS[rollbackTarget]]
+                : ""}
+              」
+            </DialogTitle>
+            <DialogDescription>
+              回退后该步恢复为可操作状态，原选中项恢复为候选并标记「上次选择」。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-1 text-xs leading-5">
+            <div className="rounded-md border border-rose-200 bg-rose-50/60 px-3 py-2 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300">
+              <div className="font-medium">将清空：</div>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                <li>
+                  该步之后的选择（
+                  {rollbackTarget === "theme"
+                    ? "想象力档位、落地方向"
+                    : rollbackTarget === "imagination"
+                      ? "落地方向、风格规范书"
+                      : "已定稿的风格规范书"}
+                  ）
+                </li>
+                <li>全部卡片的提示词与卡片上的已生成图片</li>
+                <li>评审记录与 Oracle 文案</li>
+              </ul>
+            </div>
+            <div className="rounded-md border border-emerald-200 bg-emerald-50/60 px-3 py-2 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300">
+              <div className="font-medium">不受影响（保留）：</div>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                <li>流水线日志（各模块历史记录）</li>
+                <li>资产管理中已生成的图片</li>
+                <li>已产生的费用与用量台账</li>
+              </ul>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={acting}
+              onClick={() => setRollbackTarget(null)}
+            >
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={acting}
+              onClick={handleConfirmRollback}
+            >
+              {acting ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Undo2 className="mr-1 h-3.5 w-3.5" />
+              )}
+              确认回退
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

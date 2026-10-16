@@ -346,9 +346,9 @@ export type WorkspaceAgentTemplateKey = (typeof WORKSPACE_AGENT_TEMPLATE_KEYS)[n
  */
 export const WORKSPACE_AGENT_TEMPLATE_CARD_KINDS = [
   "major", // 塔罗 · 大阿卡纳（22）
-  "number", // 塔罗王牌-十 / 扑克 A、2-10（点数牌，带数量硬规则）
-  "court", // 塔罗侍从-国王 / 扑克 J-Q-K（人物牌）
-  "joker", // 扑克大小王
+  "number", // 塔罗王牌-十（点数牌，带数量硬规则）/ 扑克 A、2-10（结构字段，无点数语义）
+  "court", // 塔罗侍从-国王（人物牌）/ 扑克 J-Q-K（结构字段）
+  "joker", // 扑克主角卡 / 主角对卡
   "position", // 神谕组内位置牌（5 组 × 11 位置）
   "back", // 套件 · 牌背（整副一份）
   "border", // 套件 · 卡牌边框（整副一份，交付阶段叠加）
@@ -555,6 +555,22 @@ export const WORKSPACE_AGENT_ROLE_STATUSES = [
   "failed", // 执行出错（可重试）
 ] as const
 export type WorkspaceAgentRoleStatus = (typeof WORKSPACE_AGENT_ROLE_STATUSES)[number]
+
+/**
+ * 事件所属流水线模块（workspace_agent_event.stage；写入点按业务动作标注）：
+ * style_confirm 风格确认 / theme 主题选择 / imagination 想象力程度 /
+ * direction 落地方向 / prompt_writing 提示词撰写 / art 生图评审。
+ * 存量行与系统级事件（取消/手动重开等）为 null，前端回退 nodeKey 白名单。
+ */
+export const WORKSPACE_AGENT_EVENT_STAGES = [
+  "style_confirm",
+  "theme",
+  "imagination",
+  "direction",
+  "prompt_writing",
+  "art",
+] as const
+export type WorkspaceAgentEventStage = (typeof WORKSPACE_AGENT_EVENT_STAGES)[number]
 
 /** 角色运行时状态（团队看板一行；由进度事件推导，不直接落库） */
 export interface WorkspaceAgentRoleState {

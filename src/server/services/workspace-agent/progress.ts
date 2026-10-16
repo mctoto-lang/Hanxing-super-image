@@ -90,6 +90,15 @@ export interface WorkspaceAgentProgressPayload {
     imaginationLevel: string | null
     styleConfirmedAt: string | null
     referenceImages: string[]
+    /** 第一轮（主题）批次 id（区分两轮行；旧数据为 null） */
+    themeDirectionIds: string[] | null
+    /** 第二轮（创作方向）批次 id（回退恢复范围与展示口径；旧数据为 null） */
+    directionBatchIds: string[] | null
+    /** 回退留档的原选中 id（展示「上次选择」徽标；未回退为 null） */
+    lastSelectedThemeId: string | null
+    lastSelectedDirectionId: string | null
+    /** 回退次数（单调递增；前端据此让视图步骤跟随服务端推导回跳） */
+    rollbackCount: number
   }
   stages: WorkspaceAgentStageProgress[]
   /** 服务端聚合推导的当前阶段（与 stageStatuses 同口径；优先于 DB workflow.currentStage） */
@@ -128,9 +137,11 @@ export interface WorkspaceAgentProgressPayload {
     action: string
     status: string
     detail: string | null
+    /** 所属流水线模块（style_confirm/theme/…/art；旧行与系统级事件为空） */
+    stage: string | null
     createdAt: string
   }[]
-  /** 弹窗兼容投影（workspace-agent-dialog / 进度弹窗固定四阶段 logs） */
+  /** 弹窗兼容投影（workspace-agent-dialog / 进度弹窗统计与团队面板） */
   dialog: {
     stats: {
       conversationCount: number
@@ -151,7 +162,6 @@ export interface WorkspaceAgentProgressPayload {
       color: string
       progressPercent: number | null
     }[]
-    stages: { id: string; name: string; status: string; logs: string[] }[]
   }
 }
 
@@ -233,7 +243,8 @@ export async function loadWorkspaceAgentProgress(
         .from(workspaceAgentEvents)
         .where(eq(workspaceAgentEvents.workflowId, workflowId))
         .orderBy(desc(workspaceAgentEvents.createdAt))
-        .limit(30),
+        // 面板日志按 stage 模块过滤，需保留各模块历史行（客户端每面板再截 20 条）
+        .limit(200),
       db
         .select({ status: workspaceAgentJobs.status, count: sql<number>`count(*)::int` })
         .from(workspaceAgentJobs)
@@ -437,13 +448,6 @@ export async function loadWorkspaceAgentProgress(
   const llmCallCount = Number(
     usageKindRows.find((r) => r.kind === "llm")?.count ?? 0,
   )
-  const dialogStageStatus = (s: WorkspaceAgentStageStatus) =>
-    s === "done" ? "done" : s === "active" ? "running" : "pending"
-  const stageLogs = (nodeKeys: string[]): string[] =>
-    eventsAsc
-      .filter((ev) => nodeKeys.includes(ev.nodeKey ?? ""))
-      .slice(-8)
-      .map((ev) => ev.detail ?? "")
 
   return {
     workflow: {
@@ -480,6 +484,11 @@ export async function loadWorkspaceAgentProgress(
       imaginationLevel: input.imaginationLevel ?? null,
       styleConfirmedAt: input.styleConfirmedAt ?? null,
       referenceImages: input.referenceImages ?? [],
+      themeDirectionIds: input.themeDirectionIds ?? null,
+      directionBatchIds: input.directionBatchIds ?? null,
+      lastSelectedThemeId: input.lastSelectedThemeId ?? null,
+      lastSelectedDirectionId: input.lastSelectedDirectionId ?? null,
+      rollbackCount: input.rollbackCount ?? 0,
     },
     stages,
     currentStage,
@@ -506,6 +515,7 @@ export async function loadWorkspaceAgentProgress(
       action: ev.action,
       status: ev.status,
       detail: ev.detail,
+      stage: ev.stage,
       createdAt: ev.createdAt.toISOString(),
     })),
     dialog: {
@@ -538,32 +548,6 @@ export async function loadWorkspaceAgentProgress(
             ? Math.round((promptsWritten / cardCount) * 100)
             : null,
       })),
-      stages: [
-        {
-          id: "understand",
-          name: "主题选择",
-          status: dialogStageStatus(stageStatuses.clarify),
-          logs: stageLogs(["creative_director", "style_director", "supervisor"]),
-        },
-        {
-          id: "fission",
-          name: "想象力程度",
-          status: dialogStageStatus(stageStatuses.draft),
-          logs: stageLogs(["creative_director", "supervisor"]),
-        },
-        {
-          id: "imagegen",
-          name: "落地方向",
-          status: dialogStageStatus(stageStatuses.art),
-          logs: stageLogs(["style_director", "supervisor"]),
-        },
-        {
-          id: "review",
-          name: "提示词撰写",
-          status: dialogStageStatus(stageStatuses.compose),
-          logs: stageLogs(["prompt_designer", "supervisor"]),
-        },
-      ],
     },
   }
 }
