@@ -2,9 +2,13 @@ import { promises as fs } from "node:fs"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
 import { env } from "@/lib/env"
+import { describeFetchError } from "@/lib/fetch-error"
 import { transferSemaphore } from "./semaphore"
 import {
   DEFAULT_DOWNLOAD_HOST_SUFFIXES,
+  DOWNLOAD_REFUSAL_URL_MAX,
+  buildDownloadRefusalError,
+  type DownloadHostCheck,
   loadStorageConfig,
   matchesAllowedHost,
   sameSiteAsHost,
@@ -63,18 +67,31 @@ const DOWNLOAD_TIMEOUT_MS = 30_000
  * https + 同源 + env COS + 常见云存储后缀 + 平台配置的额外可信域名
  * （system_setting key=storage 的 allowedDownloadHosts，精确 host 或 "." 开头后缀）
  * + 调用方传入的可信域名提示（模型 API 端点，自动放行其同站 CDN 域名）。
+ *
+ * 显式白名单与端点同站提示放行 http：本机反代/网关（如 jimeng-free-api
+ * 部署在 127.0.0.1）回传指向自身的图片地址，无法挂 https 证书。前者是
+ * 管理员主动信任；后者的 API 调用本就发往该端点且允许 http，图片回拉
+ * 同 host 不扩大攻击面。其余路径仍强制 https（防内网探测被动触发）。
  */
-function isTrustedDownloadHost(
+export function checkTrustedDownloadHost(
   url: URL,
   extraHosts: string[],
   hostHints: string[],
-): boolean {
-  // 仅允许 https（防内网探测）
-  if (url.protocol !== "https:") return false
+): DownloadHostCheck {
+  // 平台配置的额外可信域名（管理员显式信任，含 http 源站）
+  if (matchesAllowedHost(url.hostname, extraHosts)) return { ok: true }
+  // 调用方提示的可信域名（如模型 API 端点）：同站（同一可注册域）即放行
+  if (hostHints.some((hint) => sameSiteAsHost(url.hostname, hint))) {
+    return { ok: true }
+  }
+  // 其余路径仅允许 https（防内网探测）
+  if (url.protocol !== "https:") {
+    return { ok: false, reason: "protocol", host: url.hostname }
+  }
   // 同源
   try {
     const appUrl = new URL(env.NEXT_PUBLIC_APP_URL)
-    if (url.host === appUrl.host) return true
+    if (url.host === appUrl.host) return { ok: true }
   } catch {
     // ignore
   }
@@ -82,31 +99,38 @@ function isTrustedDownloadHost(
   if (env.COS_BASE_URL) {
     try {
       const cosUrl = new URL(env.COS_BASE_URL)
-      if (url.host === cosUrl.host) return true
+      if (url.host === cosUrl.host) return { ok: true }
     } catch {
       // ignore
     }
   }
   // 常见云存储 / AI 上游图片 CDN 域名后缀（与 cos.ts 共用常量）
-  if (
-    DEFAULT_DOWNLOAD_HOST_SUFFIXES.some((s) => url.hostname.endsWith(s))
-  )
-    return true
-  // 平台配置的额外可信域名
-  if (matchesAllowedHost(url.hostname, extraHosts)) return true
-  // 调用方提示的可信域名（如模型 API 端点）：同站（同一可注册域）即放行
-  if (hostHints.some((hint) => sameSiteAsHost(url.hostname, hint))) return true
-  return false
+  if (DEFAULT_DOWNLOAD_HOST_SUFFIXES.some((s) => url.hostname.endsWith(s))) {
+    return { ok: true }
+  }
+  return { ok: false, reason: "host", host: url.hostname }
 }
 
 /** 信号量内完成下载（与 cos.ts 一致：排队不计入 30s 超时，写盘在信号量外） */
 async function downloadBuffered(url: URL): Promise<Buffer> {
   await transferSemaphore.acquire()
   try {
-    const resp = await fetch(url, {
-      signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
-    })
-    if (!resp.ok) throw new Error(`下载失败: ${resp.status}`)
+    let resp: Response
+    try {
+      resp = await fetch(url, {
+        signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+      })
+    } catch (err) {
+      // 仅包装网络层失败（fetch failed → cause）带目标与原因；超时/中止原样上抛
+      const reason = describeFetchError(err)
+      if (reason) {
+        throw new Error(
+          `下载失败: 无法连接 ${url.host}（${reason}，url=${url.toString().slice(0, DOWNLOAD_REFUSAL_URL_MAX)}）`,
+        )
+      }
+      throw err
+    }
+    if (!resp.ok) throw new Error(`下载失败: HTTP ${resp.status}（${url.host}）`)
     // 流式读取并限制体积，避免超大响应耗尽内存/磁盘
     const reader = resp.body?.getReader()
     if (!reader) {
@@ -185,13 +209,12 @@ export async function saveFromUrl(
   } catch {
     // ignore
   }
-  if (!isTrustedDownloadHost(targetUrl, extraHosts, trustedHostHints)) {
+  const hostCheck = checkTrustedDownloadHost(targetUrl, extraHosts, trustedHostHints)
+  if (!hostCheck.ok) {
     console.warn(
-      `[storage] 拒绝下载：域名 ${targetUrl.hostname} 不在可信白名单内（url=${sourceUrl.slice(0, 160)}）`,
+      `[storage] 拒绝下载：${hostCheck.reason === "protocol" ? "非 https 协议" : `域名 ${targetUrl.hostname} 不在可信白名单内`}（url=${sourceUrl.slice(0, 160)}）`,
     )
-    throw new Error(
-      `下载失败: 目标域名 ${targetUrl.hostname} 不在可信白名单内`,
-    )
+    throw buildDownloadRefusalError(targetUrl, hostCheck.reason)
   }
   const buffer = await downloadBuffered(targetUrl)
   return await saveFromBuffer(buffer, enterpriseId, ext, kind)

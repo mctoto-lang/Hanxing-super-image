@@ -1,11 +1,15 @@
 import COS from "cos-nodejs-sdk-v5"
 import { randomUUID } from "node:crypto"
 import type { StorageAdapter } from "./index"
+import { describeFetchError } from "@/lib/fetch-error"
 import { transferSemaphore } from "./semaphore"
 import {
   type StorageConfig,
   type ImageCategory,
+  type DownloadHostCheck,
   resolveCosTarget,
+  buildDownloadRefusalError,
+  DOWNLOAD_REFUSAL_URL_MAX,
   datePath,
   extFromUrl,
   contentTypeFromExt,
@@ -77,30 +81,50 @@ function uploadDomain(cfg: StorageConfig, bucket: string): string | undefined {
 
 /**
  * 校验回拉目标 host 是否可信（防 SSRF）。
- * 仅允许 https + 配置的 COS 桶域名 + 常见云存储/AI 上游后缀
+ * 允许 https + 配置的 COS 桶域名 + 常见云存储/AI 上游后缀
  * + 平台配置的额外可信域名 + 调用方提示域名（模型 API 端点）的同站域名。
+ * 显式白名单与端点同站提示放行 http（本机反代/网关回传指向自身的图片地址，
+ * 无法挂 https 证书；前者是管理员主动信任，后者的 API 调用本就发往该端点，
+ * 图片回拉同 host 不扩大攻击面），其余路径仅 https。
  * 导出供 temu-publish 等服务端回拉入口复用同一白名单口径。
  */
+export function checkAllowedDownloadHost(
+  url: URL,
+  cfg: StorageConfig,
+  hostHints: string[] = [],
+): DownloadHostCheck {
+  const host = url.hostname
+  // 额外放行配置的可信上游域名（精确 host，或以 "." 开头的后缀，如 ".dakka.com.cn"）
+  if (matchesAllowedHost(host, cfg.allowedDownloadHosts ?? [])) {
+    return { ok: true }
+  }
+  // 调用方提示的可信域名（如模型 API 端点）：同站（同一可注册域）即放行
+  if (hostHints.some((hint) => sameSiteAsHost(host, hint))) {
+    return { ok: true }
+  }
+  if (url.protocol !== "https:") {
+    return { ok: false, reason: "protocol", host }
+  }
+  if (cfg.cosBaseUrl) {
+    try {
+      if (host === new URL(cfg.cosBaseUrl).hostname) return { ok: true }
+    } catch {
+      // ignore
+    }
+  }
+  if (DEFAULT_DOWNLOAD_HOST_SUFFIXES.some((s) => host.endsWith(s))) {
+    return { ok: true }
+  }
+  return { ok: false, reason: "host", host }
+}
+
+/** isAllowedDownloadHost 的布尔薄包装（保持既有导出签名，temu-publish 等复用无感知） */
 export function isAllowedDownloadHost(
   url: URL,
   cfg: StorageConfig,
   hostHints: string[] = [],
 ): boolean {
-  if (url.protocol !== "https:") return false
-  const host = url.hostname
-  if (cfg.cosBaseUrl) {
-    try {
-      if (host === new URL(cfg.cosBaseUrl).hostname) return true
-    } catch {
-      // ignore
-    }
-  }
-  if (DEFAULT_DOWNLOAD_HOST_SUFFIXES.some((s) => host.endsWith(s))) return true
-  // 额外放行配置的可信上游域名（精确 host，或以 "." 开头的后缀，如 ".dakka.com.cn"）
-  if (matchesAllowedHost(host, cfg.allowedDownloadHosts ?? [])) return true
-  // 调用方提示的可信域名（如模型 API 端点）：同站（同一可注册域）即放行
-  if (hostHints.some((hint) => sameSiteAsHost(host, hint))) return true
-  return false
+  return checkAllowedDownloadHost(url, cfg, hostHints).ok
 }
 
 /**
@@ -138,10 +162,22 @@ export function isOwnCosObjectUrl(
 async function downloadBuffered(url: URL): Promise<Buffer> {
   await transferSemaphore.acquire()
   try {
-    const resp = await fetch(url, {
-      signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
-    })
-    if (!resp.ok) throw new Error(`下载失败: ${resp.status}`)
+    let resp: Response
+    try {
+      resp = await fetch(url, {
+        signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+      })
+    } catch (err) {
+      // 仅包装网络层失败（fetch failed → cause）带目标与原因；超时/中止原样上抛
+      const reason = describeFetchError(err)
+      if (reason) {
+        throw new Error(
+          `下载失败: 无法连接 ${url.host}（${reason}，url=${url.toString().slice(0, DOWNLOAD_REFUSAL_URL_MAX)}）`,
+        )
+      }
+      throw err
+    }
+    if (!resp.ok) throw new Error(`下载失败: HTTP ${resp.status}（${url.host}）`)
 
     const reader = resp.body?.getReader()
     if (!reader) {
@@ -233,13 +269,12 @@ export function createCosAdapter(cfg: StorageConfig): CosAdapter {
           category,
         )
       }
-      if (!isAllowedDownloadHost(targetUrl, cfg, trustedHostHints)) {
+      const hostCheck = checkAllowedDownloadHost(targetUrl, cfg, trustedHostHints)
+      if (!hostCheck.ok) {
         console.warn(
-          `[storage] 拒绝下载：域名 ${targetUrl.hostname} 不在可信白名单内（url=${sourceUrl.slice(0, 160)}）`,
+          `[storage] 拒绝下载：${hostCheck.reason === "protocol" ? "非 https 协议" : `域名 ${targetUrl.hostname} 不在可信白名单内`}（url=${sourceUrl.slice(0, 160)}）`,
         )
-        throw new Error(
-          `下载失败: 目标域名 ${targetUrl.hostname} 不在可信白名单内`,
-        )
+        throw buildDownloadRefusalError(targetUrl, hostCheck.reason)
       }
 
       const ext = extFromUrl(sourceUrl)

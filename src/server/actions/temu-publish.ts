@@ -461,8 +461,9 @@ let imgSrcCfgCache: { at: number; cfg: StorageConfig } | null = null
 /**
  * 服务端回拉图片源前的 host 白名单校验（防 SSRF）：复用 cos.ts
  * isAllowedDownloadHost 同一口径（https + COS 桶域名 + 云存储/AI 上游后缀 +
- * system_setting allowedDownloadHosts），另放行 TEMU 官方图床（模板默认层/
- * 轮播复用会回存 temuUrl 源），拒绝内网/任意外链地址被服务端拉取。
+ * system_setting allowedDownloadHosts——显式白名单命中时 http 源站亦放行），
+ * 另放行 TEMU 官方图床（模板默认层/轮播复用会回存 temuUrl 源），
+ * 拒绝内网/任意外链地址被服务端拉取。
  */
 const TEMU_IMAGE_HOST_SUFFIX = ".kwcdn.com"
 

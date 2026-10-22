@@ -328,6 +328,34 @@ export function sameSiteAsHost(host: string, hintHost: string): boolean {
   return registrableDomain(host) === registrableDomain(hintHost)
 }
 
+/** 下载白名单校验结果：reason 区分拒绝原因，供报错文案与排障使用 */
+export type DownloadHostCheck =
+  | { ok: true }
+  | { ok: false; reason: "protocol"; host: string }
+  | { ok: false; reason: "host"; host: string }
+
+/** 拒绝报错中附带的完整 URL 上限（即梦签名 URL 的 query 很长，防刷屏） */
+export const DOWNLOAD_REFUSAL_URL_MAX = 300
+
+/** 上游图片 URL 被白名单拒绝时的统一报错（local / cos 适配器共用，防文案漂移） */
+export function buildDownloadRefusalError(
+  url: URL,
+  reason: "protocol" | "host",
+): Error {
+  const shownUrl =
+    url.toString().length > DOWNLOAD_REFUSAL_URL_MAX
+      ? url.toString().slice(0, DOWNLOAD_REFUSAL_URL_MAX) + "…"
+      : url.toString()
+  if (reason === "protocol") {
+    return new Error(
+      `下载失败: 上游图片地址非 https（${shownUrl}）；如为可信源站，可在平台「存储设置 → 额外可信下载域名」添加 ${url.hostname} 显式放行`,
+    )
+  }
+  return new Error(
+    `下载失败: 目标域名 ${url.hostname} 不在可信白名单内（${shownUrl}）；可在平台「存储设置 → 额外可信下载域名」添加后重试`,
+  )
+}
+
 /**
  * 服务端拉取的内网域名改写：命中本桶 canonical 公网域名且开启内网开关
  * （cosForceInternalEndpoint）时，把 host 改写为腾讯云内网域名

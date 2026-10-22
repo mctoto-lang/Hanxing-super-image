@@ -16,6 +16,7 @@
  *   并对常见网关变体做容错提取。
  */
 import { API_ERROR_BODY_MAX_LENGTH } from "@/lib/ai/error-limits"
+import { describeFetchError } from "@/lib/fetch-error"
 import {
   buildOpenAiRequestBody,
   type ImageGenResult,
@@ -172,15 +173,24 @@ export async function callOpenAiImageApi(opts: {
           ratioParamField: model.ratioParamField ?? undefined,
         })
 
-        const response = await fetch(endpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify(requestBody),
-          signal: controller.signal,
-        })
+        let response: Response
+        try {
+          response = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify(requestBody),
+            signal: controller.signal,
+          })
+        } catch (err) {
+          // AbortError 交给外层统一汉化（超时或被中止）；网络层失败带端点与原因
+          if (err instanceof Error && err.name === "AbortError") throw err
+          const reason = describeFetchError(err)
+          if (reason) throw new Error(`生图请求网络失败（${endpoint}）: ${reason}`)
+          throw err
+        }
 
         if (!response.ok) {
           const text = await response.text().catch(() => "")

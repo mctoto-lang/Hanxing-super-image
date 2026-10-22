@@ -129,12 +129,14 @@ export function SystemSettings({ initialStorage }: SystemSettingsProps) {
                 }))
               }
               placeholder={
-                "每行一个：精确域名（img.example.com）或以 . 开头的后缀（.example.com）"
+                "每行一个：精确域名/IP（img.example.com、127.0.0.1）或以 . 开头的后缀（.example.com）"
               }
             />
             <p className="text-xs text-muted-foreground">
-              服务器回拉 AI 上游图片时的防 SSRF 白名单补充。生图报「下载失败:
-              目标域名不在可信白名单内」时，在此添加上游图片域名后重试。
+              服务器回拉 AI 上游图片时的防 SSRF
+              白名单补充。生图报「下载失败: 目标域名不在可信白名单内」时，在此添加上游图片域名后重试。显式添加的域名同时放行
+              http 源站（适用于本机反代/网关，如即梦反代回传
+              127.0.0.1 图片地址的场景）。
             </p>
           </div>
 

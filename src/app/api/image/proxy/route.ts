@@ -3,6 +3,7 @@ import { env } from "@/lib/env"
 import { auth } from "@/lib/auth/config"
 import {
   loadStorageConfig,
+  matchesAllowedHost,
   toInternalCosFetchUrl,
   type StorageConfig,
 } from "@/lib/storage/config"
@@ -53,13 +54,9 @@ function isAllowedHost(url: URL, cfg: StorageConfig): boolean {
   ) {
     return true
   }
-  // 额外可信域名：精确 host，或以 "." 开头的后缀（与 cos.ts isAllowedDownloadHost 同语义）
-  for (const entry of cfg.allowedDownloadHosts ?? []) {
-    if (entry.startsWith(".")) {
-      if (url.hostname.endsWith(entry)) return true
-    } else if (url.hostname === entry) {
-      return true
-    }
+  // 额外可信域名：精确 host，或以 "." 开头的后缀（与 cos.ts checkAllowedDownloadHost 同语义）
+  if (matchesAllowedHost(url.hostname, cfg.allowedDownloadHosts ?? [])) {
+    return true
   }
   return false
 }
@@ -193,11 +190,6 @@ export async function GET(request: Request) {
     return new NextResponse("invalid url", { status: 400 })
   }
 
-  // 仅允许 https（防内网探测）
-  if (targetUrl.protocol !== "https:") {
-    return new NextResponse("only https allowed", { status: 403 })
-  }
-
   let cfg: StorageConfig
   try {
     cfg = await getCachedStorageConfig()
@@ -206,10 +198,23 @@ export async function GET(request: Request) {
     return new NextResponse("storage config unavailable", { status: 503 })
   }
 
+  // 仅允许 https（防内网探测）；显式白名单命中的 http 源站放行——本机
+  // 反代/网关场景，与 saveFromUrl 回拉白名单同口径
+  if (
+    targetUrl.protocol !== "https:" &&
+    !matchesAllowedHost(targetUrl.hostname, cfg.allowedDownloadHosts ?? [])
+  ) {
+    return new NextResponse(
+      `only https allowed (${targetUrl.hostname})`,
+      { status: 403 },
+    )
+  }
+
   if (!isAllowedHost(targetUrl, cfg)) {
-    return new NextResponse("host not allowed (SSRF protection)", {
-      status: 403,
-    })
+    return new NextResponse(
+      `host not allowed (SSRF protection, ${targetUrl.hostname})`,
+      { status: 403 },
+    )
   }
 
   // 租户绑定：平台存储上的租户内容只允许本企业用户/超管访问

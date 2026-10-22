@@ -9,6 +9,7 @@
  * task.imageCount（次数 × N），适配器只按传入总数生成。
  */
 import { API_ERROR_BODY_MAX_LENGTH } from "@/lib/ai/error-limits"
+import { describeFetchError } from "@/lib/fetch-error"
 import {
   buildJimengRequestBody,
   sizeToRatio,
@@ -134,15 +135,24 @@ export async function callJimengApi(opts: {
       signal.addEventListener("abort", () => controller.abort(), { once: true })
 
     try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-      })
+      let response: Response
+      try {
+        response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        })
+      } catch (err) {
+        // AbortError 由外层超时逻辑处理；网络层失败带端点与原因
+        if (err instanceof Error && err.name === "AbortError") throw err
+        const reason = describeFetchError(err)
+        if (reason) throw new Error(`生图请求网络失败（${endpoint}）: ${reason}`)
+        throw err
+      }
 
       if (!response.ok) {
         const text = await response.text().catch(() => "")
