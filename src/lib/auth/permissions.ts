@@ -83,8 +83,8 @@ export function checkModelAccess(
  *   enterprise.maxConcurrent ≥ group.maxConcurrent ≥ model.maxConcurrent
  *
  * 消费端 Redis 槽位（task-queue.ts acquireImageSlot 的 ACQUIRE_SLOT_LUA）
- * 已按企业 + 模型 + 权限组三层强制执行；本函数用于前端并发上限提示，
- * 及 Agent 生产流水线池大小的动态推导（此时不约束模型维度，model 可不传）。
+ * 已按企业 + 模型 + 权限组三层强制执行；本函数用于前端并发上限提示
+ * （不约束模型维度时 model 可不传）。
  */
 export function effectiveConcurrentLimit(opts: {
   enterprise: number

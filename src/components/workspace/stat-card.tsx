@@ -2,8 +2,7 @@
 
 /**
  * 统计卡（StatCard）：彩色图标 chip + 大数字 + 可选副行/迷你进度条。
- * 工作台顶部常驻 4 信息卡（文本/图片/产出/积分）使用；生产统计统一由
- * 顶部信息卡承担（art 阶段不再有第二份重复统计）。
+ * 工作台 Agent 弹窗顶部常驻 4 信息卡（文本/图片/产出/积分）使用。
  */
 import type { Coins } from "lucide-react"
 import { cn } from "@/lib/utils"

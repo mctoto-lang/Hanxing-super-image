@@ -1,7 +1,7 @@
 /**
  * 工作台 Agent 模型候选池与选择校验
  *
- * 对话模型（主控 + 评审团）复用 Agent 工坊的候选池口径
+ * 对话模型（主控 + 评审团）复用共享候选池口径
  * （services/agent/chat-models：isActive + 企业归属 + 企业 visiblePresetChatModels
  * 白名单 + 权限组 allowedChatModels 白名单）；图片模型复刻工作台
  * listWorkspaceModelsAction 的可见性口径（visibleInWorkspace + 企业白名单 +

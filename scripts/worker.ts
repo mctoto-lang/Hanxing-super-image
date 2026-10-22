@@ -1,10 +1,10 @@
 /**
  * 独立队列消费者 worker（手册 §5.4 / §5.6）
  *
- * 周期性消费队列：生图任务（Redis 队列）+ 对话任务（DB 表）+ Agent 工坊
- * 模板任务 + 工作台 Agent 任务（workspace_agent_job 表）；
- * 另含低频服务可用性采样循环（5 分钟，见 statusLoop）与 Agent 崩溃恢复
- * 独立循环 ×2（60 秒，长任务阻塞主轮询时其他企业仍能被恢复）。
+ * 周期性消费队列：生图任务（Redis 队列）+ 对话任务（DB 表）+ 工作台
+ * Agent 任务（workspace_agent_job 表）；
+ * 另含低频服务可用性采样循环（5 分钟，见 statusLoop）与工作台 Agent
+ * 崩溃恢复独立循环（60 秒，长任务阻塞主轮询时其他企业仍能被恢复）。
  * 解决「任务永久卡在 queued」——补齐队列消费者的触发器，与 Web 进程解耦，
  * 避免长耗时 AI 任务拖累用户请求响应。
  *
@@ -50,7 +50,6 @@ void (async () => {
     // 动态 import：确保上面 loadEnvFile 在 env.ts 校验之前完成
     const { processQueueContinuous } = await import("@/lib/queue/processor")
     const { processChatQueueOnce } = await import("@/lib/queue/chat-processor")
-    const { processAgentQueueOnce, recoverStaleAgentRuns } = await import("@/lib/queue/agent-processor")
     const {
       processWorkspaceAgentQueueOnce,
       recoverStaleWorkspaceAgentJobs,
@@ -73,7 +72,7 @@ void (async () => {
     const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
     console.log(
-      `[worker] 队列消费者启动（主机 ${os.hostname()}，间隔 ${interval}ms，消费生图 + 对话 + Agent 队列）`,
+      `[worker] 队列消费者启动（主机 ${os.hostname()}，间隔 ${interval}ms，消费生图 + 对话 + 工作台 Agent 队列）`,
     )
 
     type LoopResult = { processed: number; failed: number }[]
@@ -121,26 +120,10 @@ void (async () => {
       }
     }
 
-    // Agent 崩溃恢复独立循环：produce_cards 长任务会阻塞 agent 主轮询，
-    // 独立通道保证其他企业的 stale run 恢复与新任务认领不被卡死
-    const agentRecoveryInterval = 60 * 1000
-    const agentRecoveryLoop = async (): Promise<void> => {
-      while (running) {
-        try {
-          await recoverStaleAgentRuns()
-        } catch (err) {
-          console.error(
-            "[worker:agent-recovery] 恢复循环异常:",
-            err instanceof Error ? err.message : err,
-          )
-        }
-        await sleep(agentRecoveryInterval)
-      }
-    }
-
     // 工作台 Agent 崩溃恢复独立循环：write_prompts 长任务（全套分批撰写）
     // 会阻塞 workspace-agent 主轮询，独立通道保证 stale job 恢复不被卡死；
     // 顺带低频执行终态 job 行清理（保留期见 TERMINAL_JOB_RETENTION_MS）
+    const agentRecoveryInterval = 60 * 1000
     const workspaceAgentRecoveryLoop = async (): Promise<void> => {
       while (running) {
         try {
@@ -219,8 +202,6 @@ void (async () => {
     await Promise.all([
       processQueueContinuous({ isRunning: () => running }),
       runLoop("chat", processChatQueueOnce),
-      runLoop("agent", processAgentQueueOnce),
-      agentRecoveryLoop(),
       runLoop("workspace-agent", processWorkspaceAgentQueueOnce),
       workspaceAgentRecoveryLoop(),
       runLoop("mockup", async () => {

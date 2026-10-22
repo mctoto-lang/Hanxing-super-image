@@ -86,7 +86,6 @@ export const modelConfigSchema = z.object({
   visibleInProduct: z.boolean().default(false),
   visibleInWeartry: z.boolean().default(false),
   visibleInMockup: z.boolean().default(false),
-  visibleInAgent: z.boolean().default(false),
   supportsReferenceImage: z.boolean().default(false),
   maxReferenceImages: z.number().int().min(0).max(10).default(0),
   referenceImageField: z.string().max(50).optional(),

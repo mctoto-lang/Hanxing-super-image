@@ -4,14 +4,13 @@ import { chatApiConfigs } from "@/db/schema"
 import type { UserContext } from "@/lib/auth/session"
 
 /**
- * Agent 工坊 AI 团队对话模型候选池（用户侧）
+ * Agent 对话模型候选池（用户侧；工作台 Agent 发起弹窗使用）
  *
- * 阶段对话模型（创意总监/风格策划/提示词撰写）与评审团模型默认由超管在
- * 「Agent 工坊配置」预置；本模块让用户在发起弹窗按需覆盖。候选池复刻
+ * 让用户在发起弹窗按需选择主控/评审团对话模型。候选池复刻
  * chat-service.listAccessibleChatModels 的可见性口径（isActive + 企业归属 +
  * 企业 visiblePresetChatModels 白名单 + 权限组 allowedChatModels 白名单）
  * ——执行链的 loadChatModel 只校验 isActive/企业归属，用户自选必须经此
- * 池校验后才允许写入 run.input。
+ * 池校验后才允许写入 workflow 输入。
  */
 
 export interface AgentChatModelOption {

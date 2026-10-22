@@ -2,7 +2,7 @@
  * Agent 对话（LLM）三层并发槽位（模型 / 权限组 / 企业）
  *
  * 与生图队列（task-queue.acquireImageSlot）同款语义、独立计数键
- * （hanxing:agentllm:*），覆盖 callLlmJson 的全部 Agent LLM 调用
+ * （hanxing:agentllm:*），覆盖工作台 Agent 的全部 LLM 调用
  * （澄清/初稿/终稿/评审/改写）；网页对话 SSE 路由的 chat-concurrency
  * 不受影响（各自独立键）。
  *
@@ -16,15 +16,15 @@
  */
 import { eq } from "drizzle-orm"
 import { db } from "@/db/client"
-import { enterprises, permissionGroups, users } from "@/db/schema"
+import { chatApiConfigs, enterprises, permissionGroups, users } from "@/db/schema"
 import { redis } from "@/lib/redis"
 import { ACQUIRE_SLOT_LUA, RELEASE_SLOT_LUA } from "@/lib/queue/task-queue"
-import type { ChatModelRow } from "./llm"
+
+export type ChatModelRow = typeof chatApiConfigs.$inferSelect
 
 /**
- * 槽位所需的最小运行上下文。AgentLlmContext（agent/llm.ts）是其超集，
- * 结构兼容直接传入；其他服务（如工作台 Agent）只需提供 userId/enterpriseId
- * 即可共享同一套三层并发预算。
+ * 槽位所需的最小运行上下文。工作台 Agent 等服务只需提供
+ * userId/enterpriseId 即可共享同一套三层并发预算。
  */
 export interface AgentLlmSlotContext {
   run: { userId: string; enterpriseId: string }
@@ -89,23 +89,6 @@ const evalLua = (script: string, numKeys: number, ...args: unknown[]) =>
   )
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
-
-/**
- * 解析三层对话槽位的有效并发上限（模型 / 权限组 / 企业 chat）：
- * ≤0 的维度视为不限；三个维度全不限时返回 null（由调用方决定兜底值）。
- * 与 withAgentLlmSlot 同款限额来源（ctx 缓存，运行期视为不变）。
- */
-export async function resolveAgentLlmSlotLimit(
-  ctx: AgentLlmSlotContext,
-  model: ChatModelRow,
-): Promise<number | null> {
-  const limits = await loadLlmLimits(ctx)
-  const modelMax = model.maxConcurrent ?? 0
-  const candidates = [modelMax, limits.groupMaxConcurrent, limits.entChatMaxConcurrent].filter(
-    (value) => value > 0,
-  )
-  return candidates.length > 0 ? Math.min(...candidates) : null
-}
 
 /**
  * 在三层对话槽位内执行 fn：获取（排队等待）→ 执行 → 释放。

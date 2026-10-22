@@ -12,14 +12,7 @@
  * - poker58：扑克 58 = 54 标准牌（4 花色 × 13 + 大小王）+ 替换牌面 + 牌背
  *   + 边框 + 牌盒；
  * - oracle58：神谕 58 = 55 牌面（5 组 × 11 位置）+ 牌背 + 边框 + 牌盒。
- *
- * 与既有 agent 域（src/lib/agent/*）的关系（只读复用，不反向修改）：
- * - 78 张塔罗牌名包装自 pipelines.tarotSkeleton（单一事实来源，顺序严格一致）；
- * - 阶段命名对齐 graph.AGENT_TEMPLATE_STAGES（clarify/draft/art/compose）；
- * - 评审聚合口径对齐 review.majorityVotePassed（单评审一票否决、多数票裁决），
- *   在其上扩展「加权」维度（评审员可配权重，缺省 1 = 等权多数票）。
  */
-import { tarotSkeleton } from "@/lib/agent/pipelines"
 import type {
   WorkspaceAgentCandidate,
   WorkspaceAgentCardSkeleton,
@@ -122,7 +115,7 @@ export const TAROT81_MAJOR_COUNT = 22
 /** 小阿卡纳每花色张数（王牌-国王） */
 const TAROT_CARDS_PER_SUIT = 14
 
-/** 小阿卡纳花色 ASCII id（顺序与 pipelines.tarotSkeleton 出牌顺序一致：权杖/圣杯/宝剑/星币） */
+/** 小阿卡纳花色 ASCII id（顺序与 tarotSkeleton() 出牌顺序一致：权杖/圣杯/宝剑/星币） */
 const TAROT_SUIT_IDS = ["wands", "cups", "swords", "pentacles"] as const
 export type Tarot81SuitId = (typeof TAROT_SUIT_IDS)[number]
 
@@ -137,6 +130,44 @@ export interface Tarot81CardSkeleton extends WorkspaceAgentCardSkeleton {
 }
 
 const TAROT_KIT = [KIT_BACK, KIT_BORDER, KIT_BOX_TAROT] as const
+
+// ---------------------------------------------------------------------------
+// 塔罗 78 张牌名骨架（牌名与顺序的唯一事实来源）
+// ---------------------------------------------------------------------------
+
+const TAROT_SUITS = [
+  { suit: "权杖", element: "火 · 行动与创造" },
+  { suit: "圣杯", element: "水 · 情感与关系" },
+  { suit: "宝剑", element: "风 · 思维与冲突" },
+  { suit: "星币", element: "土 · 物质与现实" },
+] as const
+
+const TAROT_MAJOR_NAMES = [
+  "愚者", "魔术师", "女祭司", "女皇", "皇帝", "教皇", "恋人", "战车",
+  "力量", "隐士", "命运之轮", "正义", "倒吊人", "死神", "节制", "恶魔",
+  "塔", "星星", "月亮", "太阳", "审判", "世界",
+] as const
+
+const TAROT_MINOR_RANKS = [
+  "王牌", "二", "三", "四", "五", "六", "七", "八", "九", "十",
+  "侍从", "骑士", "王后", "国王",
+] as const
+
+/** 塔罗 78 张骨架（大阿卡纳 22 在前，顺序固定；小阿卡纳四花色各 14） */
+function tarotSkeleton(): { index: number; name: string; hint: string }[] {
+  const cards: { index: number; name: string; hint: string }[] = []
+  TAROT_MAJOR_NAMES.forEach((name, i) => {
+    cards.push({ index: i, name: `${name}`, hint: "大阿卡纳" })
+  })
+  let idx = 22
+  for (const { suit, element } of TAROT_SUITS) {
+    for (const rank of TAROT_MINOR_RANKS) {
+      cards.push({ index: idx, name: `${suit}${rank}`, hint: `小阿卡纳 · ${suit}（${element}）` })
+      idx++
+    }
+  }
+  return cards
+}
 
 /**
  * 塔罗 81 张骨架：0-21 大阿卡纳 → 22-77 小阿卡纳（权杖/圣杯/宝剑/星币各 14）

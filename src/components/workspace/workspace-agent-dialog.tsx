@@ -38,8 +38,8 @@ import {
 } from "@/components/ui/dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { StatCard } from "@/components/agent/production/production-stats"
-import { GrokAgentAvatar } from "@/components/agent/grok-agent-avatar"
+import { StatCard } from "@/components/workspace/stat-card"
+import { GrokAgentAvatar } from "@/components/workspace/grok-agent-avatar"
 
 /** 顶部消耗统计（宽松：均可空，缺省显示「—」） */
 export interface WorkspaceAgentStatsInput {

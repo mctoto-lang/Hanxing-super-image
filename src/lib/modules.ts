@@ -25,7 +25,6 @@ export const MODULE_LABELS: Record<ModuleName, string> = {
   temu_price: "TEMU-核价调价",
   temu_purchase: "TEMU-备货",
   temu_qc: "TEMU-质检",
-  agent: "AI Agent",
   settings: "个人设置",
 }
 
@@ -40,7 +39,6 @@ export const BASE_MODULE_OPTIONS: ModuleOption[] = [
   { value: "product", label: MODULE_LABELS.product },
   { value: "weartry", label: MODULE_LABELS.weartry },
   { value: "mockup", label: MODULE_LABELS.mockup },
-  { value: "agent", label: MODULE_LABELS.agent },
 ]
 
 /** TEMU tab 子权限项（依赖 temu 总开关：总开关未勾时弹窗内禁用） */

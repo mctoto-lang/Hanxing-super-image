@@ -23,7 +23,6 @@ export const MODULE_NAMES = [
   "temu_price", // TEMU tab：核价调价
   "temu_purchase", // TEMU tab：备货
   "temu_qc", // TEMU tab：质检
-  "agent", // AI Agent 工作流画布（多智能体协作生图流水线）
   "settings", // 用户个人设置（默认开通）
 ] as const
 export type ModuleName = (typeof MODULE_NAMES)[number]
@@ -91,7 +90,7 @@ export const taskTypeEnum = pgEnum("task_type", [
   "mockup", // 样机渲染（外部 psd-render-api，无 AI 模型）
 ])
 
-/** 任务来源（合并 creative/project → create，手册 D13；agent = AI Agent 工坊三路生图） */
+/** 任务来源（合并 creative/project → create，手册 D13；agent = 工作台 Agent 四阶段流水线） */
 export const taskSourceEnum = pgEnum("task_source", [
   "create",
   "workspace",

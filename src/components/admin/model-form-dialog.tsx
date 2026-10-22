@@ -59,7 +59,6 @@ export interface ModelRow {
   visibleInProduct: boolean
   visibleInWeartry: boolean
   visibleInMockup: boolean
-  visibleInAgent: boolean
   supportsReferenceImage: boolean
   maxReferenceImages: number
   referenceImageField: string | null
@@ -97,7 +96,6 @@ interface FormState {
   visibleInProduct: boolean
   visibleInWeartry: boolean
   visibleInMockup: boolean
-  visibleInAgent: boolean
   supportsReferenceImage: boolean
   maxReferenceImages: number
   referenceImageField: string
@@ -134,7 +132,6 @@ function emptyState(): FormState {
     visibleInProduct: false,
     visibleInWeartry: false,
     visibleInMockup: false,
-    visibleInAgent: false,
     supportsReferenceImage: false,
     maxReferenceImages: 0,
     referenceImageField: "",
@@ -179,7 +176,6 @@ function fromModel(m: ModelRow): FormState {
     visibleInProduct: m.visibleInProduct,
     visibleInWeartry: m.visibleInWeartry,
     visibleInMockup: m.visibleInMockup,
-    visibleInAgent: m.visibleInAgent,
     supportsReferenceImage: m.supportsReferenceImage,
     maxReferenceImages: m.maxReferenceImages,
     referenceImageField: m.referenceImageField ?? "",
@@ -235,7 +231,6 @@ export function ModelFormDialog({
       visibleInProduct: state.visibleInProduct,
       visibleInWeartry: state.visibleInWeartry,
       visibleInMockup: state.visibleInMockup,
-      visibleInAgent: state.visibleInAgent,
       supportsReferenceImage: state.supportsReferenceImage,
       maxReferenceImages: state.maxReferenceImages,
       referenceImageField: state.referenceImageField,
@@ -685,18 +680,7 @@ export function ModelFormDialog({
                   />
                   样机渲染
                 </label>
-                <label className="flex items-center gap-2 text-sm">
-                  <Checkbox
-                    checked={state.visibleInAgent}
-                    onCheckedChange={(v) => up("visibleInAgent", v === true)}
-                  />
-                  Agent 工坊（卡面生图可选）
-                </label>
               </div>
-              <p className="text-xs text-muted-foreground">
-                勾选「Agent 工坊」后，用户创建塔罗工坊项目时可选择此模型作为卡面生图模型
-                （需模型启用中，且尺寸预设包含与卡面比例一致的预设）。
-              </p>
             </div>
             <label className="flex items-center justify-between border-t pt-3">
               <span className="text-sm font-medium">

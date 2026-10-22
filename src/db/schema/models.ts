@@ -98,8 +98,6 @@ export const models = pgTable(
       .notNull(),
     /** 样机渲染页 AI 生图（背景/重绘）可选 */
     visibleInMockup: boolean("visible_in_mockup").default(false).notNull(),
-    /** Agent 工坊卡面生图可选（用户创建模板时的候选池开关） */
-    visibleInAgent: boolean("visible_in_agent").default(false).notNull(),
     supportsReferenceImage: boolean("supports_reference_image")
       .default(false)
       .notNull(),

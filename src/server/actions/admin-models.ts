@@ -62,7 +62,6 @@ export async function listModelsAction(
       visibleInProduct: models.visibleInProduct,
       visibleInWeartry: models.visibleInWeartry,
       visibleInMockup: models.visibleInMockup,
-      visibleInAgent: models.visibleInAgent,
       supportsReferenceImage: models.supportsReferenceImage,
       maxReferenceImages: models.maxReferenceImages,
       referenceImageField: models.referenceImageField,
@@ -165,7 +164,6 @@ export async function createModelAction(input: Record<string, unknown>) {
       visibleInProduct: d.visibleInProduct,
       visibleInWeartry: d.visibleInWeartry,
       visibleInMockup: d.visibleInMockup,
-      visibleInAgent: d.visibleInAgent,
       supportsReferenceImage: d.supportsReferenceImage,
       maxReferenceImages: d.maxReferenceImages,
       referenceImageField: d.referenceImageField || null,
@@ -270,7 +268,6 @@ export async function updateModelAction(
   if (d.visibleInProduct !== undefined) set.visibleInProduct = d.visibleInProduct
   if (d.visibleInWeartry !== undefined) set.visibleInWeartry = d.visibleInWeartry
   if (d.visibleInMockup !== undefined) set.visibleInMockup = d.visibleInMockup
-  if (d.visibleInAgent !== undefined) set.visibleInAgent = d.visibleInAgent
   if (d.supportsReferenceImage !== undefined)
     set.supportsReferenceImage = d.supportsReferenceImage
   if (d.maxReferenceImages !== undefined)
