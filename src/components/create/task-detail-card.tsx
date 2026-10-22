@@ -29,7 +29,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { copyText, generationDurationMs, toImageSrc } from "@/lib/utils"
+import { copyText, cn, generationDurationMs, toImageSrc } from "@/lib/utils"
 import { SmartImage } from "@/components/ui/smart-image"
 import { ImageGeneration } from "@/components/ui/image-generation"
 import { parseImageSize, sizeToRatioLabel } from "@/lib/image-sizes"
@@ -125,6 +125,55 @@ function formatGenerationDuration(ms: number): string {
   // 先取整总秒数再拆分，避免 59.5~60s 四舍五入出「X分60秒」
   const total = Math.round(seconds)
   return `${Math.floor(total / 60)}分${total % 60}秒`
+}
+
+/**
+ * 失败/部分失败提示条：可见区截断到 120 字符，悬浮 Tooltip 查看完整错误
+ * （上游 API 错误体入库最长 1500 字符，超长时 Tooltip 内限宽限高滚动）。
+ */
+function TaskErrorBanner({
+  message,
+  variant,
+}: {
+  message: string
+  variant: "failed" | "partial"
+}) {
+  const isFailed = variant === "failed"
+  return (
+    <div
+      className={cn(
+        "mt-2 flex items-start gap-1.5 rounded-md p-2 text-xs",
+        isFailed
+          ? "bg-destructive/10 text-destructive"
+          : "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+      )}
+    >
+      {isFailed ? (
+        <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+      ) : (
+        <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+      )}
+      {message.length > 120 ? (
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger
+              render={<span className="cursor-default break-words" />}
+            >
+              {message.slice(0, 120)}
+            </TooltipTrigger>
+            <TooltipContent
+              side="top"
+              className="max-h-64 max-w-md overflow-y-auto whitespace-pre-wrap break-all text-left"
+            >
+              {message}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      ) : (
+        <span className="break-words">{message}</span>
+      )}
+    </div>
+  )
 }
 
 export function TaskDetailCard({
@@ -593,15 +642,9 @@ export function TaskDetailCard({
 
       {/* 失败错误信息 / 部分失败提示（completed 但有失败张：已按张退款） */}
       {task.status === "failed" && task.errorMessage ? (
-        <div className="mt-2 flex items-start gap-1.5 rounded-md bg-destructive/10 p-2 text-xs text-destructive">
-          <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
-          <span className="break-words">{task.errorMessage.slice(0, 120)}</span>
-        </div>
+        <TaskErrorBanner message={task.errorMessage} variant="failed" />
       ) : task.status === "completed" && task.errorMessage ? (
-        <div className="mt-2 flex items-start gap-1.5 rounded-md bg-amber-500/10 p-2 text-xs text-amber-600 dark:text-amber-400">
-          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-          <span className="break-words">{task.errorMessage.slice(0, 120)}</span>
-        </div>
+        <TaskErrorBanner message={task.errorMessage} variant="partial" />
       ) : null}
 
       {/* 操作行：重新编辑 / 重新生成 / 更多（删除菜单从更多按钮右侧弹出） + 状态 */}

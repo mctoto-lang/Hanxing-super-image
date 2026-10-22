@@ -8,14 +8,15 @@ import type { NavItem, SidebarUser } from "./types"
  * 根据当前用户上下文构建侧边栏数据（手册 §7.1、§5.1、§5.2）
  *
  * 主导航：AI 对话（独立顶级项）、图片生成（按 enabledModules ∩ allowedPages 过滤）、
- * 模板管理（提示词模板，跟随 workspace 模块）、企业管理（owner/admin）、
+ * 模板管理（生图提示词模板，跟随 workspace 模块）、企业管理（owner/admin）、
  * 平台管理（仅超管，位于工作台分组内，与企业管理同构）。
  *
  * icon 只传字符串名（在客户端 lucideIconMap 内查表），
  * 避免函数从服务端组件跨边界传到客户端组件。
  */
 
-/** 模块 → 菜单项配置 */
+/** 模块 → 菜单项配置（temu_* 子权限不进侧边栏——TEMU 保持单入口，tab 按权限过滤；
+ *  条目仍需穷举以满足 Record<ModuleName>，url 指向对应 tab 供跳转复用） */
 const MODULE_NAV: Record<ModuleName, { title: string; url: string; icon: string }> = {
   create: { title: "自由创作", url: "/create", icon: "create" },
   chat: { title: "AI 对话", url: "/chat", icon: "chat" },
@@ -24,7 +25,14 @@ const MODULE_NAV: Record<ModuleName, { title: string; url: string; icon: string 
   product: { title: "商品图片", url: "/product", icon: "product" },
   weartry: { title: "穿戴图片", url: "/weartry", icon: "shirt" },
   mockup: { title: "样机渲染", url: "/mockup", icon: "mockup" },
-  temu: { title: "Temu 数据", url: "/temu", icon: "temu" },
+  temu: { title: "TEMU", url: "/temu", icon: "temu" },
+  temu_overview: { title: "TEMU-销售概览", url: "/temu?tab=overview", icon: "temu" },
+  temu_products: { title: "TEMU-商品信息", url: "/temu?tab=products", icon: "temu" },
+  temu_publish: { title: "TEMU-商品发布", url: "/temu?tab=publish", icon: "temu" },
+  temu_ads: { title: "TEMU-广告推广", url: "/temu?tab=ads", icon: "temu" },
+  temu_price: { title: "TEMU-核价调价", url: "/temu?tab=price", icon: "temu" },
+  temu_purchase: { title: "TEMU-备货", url: "/temu?tab=purchase", icon: "temu" },
+  temu_qc: { title: "TEMU-质检", url: "/temu?tab=qc", icon: "temu" },
   agent: { title: "AI Agent", url: "/agent", icon: "bot" },
   settings: { title: "个人设置", url: "/settings", icon: "settings" },
 }
@@ -80,7 +88,7 @@ const PLATFORM_NAV: { title: string; url: string }[] = [
  * - AI 对话：独立顶级导航项（无子项，直链渲染），位于图片生成上方。
  * - 图片生成：按可访问业务模块过滤子项；settings 不进入主导航（仅保留
  *   在底部用户卡下拉），超管无业务模块时整组隐藏。
- * - 模板管理：提示词模板仅被批量生图消费，跟随 workspace 模块权限。
+ * - 模板管理：子项各随业务模块权限（生图提示词模板→workspace；TEMU刊登模板→temu）。
  * - 企业管理：owner/admin 专属。
  * - 平台管理：超管专属（原顶部徽章/用户卡下拉入口迁入主导航分组）。
  */
@@ -106,10 +114,10 @@ export function buildNavMain(ctx: UserContext): NavItem[] {
     })
   }
 
-  // 店铺数据：AI 对话下方的数据面板分组（Temu 数据为第一个子项，后续平台按需追加）
+  // 店铺管理：AI 对话下方的数据面板分组（TEMU 为第一个子项，后续平台按需追加）
   if (accessible.has("temu")) {
     groups.push({
-      title: "店铺数据",
+      title: "店铺管理",
       url: MODULE_NAV.temu.url,
       icon: "store",
       items: [{ title: MODULE_NAV.temu.title, url: MODULE_NAV.temu.url }],
@@ -133,13 +141,25 @@ export function buildNavMain(ctx: UserContext): NavItem[] {
     })
   }
 
-  if (accessible.has("workspace")) {
-    groups.push({
-      title: "模板管理",
-      url: "/templates",
-      icon: "library",
-      items: [{ title: "提示词模板", url: "/templates" }],
-    })
+  // 模板管理：子项各随其业务模块权限——生图提示词模板（workspace，批量生图消费）
+  // 与 TEMU 刊登模板（temu，模板化发品）；父组兜底跳第一个可见子项
+  {
+    const templateItems: { title: string; url: string }[] = [
+      ...(accessible.has("workspace")
+        ? [{ title: "生图提示词模板", url: "/templates" }]
+        : []),
+      ...(accessible.has("temu")
+        ? [{ title: "TEMU刊登模板", url: "/templates/temu" }]
+        : []),
+    ]
+    if (templateItems.length > 0) {
+      groups.push({
+        title: "模板管理",
+        url: templateItems[0]!.url,
+        icon: "library",
+        items: templateItems,
+      })
+    }
   }
 
   if (

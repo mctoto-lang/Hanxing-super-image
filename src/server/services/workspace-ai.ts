@@ -2,6 +2,7 @@ import { and, eq, isNull, or } from "drizzle-orm"
 import { db } from "@/db/client"
 import { chatApiConfigs, promptTemplates, workspaceApiLogs } from "@/db/schema"
 import { decrypt } from "@/lib/crypto"
+import { API_ERROR_BODY_MAX_LENGTH } from "@/lib/ai/error-limits"
 
 /**
  * 工作台 AI（提示词裂变/提取/细化/重生成/翻译，手册 §5.6、M5）
@@ -99,7 +100,7 @@ export async function callChatApi(opts: {
 
   if (!response.ok) {
     const text = await response.text().catch(() => "")
-    throw new Error(`对话 API 错误 ${response.status}: ${text.slice(0, 200)}`)
+    throw new Error(`对话 API 错误 ${response.status}: ${text.slice(0, API_ERROR_BODY_MAX_LENGTH)}`)
   }
 
   const data = await response.json()

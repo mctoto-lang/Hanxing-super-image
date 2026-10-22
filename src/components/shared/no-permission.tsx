@@ -25,7 +25,7 @@ export function NoPermission({
         <h2 className="text-lg font-semibold">无权访问「{module}」</h2>
         <p className="text-sm text-muted-foreground">{description}</p>
       </div>
-      <Button variant="outline" render={<Link href="/create" />}>
+      <Button variant="outline" nativeButton={false} render={<Link href="/create" />}>
         <ArrowLeft className="size-4" />
         返回自由创作
       </Button>

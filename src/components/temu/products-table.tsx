@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import { Area, AreaChart, CartesianGrid, XAxis } from "recharts"
-import { FileDown, TrendingUp } from "lucide-react"
+import { ChevronDown, ChevronRight, CircleAlert, TrendingUp } from "lucide-react"
 import { toast } from "sonner"
 import {
   ChartContainer,
@@ -42,6 +42,9 @@ import {
   getTemuProductsPageAction,
   type TemuProductRow,
   type TemuProductSalesInfo,
+  type TemuSkuDetailRow,
+  type TemuInventoryInfo,
+  type TemuProductDetailExtra,
 } from "@/server/actions/temu"
 
 /**
@@ -172,51 +175,145 @@ export function ProductSalesTrendPopover({ series }: { series: SalesSeriesPoint[
   )
 }
 
-/** 商品信息在售状态筛选下拉（URL 驱动 sale=on/off，与切店下拉同交互） */
+/** 商品信息工具行：防抖搜索（输入即搜）+ 在售筛选 + 排序（URL 驱动，与切店下拉同交互） */
 export function TemuProductsSaleFilter({
   current,
+  saleAll = false,
   store,
   q,
+  sort,
 }: {
   current?: string
+  /** URL 显式携带 sale=all（页面把 saleRaw==="all" 下传）：current 为 undefined
+   *  时区分「全部状态」与「URL 无 sale 参数的缺省在售」两种语义 */
+  saleAll?: boolean
   store?: string
   q?: string
+  sort?: string
 }) {
   const router = useRouter()
   // "全部"用哨兵 sale=all 显式携带：URL 无 sale 参数时页面缺省"在售"
   const ALL = "all"
-  const items = [
-    { value: ALL, label: "全部在售状态" },
+  const saleItems = [
+    { value: ALL, label: "全部状态" },
     { value: "on", label: "在售" },
-    { value: "off", label: "不在售" },
+    { value: "off", label: "未上架" },
   ]
+  const sortItems = [
+    { value: "listed", label: "上架时间" },
+    { value: "today", label: "今日销量" },
+    { value: "last7", label: "七日销量" },
+    { value: "sn", label: "货号" },
+  ]
+  const currentSort = sort === "today" || sort === "last7" || sort === "sn" ? sort : "listed"
+
+  /** 组 URL：q/sale/sort 任意变化都重置回第 1 页（page 参数本就不携带） */
+  const push = (next: { q?: string; sale?: string; sort?: string }) => {
+    const p = new URLSearchParams({ tab: "products" })
+    if (store) p.set("store", store)
+    const qVal = next.q !== undefined ? next.q : q
+    if (qVal) p.set("q", qVal)
+    const saleVal = next.sale !== undefined ? next.sale : current
+    if (saleVal === ALL || saleVal === "on" || saleVal === "off") p.set("sale", saleVal)
+    // 切排序/提交搜索时 next.sale 不带、current 为 undefined：若用户显式
+    // 选过「全部状态」（URL sale=all）须保留，否则参数丢失、页面回落缺省
+    // "在售"；URL 本无 sale 参数（缺省在售）则保持缺省，不写 sale 参数
+    else if (saleVal === undefined && saleAll) p.set("sale", ALL)
+    const sortVal = next.sort !== undefined ? next.sort : currentSort
+    p.set("sort", sortVal)
+    router.push(`/temu?${p.toString()}`)
+  }
+
+  // 防抖即搜：停顿 500ms 后提交；卸载清定时器避免离开页面后仍跳转
+  const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  React.useEffect(() => {
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current)
+    }
+  }, [])
+  const onSearch = (raw: string) => {
+    const value = raw.trim()
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => {
+      // 与当前值相同不重复跳转（初次挂载 defaultValue 不触发 onChange）
+      if (value === (q ?? "")) return
+      push({ q: value || "" })
+    }, 500)
+  }
+
   return (
-    <Select
-      items={items}
-      value={current === "on" || current === "off" ? current : ALL}
-      onValueChange={(v) => {
-        const p = new URLSearchParams({ tab: "products" })
-        if (store) p.set("store", store)
-        if (q) p.set("q", q)
-        if (v) p.set("sale", v)
-        router.push(`/temu?${p.toString()}`)
-      }}
-    >
-      <SelectTrigger className="h-9 w-32" aria-label="在售状态筛选">
-        <SelectValue placeholder="全部在售状态" />
-      </SelectTrigger>
-      <SelectContent>
-        {items.map((it) => (
-          <SelectItem key={it.value} value={it.value}>
-            {it.label}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+    <div className="flex flex-wrap items-center gap-2">
+      <input
+        type="search"
+        defaultValue={q ?? ""}
+        placeholder="搜索 SKC/SPU/货号/商品名"
+        onChange={(e) => onSearch(e.target.value)}
+        className="h-9 w-56 rounded-md border bg-background px-3 text-sm"
+      />
+      <Select
+        items={saleItems}
+        value={current === "on" || current === "off" ? current : ALL}
+        onValueChange={(v) => {
+          if (v) push({ sale: v })
+        }}
+      >
+        <SelectTrigger className="h-9 w-28" aria-label="状态筛选">
+          <SelectValue placeholder="全部状态" />
+        </SelectTrigger>
+        <SelectContent>
+          {saleItems.map((it) => (
+            <SelectItem key={it.value} value={it.value}>
+              {it.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Select
+        items={sortItems}
+        value={currentSort}
+        onValueChange={(v) => {
+          if (v) push({ sort: v })
+        }}
+      >
+        <SelectTrigger className="h-9 w-28" aria-label="排序方式">
+          <SelectValue placeholder="上架时间" />
+        </SelectTrigger>
+        <SelectContent>
+          {sortItems.map((it) => (
+            <SelectItem key={it.value} value={it.value}>
+              {it.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
   )
 }
 
 // ---------- 商品信息无限滚动表格 ----------
+
+/** 空值占位：圆形感叹号 + 悬浮提示（数值为空或无数据）——TEMU 各页空值统一口径 */
+export function EmptyHint() {
+  return (
+    <Tooltip>
+      <TooltipTrigger className="cursor-default text-muted-foreground" aria-label="数值为空或无数据">
+        <CircleAlert className="size-3.5" />
+      </TooltipTrigger>
+      <TooltipContent className="text-xs">数值为空或无数据</TooltipContent>
+    </Tooltip>
+  )
+}
+
+/**
+ * 货号分组归一化键：取首段数字去前导零——早期 2 位货号可能缺 0，
+ * B7=B07=B007、B066=B66 视为同货号（与服务端 sn 排序的
+ * substring('[0-9]+')::numeric 同口径，同号行排序天然相邻）；
+ * 无数字的货号原样返回（空串自成一组，排序时空值最上恰好连续）。
+ */
+function snGroupKey(sn: string): string {
+  const m = /[0-9]+/.exec(sn.trim())
+  return m ? `#${Number(m[0])}` : sn.trim()
+}
 
 /** 商品名单元格：前 10 字符截断，超长时 Tooltip 显示全名（短文本不弹冗余提示） */
 export function ProductNameCell({ name }: { name: string | null }) {
@@ -234,112 +331,226 @@ export function ProductNameCell({ name }: { name: string | null }) {
 
 const PRODUCTS_PAGE_SIZE = 20
 
-/** 导出当前已加载商品为 CSV（带 BOM，Excel 直接打开中文不乱码；P2-3） */
-function exportRowsCsv(
-  rows: TemuProductRow[],
-  salesInfo: TemuProductSalesInfo,
-): void {
-  const esc = (v: unknown) => {
-    const s = v == null ? "" : String(v)
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-  }
-  const header = [
-    "SKC", "SPU", "商品名", "货号", "申报价格(元)", "在售",
-    "今日销量", "七日销量", "可售天数", "仓内可用", "已发货", "平台库存",
-  ]
-  const lines = [header.join(",")]
-  for (const r of rows) {
-    const s = salesInfo.latest[r.productSkcId]
-    const stock =
-      (s?.warehouseAvailableStock ?? 0) + (s?.shippedStock ?? 0)
-    lines.push(
-      [
-        r.productSkcId,
-        r.productId ?? "",
-        r.productName ?? "",
-        r.productSn ?? "",
-        r.supplierPrice != null ? (r.supplierPrice / 100).toFixed(2) : "",
-        r.skcStatus === 11 ? "在售" : "非在售",
-        s?.todaySalesVolume ?? "",
-        r.last7DaysSalesVolume ?? "",
-        s?.availableSaleDays ?? "",
-        s?.warehouseAvailableStock ?? "",
-        s?.shippedStock ?? "",
-        stock,
-      ]
-        .map(esc)
-        .join(","),
-    )
-  }
-  const blob = new Blob(["\uFEFF" + lines.join("\r\n")], {
-    type: "text/csv;charset=utf-8",
-  })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement("a")
-  a.href = url
-  a.download = `temu-商品-${new Date().toISOString().slice(0, 10)}.csv`
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
-
 /**
  * 商品信息无限滚动表格：首屏 20 条由服务端渲染，滚动到底（哨兵 + IntersectionObserver
  * 预载 200px）自动调用组合 action 追加下一页；按 id 去重，销量/趋势信息浅合并；
  * 取回不足一页即"已全部加载"。表头 sticky 吸顶（滚动容器在页侧 CardContent）。
  */
-/** 可售天数圆环：进度 = min(天数/15, 100%)；≥15 天蓝（满环）、10-15 绿、5-10 黄、<5 红 */
-function SaleDaysRing({ days }: { days: number | null }) {
-  if (days == null) return <span className="text-muted-foreground">—</span>
-  const pct = Math.min(days / 15, 1)
-  const r = 9
-  const c = 2 * Math.PI * r
-  const color =
-    days >= 15 ? "var(--chart-2)" : days >= 10 ? "var(--chart-5)" : days >= 5 ? "var(--color-yellow-500)" : "var(--color-red-500)"
-  const text = days >= 15 ? "text-sky-600 dark:text-sky-400" : days >= 10 ? "text-emerald-600 dark:text-emerald-400" : days >= 5 ? "text-yellow-600 dark:text-yellow-400" : "text-red-600 dark:text-red-400"
-  return (
-    <span className="relative inline-flex size-7 items-center justify-center" title={`可售天数 ${days} 天`}>
-      <svg viewBox="0 0 24 24" className="size-7 -rotate-90">
-        <circle cx="12" cy="12" r={r} fill="none" stroke="var(--muted)" strokeWidth="3" />
-        <circle
-          cx="12"
-          cy="12"
-          r={r}
-          fill="none"
-          stroke={color}
-          strokeWidth="3"
-          strokeLinecap="round"
-          strokeDasharray={c}
-          strokeDashoffset={c * (1 - pct)}
-        />
-      </svg>
-      <span className={`absolute text-[9px] font-semibold tabular-nums ${text}`}>
-        {days >= 100 ? "99+" : Math.round(days)}
-      </span>
-    </span>
-  )
-}
-
-/** 平台库存单元格：数值 = 仓内可用 + 已发货，悬停 Tooltip 分解两项 */
-function PlatformStockCell({
-  warehouse,
-  shipped,
-}: {
-  warehouse: number | null
-  shipped: number | null
-}) {
-  const total = (warehouse ?? 0) + (shipped ?? 0)
+/** 库存数据单元格：主值 = 细分库存求和 − 不可用；悬停逐类换行展示官方七类口径 */
+function AvailableStockCell({ info }: { info: TemuInventoryInfo | null }) {
+  if (!info) return <EmptyHint />
+  const available =
+    (info.waitOnShelfNum ?? 0) +
+    (info.waitApproveInventoryNum ?? 0) +
+    (info.waitInStock ?? 0) +
+    (info.waitReceiveNum ?? 0) +
+    (info.waitDeliveryInventoryNum ?? 0) +
+    (info.waitQcNum ?? 0)
   return (
     <TooltipProvider>
       <Tooltip>
-        <TooltipTrigger className="cursor-default tabular-nums">{total}</TooltipTrigger>
+        <TooltipTrigger className="cursor-default tabular-nums">{available}</TooltipTrigger>
         <TooltipContent className="text-xs">
-          <div>仓内可用库存 {warehouse ?? 0}</div>
-          <div>已发货库存 {shipped ?? 0}</div>
+          {/* 固定宽度单列容器：TooltipContent 多子元素默认会横向铺开成多列 */}
+          <div className="flex w-44 flex-col gap-0.5">
+            {INVENTORY_LABELS.map(([key, label]) => (
+              <div key={key} className="flex items-baseline justify-between gap-4">
+                <span>{label}</span>
+                <span className="tabular-nums">{info[key] ?? 0}</span>
+              </div>
+            ))}
+          </div>
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
+  )
+}
+
+/* ─── SKC 状态映射 ───
+ * 官方 bg.glo.goods.list.get 响应 skcSiteStatus 实测为 0/1（与查询参数
+ * skcTopStatus 的 0/100/200/300 是两套值空间）：1=在售（实测 100% 落在
+ * 销售管理数据内）、0=未发布到站点；11 为插件历史口径的在售，一并兼容。
+ */
+type SkcStatusView = { label: string; className: string }
+
+export function skcStatusView(skcStatus: number | null): SkcStatusView {
+  if (skcStatus === 1 || skcStatus === 11) {
+    return {
+      label: "在售",
+      className: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
+    }
+  }
+  if (skcStatus === 0) {
+    return {
+      label: "未上架",
+      className: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
+    }
+  }
+  if (skcStatus == null) {
+    return {
+      label: "未知",
+      className: "bg-muted text-muted-foreground",
+    }
+  }
+  return {
+    label: `状态码 ${skcStatus}`,
+    className: "bg-muted text-muted-foreground",
+  }
+}
+
+/** 上架时间戳格式化（goods-list createdAt 实测为毫秒；按量级自适应兼容秒；无效返回 null 由外层显空值占位） */
+function formatListedAt(ts: number | null): string | null {
+  if (ts == null) return null
+  const ms = ts >= 1e12 ? ts : ts * 1000
+  const d = new Date(ms)
+  return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString("zh-CN")
+}
+
+const INVENTORY_LABELS: Array<[keyof TemuInventoryInfo, string]> = [
+  ["waitOnShelfNum", "待上架"],
+  ["waitApproveInventoryNum", "待审核备货"],
+  ["waitInStock", "待入库"],
+  ["waitReceiveNum", "待收货"],
+  ["waitDeliveryInventoryNum", "待发货"],
+  ["waitQcNum", "待质检"],
+  ["unavailableWarehouseInventoryNum", "不可用"],
+]
+
+/** 商品级信息面板（展开行上半段）：三组呈现——商品 / 交易与备货 / 其他信息 */
+function ProductDetailPanel({
+  row,
+  extra,
+  leafCategory,
+  skus,
+}: {
+  row: TemuProductRow
+  extra?: TemuProductDetailExtra
+  /** 叶子类目（salesv2 口径；goods-list 的 leafCat 官方不返回） */
+  leafCategory?: string | null
+  /** SKU 明细（仓组/备货配置聚合源） */
+  skus?: TemuSkuDetailRow[]
+}) {
+  if (!extra) {
+    return <p className="text-xs text-muted-foreground">该商品暂无销售管理数据（未进入销售管理范围）</p>
+  }
+  const num = (v: number | null | undefined) =>
+    v == null ? <EmptyHint /> : v.toLocaleString("zh-CN")
+  const picText =
+    extra.pictureAuditStatus == null ? (
+      <EmptyHint />
+    ) : extra.pictureAuditStatus === 2 ? (
+      "已完成"
+    ) : (
+      "未完成"
+    )
+  // 类目路径：一级 / 叶子（叶子优先销售管理口径，goods-list leafCat 实测不返回；
+  // 缺一级时只显叶子），长名由外层 truncate + title 兜底
+  const categoryPath = [row.cat1Name, leafCategory ?? row.leafCategoryName]
+    .filter((v): v is string => !!v)
+    .join(" / ")
+  // 仓组/备货配置：SKU 明细去重聚合（多仓组「、」拼接）
+  const distinct = (pick: (s: TemuSkuDetailRow) => string | null | undefined) => {
+    const vals = [...new Set((skus ?? []).map(pick).filter((v): v is string => !!v))]
+    return vals.length > 0 ? vals.join("、") : <EmptyHint />
+  }
+  const warehouseGroups = distinct((s) => s.warehouseGroupName)
+  const purchaseConfigs = distinct((s) => s.purchaseConfig)
+  const groups: Array<{ title: string; items: Array<{ label: string; value: React.ReactNode }> }> = [
+    {
+      title: "商品信息",
+      items: [
+        { label: "上架时间", value: formatListedAt(row.skcCreatedAt) ?? <EmptyHint /> },
+        {
+          label: "加入站点时长",
+          value: extra.onSalesDurationDays != null ? `${extra.onSalesDurationDays} 天` : <EmptyHint />,
+        },
+        { label: "商品类目", value: categoryPath || <EmptyHint /> },
+        { label: "图片审核", value: picText },
+      ],
+    },
+    {
+      title: "加购备货",
+      items: [
+        { label: "近 7 日加购", value: num(extra.inCartNumber7d) },
+        { label: "当前加购", value: num(extra.inCardNumber) },
+        {
+          label: "备货/安全库存天数",
+          value: extra.stockDays != null ? `${extra.stockDays} 天` : <EmptyHint />,
+        },
+        { label: "可否备货", value: extra.canPurchase ? "可备货" : "不可" },
+      ],
+    },
+    {
+      title: "其他信息",
+      items: [
+        { label: "SPU 编号", value: row.productId ?? <EmptyHint /> },
+        { label: "仓组", value: warehouseGroups },
+        { label: "备货配置", value: purchaseConfigs },
+        { label: "归属店铺", value: row.storeName ?? <EmptyHint /> },
+      ],
+    },
+  ]
+  return (
+    <div className="grid gap-x-8 gap-y-3 md:grid-cols-3">
+      {groups.map((g) => (
+        <section key={g.title} className="min-w-0 space-y-1.5">
+          <h4 className="text-xs font-medium text-muted-foreground">{g.title}</h4>
+          <dl className="space-y-1">
+            {g.items.map((it) => (
+              <div key={it.label} className="flex items-baseline justify-between gap-3 text-xs">
+                <dt className="whitespace-nowrap text-muted-foreground">{it.label}</dt>
+                <dd
+                  className="min-w-0 truncate text-right font-medium tabular-nums"
+                  title={typeof it.value === "string" ? it.value : undefined}
+                >
+                  {it.value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      ))}
+    </div>
+  )
+}
+
+/** SKU 明细展开子表：尺码/货号/申报价/今日·7日·30日·总销量（salesv2 priceDetail） */
+function SkuDetailSubtable({ skus }: { skus: TemuSkuDetailRow[] }) {
+  const num = (v: unknown) =>
+    typeof v === "number" ? v.toLocaleString("zh-CN") : v == null ? <EmptyHint /> : String(v)
+  return (
+    <table className="w-full caption-bottom text-xs">
+      <TableHeader>
+        <TableRow className="hover:bg-transparent">
+          <TableHead className="h-8 px-3">SKU 编号</TableHead>
+          <TableHead>尺码</TableHead>
+          <TableHead>货号</TableHead>
+          <TableHead className="text-right">申报价格</TableHead>
+          <TableHead className="text-right">今日销量</TableHead>
+          <TableHead className="text-right">近 7 日</TableHead>
+          <TableHead className="text-right">近 30 日</TableHead>
+          <TableHead className="text-right">总销量</TableHead>
+          <TableHead className="text-right">缺货数量</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {skus.map((s, i) => (
+          <TableRow key={String(s.productSkuId ?? i)} className="hover:bg-transparent">
+            <TableCell className="px-3 py-1.5 font-mono">{s.productSkuId ?? <EmptyHint />}</TableCell>
+            <TableCell>{s.className ?? <EmptyHint />}</TableCell>
+            <TableCell className="font-mono">{s.skuExtCode ?? <EmptyHint />}</TableCell>
+            <TableCell className="text-right tabular-nums">
+              {s.supplierPrice != null ? `¥${(s.supplierPrice / 100).toFixed(2)}` : <EmptyHint />}
+            </TableCell>
+            <TableCell className="text-right tabular-nums">{num(s.todaySaleVolume)}</TableCell>
+            <TableCell className="text-right tabular-nums">{num(s.lastSevenDaysSaleVolume)}</TableCell>
+            <TableCell className="text-right tabular-nums">{num(s.lastThirtyDaysSaleVolume)}</TableCell>
+            <TableCell className="text-right tabular-nums">{num(s.totalSaleVolume)}</TableCell>
+            <TableCell className="text-right tabular-nums">{num(s.lackQuantity)}</TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </table>
   )
 }
 
@@ -347,12 +558,14 @@ export function ProductsInfiniteTable({
   store,
   q,
   sale,
+  sort,
   initialRows,
   initialSalesInfo,
 }: {
   store?: string
   q?: string
   sale?: "on" | "off"
+  sort?: string
   initialRows: TemuProductRow[]
   initialSalesInfo: TemuProductSalesInfo
 }) {
@@ -364,11 +577,39 @@ export function ProductsInfiniteTable({
   const loadingRef = React.useRef(false)
   const doneRef = React.useRef(false)
   const pageRef = React.useRef(1)
+  /** SKU 明细展开行（按行 id 记录；展开后追加行不计入渐进渲染批次） */
+  const [expanded, setExpanded] = React.useState<Set<string>>(new Set())
   // 渐进渲染：已加载行先按批露出，滚到底再露下一批/拉下一页——无限滚动只追加
   // 不清除，几千 SKU 全量渲染时 DOM 与 React 树持续膨胀，表格滚动明显卡顿
   const ROW_STEP = 40
   const [visibleCount, setVisibleCount] = React.useState(ROW_STEP)
   const visibleRows = rows.slice(0, visibleCount)
+  // 货号排序（sort=sn）时按货号分组交替浅底：全部店铺视图下同货号跨店链接
+  // 一眼可辨；其他排序同货号不相邻，不适用。分组号按全量已加载行计算，
+  // 翻页追加时既有行分组保持稳定
+  const snGroupOf = React.useMemo(() => {
+    const m = new Map<string, number>()
+    if (sort !== "sn") return m
+    let g = -1
+    let prev: string | null = null
+    for (const r of rows) {
+      const key = snGroupKey(r.productSn ?? "")
+      if (prev == null || key !== prev) {
+        g += 1
+        prev = key
+      }
+      m.set(r.id, g)
+    }
+    return m
+  }, [rows, sort])
+  const toggleExpanded = (id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
 
   const loadMore = React.useCallback(async () => {
     if (loadingRef.current || doneRef.current) return
@@ -376,7 +617,7 @@ export function ProductsInfiniteTable({
     setLoading(true)
     try {
       const next = pageRef.current + 1
-      const r = await getTemuProductsPageAction(store, q, sale, next)
+      const r = await getTemuProductsPageAction(store, q, sale, next, sort)
       setRows((prev) => {
         const seen = new Set(prev.map((x) => x.id))
         return prev.concat(r.rows.filter((x) => !seen.has(x.id)))
@@ -397,7 +638,7 @@ export function ProductsInfiniteTable({
       loadingRef.current = false
       setLoading(false)
     }
-  }, [store, q, sale])
+  }, [store, q, sale, sort])
 
   React.useEffect(() => {
     const el = sentinelRef.current
@@ -427,25 +668,56 @@ export function ProductsInfiniteTable({
       <table className="w-max min-w-full caption-bottom text-sm">
         <TableHeader className="sticky top-0 z-10 bg-background">
           <TableRow>
+            <TableHead className="w-8" />
             <TableHead>主图</TableHead>
             <TableHead>SKC</TableHead>
             <TableHead>商品名</TableHead>
             <TableHead>货号</TableHead>
             <TableHead className="text-right">申报价格</TableHead>
-            <TableHead>在售</TableHead>
+            <TableHead>状态</TableHead>
             <TableHead className="text-right">今日销量</TableHead>
             <TableHead className="text-right">七日销量</TableHead>
+            <TableHead className="text-right">三十日销量</TableHead>
             <TableHead className="text-right">可售天数</TableHead>
-            <TableHead className="text-right">平台库存</TableHead>
+            <TableHead className="text-right">库存数据</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {visibleRows.map((r) => {
             const sales = salesInfo.latest[r.productSkcId]
-            const series = salesInfo.series[r.productSkcId]
-            const onSale = r.skcStatus === 11
+            const status = skcStatusView(r.skcStatus)
+            const isOpen = expanded.has(r.id)
+            const skuRows = sales?.skus ?? []
+            // 可展开 = 有 SKU 明细：price_detail 为空的行（多为插件历史行）
+            // 展开只会得到空面板，不再给展开按钮
+            const expandable = skuRows.length > 0
             return (
-              <TableRow key={r.id}>
+              <React.Fragment key={r.id}>
+              {/* 整行点击即可展开/收纳（chevron 仅为视觉提示，行内无其他可点元素）；
+                  货号排序时同组行共享浅蓝/浅紫交替底色（同货号跨店分组辨识） */}
+              <TableRow
+                className={[
+                  expandable ? "cursor-pointer" : "",
+                  (() => {
+                    const g = snGroupOf.get(r.id)
+                    if (g == null) return ""
+                    return g % 2 === 0
+                      ? "bg-sky-100 dark:bg-sky-950/60"
+                      : "bg-violet-100 dark:bg-violet-950/60"
+                  })(),
+                ].filter(Boolean).join(" ") || undefined}
+                onClick={expandable ? () => toggleExpanded(r.id) : undefined}
+              >
+                <TableCell className="px-2">
+                  {expandable && (
+                    <span
+                      aria-hidden
+                      className="inline-flex rounded p-0.5 text-muted-foreground"
+                    >
+                      {isOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+                    </span>
+                  )}
+                </TableCell>
                 <TableCell>
                   {r.mainImageUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
@@ -461,64 +733,82 @@ export function ProductsInfiniteTable({
                 </TableCell>
                 <TableCell className="font-mono text-xs">{r.productSkcId}</TableCell>
                 <TableCell>
-                  <ProductNameCell name={r.productName} />
-                </TableCell>
-                <TableCell className="font-mono text-xs">{r.productSn ?? "—"}</TableCell>
-                <TableCell className="text-right tabular-nums">
-                  {r.supplierPrice != null ? `¥${(r.supplierPrice / 100).toFixed(2)}` : "—"}
-                </TableCell>
-                <TableCell>
-                  {onSale ? (
-                    // 生命周期状态（价格申报中/已发布到站点等）收进在售徽章悬停展示
-                    <Tooltip>
-                      <TooltipTrigger className="cursor-default">
-                        <span className="rounded-sm bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
-                          在售
-                        </span>
-                      </TooltipTrigger>
-                      {r.lifecycleStatus ? (
-                        <TooltipContent className="text-xs">状态：{r.lifecycleStatus}</TooltipContent>
-                      ) : (
-                        <TooltipContent className="text-xs text-muted-foreground">暂无生命周期状态</TooltipContent>
-                      )}
-                    </Tooltip>
-                  ) : (
-                    <Tooltip>
-                      <TooltipTrigger className="cursor-default">
-                        <span className="rounded-sm bg-red-100 px-1.5 py-0.5 text-xs font-medium text-red-700 dark:bg-red-950 dark:text-red-300">
-                          未在售
-                        </span>
-                      </TooltipTrigger>
-                      {r.lifecycleStatus ? (
-                        <TooltipContent className="text-xs">状态：{r.lifecycleStatus}</TooltipContent>
-                      ) : (
-                        <TooltipContent className="text-xs text-muted-foreground">暂无生命周期状态</TooltipContent>
-                      )}
-                    </Tooltip>
-                  )}
-                </TableCell>
-                <TableCell className="text-right tabular-nums">{sales?.todaySalesVolume ?? "—"}</TableCell>
-                <TableCell className="text-right">
-                  <span className="inline-flex items-center justify-end gap-0.5 tabular-nums">
-                    {r.last7DaysSalesVolume ?? "—"}
-                    {series && series.length > 0 && <ProductSalesTrendPopover series={series} />}
+                  <span className="inline-flex items-center gap-1">
+                    {r.productName ? <ProductNameCell name={r.productName} /> : <EmptyHint />}
+                    {sales?.hotTag && (
+                      <Tooltip>
+                        <TooltipTrigger className="cursor-default text-xs" aria-label="热销款">
+                          🔥
+                        </TooltipTrigger>
+                        <TooltipContent className="text-xs">热销款（销售管理标记）</TooltipContent>
+                      </Tooltip>
+                    )}
+                    {sales?.extra.isFirst && (
+                      <Tooltip>
+                        <TooltipTrigger className="cursor-default" aria-label="首单">
+                          <span className="rounded-sm bg-sky-100 px-1 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-950 dark:text-sky-300">
+                            首单
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent className="text-xs">平台标记的首单商品（isFirst）</TooltipContent>
+                      </Tooltip>
+                    )}
                   </span>
                 </TableCell>
-                <TableCell className="text-right">
-                  <div className="flex justify-end">
-                    <SaleDaysRing days={sales?.availableSaleDays ?? null} />
-                  </div>
+                <TableCell className="font-mono text-xs">{r.productSn ?? <EmptyHint />}</TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {r.supplierPrice != null ? `¥${(r.supplierPrice / 100).toFixed(2)}` : <EmptyHint />}
+                </TableCell>
+                <TableCell>
+                  <Tooltip>
+                    <TooltipTrigger className="cursor-default">
+                      <span className={`rounded-sm px-1.5 py-0.5 text-xs font-medium ${status.className}`}>
+                        {status.label}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent className="text-xs">
+                      <div>SKC 站点状态码：{r.skcStatus ?? "未知"}</div>
+                      {r.lifecycleStatus && <div>生命周期：{r.lifecycleStatus}</div>}
+                      {sales?.extra.priceReview.reviewStatus != null && (
+                        <div>核价状态码：{sales.extra.priceReview.reviewStatus}</div>
+                      )}
+                    </TooltipContent>
+                  </Tooltip>
+                </TableCell>
+                <TableCell className="text-right tabular-nums">{sales?.todaySalesVolume ?? <EmptyHint />}</TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {sales?.extra.last7DaysSalesVolume ?? <EmptyHint />}
                 </TableCell>
                 <TableCell className="text-right tabular-nums">
-                  <PlatformStockCell warehouse={sales?.warehouseAvailableStock ?? null} shipped={sales?.shippedStock ?? null} />
+                  {sales?.extra.last30DaysSalesVolume ?? <EmptyHint />}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {sales?.availableSaleDays != null ? Math.round(sales.availableSaleDays) : <EmptyHint />}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  <AvailableStockCell info={sales?.extra.inventoryInfo ?? null} />
                 </TableCell>
               </TableRow>
+              {isOpen && (
+                <TableRow className="hover:bg-transparent">
+                  <TableCell colSpan={12} className="space-y-3 bg-muted/30 px-4 py-3">
+                    <ProductDetailPanel
+                      row={r}
+                      extra={sales?.extra}
+                      leafCategory={sales?.leafCategory}
+                      skus={skuRows}
+                    />
+                    {skuRows.length > 0 && <SkuDetailSubtable skus={skuRows} />}
+                  </TableCell>
+                </TableRow>
+              )}
+              </React.Fragment>
             )
           })}
           {rows.length === 0 && (
             <TableRow>
-              <TableCell colSpan={10} className="h-20 text-center text-sm text-muted-foreground">
-                暂无数据：插件完成一轮采集上报后自动出现
+              <TableCell colSpan={12} className="h-20 text-center text-sm text-muted-foreground">
+                暂无数据：店铺完成一次官方 API 同步后自动出现
               </TableCell>
             </TableRow>
           )}
@@ -533,47 +823,6 @@ export function ProductsInfiniteTable({
             : ""}
       </div>
 
-      {/* 导出 CSV（P2-3）：固定右下角悬浮，导出当前已加载的商品行 */}
-      {rows.length > 0 && (
-        <Button
-          size="sm"
-          variant="outline"
-          className="fixed bottom-6 right-6 z-30 h-8 gap-1.5 rounded-full bg-background/95 shadow-lg backdrop-blur"
-          onClick={() => {
-            exportRowsCsv(rows, salesInfo)
-            toast.success(`已导出 ${rows.length} 条商品数据（CSV）`)
-          }}
-        >
-          <FileDown className="size-3.5" />
-          导出 CSV（{rows.length} 条）
-        </Button>
-      )}
     </>
-  )
-}
-
-/** 流量曝光量单元格：数字悬停 Tooltip 拆分显示 搜索曝光量/推荐曝光量 */
-export function FlowExposeCell({
-  expose,
-  searchExpose,
-  recommendExpose,
-}: {
-  expose: number | null
-  searchExpose: number | null
-  recommendExpose: number | null
-}) {
-  const num = (v: number | null) => (v ?? 0).toLocaleString('zh-CN')
-  return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger className='cursor-default tabular-nums'>
-          {(expose ?? 0).toLocaleString('zh-CN')}
-        </TooltipTrigger>
-        <TooltipContent className='text-xs'>
-          <div>搜索曝光量：{num(searchExpose)}</div>
-          <div>推荐曝光量：{num(recommendExpose)}</div>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
   )
 }

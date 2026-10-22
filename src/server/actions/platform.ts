@@ -29,6 +29,14 @@ import {
 } from "@/db/schema"
 import { requireSuperAdmin } from "@/lib/auth/session"
 import { encrypt, hashPassword } from "@/lib/crypto"
+import {
+  decryptTemuSecret,
+  encryptTemuSecret,
+  isMaskedTemuSecret,
+  loadTemuAppConfig,
+  maskTemuSecret,
+  saveTemuAppConfig,
+} from "@/lib/temu-api/app-config"
 import { rechargeCredits } from "@/server/services/credits-service"
 import {
   createEnterpriseSchema,
@@ -843,6 +851,70 @@ export async function saveMockupSettingAction(input: {
       set: { value, updatedAt: new Date() },
     })
 
+  revalidatePath("/platform/enterprises")
+  return { ok: true, error: null }
+}
+
+/* ─── 企业级 TEMU 应用凭证（system_setting key=temu_api_app；每企业可对接各自的自研应用） ─── */
+
+/** TEMU 应用凭证表单值（secret 回显掩码） */
+export interface TemuAppSettingView {
+  appKey: string
+  appSecret: string
+  testMode: boolean
+}
+
+export async function getTemuAppSettingAction(
+  enterpriseId: string,
+): Promise<TemuAppSettingView> {
+  await requireSuperAdmin()
+  const config = await loadTemuAppConfig(enterpriseId)
+  return {
+    appKey: config.appKey,
+    appSecret: maskTemuSecret(decryptTemuSecret(config.appSecretEncrypted)),
+    testMode: config.testMode,
+  }
+}
+
+export async function saveTemuAppSettingAction(input: {
+  enterpriseId: string
+  appKey: string
+  appSecret: string
+  testMode: boolean
+}): Promise<{ ok: boolean; error: string | null }> {
+  await requireSuperAdmin()
+
+  const enterpriseId = String(input.enterpriseId ?? "").trim()
+  if (!/^[0-9a-f-]{36}$/i.test(enterpriseId)) {
+    return { ok: false, error: "企业 ID 非法" }
+  }
+  const [ent] = await db
+    .select({ id: enterprises.id })
+    .from(enterprises)
+    .where(eq(enterprises.id, enterpriseId))
+    .limit(1)
+  if (!ent) return { ok: false, error: "企业不存在" }
+
+  const current = await loadTemuAppConfig(enterpriseId)
+  const appKey = input.appKey.trim()
+  // 掩码=保留现值；其余以输入为准（空串=清空）
+  const masked = isMaskedTemuSecret(input.appSecret)
+  const plainSecret = masked
+    ? decryptTemuSecret(current.appSecretEncrypted)
+    : input.appSecret.trim()
+
+  if (!input.testMode && appKey && !plainSecret) {
+    return { ok: false, error: "已填写 app_key 但 app_secret 为空，请补全后再保存" }
+  }
+  if (!input.testMode && !appKey && plainSecret) {
+    return { ok: false, error: "已填写 app_secret 但 app_key 为空，请补全后再保存" }
+  }
+
+  await saveTemuAppConfig(enterpriseId, {
+    appKey,
+    appSecretEncrypted: encryptTemuSecret(plainSecret),
+    testMode: input.testMode,
+  })
   revalidatePath("/platform/enterprises")
   return { ok: true, error: null }
 }

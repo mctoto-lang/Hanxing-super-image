@@ -19,28 +19,29 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { toast } from "sonner"
 import { useRouter } from "next/navigation"
 import { createEnterpriseAction } from "@/server/actions/platform"
-
-const MODULE_OPTIONS = [
-  { value: "create", label: "创作" },
-  { value: "chat", label: "AI 对话" },
-  { value: "assets", label: "资产管理" },
-  { value: "workspace", label: "批量生图" },
-  { value: "product", label: "商品图片" },
-  { value: "weartry", label: "穿戴图片" },
-  { value: "mockup", label: "样机渲染" },
-  { value: "temu", label: "Temu 数据" },
-  { value: "agent", label: "AI Agent" },
-] as const
+import { BASE_MODULE_OPTIONS, MODULE_LABELS, TEMU_TAB_OPTIONS } from "@/lib/modules"
 
 export function EnterpriseCreateDialog() {
   const [open, setOpen] = React.useState(false)
   const router = useRouter()
+  /** TEMU 总开关（未勾时 7 个 tab 子项禁用且不提交） */
+  const [temuOn, setTemuOn] = React.useState(false)
+  /** DialogContent 仅 open 时挂载，非受控项自动复位；受控 temuOn 需手动复位（对齐 modules-dialog） */
+  React.useEffect(() => {
+    if (open) setTemuOn(false)
+  }, [open])
 
   const [state, formAction, pending] = useActionState(
     async (_prev: unknown, formData: FormData) => {
-      const modules = MODULE_OPTIONS.filter((o) =>
-        formData.get(`mod_${o.value}`) === "on",
-      ).map((o) => o.value) as string[]
+      const modules = [
+        ...BASE_MODULE_OPTIONS.filter((o) => formData.get(`mod_${o.value}`) === "on").map((o) => o.value),
+        ...(formData.get("mod_temu") === "on"
+          ? [
+              "temu",
+              ...TEMU_TAB_OPTIONS.filter((o) => formData.get(`mod_${o.value}`) === "on").map((o) => o.value),
+            ]
+          : []),
+      ] as string[]
       // settings 默认带
       modules.push("settings")
 
@@ -136,7 +137,7 @@ export function EnterpriseCreateDialog() {
           <div className="grid gap-2">
             <Label>开通模块</Label>
             <div className="grid grid-cols-2 gap-2">
-              {MODULE_OPTIONS.map((o) => (
+              {BASE_MODULE_OPTIONS.map((o) => (
                 <label
                   key={o.value}
                   className="flex items-center gap-2 text-sm"
@@ -145,6 +146,23 @@ export function EnterpriseCreateDialog() {
                   {o.label}
                 </label>
               ))}
+              <label className="col-span-2 flex items-center gap-2 border-t pt-2 text-sm font-medium">
+                <Checkbox
+                  name="mod_temu"
+                  checked={temuOn}
+                  onCheckedChange={(v) => setTemuOn(v === true)}
+                />
+                {MODULE_LABELS.temu}
+                <span className="text-xs font-normal text-muted-foreground">（总开关，勾选后可配置各页面权限）</span>
+              </label>
+              <div className="col-span-2 ml-6 grid grid-cols-2 gap-2 border-l pl-3">
+                {TEMU_TAB_OPTIONS.map((o) => (
+                  <label key={o.value} className="flex items-center gap-2 text-sm">
+                    <Checkbox name={`mod_${o.value}`} disabled={!temuOn} />
+                    {o.label}
+                  </label>
+                ))}
+              </div>
             </div>
           </div>
           <div className="rounded-md border p-3">

@@ -79,8 +79,9 @@ function uploadDomain(cfg: StorageConfig, bucket: string): string | undefined {
  * 校验回拉目标 host 是否可信（防 SSRF）。
  * 仅允许 https + 配置的 COS 桶域名 + 常见云存储/AI 上游后缀
  * + 平台配置的额外可信域名 + 调用方提示域名（模型 API 端点）的同站域名。
+ * 导出供 temu-publish 等服务端回拉入口复用同一白名单口径。
  */
-function isAllowedDownloadHost(
+export function isAllowedDownloadHost(
   url: URL,
   cfg: StorageConfig,
   hostHints: string[] = [],

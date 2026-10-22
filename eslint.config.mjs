@@ -15,6 +15,9 @@ const eslintConfig = defineConfig([
     // Vendored 上游文件（文件头注明「勿局部修改，上游更新时整体重新 vendor」），
     // 不按本仓库规则改造
     "src/components/grok-ball/engine/grok-ball.js",
+    // 浏览器自动化落盘的 Chrome 用户配置目录（含第三方扩展压缩产物），
+    // 非本仓库源码
+    "chrome-zcode-profile/**",
   ]),
   {
     rules: {

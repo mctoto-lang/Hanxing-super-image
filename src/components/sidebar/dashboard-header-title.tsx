@@ -22,10 +22,11 @@ const ROUTE_TITLES: { prefix: string; title: string }[] = [
   { prefix: "/workspace", title: "批量生图" },
   { prefix: "/product", title: "商品图片" },
   { prefix: "/mockup", title: "样机渲染" },
-  // 店铺数据
-  { prefix: "/temu", title: "Temu 数据" },
+  // 店铺管理
+  { prefix: "/temu", title: "TEMU" },
   // 模板管理
-  { prefix: "/templates", title: "提示词模板" },
+  { prefix: "/templates/temu", title: "TEMU刊登模板" },
+  { prefix: "/templates", title: "生图提示词模板" },
   // 企业管理（admin）
   { prefix: "/admin", title: "企业管理" },
   { prefix: "/admin/stats", title: "数据看板" },

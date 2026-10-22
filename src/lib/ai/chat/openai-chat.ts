@@ -12,6 +12,7 @@
  * - usage：开启 stream_options 后最后一个 chunk 携带 usage
  *   （prompt_tokens / completion_tokens）；兼容网关在多个 chunk 分次上报。
  */
+import { API_ERROR_BODY_MAX_LENGTH } from "../error-limits"
 import {
   extractChatErrorMessage,
   resolveOpenAiChatEndpoint,
@@ -130,7 +131,7 @@ export async function* streamOpenAiCompatibleChat(
     dispose()
     yield {
       type: "error",
-      message: message ?? `对话 API 错误 ${response.status}: ${text.slice(0, 200)}`,
+      message: message ?? `对话 API 错误 ${response.status}: ${text.slice(0, API_ERROR_BODY_MAX_LENGTH)}`,
     }
     return
   }

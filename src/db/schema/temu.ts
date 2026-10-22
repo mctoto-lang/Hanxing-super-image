@@ -16,20 +16,21 @@ import {
 import { enterprises } from "./enterprise"
 
 /**
- * Temu 卖家数据采集（手册 §4：多租户业务域；2026-09-15 增发现店铺/广告日报）
+ * Temu 卖家数据（手册 §4：多租户业务域）
  *
- * 数据来源：Temu Collector 浏览器插件（被动捕获卖家中心接口）经
- * /api/v1/ingest 上报（X-Device-Token = temu_store.deviceToken）。
+ * 数据来源：TEMU 官方开放平台（agentpartner.temu.com，bg.* 接口），
+ * 由 temu-sync 定时/手动拉取（商品列表、生命周期、销售管理、爆款售罄），
+ * 写入既有数据表并在 temu_ingest_log 留 api-* 审计。
+ * 历史数据（2026-10 前）来自 Temu Collector 浏览器插件被动采集，该链路已下线；
+ * 流量/广告等官方无接口的维度不再产生新数据（表保留历史）。
  *
- * 归属链：store（店铺，企业可多店铺）→ 各数据表；
- * 条目级 mall 归属由数据内嵌 supplierId 判定（一个登录账号可挂多个 mall），
- * mallMeta（supplierIds/mallNames）随上报携带，落库于各表 mall_meta。
+ * 归属链：store（店铺，企业可多店铺，官方 API 店铺级 access_token）→ 各数据表。
  *
- * 数据域（v1 范围）：销售管理、商品列表、上新生命周期、流量分析、活动数据；
- * 订单/备货单/发货批次本期不建表（未知 source 仅记 temu_ingest_log 审计）。
+ * 数据域：商品、生命周期、销售管理、售罄、广告（官方 API 实时 + 历史插件存档）；
+ * 流量表仅存档；核价/调价/活动工作台为实时拉取不落库；订单/备货单/发货批次未建表。
  */
 
-/** 店铺（一个企业可配置多个 Temu 店铺；token 由企业管理员在面板生成） */
+/** 店铺（一个企业可配置多个 Temu 店铺；官方 API token 由企业管理员录入） */
 export const temuStores = pgTable(
   "temu_store",
   {
@@ -38,16 +39,28 @@ export const temuStores = pgTable(
       .notNull()
       .references(() => enterprises.id, { onDelete: "cascade" }),
     name: varchar("name", { length: 100 }).notNull(),
-    /** 插件上报凭证（X-Device-Token），仅创建/重置时明文展示 */
-    deviceToken: varchar("device_token", { length: 64 }).notNull(),
-    /** 绑定的 Temu mall（可选，数据内嵌 supplierId 与之对应时归属成立） */
-    mallId: varchar("mall_id", { length: 32 }),
+    /** 官方 API 店铺级令牌（AES-256-GCM 密文；卖家中心授权页复制，自研应用 365 天有效） */
+    accessTokenEncrypted: text("access_token_encrypted"),
+    /** 店铺类型（bg.mall.info.get 验证回写：full=全托 semi=半托） */
+    mallType: varchar("mall_type", { length: 16 }),
+    /** 绑定的 Temu mall（可选；bg.open.accesstoken.info.get.global 的 uniqueId，实测为 base64 串可到 56 字符） */
+    mallId: varchar("mall_id", { length: 64 }),
     mallName: varchar("mall_name", { length: 100 }),
+    /** token 状态：none=未录入 active=有效 invalid=已失效（7000007 触发） */
+    tokenState: varchar("token_state", { length: 16 })
+      .default("none")
+      .notNull(),
+    /** 预计到期时间（录入时间 + 365 天，展示提醒用；官方无自动刷新） */
+    tokenExpiresAt: timestamp("token_expires_at", { withTimezone: true }),
+    /** 是否参与定时同步 */
+    syncEnabled: boolean("sync_enabled").default(true).notNull(),
+    /** 最近一次同步时间 */
+    lastSyncAt: timestamp("last_sync_at", { withTimezone: true }),
+    /** 最近一次同步结果（{ ok, startedAt, finishedAt, sources: { [source]: { ok, count, error } } }） */
+    lastSyncStatus: jsonb("last_sync_status").$type<TemuSyncStatus | null>(),
     enabled: boolean("enabled").default(true).notNull(),
     /** 面板展示顺序（拖拽排序，小在前；默认 0 按 createdAt） */
     sortOrder: integer("sort_order").default(0).notNull(),
-    /** 最近一次成功上报时间（在线状态判据） */
-    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -55,11 +68,19 @@ export const temuStores = pgTable(
       .defaultNow()
       .notNull(),
   },
-  (t) => [
-    uniqueIndex("gt_temu_store_token").on(t.deviceToken),
-    index("gt_temu_store_ent").on(t.enterpriseId),
-  ],
+  (t) => [index("gt_temu_store_ent").on(t.enterpriseId)],
 )
+
+/** 店铺同步结果（temu_store.lastSyncStatus 结构；skipped=true 表示该源不适用于店铺类型） */
+export interface TemuSyncStatus {
+  ok: boolean
+  startedAt: string
+  finishedAt: string
+  sources: Record<
+    string,
+    { ok: boolean; count?: number; error?: string; skipped?: boolean }
+  >
+}
 
 /** 条目级 mall 归属（数据内嵌 supplierId → mallName 映射，随上报携带） */
 export interface TemuMallMeta {
@@ -114,7 +135,9 @@ export const temuMetricSnapshots = pgTable(
   ],
 )
 
-/** 销售管理总览明细（listOverall，SKC 级 + SKU 价格在 priceDetail） */
+/** 销售管理总览明细（listOverall/salesv2，SKC 级 + SKU 价格在 priceDetail）。
+ *  每 (店, SKC, 日) 一行、每轮同步覆盖更新——保证当日批次恒为全量，
+ *  概览按「当日最新批次求和」才不漏内容未变化的在售商品。 */
 export const temuSalesOverviews = pgTable(
   "temu_sales_overview",
   {
@@ -124,6 +147,8 @@ export const temuSalesOverviews = pgTable(
       .references(() => temuStores.id, { onDelete: "cascade" }),
     skcId: varchar("skc_id", { length: 32 }).notNull(),
     capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
+    /** 数据日（北京时间；批次聚合/今日口径按它判日界） */
+    capturedDay: date("captured_day").notNull(),
     productName: text("product_name"),
     category: varchar("category", { length: 120 }),
     supplierId: varchar("supplier_id", { length: 32 }),
@@ -142,14 +167,16 @@ export const temuSalesOverviews = pgTable(
     /** 顶层售罄/库存计数等其余字段 */
     overview: jsonb("overview").$type<Record<string, unknown>>(),
     mallMeta: jsonb("mall_meta").$type<TemuMallMeta | null>(),
+    /** 内容摘要（信息性保留；不再做唯一去重——改为按日覆盖） */
     contentHash: varchar("content_hash", { length: 40 }).notNull(),
     receivedAt: timestamp("received_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
   },
   (t) => [
-    uniqueIndex("gt_temu_sales_dedup").on(t.storeId, t.skcId, t.contentHash),
+    uniqueIndex("gt_temu_sales_day").on(t.storeId, t.skcId, t.capturedDay),
     index("gt_temu_sales_time").on(t.storeId, t.capturedAt),
+    index("gt_temu_sales_day_time").on(t.storeId, t.capturedDay),
   ],
 )
 
@@ -193,6 +220,8 @@ export const temuProducts = pgTable(
     /** 站点信息（生命周期源） */
     siteCode: varchar("site_code", { length: 32 }),
     siteName: varchar("site_name", { length: 64 }),
+    /** 在售站点列表（goods-list 源 bindSites 拼接，如「US、EU」） */
+    siteNames: text("site_names"),
     /** 生命周期时间线摘要（epoch ms） */
     skcCreatedAt: bigint("skc_created_at", { mode: "number" }),
     priceVerifiedAt: bigint("price_verified_at", { mode: "number" }),
@@ -330,7 +359,7 @@ export const temuActivities = pgTable(
   ],
 )
 
-/** 上报审计（全部 source 落此表；未建表的 source 仅此留痕不丢） */
+/** 同步审计（官方 API 各 source 拉取结果；历史行为插件上报审计） */
 export const temuIngestLogs = pgTable(
   "temu_ingest_log",
   {
@@ -350,30 +379,8 @@ export const temuIngestLogs = pgTable(
   (t) => [index("gt_temu_log_time").on(t.storeId, t.receivedAt)],
 )
 
-/**
- * 插件发现的 mall（数据内嵌 supplierId 自动登记）：企业侧首次确认后建店收录。
- * 来源：/api/v1/ingest 每条 item 的 mallMeta.supplierIds/mallNames upsert。
- */
-export const temuDiscoveredMalls = pgTable(
-  "temu_discovered_mall",
-  {
-    id: uuid("id").defaultRandom().primaryKey(),
-    enterpriseId: uuid("enterprise_id")
-      .notNull()
-      .references(() => enterprises.id, { onDelete: "cascade" }),
-    mallId: varchar("mall_id", { length: 32 }).notNull(),
-    mallName: varchar("mall_name", { length: 100 }),
-    firstSeenAt: timestamp("first_seen_at", { withTimezone: true })
-      .defaultNow()
-      .notNull(),
-    lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
-      .defaultNow()
-      .notNull(),
-  },
-  (t) => [uniqueIndex("temu_discovered_mall_mall_unique").on(t.enterpriseId, t.mallId)],
-)
-
-/** 广告日报（ads.temu.com queryReports 按日序列：花费/曝光/点击/订单/成交） */
+/** 广告日报（店铺级：历史插件 queryReports 与官方 mall.query 共写，
+ *  按日序列：花费/曝光/点击/订单/成交） */
 export const temuAdsDailies = pgTable(
   "temu_ads_daily",
   {
@@ -382,12 +389,14 @@ export const temuAdsDailies = pgTable(
       .notNull()
       .references(() => temuStores.id, { onDelete: "cascade" }),
     date: date("date").notNull(),
-    /** 花费（元；接口原始单位分已除 100） */
+    /** 花费（元；接口原始单位分已除 100；取 ad 推广维度） */
     adSpend: doublePrecision("ad_spend").default(0).notNull(),
     impressions: integer("impressions"),
     clicks: integer("clicks"),
     orders: integer("orders"),
     gmv: doublePrecision("gmv"),
+    /** 官方 mall.query 日行长尾指标存档（ROAS/ACOS/CTR/CVR/加购/件数等，四维口径） */
+    metrics: jsonb("metrics").$type<Record<string, unknown>>(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -395,6 +404,51 @@ export const temuAdsDailies = pgTable(
   (t) => [
     uniqueIndex("temu_ads_daily_unique").on(t.storeId, t.date),
     index("gt_temu_ads_daily_time").on(t.storeId, t.date),
+  ],
+)
+
+/** 广告商品日报（官方 goods.query 天级行：bg.glo.searchrec.ad.reports.goods.query
+ *  不传 productId 拉全店商品，按 (店, 日, 商品) upsert 幂等覆盖；金额分，
+ *  指标取 ad 推广维度，四维全量存 metrics） */
+export const temuAdsProductDailies = pgTable(
+  "temu_ads_product_daily",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => temuStores.id, { onDelete: "cascade" }),
+    date: date("date").notNull(),
+    /** 货品 id（与 temu_product.productId 同空间） */
+    productId: varchar("product_id", { length: 32 }).notNull(),
+    /** 花费（分，ad 推广维度） */
+    adSpend: doublePrecision("ad_spend"),
+    /** 曝光量 */
+    imprCnt: integer("impr_cnt"),
+    /** 点击量 */
+    clkCnt: integer("clk_cnt"),
+    /** 加购数 */
+    cartCnt: integer("cart_cnt"),
+    /** 子订单量 */
+    orderPayCnt: integer("order_pay_cnt"),
+    /** 申报价销售额（分） */
+    orderPayAmt: doublePrecision("order_pay_amt"),
+    /** 件数 */
+    goodsNum: integer("goods_num"),
+    /** ROAS（推广维度） */
+    roas: doublePrecision("roas"),
+    /** ACOS 费比（推广维度） */
+    acos: doublePrecision("acos"),
+    /** 每笔成交花费（分） */
+    transactionCost: doublePrecision("transaction_cost"),
+    /** 全量指标（total/ad/netTotal/netAd 四维）存档 */
+    metrics: jsonb("metrics").$type<Record<string, unknown>>(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    uniqueIndex("temu_ads_product_daily_unique").on(t.storeId, t.date, t.productId),
+    index("gt_temu_ads_product_daily_time").on(t.storeId, t.date),
   ],
 )
 
@@ -421,7 +475,9 @@ export const temuSkuSalesDailies = pgTable(
   ],
 )
 
-/** SKU↔SKC 映射（listOverall 行内 SKU 明细提取；SKU 日序列按 SKC 聚合的关联依据） */
+/** SKU↔SKC 映射（listOverall 行内 SKU 明细提取；SKU 日序列按 SKC 聚合的关联依据）。
+ *  supplier_price：SKU 级申报价（price.list.get 按 SKU 批查回填——salesv2
+ *  的 SKU 明细 supplierPrice 实测已不返回，此列为 SKU 子表价格源） */
 export const temuSkuMaps = pgTable(
   "temu_sku_map",
   {
@@ -431,9 +487,170 @@ export const temuSkuMaps = pgTable(
       .references(() => temuStores.id, { onDelete: "cascade" }),
     skuId: varchar("sku_id", { length: 32 }).notNull(),
     skcId: varchar("skc_id", { length: 32 }).notNull(),
+    supplierPrice: bigint("supplier_price", { mode: "number" }),
     receivedAt: timestamp("received_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
   },
   (t) => [uniqueIndex("gt_temu_sku_map_dedup").on(t.storeId, t.skuId)],
+)
+
+/** API 广告注册表（temu_ad）：仅记录通过本站 ad.create 创建的广告。
+ *  平台限制（2026-10-20 实测）：后台手动创建的广告对官方接口不可见，
+ *  「我的广告」= 本表 + ad.detail.query 实时状态。budget 分口径。 */
+export const temuAds = pgTable(
+  "temu_ad",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => temuStores.id, { onDelete: "cascade" }),
+    productId: varchar("product_id", { length: 32 }).notNull(),
+    /** 日预算（分；创建时口径，实时值以 detail.query 为准） */
+    budget: integer("budget"),
+    /** 目标 ROAS */
+    roas: doublePrecision("roas"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [uniqueIndex("gt_temu_ad_dedup").on(t.storeId, t.productId)],
+)
+
+/* ─── 模板化发品（M2：企业级刊登模板，跨店复用） ─── */
+
+/** 发品模板属性值（attrs.get 选定项；父子联动在向导选值时已保证） */
+export interface TemuTemplateAttr {
+  templatePid: number
+  pid: number
+  refPid: number
+  propName: string
+  vid: number
+  propValue: string
+  valueUnit: string
+  numberInputValue?: string
+}
+
+/** 自建规格定义（非服饰无内置销售规格——parentspec.get + spec.create 实测口径；
+ *  specId 为店铺级，发品时按店 spec.create 同名幂等换取，不在模板落值） */
+export interface TemuTemplateSpec {
+  parentSpecId: number
+  parentSpecName: string
+  /** 规格值名（如 "藏青"） */
+  specName: string
+}
+
+/** 发品模板默认层（发品实例可覆盖 title/imageUrls/declaredPriceFen/extCode） */
+export interface TemuTemplateDefaults {
+  /** 商品名（官方上限 500，类目特殊上限在预检透传官方错误） */
+  title: string
+  /** 素材图源（可为空；http(s) 或压缩 dataUrl——发品时按目标店上传图床并校验 1:1 ≥800×800 ≤2M） */
+  imageUrls: string[]
+  /** 申报价（分，SKU 级同价） */
+  declaredPriceFen: number
+  /** 货号（可空；字母数字标点） */
+  extCode: string
+  /** 产地二字码（productOrigin.countryShortName，2000146 必填） */
+  countryShortName: string
+  /** 中国省级 region2Id（官方仅到省级、无市级字段；仅 country=CN 时下发） */
+  region2Id?: number
+  /** SKU 重量（mg，官方口径） */
+  weightMg: number
+  /** SKU 体积（mm，最长边 ≥ 次长边 ≥ 最短边） */
+  volumeMm: { len: number; width: number; height: number }
+  /** 敏感属性（0 非敏感；1 需配 sensitiveTypes） */
+  isSensitive: 0 | 1
+  /** 敏感类型（110001 纯电 等；isSensitive=1 时必填） */
+  sensitiveTypes: number[]
+  /** 储电容量上限（Wh；纯电必填，非电池类目必须空） */
+  maxBatteryCapacityWh?: number
+  /** 外包装信息（形状 1 长方体/2 圆柱体，"其他不规则"=不提交形状；类型 0 硬包装/1 软包装+硬物/2 软包装+软物，按卖家中心顺序对应） */
+  outerPackage?: { packageShape?: 1 | 2; packageType: 0 | 1 | 2 }
+  /** 外包装图（正拍/侧拍/俯拍槽位顺序；≥1 张即提交） */
+  outerPackageImages?: string[]
+  /** 尺寸图源（可选；发品时按目标店上传后固定插轮播第 2 张——卖家中心页面口径，API 实测不校验位置） */
+  dimensionImageUrl?: string
+  /** 电子说明书（存 base64 源——发品时对目标店重传换 pdfId，需含英文内容 2000163；pdfMaterialId 兼容旧模板） */
+  guideFile?: { fileName: string; pdfMaterialId?: number; languages: string[]; base64?: string }
+  /** 定制商品工艺（§13.6；不配=非定制不提交该块） */
+  customized?: { firstType: number; twiceType: number[]; technologyType: number }
+  /** SKU 分类/多件装（不配=单品 1 件） */
+  skuPack?: { skuClassification: 1 | 2 | 3; numberOfPieces: number; pieceUnitCode: number }
+}
+
+/**
+ * 发品模板（企业级，跨店复用）。锁定层 = 类目链 + 属性 + 规格定义 + 默认层中的
+ * 产地/重量/体积/敏感；可覆盖层 = 标题/图片/申报价/货号。发品仅能基于模板。
+ */
+export const temuPublishTemplates = pgTable(
+  "temu_publish_template",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    enterpriseId: uuid("enterprise_id")
+      .notNull()
+      .references(() => enterprises.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 100 }).notNull(),
+    /** draft 草稿 / active 可发 / archived 归档（软删） */
+    status: varchar("status", { length: 16 }).default("draft").notNull(),
+    createdBy: uuid("created_by"),
+    /** 完整类目链（cats.get 钻取快照，1~6 级，最后一级 isLeaf） */
+    categoryChain: jsonb("category_chain")
+      .$type<Array<{ catId: number; catName: string; isLeaf: boolean }>>()
+      .notNull(),
+    leafCategoryId: bigint("leaf_category_id", { mode: "number" }).notNull(),
+    /** 属性选定值（锁定层；实时 attrs.get 口径，模板过期由预检提示重选） */
+    attributes: jsonb("attributes").$type<TemuTemplateAttr[]>().notNull(),
+    /** 自建规格定义（锁定层；发品时按店铺幂等创建） */
+    specConfig: jsonb("spec_config").$type<TemuTemplateSpec>().notNull(),
+    /** 默认层（锁定骨架 + 可覆盖项） */
+    defaults: jsonb("defaults").$type<TemuTemplateDefaults>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [index("gt_temu_pub_tpl_ent").on(t.enterpriseId, t.status)],
+)
+
+/** 发品记录（一次 publishFromTemplate 调用一行，成败都落） */
+export const temuPublishRecords = pgTable(
+  "temu_publish_record",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    enterpriseId: uuid("enterprise_id")
+      .notNull()
+      .references(() => enterprises.id, { onDelete: "cascade" }),
+    templateId: uuid("template_id")
+      .notNull()
+      .references(() => temuPublishTemplates.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => temuStores.id, { onDelete: "cascade" }),
+    userId: uuid("user_id"),
+    /** 发品时的覆盖值（未覆盖项为 null） */
+    overrides: jsonb("overrides")
+      .$type<Partial<Pick<TemuTemplateDefaults, "title" | "imageUrls" | "declaredPriceFen" | "extCode">>>()
+      .notNull(),
+    /** pending 组装中 / success / failed */
+    status: varchar("status", { length: 16 }).default("pending").notNull(),
+    /** 官方返回的货品 id（成功时） */
+    productId: varchar("product_id", { length: 32 }),
+    errorCode: integer("error_code"),
+    errorMsg: varchar("error_msg", { length: 1000 }),
+    /** 审计：完整请求/响应快照（排障与口径回归） */
+    requestSnapshot: jsonb("request_snapshot").$type<Record<string, unknown>>(),
+    responseSnapshot: jsonb("response_snapshot").$type<Record<string, unknown>>(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    index("gt_temu_pub_rec_ent").on(t.enterpriseId, t.createdAt),
+    index("gt_temu_pub_rec_tpl").on(t.templateId),
+  ],
 )

@@ -463,6 +463,76 @@
       "when": 1792031512326,
       "tag": "0065_pipeline_event_stage",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1792385773320,
+      "tag": "0066_temu_official_api_store",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1792388806710,
+      "tag": "0067_temu_mall_id_width",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1792390129907,
+      "tag": "0068_temu_product_site_names",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1792448000000,
+      "tag": "0069_temu_ads_and_compliance",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1792534400000,
+      "tag": "0070_temu_sales_day_upsert",
+      "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1792620800000,
+      "tag": "0071_drop_temu_compliance",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1792627200000,
+      "tag": "0072_temu_sku_map_price",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1792713600000,
+      "tag": "0073_temu_ad_registry",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1792800000000,
+      "tag": "0074_temu_publish_template",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1792886400000,
+      "tag": "0075_temu_enterprise_app_and_tab_modules",
+      "breakpoints": true
     }
   ]
 }

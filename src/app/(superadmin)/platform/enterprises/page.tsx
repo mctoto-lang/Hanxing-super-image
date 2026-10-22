@@ -32,25 +32,14 @@ import { EnterpriseCreateDialog } from "@/components/superadmin/enterprise-creat
 import { RechargeDialog } from "@/components/superadmin/recharge-dialog"
 import { ModulesDialog } from "@/components/superadmin/modules-dialog"
 import { MockupConfigDialog } from "@/components/superadmin/mockup-config-dialog"
+import { TemuAppConfigDialog } from "@/components/superadmin/temu-app-config-dialog"
 import { EnterpriseModelConfigDialog } from "@/components/superadmin/enterprise-model-config-dialog"
 import { EnterpriseConcurrencyDialog } from "@/components/superadmin/enterprise-concurrency-dialog"
 import { PlanAssignDialog } from "@/components/superadmin/plan-assign-dialog"
+import { MODULE_LABELS, TEMU_TAB_OPTIONS } from "@/lib/modules"
 import type { ModuleName } from "@/db/schema"
 
 export const dynamic = "force-dynamic"
-
-const MODULE_LABELS: Record<ModuleName, string> = {
-  create: "创作",
-  chat: "AI 对话",
-  assets: "资产",
-  workspace: "批量生图",
-  product: "商品图片",
-  weartry: "穿戴图片",
-  mockup: "样机渲染",
-  temu: "Temu 数据",
-  agent: "AI Agent",
-  settings: "设置",
-}
 
 export default async function EnterprisesPage({
   searchParams,
@@ -201,11 +190,27 @@ export default async function EnterprisesPage({
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
-                        {(e.enabledModules as ModuleName[]).map((m) => (
-                          <Badge key={m} variant="outline" className="text-xs">
-                            {MODULE_LABELS[m] ?? m}
+                        {(e.enabledModules as ModuleName[])
+                          .filter((m) => m !== "settings" && !TEMU_TAB_OPTIONS.some((t) => t.value === m))
+                          .map((m) => (
+                            <Badge key={m} variant="outline" className="text-xs">
+                              {MODULE_LABELS[m] ?? m}
+                            </Badge>
+                          ))}
+                        {(e.enabledModules as ModuleName[]).includes("temu") && (
+                          <Badge variant="outline" className="text-xs">
+                            TEMU
+                            {(e.enabledModules as ModuleName[]).some((m) =>
+                              TEMU_TAB_OPTIONS.some((t) => t.value === m),
+                            )
+                              ? ` ·${
+                                  (e.enabledModules as ModuleName[]).filter((m) =>
+                                    TEMU_TAB_OPTIONS.some((t) => t.value === m),
+                                  ).length
+                                }页面`
+                              : ""}
                           </Badge>
-                        ))}
+                        )}
                       </div>
                     </TableCell>
                     <TableCell>
@@ -260,6 +265,10 @@ export default async function EnterprisesPage({
                           currentModules={e.enabledModules as ModuleName[]}
                         />
                         <MockupConfigDialog
+                          enterpriseId={e.id}
+                          enterpriseName={e.name}
+                        />
+                        <TemuAppConfigDialog
                           enterpriseId={e.id}
                           enterpriseName={e.name}
                         />

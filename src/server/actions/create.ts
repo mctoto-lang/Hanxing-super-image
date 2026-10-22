@@ -18,6 +18,7 @@ import {
 } from "@/lib/auth/permissions"
 import { deductUserCredits, refundFailedTask } from "@/server/services/credits-service"
 import { enqueue } from "@/lib/queue/task-queue"
+import { API_ERROR_BODY_MAX_LENGTH } from "@/lib/ai/error-limits"
 import { validateReferenceImageUrls } from "@/lib/storage/reference-url"
 import { submitTaskSchema } from "@/server/schemas/create"
 import { createConversationAction } from "@/server/actions/conversations"
@@ -275,13 +276,18 @@ export async function submitTaskAction(input: {
       conversationId,
     })
   } catch (err) {
-    // 入队失败（如 Redis 闪断）：退还积分并标记任务失败，避免资金损失
+    // 入队失败（如 Redis 闪断）：退还积分并标记任务失败，避免资金损失；
+    // 真实错误拼入 errorMessage 透传给用户（截断防超长堆栈）
+    const reason = (err instanceof Error ? err.message : String(err)).slice(
+      0,
+      API_ERROR_BODY_MAX_LENGTH,
+    )
     await refundFailedTask(taskId)
     await db
       .update(generationTasks)
       .set({
         status: "failed",
-        errorMessage: "任务入队失败，积分已退还",
+        errorMessage: `任务入队失败，积分已退还：${reason}`,
       })
       .where(eq(generationTasks.id, taskId))
     console.error(
@@ -290,7 +296,7 @@ export async function submitTaskAction(input: {
     )
     return {
       ok: false,
-      error: "任务入队失败，积分已退还，请稍后重试",
+      error: `任务入队失败，积分已退还：${reason}`,
     }
   }
 

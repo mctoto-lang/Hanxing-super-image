@@ -13,6 +13,8 @@
  * .thinkingOverrides 中按模型覆盖（先测试再投产），未配置时用上方内置默认值兜底。
  */
 
+import { API_ERROR_BODY_MAX_LENGTH } from "../error-limits"
+
 /** 对话接口格式（chat_api_config.format_type） */
 export type ChatApiFormat = "openai" | "claude" | "gemini" | "grok"
 
@@ -394,19 +396,38 @@ export function formatPricePerMillion(centicredits: number): string {
 /**
  * 从错误响应体提取可读信息。
  * 兼容：{error:{message}}（openai/gemini/xai）、{error:{msg}}（网关变体）、
- * {message}（部分代理）、{error:"字符串"}。
+ * {message}（部分代理）、{error:"字符串"}、{error:{metadata:{raw}}}（OpenRouter
+ * 完整上游错误）、{error:{errors:[{message}]}}（网关数组形态）。
+ * 命中任一分支均统一截断到 API_ERROR_BODY_MAX_LENGTH（error-limits.ts 声明的
+ * 源头截断不变量）；均不匹配时返回 null，调用方回退到截断后的响应原文。
  */
 export function extractChatErrorMessage(data: unknown): string | null {
   if (!data || typeof data !== "object") return null
   const obj = data as Record<string, unknown>
   const err = obj.error
-  if (typeof err === "string" && err) return err
+  if (typeof err === "string" && err) {
+    return err.slice(0, API_ERROR_BODY_MAX_LENGTH)
+  }
   if (err && typeof err === "object") {
     const e = err as Record<string, unknown>
     for (const key of ["message", "msg"]) {
-      if (typeof e[key] === "string" && e[key]) return e[key] as string
+      if (typeof e[key] === "string" && e[key]) {
+        return (e[key] as string).slice(0, API_ERROR_BODY_MAX_LENGTH)
+      }
+    }
+    const raw = (e.metadata as Record<string, unknown> | undefined)?.raw
+    if (typeof raw === "string" && raw) {
+      return raw.slice(0, API_ERROR_BODY_MAX_LENGTH)
+    }
+    if (Array.isArray(e.errors)) {
+      const first = e.errors[0] as Record<string, unknown> | undefined
+      if (first && typeof first.message === "string" && first.message) {
+        return first.message.slice(0, API_ERROR_BODY_MAX_LENGTH)
+      }
     }
   }
-  if (typeof obj.message === "string" && obj.message) return obj.message
+  if (typeof obj.message === "string" && obj.message) {
+    return obj.message.slice(0, API_ERROR_BODY_MAX_LENGTH)
+  }
   return null
 }

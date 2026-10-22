@@ -2,8 +2,10 @@
 
 import * as React from "react"
 import { toast } from "sonner"
+import { RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Switch } from "@/components/ui/switch"
 import {
   Dialog,
   DialogContent,
@@ -16,22 +18,22 @@ import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import {
   createTemuStoreAction,
   updateTemuStoreAction,
-  resetTemuStoreTokenAction,
+  setTemuStoreTokenAction,
+  syncTemuStoreAction,
+  toggleTemuStoreSyncAction,
   toggleTemuStoreAction,
   deleteTemuStoreAction,
   clearTemuStoreDataAction,
-  confirmDiscoveredStoreAction,
   reorderTemuStoresAction,
   type TemuStoreBrief,
 } from "@/server/actions/temu"
 import { useDragSort, DragHandle } from "@/hooks/use-drag-sort"
 
 /**
- * Temu 店铺管理：新增（插件发现-确认-同步 / 手动创建）、编辑、拖拽排序、
- * 启停、重置 token、清空数据。
+ * Temu 店铺管理（官方 API 口径）：新增、access_token 录入（保存即验证）、
+ * 手动同步、定时同步开关、编辑、拖拽排序、启停、清空数据、删除。
  *
- * 交互统一：确认类操作走 ConfirmDialog / Dialog（焦点管理、无障碍语义），
- * 操作结果统一 toast 反馈（替代原生 confirm 与内联红字）。
+ * 交互统一：确认类操作走 ConfirmDialog / Dialog，操作结果统一 toast 反馈。
  */
 
 /** 统一执行 + 反馈：成功/失败均走全局 toast；返回是否成功 */
@@ -47,112 +49,85 @@ async function run(message: string, fn: () => Promise<unknown>): Promise<boolean
   }
 }
 
-export function TemuStoreManager({
-  stores,
-  discovered,
-}: {
-  stores: TemuStoreBrief[]
-  discovered: { mallId: string; mallName: string | null; firstSeenAt: Date; lastSeenAt: Date }[]
-}) {
-  const [tokenShown, setTokenShown] = React.useState<{ name: string; token: string } | null>(null)
+/** token 状态点 + 文案 */
+function TokenStateBadge({ state }: { state: string }) {
+  if (state === "active") {
+    return <span className="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">● token 有效</span>
+  }
+  if (state === "invalid") {
+    return <span className="inline-flex items-center gap-1 text-xs text-red-600 dark:text-red-400">● token 已失效，请重录</span>
+  }
+  return <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">○ 未录入 token</span>
+}
+
+/** 距到期天数提示（≤30 天黄色预警） */
+function expiryHint(expiresAt: Date | string | null): string | null {
+  if (!expiresAt) return null
+  const days = Math.ceil((new Date(expiresAt).getTime() - Date.now()) / 86400_000)
+  if (days <= 0) return "token 已到期"
+  if (days <= 30) return `约 ${days} 天后到期，请提前重录`
+  return null
+}
+
+export function TemuStoreManager({ stores }: { stores: TemuStoreBrief[] }) {
   const [editing, setEditing] = React.useState<{ id: string; name: string; mallId: string; mallName: string } | null>(null)
-  /** 发现店铺"确认收录"进行中（mallId） */
-  const [confirming, setConfirming] = React.useState<string | null>(null)
   const [adding, setAdding] = React.useState<{ name: string; mallId: string; mallName: string } | null>(null)
+  /** token 录入弹层（invalid/none 状态或手动点开） */
+  const [tokenInput, setTokenInput] = React.useState<{ store: TemuStoreBrief; value: string } | null>(null)
+  /** 手动同步进行中（storeId） */
+  const [syncing, setSyncing] = React.useState<string | null>(null)
   /** 危险操作二次确认（删除 / 清空数据） */
   const [confirmAction, setConfirmAction] = React.useState<
     { type: "delete" | "clear"; store: TemuStoreBrief } | null
   >(null)
   const [pending, startTransition] = React.useTransition()
 
+  /** 手动同步：四源结果摘要 toast（失败源列名 + 首个错误） */
+  const doSync = (store: TemuStoreBrief) => {
+    setSyncing(store.id)
+    void (async () => {
+      try {
+        const r = await syncTemuStoreAction({ id: store.id })
+        if (r.skipped) {
+          toast.warning(`「${store.name}」未同步：${r.skipped}`)
+          return
+        }
+        if (r.status && r.status.ok) {
+          const parts = Object.entries(r.status.sources)
+            .map(([k, v]) => `${k.replace("api-", "")} ${v.count ?? 0}`)
+            .join(" · ")
+          toast.success(`「${store.name}」同步完成：${parts || "无数据"}`)
+        } else {
+          const firstErr = r.status
+            ? Object.entries(r.status.sources).find(([, v]) => !v.ok)
+            : undefined
+          toast.error(
+            `「${store.name}」部分同步失败${firstErr ? `：${firstErr[0].replace("api-", "")} — ${String(firstErr[1].error ?? "").slice(0, 90)}` : ""}`,
+            { duration: 6000 },
+          )
+        }
+      } catch (e) {
+        toast.error((e instanceof Error ? e.message : String(e)).slice(0, 150) || "同步失败")
+      } finally {
+        setSyncing(null)
+      }
+    })()
+  }
+
   return (
     <div className="space-y-6">
-      {/* 新 token 弹层（仅重置/新建时展示一次） */}
-      <Dialog open={tokenShown !== null} onOpenChange={(o) => !o && setTokenShown(null)}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>「{tokenShown?.name}」上报 Token</DialogTitle>
-            <DialogDescription>
-              无需手动复制：插件在浏览器登录 super-image 后会自动同步该店铺（如需手动对接，Token 仅此一次明文展示）。
-            </DialogDescription>
-          </DialogHeader>
-          <code className="block break-all rounded-md bg-muted p-3 font-mono text-sm">
-            {tokenShown?.token}
-          </code>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                void navigator.clipboard
-                  ?.writeText(tokenShown?.token ?? "")
-                  .then(() => toast.success("Token 已复制"))
-                  .catch(() => toast.error("复制失败，请手动选择复制"))
-              }}
-            >
-              复制
-            </Button>
-            <Button onClick={() => setTokenShown(null)}>我已保存</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* 手动新增店铺：首个店铺的唯一入口（发现收录依赖已有店铺作上报通道） */}
+      {/* 概览说明 + 新增 */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4">
         <div>
           <h3 className="text-sm font-semibold">店铺列表</h3>
           <p className="mt-1 text-xs text-muted-foreground">
-            首个店铺在此手动添加，生成上报 Token 后插件自动同步；
-            之后的店铺由插件发现账号下的店铺列表，在下方一键收录。
+            数据经 TEMU 官方开放平台 API 定时同步（默认每 15 分钟）。添加店铺后录入卖家中心
+            「授权管理」复制的 access_token，保存时自动验证店铺类型；全托/半托均可。
           </p>
         </div>
-        <Button size="sm" disabled={pending} onClick={() => setAdding({ name: "", mallId: "", mallName: "" })}>
+        <Button size="sm" className="h-9! text-xs" disabled={pending} onClick={() => setAdding({ name: "", mallId: "", mallName: "" })}>
           新增店铺
         </Button>
-      </div>
-
-      {/* 插件发现的店铺（数据内嵌 supplierId 自动登记）→ 首次确认收录 */}
-      <div className="rounded-xl border p-4">
-        <h3 className="text-sm font-semibold">插件发现的店铺</h3>
-        <p className="mt-1 text-xs text-muted-foreground">
-          企业下登录用户使用插件采集时自动发现的 Temu 店铺。确认收录后建店并自动绑定 mallId，
-          插件会在 10 分钟内同步该店铺，之后采集的数据归属到它。
-        </p>
-        <div className="mt-3 space-y-2">
-          {discovered.length === 0 && (
-            <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-              暂无待确认的新店铺：插件登录卖家中心后会实时上报账号下的店铺列表；
-              若一直未出现，请确认已在插件中登录本面板账号，且下方已收录至少一个店铺作为上报通道
-              （首个店铺需手动添加）。
-            </p>
-          )}
-          {discovered.map((d) => (
-            <div key={d.mallId} className="flex flex-wrap items-center gap-3 rounded-lg border p-3">
-              <div className="min-w-0 flex-1">
-                <div className="font-medium">{d.mallName || "未命名店铺"}</div>
-                <div className="text-xs text-muted-foreground">
-                  mall:{d.mallId} · 首次发现{" "}
-                  {new Date(d.firstSeenAt).toLocaleString("zh-CN", { hour12: false })} · 最近上报{" "}
-                  {new Date(d.lastSeenAt).toLocaleString("zh-CN", { hour12: false })}
-                </div>
-              </div>
-              <Button
-                size="sm"
-                disabled={pending || confirming === d.mallId}
-                onClick={() => {
-                  setConfirming(d.mallId)
-                  startTransition(async () => {
-                    await run("店铺已收录，插件将在 10 分钟内同步", () =>
-                      confirmDiscoveredStoreAction({ mallId: d.mallId }),
-                    )
-                    setConfirming(null)
-                  })
-                }}
-              >
-                {confirming === d.mallId ? "收录中…" : "确认收录"}
-              </Button>
-            </div>
-          ))}
-        </div>
       </div>
 
       {/* 编辑店铺（名称 / mallId 绑定） */}
@@ -167,11 +142,11 @@ export function TemuStoreManager({
               <Input value={editing?.name ?? ""} onChange={(e) => setEditing(editing && { ...editing, name: e.target.value })} className="mt-1" />
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">Temu mallId（多店巡检归属跟随的依据）</label>
+              <label className="text-sm text-muted-foreground">Temu mallId（可选，授权验证时自动回填）</label>
               <Input
                 value={editing?.mallId ?? ""}
                 onChange={(e) => setEditing(editing && { ...editing, mallId: e.target.value })}
-                placeholder="如 634418211196072（留空 = 未绑定）"
+                placeholder="授权验证自动回填的 base64 串（留空 = 未绑定）"
                 className="mt-1"
               />
             </div>
@@ -205,11 +180,15 @@ export function TemuStoreManager({
         </DialogContent>
       </Dialog>
 
-      {/* 新增店铺：建店即生成 deviceToken（成功后一次性明文展示） */}
+      {/* 新增店铺 */}
       <Dialog open={adding !== null} onOpenChange={(o) => !o && setAdding(null)}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>新增店铺</DialogTitle>
+            <DialogDescription>
+              创建后请在列表中录入 access_token（TEMU 卖家中心 → 授权管理 → 选择自研应用 →
+              勾选接口 → 确认 → 复制 token）。
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div>
@@ -222,13 +201,11 @@ export function TemuStoreManager({
               />
             </div>
             <div>
-              <label className="text-sm text-muted-foreground">
-                Temu mallId（可选，多店巡检归属依据，可稍后编辑绑定）
-              </label>
+              <label className="text-sm text-muted-foreground">Temu mallId（可选，可稍后编辑或自动回填）</label>
               <Input
                 value={adding?.mallId ?? ""}
                 onChange={(e) => setAdding(adding && { ...adding, mallId: e.target.value })}
-                placeholder="如 634418211196072（留空 = 暂不绑定）"
+                placeholder="授权验证自动回填的 base64 串（留空 = 暂不绑定）"
                 className="mt-1"
               />
             </div>
@@ -248,14 +225,13 @@ export function TemuStoreManager({
               onClick={() =>
                 adding &&
                 startTransition(async () => {
-                  const ok = await run("店铺已创建", async () => {
-                    const created = await createTemuStoreAction({
+                  const ok = await run("店铺已创建，接下来请录入 access_token", () =>
+                    createTemuStoreAction({
                       name: adding.name.trim(),
                       mallId: adding.mallId.trim() || undefined,
                       mallName: adding.mallName.trim() || undefined,
-                    })
-                    setTokenShown({ name: created.store.name, token: created.deviceToken })
-                  })
+                    }),
+                  )
                   if (ok) setAdding(null)
                 })
               }
@@ -266,15 +242,63 @@ export function TemuStoreManager({
         </DialogContent>
       </Dialog>
 
-      {/* 删除 / 清空数据二次确认（替代原生 confirm） */}
+      {/* access_token 录入（保存即验证） */}
+      <Dialog open={tokenInput !== null} onOpenChange={(o) => !o && setTokenInput(null)}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>录入 access_token · {tokenInput?.store.name}</DialogTitle>
+            <DialogDescription>
+              TEMU 卖家中心 → 授权管理 → 选择自研应用 → 勾选接口（建议全选）→ 确认 → 复制
+              token 粘贴到此。自研应用 token 有效期 365 天，过期需重新授权复制。保存时自动调用
+              官方接口验证并识别全托/半托。
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            value={tokenInput?.value ?? ""}
+            onChange={(e) => setTokenInput(tokenInput && { ...tokenInput, value: e.target.value })}
+            placeholder="粘贴 access_token"
+            className="font-mono text-sm"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTokenInput(null)}>取消</Button>
+            <Button
+              disabled={pending || !tokenInput?.value.trim()}
+              onClick={() =>
+                tokenInput &&
+                startTransition(async () => {
+                  try {
+                    const r = await setTemuStoreTokenAction({
+                      id: tokenInput.store.id,
+                      accessToken: tokenInput.value.trim(),
+                    })
+                    if (r.ok) {
+                      const typeText = r.mallType === "semi" ? "半托店铺" : "全托店铺"
+                      toast.success(`token 验证通过：${typeText}${r.mallId ? `（mall:${r.mallId}）` : ""}`)
+                      setTokenInput(null)
+                    } else {
+                      toast.error(r.error ?? "token 验证失败", { duration: 6000 })
+                    }
+                  } catch (e) {
+                    toast.error((e instanceof Error ? e.message : String(e)).slice(0, 150) || "保存失败")
+                  }
+                })
+              }
+            >
+              保存并验证
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 删除 / 清空数据二次确认 */}
       <ConfirmDialog
         open={confirmAction !== null}
         onOpenChange={(o) => !o && setConfirmAction(null)}
-        title={confirmAction?.type === "delete" ? "删除店铺" : "清空采集数据"}
+        title={confirmAction?.type === "delete" ? "删除店铺" : "清空同步数据"}
         description={
           confirmAction?.type === "delete"
-            ? `将删除店铺「${confirmAction.store.name}」及其全部采集数据，此操作不可恢复。`
-            : `将清空店铺「${confirmAction?.store.name}」的全部采集数据，店铺本身与 token 保留。\n（用于重新采集测试：插件去重缓存约 30 秒自动重置，清空后稍候再采集即可全量入库）`
+            ? `将删除店铺「${confirmAction.store.name}」及其全部数据，此操作不可恢复。`
+            : `将清空店铺「${confirmAction?.store.name}」的全部数据，店铺与 token 保留。下次同步（定时或手动）会全量重建。`
         }
         confirmText={confirmAction?.type === "delete" ? "删除" : "清空"}
         destructive
@@ -288,7 +312,7 @@ export function TemuStoreManager({
                 ? await run(`已删除店铺「${action.store.name}」`, () =>
                     deleteTemuStoreAction({ id: action.store.id }),
                   )
-                : await run(`已清空「${action.store.name}」采集数据`, () =>
+                : await run(`已清空「${action.store.name}」数据`, () =>
                     clearTemuStoreDataAction({ id: action.store.id }),
                   )
             if (ok) setConfirmAction(null)
@@ -300,17 +324,16 @@ export function TemuStoreManager({
         <StoreList
           stores={stores}
           pending={pending}
+          syncing={syncing}
           onEdit={(s) => setEditing({ id: s.id, name: s.name, mallId: s.mallId || "", mallName: s.mallName || "" })}
-          onResetToken={(s) =>
+          onToken={(s) => setTokenInput({ store: s, value: "" })}
+          onSync={doSync}
+          onToggleSync={(s, syncEnabled) =>
             startTransition(() =>
-              void (async () => {
-                try {
-                  const r = await resetTemuStoreTokenAction({ id: s.id })
-                  setTokenShown({ name: s.name, token: r.deviceToken })
-                } catch (e) {
-                  toast.error((e instanceof Error ? e.message : String(e)).slice(0, 120) || "重置失败")
-                }
-              })(),
+              void run(
+                syncEnabled ? `已开启「${s.name}」定时同步` : `已暂停「${s.name}」定时同步`,
+                () => toggleTemuStoreSyncAction({ id: s.id, syncEnabled }),
+              ),
             )
           }
           onToggle={(s) =>
@@ -325,7 +348,7 @@ export function TemuStoreManager({
         />
         {stores.length === 0 && (
           <p className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">
-            还没有店铺。在上方「插件发现的店铺」中确认收录，或等插件上报后自动出现。
+            还没有店铺。点击上方「新增店铺」创建，然后录入 TEMU 卖家中心复制的 access_token。
           </p>
         )}
       </div>
@@ -337,16 +360,22 @@ export function TemuStoreManager({
 function StoreList({
   stores,
   pending,
+  syncing,
   onEdit,
-  onResetToken,
+  onToken,
+  onSync,
+  onToggleSync,
   onToggle,
   onDelete,
   onClearData,
 }: {
   stores: TemuStoreBrief[]
   pending: boolean
+  syncing: string | null
   onEdit: (s: TemuStoreBrief) => void
-  onResetToken: (s: TemuStoreBrief) => void
+  onToken: (s: TemuStoreBrief) => void
+  onSync: (s: TemuStoreBrief) => void
+  onToggleSync: (s: TemuStoreBrief, syncEnabled: boolean) => void
   onToggle: (s: TemuStoreBrief) => void
   onDelete: (s: TemuStoreBrief) => void
   onClearData: (s: TemuStoreBrief) => void
@@ -357,62 +386,89 @@ function StoreList({
   })
   return (
     <>
-      {ordered.map((s) => (
-        <div
-          key={s.id}
-          {...rowProps(s.id, "flex flex-wrap items-center gap-3 rounded-xl border p-4")}
-        >
-          <DragHandle handleProps={handleProps(s.id)} />
-          <div className="min-w-0 flex-1">
-            <div className="font-medium">
-              {s.name}
-              {s.mallName && <span className="ml-2 text-sm text-muted-foreground">（{s.mallName}）</span>}
+      {ordered.map((s) => {
+        const expiry = expiryHint(s.tokenExpiresAt)
+        return (
+          <div
+            key={s.id}
+            {...rowProps(s.id, "flex flex-wrap items-center gap-3 rounded-xl border p-4")}
+          >
+            <DragHandle handleProps={handleProps(s.id)} />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2 font-medium">
+                {s.name}
+                {s.mallName && <span className="text-sm text-muted-foreground">（{s.mallName}）</span>}
+                {s.mallType && (
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                    {s.mallType === "semi" ? "半托" : "全托"}
+                  </span>
+                )}
+                <TokenStateBadge state={s.tokenState} />
+              </div>
+              <div className="mt-0.5 text-xs text-muted-foreground">
+                {s.mallId ? `mall:${s.mallId} · ` : "未绑定 mallId · "}
+                {s.enabled ? "启用" : "已停用"} · 最近同步{" "}
+                {s.lastSyncAt
+                  ? new Date(s.lastSyncAt).toLocaleString("zh-CN", { hour12: false })
+                  : "从未"}
+                {expiry && <span className="ml-2 text-amber-600 dark:text-amber-400">{expiry}</span>}
+              </div>
             </div>
-            <div className="text-xs text-muted-foreground">
-              {s.mallId ? `mall:${s.mallId} · ` : "未绑定 mallId · "}
-              {s.enabled ? "启用" : "已停用"} · 最近上报{" "}
-              {s.lastSeenAt
-                ? new Date(s.lastSeenAt).toLocaleString("zh-CN", { hour12: false })
-                : "从未"}
-            </div>
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              定时同步
+              <Switch
+                checked={s.syncEnabled}
+                disabled={pending}
+                onCheckedChange={(v) => onToggleSync(s, v)}
+              />
+            </label>
+            <Button
+              size="sm"
+              variant={s.tokenState === "active" ? "outline" : "default"}
+              disabled={pending}
+              onClick={() => onToken(s)}
+            >
+              {s.tokenState === "none" ? "录入 Token" : "重录 Token"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={pending || syncing === s.id}
+              onClick={() => onSync(s)}
+            >
+              <RefreshCw className={syncing === s.id ? "mr-1 size-3.5 animate-spin" : "mr-1 size-3.5"} />
+              {syncing === s.id ? "同步中…" : "立即同步"}
+            </Button>
+            <Button size="sm" variant="outline" disabled={pending} onClick={() => onEdit(s)}>
+              编辑
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={pending}
+              onClick={() => onToggle(s)}
+            >
+              {s.enabled ? "停用" : "启用"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={pending}
+              onClick={() => onClearData(s)}
+            >
+              清空数据
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={pending}
+              onClick={() => onDelete(s)}
+            >
+              删除
+            </Button>
           </div>
-          <Button size="sm" variant="outline" disabled={pending} onClick={() => onEdit(s)}>
-            编辑
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={pending}
-            onClick={() => onResetToken(s)}
-          >
-            重置 Token
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={pending}
-            onClick={() => onToggle(s)}
-          >
-            {s.enabled ? "停用" : "启用"}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={pending}
-            onClick={() => onClearData(s)}
-          >
-            清空数据
-          </Button>
-          <Button
-            size="sm"
-            variant="destructive"
-            disabled={pending}
-            onClick={() => onDelete(s)}
-          >
-            删除
-          </Button>
-        </div>
-      ))}
+        )
+      })}
     </>
   )
 }

@@ -21,7 +21,9 @@ import { revalidatePath } from "next/cache"
  * 仅超管可操作。平台级设置 enterpriseId=NULL。
  * 当前支持：storage（存储后端）。
  * （原 queue 队列参数设置已移除：运行时只消费 env 与模型/企业/分组级
- * 配置，该设置从未被读取——企业并发在「企业管理」中设置。）
+ * 配置，该设置从未被读取——企业并发在「企业管理」中设置。
+ * 原 TEMU 应用凭证已改为企业级配置：超管 → 企业管理 → TEMU应用，
+ * 见 platform.ts 的 get/saveTemuAppSettingAction。）
  *
  * ⚠️ unique(key, enterpriseId) 对 NULL 不去重（Postgres NULL≠NULL），历史保存
  * 用 onConflictDoUpdate 永远命不中 NULL 行，会不断插入重复行——读写都必须

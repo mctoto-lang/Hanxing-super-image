@@ -13,6 +13,7 @@
  *   思考摘要 part，归一化为 thinking_delta）；
  * - usage：usageMetadata.promptTokenCount / candidatesTokenCount。
  */
+import { API_ERROR_BODY_MAX_LENGTH } from "../error-limits"
 import {
   extractChatErrorMessage,
   mergeConsecutiveMessages,
@@ -202,7 +203,7 @@ export async function* streamGeminiChat(
     dispose()
     yield {
       type: "error",
-      message: message ?? `对话 API 错误 ${response.status}: ${text.slice(0, 200)}`,
+      message: message ?? `对话 API 错误 ${response.status}: ${text.slice(0, API_ERROR_BODY_MAX_LENGTH)}`,
     }
     return
   }

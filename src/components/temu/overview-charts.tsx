@@ -8,7 +8,6 @@ import {
   ChartLegend,
   ChartLegendContent,
   ChartTooltip,
-  ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart"
 import {
@@ -19,7 +18,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { cn } from "@/lib/utils"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import {
   Select,
@@ -31,11 +29,10 @@ import {
 import type {
   TemuCategoryShare,
   TemuSalesTopRow,
-  TemuAdsEffect,
 } from "@/server/actions/temu"
 
 /**
- * Temu 面板概览组件：店铺切换下拉、类目占比、售出 TOP10、广告效果。
+ * Temu 面板概览组件：店铺切换下拉、类目占比、售出 TOP10。
  * 趋势图与顶部卡片用 dashboard-01 真源组件
  * （@/components/chart-area-interactive、@/components/section-cards）。
  */
@@ -43,36 +40,39 @@ import type {
 const ALL_STORES = "__all__"
 
 /** 店铺切换下拉（URL 驱动：选值跳转 /temu?tab=&store=，保持服务端渲染数据流）。
- *  items 供 SelectValue 显示中文标签——不传时 base-ui 会显示原始 value（UUID） */
+ *  items 供 SelectValue 显示中文标签——不传时 base-ui 会显示原始 value（UUID）。
+ *  allowAll=false 时不提供「全部店铺」（发品等必须落到具体店的 tab） */
 export function TemuStoreSelect({
   tab,
   current,
   stores,
+  allowAll = true,
 }: {
   tab: string
   current?: string
   stores: { id: string; name: string }[]
+  allowAll?: boolean
 }) {
   const router = useRouter()
   const items = [
-    { value: ALL_STORES, label: "全部店铺" },
+    ...(allowAll ? [{ value: ALL_STORES, label: "全部店铺" }] : []),
     ...stores.map((s) => ({ value: s.id, label: s.name })),
   ]
   return (
     <Select
       items={items}
-      value={current || ALL_STORES}
+      value={current || (allowAll ? ALL_STORES : stores[0]?.id ?? "")}
       onValueChange={(v) => {
         const p = new URLSearchParams({ tab })
         if (v && v !== ALL_STORES) p.set("store", v)
         router.push(`/temu?${p.toString()}`)
       }}
     >
-      <SelectTrigger size="sm" className="w-44" aria-label="切换店铺">
-        <SelectValue placeholder="全部店铺" />
+      <SelectTrigger className="h-9! w-44" aria-label="切换店铺">
+        <SelectValue placeholder={allowAll ? "全部店铺" : "选择店铺"} />
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value={ALL_STORES}>全部店铺</SelectItem>
+        {allowAll && <SelectItem value={ALL_STORES}>全部店铺</SelectItem>}
         {stores.map((s) => (
           <SelectItem key={s.id} value={s.id}>
             {s.name}
@@ -148,7 +148,7 @@ function ShareTooltip({
   )
 }
 
-/** 售出类目占比（环形图，top5 + 其他；口径可切 今日/近7日/近30日） */
+/** 售出类目占比（环形图，动态切片 + 其他；口径可切 今日/近7日/近30日） */
 export function TemuCategoryShare({ data }: { data: TemuCategoryShare[] }) {
   const [metric, setMetric] = React.useState("today")
   const pick = (d: TemuCategoryShare) =>
@@ -160,16 +160,22 @@ export function TemuCategoryShare({ data }: { data: TemuCategoryShare[] }) {
 
   const total = data.reduce((s, d) => s + pick(d), 0)
   const slices = React.useMemo(() => {
-    const sorted = [...data].sort((a, b) => pick(b) - pick(a))
-    const top = sorted.slice(0, 5).map((d) => ({ label: d.category, value: pick(d) }))
-    const rest = sorted.slice(5).reduce((s, d) => s + pick(d), 0)
-    if (rest > 0) top.push({ label: "其他", value: rest })
-    return top.map((s, i) => ({
+    const sorted = [...data].sort((a, b) => pick(b) - pick(a)).filter((d) => pick(d) > 0)
+    // 动态纳入：占比 ≥1% 的类目全部展示（最多 15 条），其余合并「其他」
+    const kept: Array<{ label: string; value: number }> = []
+    for (const d of sorted) {
+      if (kept.length >= 15) break
+      if (total > 0 && pick(d) / total < 0.01) break
+      kept.push({ label: d.category, value: pick(d) })
+    }
+    const rest = sorted.slice(kept.length).reduce((s, d) => s + pick(d), 0)
+    if (rest > 0) kept.push({ label: "其他", value: rest })
+    return kept.map((s, i) => ({
       ...s,
       color: s.label === "其他" ? "var(--muted)" : donutPalette[i % donutPalette.length],
     }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, metric])
+  }, [data, metric, total])
 
   const config = Object.fromEntries(
     slices.map((s) => [s.label, { label: s.label, color: s.color }]),
@@ -179,7 +185,7 @@ export function TemuCategoryShare({ data }: { data: TemuCategoryShare[] }) {
     <Card className="@container/card">
       <CardHeader>
         <CardTitle>售出类目占比</CardTitle>
-        <CardDescription>销售管理最新批次 · 按类目汇总销量</CardDescription>
+        <CardDescription>销售管理最新批次 · 按类目汇总销量（展示占比 ≥1% 的类目，至多 15 条）</CardDescription>
         <CardAction>
           <MetricToggle value={metric} onChange={setMetric} />
         </CardAction>
@@ -187,7 +193,7 @@ export function TemuCategoryShare({ data }: { data: TemuCategoryShare[] }) {
       <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
         {total === 0 ? (
           <div className="flex h-[280px] items-center justify-center text-sm text-muted-foreground">
-            所选口径暂无数据（插件上报后自动出现）
+            所选口径暂无数据（数据随官方 API 定时同步更新）
           </div>
         ) : (
           <ChartContainer config={config} className="mx-auto h-[280px] w-full">
@@ -199,7 +205,7 @@ export function TemuCategoryShare({ data }: { data: TemuCategoryShare[] }) {
                 nameKey="label"
                 innerRadius={52}
                 outerRadius={86}
-                paddingAngle={2}
+                paddingAngle={slices.length > 10 ? 1 : 2}
                 strokeWidth={2}
               >
                 {slices.map((s) => (
@@ -288,7 +294,7 @@ export function TemuSalesTop10({ data }: { data: TemuSalesTopRow[] }) {
       <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
         {rows.length === 0 ? (
           <div className="flex h-[320px] items-center justify-center text-sm text-muted-foreground">
-            所选口径暂无数据（插件上报后自动出现）
+            所选口径暂无数据（数据随官方 API 定时同步更新）
           </div>
         ) : (
           <ChartContainer config={config} className="h-[320px] w-full">
@@ -311,80 +317,6 @@ export function TemuSalesTop10({ data }: { data: TemuSalesTopRow[] }) {
               </Bar>
             </BarChart>
           </ChartContainer>
-        )}
-      </CardContent>
-    </Card>
-  )
-}
-
-// ---------- 广告效果 ----------
-
-/** 广告效果：近 7 日花费/GMV/ROI 摘要 + 近 14 日每日花费迷你条形图 */
-export function TemuAdsEffectCard({ effect }: { effect: TemuAdsEffect }) {
-  const config = { spend: { label: "广告花费(元)", color: "var(--chart-1)" } } satisfies ChartConfig
-  const { last7 } = effect
-  const hasDays = effect.days.some((d) => d.adSpend > 0)
-
-  return (
-    // 图表固定 208px：卡片自然高度与同行转化漏斗卡完全贴合（实测内容均到
-    // 346px），两卡等高、互不撑出底部空白（flex-1 方案会让图表失控长高）
-    <Card className="@container/card">
-      <CardHeader>
-        <CardTitle>广告效果</CardTitle>
-        <CardDescription>近 7 日推广日报 · 近 7 日每日花费</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="grid grid-cols-3 gap-2">
-          <div>
-            <div className="text-xs text-muted-foreground">花费（近7日）</div>
-            <div className="text-lg font-semibold tabular-nums">¥{last7.adSpend.toLocaleString("zh-CN")}</div>
-          </div>
-          <div>
-            <div className="text-xs text-muted-foreground">广告 GMV（近7日）</div>
-            <div className="text-lg font-semibold tabular-nums">¥{last7.gmv.toLocaleString("zh-CN")}</div>
-          </div>
-          <div>
-            <div className="text-xs text-muted-foreground">ROI（近7日）</div>
-            <div
-              className={cn(
-                "text-lg font-semibold tabular-nums",
-                last7.roi == null ? "text-muted-foreground" : last7.roi >= 1 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400",
-              )}
-            >
-              {last7.roi == null ? "—" : `${last7.roi.toFixed(2)}x`}
-            </div>
-          </div>
-        </div>
-        {hasDays ? (
-          <ChartContainer config={config} className="h-[208px] w-full">
-            <BarChart data={effect.days} margin={{ top: 4, left: 4, right: 4, bottom: 0 }} barSize={18}>
-              <XAxis
-                dataKey="date"
-                tickLine={false}
-                axisLine={false}
-                tickMargin={6}
-                interval={0}
-                minTickGap={8}
-                tickFormatter={(v: string) => v.slice(5)}
-              />
-              <ChartTooltip
-                cursor={{ fill: "var(--muted)" }}
-                content={
-                  <ChartTooltipContent
-                    hideLabel
-                    formatter={(value, name) => [`¥${Number(value).toLocaleString("zh-CN")}`, name]}
-                    labelFormatter={(v) => String(v)}
-                  />
-                }
-              />
-              {/* 数据字段为 adSpend（此前误写 spend 导致柱形全部不渲染，只剩坐标轴刻度） */}
-              <Bar dataKey="adSpend" fill="var(--color-spend)" radius={4} />
-            </BarChart>
-          </ChartContainer>
-        ) : (
-          <div className="flex h-[208px] items-center justify-center text-sm text-muted-foreground">
-            暂无广告数据（插件在 ads.temu.com 采集后自动出现）
-          </div>
         )}
       </CardContent>
     </Card>

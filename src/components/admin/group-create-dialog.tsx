@@ -23,19 +23,7 @@ import {
   GroupModelPicker,
   type GroupModelOption,
 } from "@/components/admin/group-model-picker"
-
-const PAGE_OPTIONS = [
-  { value: "create", label: "自由创作" },
-  { value: "chat", label: "AI 对话" },
-  { value: "assets", label: "资产管理" },
-  { value: "workspace", label: "批量生图" },
-  { value: "product", label: "商品图片" },
-  { value: "weartry", label: "穿戴图片" },
-  { value: "mockup", label: "样机渲染" },
-  { value: "temu", label: "Temu 数据" },
-  { value: "agent", label: "AI Agent" },
-  { value: "settings", label: "个人设置" },
-] as const
+import { BASE_MODULE_OPTIONS, MODULE_LABELS, TEMU_TAB_OPTIONS } from "@/lib/modules"
 
 export function GroupCreateDialog({
   imageModels,
@@ -47,13 +35,30 @@ export function GroupCreateDialog({
   const [open, setOpen] = React.useState(false)
   const [imageSelected, setImageSelected] = React.useState<Set<string>>(new Set())
   const [chatSelected, setChatSelected] = React.useState<Set<string>>(new Set())
+  /** TEMU 总开关（未勾时 tab 子项禁用且不提交；不勾默认放行企业全部已开通模块） */
+  const [temuOn, setTemuOn] = React.useState(false)
+  /** DialogContent 仅 open 时挂载，非受控项自动复位；外层受控状态需手动复位（对齐 modules-dialog） */
+  React.useEffect(() => {
+    if (open) {
+      setTemuOn(false)
+      setImageSelected(new Set())
+      setChatSelected(new Set())
+    }
+  }, [open])
   const router = useRouter()
 
   const [state, formAction, pending] = useActionState(
     async (_prev: unknown, formData: FormData) => {
-      const allowedPages = PAGE_OPTIONS.filter(
-        (o) => formData.get(`page_${o.value}`) === "on",
-      ).map((o) => o.value) as never
+      const allowedPages = [
+        ...BASE_MODULE_OPTIONS.filter((o) => formData.get(`page_${o.value}`) === "on").map((o) => o.value),
+        ...(formData.get("page_temu") === "on"
+          ? [
+              "temu",
+              ...TEMU_TAB_OPTIONS.filter((o) => formData.get(`page_${o.value}`) === "on").map((o) => o.value),
+            ]
+          : []),
+        ...(formData.get("page_settings") === "on" ? ["settings"] : []),
+      ] as never
       const res = await createGroupAction({
         name: String(formData.get("name") ?? ""),
         description: String(formData.get("description") ?? "") || undefined,
@@ -117,7 +122,7 @@ export function GroupCreateDialog({
           <div className="grid gap-2">
             <Label>允许页面（不勾选默认放行企业全部已开通模块）</Label>
             <div className="grid grid-cols-4 gap-2">
-              {PAGE_OPTIONS.map((o) => (
+              {BASE_MODULE_OPTIONS.map((o) => (
                 <label
                   key={o.value}
                   className="flex items-center gap-2 text-sm"
@@ -126,7 +131,30 @@ export function GroupCreateDialog({
                   {o.label}
                 </label>
               ))}
+              <label className="flex items-center gap-2 text-sm font-medium">
+                <Checkbox
+                  name="page_temu"
+                  checked={temuOn}
+                  onCheckedChange={(v) => setTemuOn(v === true)}
+                />
+                {MODULE_LABELS.temu}
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <Checkbox name="page_settings" />
+                {MODULE_LABELS.settings}
+              </label>
             </div>
+            <div className="ml-4 grid grid-cols-4 gap-2 border-l pl-3">
+              {TEMU_TAB_OPTIONS.map((o) => (
+                <label key={o.value} className="flex items-center gap-2 text-sm">
+                  <Checkbox name={`page_${o.value}`} disabled={!temuOn} />
+                  {o.label}
+                </label>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              TEMU 子页面按勾选放行（须企业已开通 TEMU 且对应页面已授权）；店铺页面不设权限项，仅企业管理员可见
+            </p>
           </div>
           <GroupModelPicker
             label="可用生图模型"

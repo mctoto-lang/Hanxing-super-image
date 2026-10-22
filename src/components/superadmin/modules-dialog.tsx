@@ -17,20 +17,8 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { toast } from "sonner"
 import { useRouter } from "next/navigation"
 import { updateModulesAction } from "@/server/actions/platform"
+import { BASE_MODULE_OPTIONS, MODULE_LABELS, TEMU_TAB_OPTIONS } from "@/lib/modules"
 import type { ModuleName } from "@/db/schema"
-
-const MODULE_OPTIONS: { value: ModuleName; label: string }[] = [
-  { value: "create", label: "创作" },
-  { value: "chat", label: "AI 对话" },
-  { value: "assets", label: "资产管理" },
-  { value: "workspace", label: "批量生图" },
-  { value: "product", label: "商品图片" },
-  { value: "weartry", label: "穿戴图片" },
-  { value: "mockup", label: "样机渲染" },
-  { value: "temu", label: "Temu 数据" },
-  { value: "agent", label: "AI Agent" },
-  { value: "settings", label: "个人设置" },
-]
 
 export function ModulesDialog({
   enterpriseId,
@@ -43,12 +31,25 @@ export function ModulesDialog({
 }) {
   const [open, setOpen] = React.useState(false)
   const router = useRouter()
+  /** TEMU 总开关（未勾时 7 个 tab 子项禁用且不提交） */
+  const [temuOn, setTemuOn] = React.useState(currentModules.includes("temu"))
+  React.useEffect(() => {
+    if (open) setTemuOn(currentModules.includes("temu"))
+  }, [open, currentModules])
 
   const [state, formAction, pending] = useActionState(
     async (_prev: unknown, formData: FormData) => {
-      const modules = MODULE_OPTIONS.filter(
+      const plain = BASE_MODULE_OPTIONS.filter(
         (o) => formData.get(`mod_${o.value}`) === "on",
       ).map((o) => o.value)
+      const modules: ModuleName[] = [
+        ...plain,
+        ...(formData.get("mod_temu") === "on" ? (["temu"] as ModuleName[]) : []),
+        ...((formData.get("mod_temu") === "on"
+          ? TEMU_TAB_OPTIONS.filter((o) => formData.get(`mod_${o.value}`) === "on").map((o) => o.value)
+          : []) as ModuleName[]),
+        "settings",
+      ]
       const res = await updateModulesAction({ enterpriseId, modules })
       if (res.ok) {
         toast.success("模块配置已更新")
@@ -74,7 +75,7 @@ export function ModulesDialog({
         </DialogHeader>
         <form action={formAction} className="space-y-3">
           <div className="space-y-2">
-            {MODULE_OPTIONS.map((o) => (
+            {BASE_MODULE_OPTIONS.map((o) => (
               <label
                 key={o.value}
                 className="flex items-center gap-2 text-sm"
@@ -82,14 +83,39 @@ export function ModulesDialog({
                 <Checkbox
                   name={`mod_${o.value}`}
                   defaultChecked={currentModules.includes(o.value)}
-                  disabled={o.value === "settings"}
                 />
                 {o.label}
-                {o.value === "settings" ? (
-                  <span className="text-xs text-muted-foreground">（始终开启）</span>
-                ) : null}
               </label>
             ))}
+
+            <label className="flex items-center gap-2 border-t pt-2 text-sm font-medium">
+              <Checkbox
+                name="mod_temu"
+                checked={temuOn}
+                onCheckedChange={(v) => setTemuOn(v === true)}
+              />
+              {MODULE_LABELS.temu}
+              <span className="text-xs font-normal text-muted-foreground">（总开关，勾选后可配置各页面权限）</span>
+            </label>
+            <div className="ml-6 space-y-2 border-l pl-3">
+              {TEMU_TAB_OPTIONS.map((o) => (
+                <label key={o.value} className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    name={`mod_${o.value}`}
+                    defaultChecked={currentModules.includes(o.value)}
+                    disabled={!temuOn}
+                  />
+                  {o.label}
+                </label>
+              ))}
+              <p className="text-xs text-muted-foreground">店铺页面不设权限项，仅企业管理员可见</p>
+            </div>
+
+            <label className="flex items-center gap-2 border-t pt-2 text-sm">
+              <Checkbox name="mod_settings" defaultChecked disabled />
+              {MODULE_LABELS.settings}
+              <span className="text-xs text-muted-foreground">（始终开启）</span>
+            </label>
           </div>
           {state?.error ? (
             <p role="alert" className="text-sm text-destructive">{state.error}</p>

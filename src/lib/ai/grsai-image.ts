@@ -15,6 +15,7 @@
  * - 响应：{ status, results: [{ url }], error }；status 非 succeeded
  *   （failed/violation/running 等）按失败处理并透出上游 error。
  */
+import { API_ERROR_BODY_MAX_LENGTH } from "@/lib/ai/error-limits"
 import {
   buildGrsaiRequestBody,
   type ImageGenResult,
@@ -159,7 +160,7 @@ export async function callGrsaiImageApi(opts: {
 
         if (!response.ok) {
           const text = await response.text().catch(() => "")
-          throw new Error(`Grsai 生图 API 错误 ${response.status}: ${text.slice(0, 2000)}`)
+          throw new Error(`Grsai 生图 API 错误 ${response.status}: ${text.slice(0, API_ERROR_BODY_MAX_LENGTH)}`)
         }
 
         const data: unknown = await response.json()

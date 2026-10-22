@@ -8,6 +8,7 @@
  * jimengN 不在此处生效——模型配置的「每次 N 张」已在提交端相乘进
  * task.imageCount（次数 × N），适配器只按传入总数生成。
  */
+import { API_ERROR_BODY_MAX_LENGTH } from "@/lib/ai/error-limits"
 import {
   buildJimengRequestBody,
   sizeToRatio,
@@ -145,7 +146,7 @@ export async function callJimengApi(opts: {
 
       if (!response.ok) {
         const text = await response.text().catch(() => "")
-        throw new Error(`即梦 API 错误 ${response.status}: ${text.slice(0, 200)}`)
+        throw new Error(`即梦 API 错误 ${response.status}: ${text.slice(0, API_ERROR_BODY_MAX_LENGTH)}`)
       }
 
       const data = await response.json()

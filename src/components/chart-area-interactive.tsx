@@ -36,6 +36,8 @@ export const description = "An interactive area chart"
  * dashboard-01 ChartAreaInteractive：仅把内置演示数据替换为 data prop，
  * 系列 key（desktop/mobile）与全部标记样式保持模板原样。
  * desktop = 七日滚动销量（件），mobile = 今日销量（件）。
+ * 两口径互相独立（今日 ⊂ 七日），不堆叠、双色区分——模板原 stackId 同色
+ * 堆叠会把总量视觉翻倍。
  */
 export type TrendPoint = {
   date: string
@@ -49,11 +51,11 @@ const chartConfig = {
   },
   desktop: {
     label: "七日销量",
-    color: "var(--primary)",
+    color: "var(--chart-1)",
   },
   mobile: {
     label: "今日销量",
-    color: "var(--primary)",
+    color: "var(--chart-2)",
   },
 } satisfies ChartConfig
 
@@ -200,14 +202,12 @@ export function ChartAreaInteractive({ data }: { data: TrendPoint[] }) {
               type="natural"
               fill="url(#fillMobile)"
               stroke="var(--color-mobile)"
-              stackId="a"
             />
             <Area
               dataKey="desktop"
               type="natural"
               fill="url(#fillDesktop)"
               stroke="var(--color-desktop)"
-              stackId="a"
             />
           </AreaChart>
         </ChartContainer>

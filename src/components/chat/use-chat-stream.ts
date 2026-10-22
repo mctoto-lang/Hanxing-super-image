@@ -3,6 +3,7 @@
 import { useCallback, useRef, useState } from "react"
 import type { ChatStreamState, ThinkingLevel } from "@/components/chat/types"
 import { emitGrokEmotion } from "@/lib/grok-ball-bus"
+import { API_ERROR_BODY_MAX_LENGTH } from "@/lib/ai/error-limits"
 
 /**
  * SSE 流式对话客户端 Hook
@@ -112,13 +113,21 @@ export function useChatStream(hooks: {
         })
 
         if (!resp.ok || !resp.body) {
-          let message = `请求失败（${resp.status}）`
+          // 先读原文再 parse（json() 消费后 body 不可重复读）；
+          // 非 JSON 错误体（如网关 HTML 错误页）拼入原文，避免只剩状态码
+          const text = await resp.text().catch(() => "")
+          let message: string | null = null
           try {
-            const data = (await resp.json()) as { error?: string }
+            const data = JSON.parse(text) as { error?: string }
             if (data.error) message = data.error
           } catch {
             // 非 JSON 错误体
           }
+          message =
+            message ??
+            (text
+              ? `请求失败（${resp.status}）: ${text.slice(0, API_ERROR_BODY_MAX_LENGTH)}`
+              : `请求失败（${resp.status}）`)
           patch({ status: "error", error: message })
           throw new Error(message)
         }

@@ -15,6 +15,7 @@
  * - 响应解析：data[0].url（标准）/ data[0].b64_json（转 data URL 转存），
  *   并对常见网关变体做容错提取。
  */
+import { API_ERROR_BODY_MAX_LENGTH } from "@/lib/ai/error-limits"
 import {
   buildOpenAiRequestBody,
   type ImageGenResult,
@@ -184,7 +185,7 @@ export async function callOpenAiImageApi(opts: {
         if (!response.ok) {
           const text = await response.text().catch(() => "")
           // 保留大段上游响应体（含内容政策拒绝等完整错误），便于定位来源
-          throw new Error(`OpenAI 生图 API 错误 ${response.status}: ${text.slice(0, 2000)}`)
+          throw new Error(`OpenAI 生图 API 错误 ${response.status}: ${text.slice(0, API_ERROR_BODY_MAX_LENGTH)}`)
         }
 
         const data: unknown = await response.json()

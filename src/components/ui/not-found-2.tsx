@@ -24,11 +24,11 @@ export function NotFound() {
         </EmptyHeader>
         <EmptyContent>
           <div className="flex gap-2">
-            <Button render={<Link href="/" />}>
+            <Button nativeButton={false} render={<Link href="/" />}>
               <HouseIcon className="size-4" data-icon="inline-start" />
               返回首页
             </Button>
-            <Button variant="outline" render={<Link href="/create" />}>
+            <Button variant="outline" nativeButton={false} render={<Link href="/create" />}>
               <CompassIcon className="size-4" data-icon="inline-start" />
               前往工作台
             </Button>

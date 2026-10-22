@@ -185,6 +185,37 @@ void (async () => {
       }
     }
 
+    // TEMU 官方 API 数据同步：低频（默认 15 分钟）遍历启用同步的店铺，
+    // 串行拉商品/生命周期/销售/售罄四源（3 qps 限速在 client 内）；
+    // syncDueStores 内部按 lastSyncAt 节流，手动同步过的店铺本轮自动跳过
+    const { syncDueStores } = await import("@/server/services/temu-sync")
+    const temuSyncInterval = Number(process.env.TEMU_SYNC_INTERVAL_MS) || 15 * 60 * 1000
+    const temuSyncLoop = async (): Promise<void> => {
+      while (running) {
+        try {
+          const outcomes = await syncDueStores(temuSyncInterval)
+          for (const o of outcomes) {
+            if (o.skipped) {
+              console.log(`[worker:temu-sync] 店铺 ${o.storeId} 跳过：${o.skipped}`)
+            } else if (o.status) {
+              const summary = Object.entries(o.status.sources)
+                .map(([k, v]) => `${k}:${v.ok ? v.count ?? 0 : "失败"}`)
+                .join(" ")
+              console.log(
+                `[worker:temu-sync] 店铺 ${o.storeId} 同步${o.status.ok ? "完成" : "部分失败"}：${summary}`,
+              )
+            }
+          }
+        } catch (err) {
+          console.error(
+            "[worker:temu-sync] 同步循环异常:",
+            err instanceof Error ? err.message : err,
+          )
+        }
+        await sleep(temuSyncInterval)
+      }
+    }
+
     await Promise.all([
       processQueueContinuous({ isRunning: () => running }),
       runLoop("chat", processChatQueueOnce),
@@ -198,6 +229,7 @@ void (async () => {
       }),
       statusLoop(),
       subscriptionLoop(),
+      temuSyncLoop(),
     ])
 
     console.log("[worker] 已停止")

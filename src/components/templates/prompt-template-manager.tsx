@@ -53,7 +53,7 @@ import type {
 } from "@/lib/workspace/types"
 
 /**
- * 提示词模板管理页（自批量生图的模板管理弹窗迁移而来）。
+ * 生图提示词模板管理页（自批量生图的模板管理弹窗迁移而来）。
  *
  * 模板仅被批量生图（裂变/细化/重生成/提取/翻译）消费，
  * 变更后由 server action 同时 revalidate /workspace 与 /templates。

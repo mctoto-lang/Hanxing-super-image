@@ -61,6 +61,15 @@ function CollapsibleItem({
     item.items?.some(
       (sub) => pathname === sub.url || pathname.startsWith(sub.url + "/"),
     ) ?? false
+  // 子项高亮：兄弟最长前缀匹配——/templates/temu 只点亮 TEMU刊登模板，
+  // 不再连带点亮更短前缀的 生图提示词模板（/templates）
+  const activeSubUrl =
+    item.items?.reduce((best: string, sub) => {
+      const hit = pathname === sub.url || pathname.startsWith(sub.url + "/")
+      if (!hit) return best
+      if (!best || sub.url.length > best.length) return sub.url
+      return best
+    }, "") ?? ""
   const [open, setOpen] = React.useState(active || subActive)
 
   return (
@@ -95,9 +104,7 @@ function CollapsibleItem({
         <CollapsibleContent>
           <SidebarMenuSub>
             {item.items!.map((subItem) => {
-              const subItemActive =
-                pathname === subItem.url ||
-                pathname.startsWith(subItem.url + "/")
+              const subItemActive = activeSubUrl === subItem.url
               return (
                 <SidebarMenuSubItem key={subItem.title}>
                   <SidebarMenuSubButton

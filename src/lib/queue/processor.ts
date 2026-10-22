@@ -25,6 +25,7 @@ import {
   type QueueTaskInput,
 } from "@/lib/queue/task-queue"
 import { callImageApi } from "@/lib/ai"
+import { API_ERROR_BODY_MAX_LENGTH } from "@/lib/ai/error-limits"
 import { mergeImageResults } from "@/lib/ai/image-model-config"
 import { env } from "@/lib/env"
 import { getStorage } from "@/lib/storage"
@@ -760,11 +761,16 @@ async function processOneTask(
   // 上游可能一次返回多于请求数的图（如即梦固定出 4 张）；多出的不视为失败，
   // 否则 failedCount 为负会误走"部分失败"重试分支
   const failedCount = Math.max(0, totalCount - succeededIndexes.length)
-  const failureDetails = imageResults
-    .filter((r) => r.error)
+  // 失败明细保留前 10 张，更多时汇总张数（上游单条错误已在适配器层截断）
+  const failedResults = imageResults.filter((r) => r.error)
+  const shownFailureDetails = failedResults
+    .slice(0, 10)
     .map((r) => `第 ${r.index + 1} 张: ${r.error}`)
-    .slice(0, 5)
     .join("；")
+  const failureDetails =
+    failedResults.length > 10
+      ? `${shownFailureDetails}；等共 ${failedResults.length} 张失败`
+      : shownFailureDetails
 
   if (failedCount === 0) {
     // 全部成功
@@ -977,7 +983,7 @@ async function apiCallLog(
     modelId,
     requestSummary: `model=${task.modelId} size=${task.imageSize} count=${task.imageCount}`,
     responseSummary: errorMsg
-      ? `error: ${errorMsg.slice(0, 200)}`
+      ? `error: ${errorMsg.slice(0, API_ERROR_BODY_MAX_LENGTH)}`
       : `images=${imageCount}`,
     errorMessage: errorMsg,
     durationMs: Date.now() - startedAt,

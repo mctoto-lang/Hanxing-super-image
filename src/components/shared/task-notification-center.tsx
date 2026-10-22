@@ -131,8 +131,9 @@ export function TaskNotificationCenter() {
           )
         } else if (result.status === "failed") {
           untrackTask(task.taskId)
+          // 300 字符内尽量展示可定位的错误原因，完整错误见任务卡片悬浮详情
           toast.error(
-            (result.errorMessage ?? "生成失败").slice(0, 80),
+            (result.errorMessage ?? "生成失败").slice(0, 300),
           )
         }
       }

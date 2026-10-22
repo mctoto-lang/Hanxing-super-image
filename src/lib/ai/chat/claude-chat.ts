@@ -12,6 +12,7 @@
  *   思考仅支持默认温度）；
  * - usage：message_start 报 input_tokens，message_delta 报（累计）output_tokens。
  */
+import { API_ERROR_BODY_MAX_LENGTH } from "../error-limits"
 import {
   extractChatErrorMessage,
   mergeConsecutiveMessages,
@@ -134,7 +135,7 @@ export async function* streamClaudeChat(
     dispose()
     yield {
       type: "error",
-      message: message ?? `对话 API 错误 ${response.status}: ${text.slice(0, 200)}`,
+      message: message ?? `对话 API 错误 ${response.status}: ${text.slice(0, API_ERROR_BODY_MAX_LENGTH)}`,
     }
     return
   }

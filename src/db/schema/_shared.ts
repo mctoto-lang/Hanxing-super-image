@@ -6,7 +6,7 @@ import { pgEnum } from "drizzle-orm/pg-core"
  * 多租户、角色、状态、积分流水等枚举集中定义，供各域 schema 复用。
  */
 
-/** 业务模块名（手册 D22：企业级模块开关） */
+/** 业务模块名（手册 D22：企业级模块开关；temu_* 为 TEMU 页各 tab 子权限，依赖 temu 总开关） */
 export const MODULE_NAMES = [
   "create", // 统一创作页
   "chat", // AI 对话
@@ -15,11 +15,30 @@ export const MODULE_NAMES = [
   "product", // 商品主图
   "weartry", // 穿戴图片（服装组图/模特穿戴/AI万戴/AI换色）
   "mockup", // 样机渲染
-  "temu", // Temu 卖家数据面板（插件采集上报）
+  "temu", // TEMU 数据与运营工作台（总开关：入口/刊登模板）
+  "temu_overview", // TEMU tab：销售概览
+  "temu_products", // TEMU tab：商品信息
+  "temu_publish", // TEMU tab：商品发布
+  "temu_ads", // TEMU tab：广告推广
+  "temu_price", // TEMU tab：核价调价
+  "temu_purchase", // TEMU tab：备货
+  "temu_qc", // TEMU tab：质检
   "agent", // AI Agent 工作流画布（多智能体协作生图流水线）
   "settings", // 用户个人设置（默认开通）
 ] as const
 export type ModuleName = (typeof MODULE_NAMES)[number]
+
+/** TEMU 页 tab → 子权限模块 key（店铺 tab 不设权限项，仅企业管理员可见） */
+export const TEMU_TAB_MODULES = {
+  overview: "temu_overview",
+  products: "temu_products",
+  publish: "temu_publish",
+  ads: "temu_ads",
+  price: "temu_price",
+  purchase: "temu_purchase",
+  qc: "temu_qc",
+} as const
+export type TemuTabModule = (typeof TEMU_TAB_MODULES)[keyof typeof TEMU_TAB_MODULES]
 
 /** 企业状态 */
 export const enterpriseStatusEnum = pgEnum("enterprise_status", [
