@@ -38,6 +38,7 @@ import {
   type TemuAutoStockResult,
 } from "@/server/actions/temu-fulfillment"
 import { ProductNameCell, EmptyHint } from "@/components/temu/products-table"
+import { temuImageSrc } from "@/lib/temu/image"
 
 /**
  * 申报备货视图（备货 Tab 子视图）：对商品向平台主动申请新备货单（VMI 备货，
@@ -46,11 +47,9 @@ import { ProductNameCell, EmptyHint } from "@/components/temu/products-table"
  */
 export function StockView({
   store,
-  isAdmin,
   onBack,
 }: {
   store: string
-  isAdmin: boolean
   /** 返回「备货单」视图 */
   onBack: () => void
 }) {
@@ -119,7 +118,7 @@ export function StockView({
       <CardHeader className="flex flex-wrap items-center justify-between gap-3 space-y-0">
         <CardTitle className="text-base">申报备货（{rows.length}）</CardTitle>
         <div className="flex flex-wrap items-center gap-2">
-          {isAdmin && selectedRows.length > 0 && (
+          {selectedRows.length > 0 && (
             <>
               <Button size="sm" className="h-9! text-xs" disabled={applying} onClick={runBatch}>
                 {applying ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
@@ -204,7 +203,7 @@ export function StockView({
           <table className="w-max min-w-full caption-bottom text-sm [&_td]:px-3 [&_th]:px-3">
             <TableHeader className="sticky top-0 z-10 bg-background">
               <TableRow>
-                {isAdmin && <TableHead className="w-8"></TableHead>}
+                <TableHead className="w-8"></TableHead>
                 <TableHead>主图</TableHead>
                 <TableHead>商品名</TableHead>
                 <TableHead>货号</TableHead>
@@ -213,39 +212,37 @@ export function StockView({
                 <TableHead className="text-right">可售天数</TableHead>
                 <TableHead>SKU</TableHead>
                 <TableHead>可备货</TableHead>
-                {isAdmin && <TableHead className="text-right">每 SKU 申报量</TableHead>}
+                <TableHead className="text-right">每 SKU 申报量</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {rows.map((r) => {
                 const checked = selected.has(r.productSkcId)
-                const selectable = isAdmin && r.skus.length > 0
+                const selectable = r.skus.length > 0
                 return (
                   <TableRow key={r.productSkcId}>
-                    {isAdmin && (
-                      <TableCell>
-                        <button
-                          type="button"
-                          aria-label="选择"
-                          disabled={!selectable}
-                          className="text-muted-foreground hover:text-foreground disabled:opacity-40"
-                          onClick={() =>
-                            setSelected((s) => {
-                              const n = new Set(s)
-                              if (n.has(r.productSkcId)) n.delete(r.productSkcId)
-                              else n.add(r.productSkcId)
-                              return n
-                            })
-                          }
-                        >
-                          {checked ? <CheckSquare className="size-4" /> : <Square className="size-4" />}
-                        </button>
-                      </TableCell>
-                    )}
+                    <TableCell>
+                      <button
+                        type="button"
+                        aria-label="选择"
+                        disabled={!selectable}
+                        className="text-muted-foreground hover:text-foreground disabled:opacity-40"
+                        onClick={() =>
+                          setSelected((s) => {
+                            const n = new Set(s)
+                            if (n.has(r.productSkcId)) n.delete(r.productSkcId)
+                            else n.add(r.productSkcId)
+                            return n
+                          })
+                        }
+                      >
+                        {checked ? <CheckSquare className="size-4" /> : <Square className="size-4" />}
+                      </button>
+                    </TableCell>
                     <TableCell>
                       {r.mainImageUrl ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={r.mainImageUrl} alt="" className="size-10 rounded-md object-cover" loading="lazy" />
+                        <img src={temuImageSrc(r.mainImageCosUrl, r.mainImageUrl)} alt="" className="size-10 rounded-md object-cover" loading="lazy" />
                       ) : (
                         <div className="size-10 rounded-md bg-muted" />
                       )}
@@ -273,19 +270,17 @@ export function StockView({
                         <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">—</span>
                       )}
                     </TableCell>
-                    {isAdmin && (
-                      <TableCell className="text-right">
-                        <Input
-                          className="ml-auto h-8 w-20 text-xs"
-                          type="number"
-                          inputMode="numeric"
-                          min={1}
-                          placeholder="1"
-                          value={quantities[r.productSkcId] ?? ""}
-                          onChange={(e) => setQuantities((s) => ({ ...s, [r.productSkcId]: e.target.value }))}
-                        />
-                      </TableCell>
-                    )}
+                    <TableCell className="text-right">
+                      <Input
+                        className="ml-auto h-8 w-20 text-xs"
+                        type="number"
+                        inputMode="numeric"
+                        min={1}
+                        placeholder="1"
+                        value={quantities[r.productSkcId] ?? ""}
+                        onChange={(e) => setQuantities((s) => ({ ...s, [r.productSkcId]: e.target.value }))}
+                      />
+                    </TableCell>
                   </TableRow>
                 )
               })}

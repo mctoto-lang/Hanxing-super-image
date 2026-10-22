@@ -540,6 +540,13 @@
       "when": 1792972800000,
       "tag": "0076_drop_agent_workshop",
       "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1793059200000,
+      "tag": "0077_temu_product_cos_image",
+      "breakpoints": true
     }
   ]
 }

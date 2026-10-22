@@ -25,8 +25,10 @@ import { TemplateWizard } from "./template-wizard"
 /**
  * TEMU 刊登模板管理（本页只做模板的创建/编辑/删除）。
  * 实际发品入口在 店铺管理 → TEMU → 商品发布（模板选择 + 店铺提交 + 发品记录）。
+ * 权限：canManage=有商品发布页 tab 权限（可查看 TEMU 商品发布页即可创建/编辑/删除模板，
+ * 2026-10-22 口径，写侧 action 同校验）。
  */
-export function TemuTemplateManager({ isAdmin }: { isAdmin: boolean }) {
+export function TemuTemplateManager({ canManage }: { canManage: boolean }) {
   const [templates, setTemplates] = useState<TemuPublishTemplateRow[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -81,7 +83,7 @@ export function TemuTemplateManager({ isAdmin }: { isAdmin: boolean }) {
               {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
               刷新
             </Button>
-            {isAdmin && (
+            {canManage && (
               <Button
                 onClick={() => {
                   setEditing(null)
@@ -108,7 +110,7 @@ export function TemuTemplateManager({ isAdmin }: { isAdmin: boolean }) {
                   <TableHead>规格</TableHead>
                   <TableHead>默认申报价</TableHead>
                   <TableHead>更新时间</TableHead>
-                  {isAdmin && <TableHead className="text-right">操作</TableHead>}
+                  {canManage && <TableHead className="text-right">操作</TableHead>}
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -132,7 +134,7 @@ export function TemuTemplateManager({ isAdmin }: { isAdmin: boolean }) {
                     <TableCell className="text-xs text-muted-foreground">
                       {new Date(tpl.updatedAt).toLocaleString("zh-CN", { hour12: false })}
                     </TableCell>
-                    {isAdmin && (
+                    {canManage && (
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1">
                           <Button

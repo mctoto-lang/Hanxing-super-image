@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { eq, sql } from "drizzle-orm"
+import { and, eq, isNotNull, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import {
   temuAdsDailies,
@@ -20,6 +20,7 @@ import {
   type TemuCallContext,
 } from "@/lib/temu-api/client"
 import { getTemuAppCredential } from "@/lib/temu-api/app-config"
+import { getStorage } from "@/lib/storage"
 import { invalidateTemuCache } from "@/server/services/temu-cache"
 import { temuDayOfTs, temuDayStr } from "@/server/services/temu-time"
 
@@ -28,6 +29,7 @@ import { temuDayOfTs, temuDayStr } from "@/server/services/temu-time"
  *
  * 每店铺串行拉六源（3 qps 限速在 client 内）：
  * - api-goods-list      bg.glo.goods.list.get（PA）→ temu_product 基础信息
+ * - product-image-mirror 主图转存（kwcdn → 自有存储 temu/ 前缀，本地源后增量）
  * - api-lifecycle       bg.glo.product.search（PA）→ temu_product 选中状态 + SKU 映射
  * - api-sales-overview  bg.goods.salesv2.get（CN）→ temu_sales_overview 快照 + 标识/申报价回填
  * - api-soldout         bg.glo.goods.topselling.soldout.get（PA）→ temu_metric_snapshot
@@ -78,8 +80,6 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 /* ─── 各数据源 ─── */
-
-type SourceResult = { ok: boolean; count?: number; error?: string }
 
 /** bg.glo.goods.list.get（PA，page/pageSize≤100）→ temu_product 基础信息 */
 async function syncGoodsList(storeId: string, ctx: TemuCallContext): Promise<number> {
@@ -163,6 +163,77 @@ async function upsertGoodsBatch(storeId: string, items: Record<string, unknown>[
     await db.insert(temuSkuMaps).values(skuMapValues).onConflictDoNothing()
   }
   return bySkc.size
+}
+
+/* ─── 商品主图转存（kwcdn 外链 → 自有存储） ─── */
+
+/** 每店每轮转存上限：大店首轮几千张分多轮消化，避免单轮同步被图片下载拖爆 */
+const IMAGE_MIRROR_BATCH = 50
+
+/** TEMU 主图外链域（trustedHostHints 同站放行：kwcdn.com 全系子域） */
+const TEMU_IMAGE_HOST_HINTS = ["img.kwcdn.com"]
+
+/**
+ * 商品主图增量转存（temu/ 前缀，不过期）：新图（cos_url 为空）或换图
+ * （cos_source 与当前 main_image_url 不一致）才转，成功回写两列；缩略图由
+ * 前端用同一对象 + 数据万象 imageMogr2 缩放参数。随机取批防烂图队头阻塞
+ * （单张失败下轮重试，不炸源）；与手动同步并发时最多重复转存一次（UUID
+ * key 各自独立，无害）。batch 参数供回填脚本调大批量，同步链路用默认值。
+ */
+export async function mirrorProductImages(
+  storeId: string,
+  batch: number = IMAGE_MIRROR_BATCH,
+): Promise<number> {
+  const [store] = await db
+    .select({ enterpriseId: temuStores.enterpriseId })
+    .from(temuStores)
+    .where(eq(temuStores.id, storeId))
+    .limit(1)
+  if (!store) return 0
+  const pending = await db
+    .select({ id: temuProducts.id, mainImageUrl: temuProducts.mainImageUrl })
+    .from(temuProducts)
+    .where(
+      and(
+        eq(temuProducts.storeId, storeId),
+        isNotNull(temuProducts.mainImageUrl),
+        sql`${temuProducts.mainImageUrl} <> ''`,
+        sql`(${temuProducts.mainImageCosUrl} is null or ${temuProducts.mainImageCosSource} is null or ${temuProducts.mainImageCosSource} is distinct from ${temuProducts.mainImageUrl})`,
+      ),
+    )
+    .orderBy(sql`random()`)
+    .limit(batch)
+  if (pending.length === 0) return 0
+
+  const storage = await getStorage()
+  let done = 0
+  const failures: string[] = []
+  for (const row of pending) {
+    const source = row.mainImageUrl!
+    try {
+      const url = await storage.saveFromUrl(
+        source,
+        store.enterpriseId,
+        "temu",
+        TEMU_IMAGE_HOST_HINTS,
+      )
+      await db
+        .update(temuProducts)
+        .set({ mainImageCosUrl: url, mainImageCosSource: source })
+        .where(eq(temuProducts.id, row.id))
+      done++
+    } catch (err) {
+      failures.push(
+        `${source.slice(0, 120)}: ${err instanceof Error ? err.message.slice(0, 180) : String(err)}`,
+      )
+    }
+  }
+  if (failures.length > 0) {
+    console.warn(
+      `[temu-sync] 商品主图转存 ${done} 成功 / ${failures.length} 失败（下轮重试）：\n  ${failures.join("\n  ")}`,
+    )
+  }
+  return done
 }
 
 /** bg.glo.product.search（PA，pageNum/pageSize≤100）→ 选中状态 + SKU 映射 */
@@ -709,6 +780,7 @@ export async function getTemuCallContext(
 
 const SOURCES: Array<{ source: string; run: (storeId: string, ctx: TemuCallContext) => Promise<number> }> = [
   { source: "api-goods-list", run: syncGoodsList },
+  { source: "product-image-mirror", run: (storeId) => mirrorProductImages(storeId) },
   { source: "api-lifecycle", run: syncLifecycle },
   { source: "api-sales-overview", run: syncSalesOverview },
   { source: "api-soldout", run: syncSoldout },

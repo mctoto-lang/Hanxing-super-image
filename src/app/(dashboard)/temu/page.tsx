@@ -195,14 +195,13 @@ export default async function TemuPage({
             store={
               publishableStores.find((s) => s.id === effectiveStore) ?? publishableStores[0]
             }
-            isAdmin={isAdmin}
           />
         )}
         {activeTab === "ads" && (
-          <AdsTab storeId={query.store} range={query.range} workbenchStore={effectiveStore} isAdmin={isAdmin} />
+          <AdsTab storeId={query.store} range={query.range} workbenchStore={effectiveStore} />
         )}
-        {activeTab === "price" && <TemuPriceReviewPanel store={effectiveStore} isAdmin={isAdmin} />}
-        {activeTab === "purchase" && <TemuPurchasePanel store={effectiveStore} isAdmin={isAdmin} />}
+        {activeTab === "price" && <TemuPriceReviewPanel store={effectiveStore} />}
+        {activeTab === "purchase" && <TemuPurchasePanel store={effectiveStore} />}
         {activeTab === "qc" && <TemuQualityPanel store={effectiveStore} />}
         {activeTab === "stores" && <TemuStoreManager stores={overview.stores} />}
       </div>
@@ -337,12 +336,10 @@ async function AdsTab({
   storeId,
   range,
   workbenchStore,
-  isAdmin,
 }: {
   storeId?: string
   range?: number
   workbenchStore?: string
-  isAdmin: boolean
 }) {
   const { rows, cards: syncedCards, range: r } = await getTemuAdsAction(storeId, range)
   // 同步窗口无数据时用注册表 detail.query 实时汇总兜底——创建广告后立即出数，
@@ -416,7 +413,6 @@ async function AdsTab({
       </div>
       <TemuAdsWorkbench
         store={workbenchStore}
-        isAdmin={isAdmin}
         reportRows={rows}
         range={r}
         urlStore={storeId}

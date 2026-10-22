@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll, afterAll, vi } from "vitest"
 import { randomUUID } from "node:crypto"
 import { eq } from "drizzle-orm"
 import { db } from "@/db/client"
-import { enterprises } from "@/db/schema"
+import { enterprises, permissionGroups } from "@/db/schema"
+import { MODULE_NAMES } from "@/db/schema/_shared"
 import { temuStores, temuProducts, temuSkuMaps, temuAds } from "@/db/schema/temu"
 import { encrypt } from "@/lib/crypto"
 import {
@@ -111,6 +112,10 @@ function mockWorkbenchFetch(overrides: FetchOverrides = {}, permissionDenied = f
 
 let entId: string
 let storeId: string
+/** 无广告页权限的成员：写操作按页面权限口径被拒 */
+let memberNoAdsId: string
+/** 有广告页权限的成员：可创建/修改广告 */
+let memberWithAdsId: string
 
 beforeAll(async () => {
   const [ent] = await db
@@ -119,9 +124,20 @@ beforeAll(async () => {
       name: "temu 工作台测试企业",
       slug: `wb-${randomUUID().slice(0, 8)}`,
       creditsBalance: 0,
+      // 写操作校验对应 tab 模块权限（页面可见即可用按钮）：企业先全量开通
+      enabledModules: [...MODULE_NAMES],
     })
     .returning()
   entId = ent!.id
+
+  const [noAdsGroup] = await db
+    .insert(permissionGroups)
+    .values({ enterpriseId: entId, name: "无广告权限组", allowedPages: ["settings"] })
+    .returning()
+  const [adsGroup] = await db
+    .insert(permissionGroups)
+    .values({ enterpriseId: entId, name: "广告权限组", allowedPages: ["settings", "temu", "temu_ads"] })
+    .returning()
 
   const [user] = await db
     .insert((await import("@/db/schema")).users)
@@ -135,6 +151,34 @@ beforeAll(async () => {
     })
     .returning()
   mockSession.userId = user!.id
+
+  const [memberNoAds] = await db
+    .insert((await import("@/db/schema")).users)
+    .values({
+      enterpriseId: entId,
+      username: `wbm-${randomUUID().slice(0, 8)}`,
+      email: `wbm-${randomUUID().slice(0, 8)}@test.local`,
+      name: "无广告权限成员",
+      passwordHash: "x",
+      enterpriseRole: "member",
+      groupId: noAdsGroup!.id,
+    })
+    .returning()
+  memberNoAdsId = memberNoAds!.id
+
+  const [memberWithAds] = await db
+    .insert((await import("@/db/schema")).users)
+    .values({
+      enterpriseId: entId,
+      username: `wba-${randomUUID().slice(0, 8)}`,
+      email: `wba-${randomUUID().slice(0, 8)}@test.local`,
+      name: "广告权限成员",
+      passwordHash: "x",
+      enterpriseRole: "member",
+      groupId: adsGroup!.id,
+    })
+    .returning()
+  memberWithAdsId = memberWithAds!.id
 
   const [store] = await db
     .insert(temuStores)
@@ -340,6 +384,37 @@ describe("广告工作台", () => {
     expect(r.ok).toBe(false)
     if (r.ok) return
     expect(r.error).toContain("未授权")
+  })
+
+  it("无广告页权限的成员创建广告被拒（页面权限口径）", async () => {
+    const prev = mockSession.userId
+    mockSession.userId = memberNoAdsId
+    vi.stubGlobal(
+      "fetch",
+      mockWorkbenchFetch({ "bg.glo.searchrec.ad.create": AD_CREATE_RESULT }),
+    )
+    const r = await createTemuAdsAction({
+      store: storeId,
+      items: [{ productId: "7001", budget: 1000, roas: 3.5 }],
+    })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toContain("页面权限")
+    mockSession.userId = prev
+  })
+
+  it("有广告页权限的成员可修改广告（可查看页面即有按钮权限）", async () => {
+    const prev = mockSession.userId
+    mockSession.userId = memberWithAdsId
+    const fetchMock = mockWorkbenchFetch({})
+    vi.stubGlobal("fetch", fetchMock)
+    const r = await modifyTemuAdAction({
+      store: storeId,
+      productId: "7001",
+      action: "budget",
+      budget: 2600,
+    })
+    expect(r.ok).toBe(true)
+    mockSession.userId = prev
   })
 })
 

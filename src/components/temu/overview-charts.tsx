@@ -230,6 +230,8 @@ type TopDatum = {
   productSn: string | null
   category: string | null
   mainImageUrl: string | null
+  /** 主图转存 URL（COS/本地；展示优先于 kwcdn 外链） */
+  mainImageCosUrl: string | null
   supplierPrice: number | null
 }
 
@@ -273,6 +275,7 @@ export function TemuSalesTop10({ data }: { data: TemuSalesTopRow[] }) {
         productSn: r.productSn,
         category: r.category,
         mainImageUrl: r.mainImageUrl,
+        mainImageCosUrl: r.mainImageCosUrl,
         supplierPrice: r.supplierPrice,
       }))
       .filter((r) => r.value > 0)

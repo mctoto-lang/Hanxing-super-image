@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto"
 import { deflateSync } from "node:zlib"
 import { eq } from "drizzle-orm"
 import { db } from "@/db/client"
-import { enterprises, users } from "@/db/schema"
+import { enterprises, permissionGroups, users } from "@/db/schema"
+import { MODULE_NAMES } from "@/db/schema/_shared"
 import { temuStores, temuPublishTemplates } from "@/db/schema/temu"
 import { encrypt } from "@/lib/crypto"
 import {
@@ -203,7 +204,10 @@ function buildPngNoise(w: number, h: number): Buffer {
 
 let entId: string
 let ownerId: string
+/** 无商品发布页权限的成员：模板写/发品按页面权限口径被拒 */
 let memberId: string
+/** 有商品发布页权限的成员：可创建模板/发品 */
+let memberWithPermId: string
 let storeId: string
 
 const TEMPLATE_PAYLOAD = {
@@ -241,9 +245,24 @@ const TEMPLATE_PAYLOAD = {
 beforeAll(async () => {
   const [ent] = await db
     .insert(enterprises)
-    .values({ name: "temu 发品测试企业", slug: `pub-${randomUUID().slice(0, 8)}`, creditsBalance: 0 })
+    .values({
+      name: "temu 发品测试企业",
+      slug: `pub-${randomUUID().slice(0, 8)}`,
+      creditsBalance: 0,
+      // 模板写/发品校验 temu_publish tab 模块权限（可查看商品发布页即可创建模板/发品）
+      enabledModules: [...MODULE_NAMES],
+    })
     .returning()
   entId = ent!.id
+
+  const [noPermGroup] = await db
+    .insert(permissionGroups)
+    .values({ enterpriseId: entId, name: "无发品权限组", allowedPages: ["settings"] })
+    .returning()
+  const [publishGroup] = await db
+    .insert(permissionGroups)
+    .values({ enterpriseId: entId, name: "发品权限组", allowedPages: ["settings", "temu", "temu_publish"] })
+    .returning()
 
   const [owner] = await db
     .insert(users)
@@ -258,6 +277,7 @@ beforeAll(async () => {
     .returning()
   ownerId = owner!.id
 
+  /** 无商品发布页权限的成员：模板写/发品按页面权限口径被拒 */
   const [member] = await db
     .insert(users)
     .values({
@@ -267,9 +287,25 @@ beforeAll(async () => {
       name: "发品普通成员",
       passwordHash: "x",
       enterpriseRole: "member",
+      groupId: noPermGroup!.id,
     })
     .returning()
   memberId = member!.id
+
+  /** 有商品发布页权限的成员：可创建模板/发品（可查看页面即有按钮权限） */
+  const [memberWithPerm] = await db
+    .insert(users)
+    .values({
+      enterpriseId: entId,
+      username: `pubs-${randomUUID().slice(0, 8)}`,
+      email: `pubs-${randomUUID().slice(0, 8)}@test.local`,
+      name: "发品页权限成员",
+      passwordHash: "x",
+      enterpriseRole: "member",
+      groupId: publishGroup!.id,
+    })
+    .returning()
+  memberWithPermId = memberWithPerm!.id
 
   const [store] = await db
     .insert(temuStores)
@@ -356,12 +392,23 @@ describe("模板 CRUD", () => {
     expect(row!.categoryChain.at(-1)!.isLeaf).toBe(true)
   })
 
-  it("普通成员不能创建模板", async () => {
+  it("无商品发布页权限的成员不能创建模板（页面权限口径）", async () => {
     mockSession.userId = memberId
     const r = await createPublishTemplateAction(TEMPLATE_PAYLOAD)
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.error).toContain("管理员")
+    expect(r.error).toContain("页面权限")
+  })
+
+  it("有商品发布页权限的成员可创建模板（可查看页面即可创建）", async () => {
+    mockSession.userId = memberWithPermId
+    const r = await createPublishTemplateAction({ ...TEMPLATE_PAYLOAD, name: "鸟笼-成员款" })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    const list = await listPublishTemplatesAction()
+    expect(list.ok).toBe(true)
+    if (!list.ok) return
+    expect(list.rows.some((x) => x.name === "鸟笼-成员款")).toBe(true)
   })
 
   it("编辑已存 PDF 的模板再保存：fileName-only 回填命中库内源，不再报「缺少 PDF 源」", async () => {
@@ -675,7 +722,7 @@ describe("发品", () => {
     expect(body.base64File).toBe("JVBERi0xLjQ=")
     if (!r.ok) return
     expect(r.pdfMaterialId).toBe(2610202676393)
-    // 普通成员被拒
+    // 无商品发布页权限的成员被拒（页面权限口径）
     mockSession.userId = memberId
     const r2 = await uploadPublishGuideFileAction({ base64File: "JVBERi0xLjQ=", fileName: "m.pdf" })
     expect(r2.ok).toBe(false)
@@ -707,14 +754,16 @@ describe("发品", () => {
     expect(row?.errorMsg).toContain("Outer package")
   }, 30_000)
 
-  it("普通成员不能发品", async () => {
-    mockSession.userId = memberId
+  it("无商品发布页权限的成员不能发品（页面权限口径）", async () => {
+    mockSession.userId = ownerId
     const created = await createPublishTemplateAction(TEMPLATE_PAYLOAD)
+    expect(created.ok).toBe(true)
     if (!created.ok) return
+    mockSession.userId = memberId
     const r = await publishFromTemplateAction({ templateId: created.id, storeId, overrides: {} })
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.error).toContain("管理员")
+    expect(r.error).toContain("页面权限")
   })
 })
 

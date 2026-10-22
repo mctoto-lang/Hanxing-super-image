@@ -4,11 +4,12 @@ import { and, desc, eq, ilike, inArray, or } from "drizzle-orm"
 import { z } from "zod"
 import { db } from "@/db/client"
 import { temuProducts, temuSkuMaps, temuStores, temuAds } from "@/db/schema"
+import type { ModuleName } from "@/db/schema/_shared"
 import {
   requireEnterpriseContext,
-  requireEnterpriseAdmin,
   getCurrentEnterpriseScope,
 } from "@/lib/auth/session"
+import { MODULE_LABELS } from "@/lib/modules"
 import {
   callTemuApi,
   isTemuPermissionError,
@@ -39,8 +40,8 @@ import {
  * （核价/调价单时效性强，落库反而陈旧），读走
  * temu-cache 30s 短缓存，写操作直连后失效缓存。
  *
- * 权限：查询 requireEnterpriseContext（企业成员可看）；价格/报名类写操作
- * requireEnterpriseAdmin（改价高危，先收紧到管理员）。
+ * 权限：查询 requireEnterpriseContext（企业成员可看）；价格/广告类写操作
+ * 校验对应 tab 模块权限（可查看当前页面即有该页功能按钮权限，2026-10-22 口径）。
  * 全部强制企业隔离（store 必须属于当前企业）。
  */
 
@@ -69,12 +70,19 @@ const ADJUST_STATUS_CODE: Record<string, number> = {
 
 type StoreRow = typeof temuStores.$inferSelect
 
-/** 校验店铺归属当前企业并返回店铺行（工作台全部 action 的入口守卫） */
+/** 校验店铺归属当前企业并返回店铺行（工作台全部 action 的入口守卫）。
+ *  requireModule：写操作传入对应 tab 模块（页面可见即可用按钮）；查询传 null */
 async function requireTemuStore(
   storeId: string,
-  admin: boolean,
+  requireModule: ModuleName | null,
 ): Promise<{ ok: true; store: StoreRow } | { ok: false; error: string }> {
-  const ctx = admin ? await requireEnterpriseAdmin() : await requireEnterpriseContext()
+  const ctx = await requireEnterpriseContext()
+  if (requireModule && !ctx.canAccess(requireModule)) {
+    return {
+      ok: false,
+      error: `当前账号没有「${MODULE_LABELS[requireModule]}」页面权限，无法执行该操作`,
+    }
+  }
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
   const [store] = await db
     .select()
@@ -172,7 +180,7 @@ export async function getTemuPriceReviewsAction(input: {
   status?: string
 }): Promise<{ ok: true; rows: TemuPriceReviewRow[] } | { ok: false; error: string }> {
   const q = temuPriceReviewQuerySchema.parse(input)
-  const guard = await requireTemuStore(q.store, false)
+  const guard = await requireTemuStore(q.store, null)
   if (!guard.ok) return guard
   const { store } = guard
   if (store.mallType === "semi") {
@@ -289,7 +297,7 @@ const temuPriceReviewConfirmSchema = z.object({
   orderId: z.coerce.number().int().positive(),
 })
 
-/** 同意核价单建议价（bg.price.review.confirm，管理员） */
+/** 同意核价单建议价（bg.price.review.confirm，需核价调价页权限） */
 export async function confirmTemuPriceReviewAction(input: {
   store: string
   orderId: number
@@ -298,7 +306,7 @@ export async function confirmTemuPriceReviewAction(input: {
   if (!parsed.success) {
     return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   }
-  const guard = await requireTemuStore(parsed.data.store, true)
+  const guard = await requireTemuStore(parsed.data.store, "temu_price")
   if (!guard.ok) return { ok: false, error: guard.error }
   const built = buildCallContext(guard.store, await getTemuCallContext(guard.store))
   if (!built.ok) return { ok: false, error: built.error }
@@ -311,12 +319,12 @@ export async function confirmTemuPriceReviewAction(input: {
   return { ok: true }
 }
 
-/** 不同意核价单建议价并给出新申报价（bg.price.review.reject，管理员） */
+/** 不同意核价单建议价并给出新申报价（bg.price.review.reject，需核价调价页权限） */
 export async function rejectTemuPriceReviewAction(
   input: unknown,
 ): Promise<{ ok: boolean; error?: string }> {
   const q = temuPriceReviewRejectSchema.parse(input)
-  const guard = await requireTemuStore(q.store, true)
+  const guard = await requireTemuStore(q.store, "temu_price")
   if (!guard.ok) return { ok: false, error: guard.error }
   const built = buildCallContext(guard.store, await getTemuCallContext(guard.store))
   if (!built.ok) return { ok: false, error: built.error }
@@ -371,7 +379,7 @@ export async function getTemuAdjustOrdersAction(input: {
   status: string
 }): Promise<{ ok: true; rows: TemuAdjustOrderRow[] } | { ok: false; error: string }> {
   const q = temuAdjustOrderQuerySchema.parse(input)
-  const guard = await requireTemuStore(q.store, false)
+  const guard = await requireTemuStore(q.store, null)
   if (!guard.ok) return guard
   const { store } = guard
   if (store.mallType === "semi") {
@@ -478,12 +486,12 @@ async function loadAdjustOrders(
   return { ok: true, rows }
 }
 
-/** 批量通过调价单（bg.full.adjust.price.batch.review；官方仅支持通过，管理员） */
+/** 批量通过调价单（bg.full.adjust.price.batch.review；官方仅支持通过，需核价调价页权限） */
 export async function batchApproveTemuAdjustAction(
   input: unknown,
 ): Promise<{ ok: boolean; error?: string }> {
   const q = temuAdjustApproveSchema.parse(input)
-  const guard = await requireTemuStore(q.store, true)
+  const guard = await requireTemuStore(q.store, "temu_price")
   if (!guard.ok) return { ok: false, error: guard.error }
   const built = buildCallContext(guard.store, await getTemuCallContext(guard.store))
   if (!built.ok) return { ok: false, error: built.error }
@@ -566,7 +574,7 @@ export async function getTemuAdPlansAction(input: {
   if (!parsed.success) {
     return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   }
-  const guard = await requireTemuStore(parsed.data.store, false)
+  const guard = await requireTemuStore(parsed.data.store, null)
   if (!guard.ok) return guard
   const { store } = guard
   return temuCached(`${store.enterpriseId}:ad-plans:${store.id}`, () => loadAdPlans(store))
@@ -658,7 +666,7 @@ export async function listTemuAdProductsAction(input: {
   q?: string
 }): Promise<{ ok: true; rows: TemuAdProductRow[] } | { ok: false; error: string }> {
   const q = temuAdProductsQuerySchema.parse(input)
-  const guard = await requireTemuStore(q.store, false)
+  const guard = await requireTemuStore(q.store, null)
   if (!guard.ok) return guard
   const { store } = guard
   return temuCached(`${store.enterpriseId}:ad-products:${store.id}:${q.q ?? ""}`, () =>
@@ -776,7 +784,7 @@ async function loadAdProducts(
   return { ok: true, rows }
 }
 
-/** 创建广告（bg.glo.searchrec.ad.create，管理员）→ 逐商品结果 + 注册表登记成功项 */
+/** 创建广告（bg.glo.searchrec.ad.create，需广告推广页权限）→ 逐商品结果 + 注册表登记成功项 */
 export async function createTemuAdsAction(input: unknown): Promise<
   | {
       ok: true
@@ -787,7 +795,7 @@ export async function createTemuAdsAction(input: unknown): Promise<
   | { ok: false; error: string }
 > {
   const q = temuAdCreateSchema.parse(input)
-  const guard = await requireTemuStore(q.store, true)
+  const guard = await requireTemuStore(q.store, "temu_ads")
   if (!guard.ok) return guard
   const built = buildCallContext(guard.store, await getTemuCallContext(guard.store))
   if (!built.ok) return { ok: false, error: built.error }
@@ -858,12 +866,12 @@ export async function createTemuAdsAction(input: unknown): Promise<
   }
 }
 
-/** 修改广告（bg.glo.searchrec.ad.modify，管理员）：暂停/开启/改预算/改目标ROAS */
+/** 修改广告（bg.glo.searchrec.ad.modify，需广告推广页权限）：暂停/开启/改预算/改目标ROAS */
 export async function modifyTemuAdAction(input: unknown): Promise<{ ok: boolean; error?: string }> {
   const q = temuAdModifySchema.parse(input)
   if (q.action === "budget" && q.budget == null) return { ok: false, error: "缺少新预算" }
   if (q.action === "roas" && q.roas == null) return { ok: false, error: "缺少新目标 ROAS" }
-  const guard = await requireTemuStore(q.store, true)
+  const guard = await requireTemuStore(q.store, "temu_ads")
   if (!guard.ok) return guard
   const built = buildCallContext(guard.store, await getTemuCallContext(guard.store))
   if (!built.ok) return { ok: false, error: built.error }

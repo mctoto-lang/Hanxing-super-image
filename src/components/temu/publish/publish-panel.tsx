@@ -41,14 +41,14 @@ import { PublishRecordsTable } from "./records-table"
  * 下拉切换「商品发布 / 发品记录」——发布=选可发模板+提交 goods.add；
  * 目标店铺由页面右上角下拉切换（URL ?store= 驱动，不再在弹窗内选店）；
  * 记录=成败审计（官方错误原因 Tooltip 全文）。模板创建/编辑在 模板管理 → TEMU刊登模板。
+ * 权限：本面板仅在 publish tab 可见时渲染（页面层 canAccess("temu_publish")），
+ * 发品按钮对全部可见者开放（2026-10-22 口径，写侧 action 同校验）。
  */
 export function TemuPublishPanel({
   store,
-  isAdmin,
 }: {
   /** 当前选中可发布店（全托+token 有效）；undefined=无可发布店 */
   store?: TemuStoreBrief
-  isAdmin: boolean
 }) {
   const [view, setView] = useState<"publish" | "records">("publish")
   const [templates, setTemplates] = useState<TemuPublishTemplateRow[]>([])
@@ -79,7 +79,7 @@ export function TemuPublishPanel({
     void refresh()
   }, [refresh])
 
-  const canPublish = isAdmin && store != null
+  const canPublish = store != null
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
@@ -124,7 +124,7 @@ export function TemuPublishPanel({
                     <TableHead>规格</TableHead>
                     <TableHead>默认申报价</TableHead>
                     <TableHead>素材图</TableHead>
-                    {isAdmin && <TableHead className="text-right">操作</TableHead>}
+                    <TableHead className="text-right">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -146,30 +146,28 @@ export function TemuPublishPanel({
                         ¥{(tpl.defaults.declaredPriceFen / 100).toFixed(2)}
                       </TableCell>
                       <TableCell>{tpl.defaults.imageUrls.length} 张</TableCell>
-                      {isAdmin && (
-                        <TableCell className="text-right">
-                          <Tooltip>
-                            <TooltipTrigger
-                              render={
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  disabled={!canPublish}
-                                  onClick={() => setPublishing(tpl)}
-                                >
-                                  <Send className="size-4" />
-                                  发品
-                                </Button>
-                              }
-                            />
-                            <TooltipContent>
-                              {store == null
-                                ? "无启用且 token 有效的全托店铺"
-                                : "提交发品到当前选中店铺（标题/图/价可覆盖）"}
-                            </TooltipContent>
-                          </Tooltip>
-                        </TableCell>
-                      )}
+                      <TableCell className="text-right">
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={!canPublish}
+                                onClick={() => setPublishing(tpl)}
+                              >
+                                <Send className="size-4" />
+                                发品
+                              </Button>
+                            }
+                          />
+                          <TooltipContent>
+                            {store == null
+                              ? "无启用且 token 有效的全托店铺"
+                              : "提交发品到当前选中店铺（标题/图/价可覆盖）"}
+                          </TooltipContent>
+                        </Tooltip>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

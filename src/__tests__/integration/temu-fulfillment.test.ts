@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll, afterAll, vi } from "vitest"
 import { randomUUID } from "node:crypto"
 import { eq } from "drizzle-orm"
 import { db } from "@/db/client"
-import { enterprises, users } from "@/db/schema"
+import { enterprises, permissionGroups, users } from "@/db/schema"
+import { MODULE_NAMES } from "@/db/schema/_shared"
 import { temuStores } from "@/db/schema/temu"
 import { encrypt } from "@/lib/crypto"
 import {
@@ -129,15 +130,33 @@ function mockFulfillmentFetch(overrides: Record<string, unknown> = {}, failTypes
 
 let entId: string
 let ownerId: string
+/** 无 TEMU tab 权限的成员（组白名单仅 settings）：写操作按页面权限口径被拒 */
 let memberId: string
+/** 有备货页权限的成员：可执行写操作（可查看页面即有按钮权限口径） */
+let memberWithPermId: string
 let storeId: string
 
 beforeAll(async () => {
   const [ent] = await db
     .insert(enterprises)
-    .values({ name: "temu 备货测试企业", slug: `po-${randomUUID().slice(0, 8)}`, creditsBalance: 0 })
+    .values({
+      name: "temu 备货测试企业",
+      slug: `po-${randomUUID().slice(0, 8)}`,
+      creditsBalance: 0,
+      // 写操作校验 tab 模块权限（页面可见即可用）：企业先全量开通
+      enabledModules: [...MODULE_NAMES],
+    })
     .returning()
   entId = ent!.id
+
+  const [noPermGroup] = await db
+    .insert(permissionGroups)
+    .values({ enterpriseId: entId, name: "无 TEMU 权限组", allowedPages: ["settings"] })
+    .returning()
+  const [stockGroup] = await db
+    .insert(permissionGroups)
+    .values({ enterpriseId: entId, name: "备货权限组", allowedPages: ["settings", "temu", "temu_purchase"] })
+    .returning()
 
   const [owner] = await db
     .insert(users)
@@ -161,9 +180,24 @@ beforeAll(async () => {
       name: "备货普通成员",
       passwordHash: "x",
       enterpriseRole: "member",
+      groupId: noPermGroup!.id,
     })
     .returning()
   memberId = member!.id
+
+  const [memberWithPerm] = await db
+    .insert(users)
+    .values({
+      enterpriseId: entId,
+      username: `pos-${randomUUID().slice(0, 8)}`,
+      email: `pos-${randomUUID().slice(0, 8)}@test.local`,
+      name: "备货页权限成员",
+      passwordHash: "x",
+      enterpriseRole: "member",
+      groupId: stockGroup!.id,
+    })
+    .returning()
+  memberWithPermId = memberWithPerm!.id
 
   const [store] = await db
     .insert(temuStores)
@@ -259,7 +293,7 @@ describe("备货写操作（管理员）", () => {
     expect(body.subPurchaseOrderSnList).toEqual(["WB2610210001", "WB2610210002"])
   })
 
-  it("普通成员写操作被拒（限管理员）", async () => {
+  it("无备货页权限的成员写操作被拒（页面权限口径）", async () => {
     mockSession.userId = memberId
     vi.stubGlobal("fetch", mockFulfillmentFetch())
     const r = await cancelTemuPurchaseOrdersAction({
@@ -268,7 +302,17 @@ describe("备货写操作（管理员）", () => {
     })
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.error).toContain("管理员")
+    expect(r.error).toContain("页面权限")
+  })
+
+  it("有备货页权限的成员可取消备货单（可查看页面即有按钮权限）", async () => {
+    mockSession.userId = memberWithPermId
+    vi.stubGlobal("fetch", mockFulfillmentFetch())
+    const r = await cancelTemuPurchaseOrdersAction({
+      store: storeId,
+      subPurchaseOrderSns: ["WB2610210001"],
+    })
+    expect(r.ok).toBe(true)
   })
 })
 
@@ -359,7 +403,7 @@ describe("可申报备货商品与批量申报", () => {
     ])
   })
 
-  it("普通成员批量申报被拒（限管理员）", async () => {
+  it("无备货页权限的成员批量申报被拒（页面权限口径）", async () => {
     mockSession.userId = memberId
     vi.stubGlobal("fetch", mockFulfillmentFetch())
     const r = await batchApplyTemuStockingAction({
@@ -368,7 +412,20 @@ describe("可申报备货商品与批量申报", () => {
     })
     expect(r.ok).toBe(false)
     if (r.ok) return
-    expect(r.error).toContain("管理员")
+    expect(r.error).toContain("页面权限")
+  })
+
+  it("有备货页权限的成员可批量申报（可查看页面即有按钮权限）", async () => {
+    mockSession.userId = memberWithPermId
+    const fn = mockFulfillmentFetch({ "bg.purchaseorder.apply": { applyResult: true } })
+    vi.stubGlobal("fetch", fn)
+    const r = await batchApplyTemuStockingAction({
+      store: storeId,
+      items: [{ productSkcId: 91001, productName: "可备货鸟笼", skuIds: ["111"], quantity: 2 }],
+    })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.results[0]?.ok).toBe(true)
   })
 
   it("申报失败：官方业务错（定制品 3002）按项原样透出", async () => {

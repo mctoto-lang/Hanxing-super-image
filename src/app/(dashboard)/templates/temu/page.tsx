@@ -15,6 +15,7 @@ export default async function TemuPublishTemplatesPage() {
       />
     )
   }
-  const isAdmin = ctx.user.enterpriseRole === "owner" || ctx.user.enterpriseRole === "admin"
-  return <TemuTemplateManager isAdmin={isAdmin} />
+  // 可查看 TEMU 商品发布页（temu_publish tab）即可创建/编辑/删除模板（2026-10-22 口径）
+  const canManage = ctx.canAccess("temu_publish")
+  return <TemuTemplateManager canManage={canManage} />
 }

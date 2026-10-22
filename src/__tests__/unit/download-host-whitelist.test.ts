@@ -29,6 +29,7 @@ const EMPTY_CFG: StorageConfig = {
   refPrefix: "ref/",
   configPrefix: "config/",
   generatePrefix: "gen/",
+  temuPrefix: "temu/",
   cosForceInternalEndpoint: false,
   localImagePrefix: "image/",
   allowedDownloadHosts: [],

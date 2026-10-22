@@ -133,13 +133,7 @@ function reviewTone(status: number): "warn" | "ok" | "bad" | "muted" {
   return "muted"
 }
 
-export function TemuPriceReviewPanel({
-  store,
-  isAdmin,
-}: {
-  store?: string
-  isAdmin: boolean
-}) {
+export function TemuPriceReviewPanel({ store }: { store?: string }) {
   const [section, setSection] = React.useState<"review" | "adjust">("review")
   /** 已成功操作的核价单(orderId)/调价单(priceOrderSn)：官方状态回写有秒级延迟，
    *  操作后行可能仍留在列表——冻结防重复提交（重复提交官方报 4000000）。
@@ -164,7 +158,6 @@ export function TemuPriceReviewPanel({
         {section === "review" ? (
           <ReviewSection
             store={store}
-            isAdmin={isAdmin}
             section={section}
             onSectionChange={setSection}
             doneOps={doneReviewOps}
@@ -173,7 +166,6 @@ export function TemuPriceReviewPanel({
         ) : (
           <AdjustSection
             store={store}
-            isAdmin={isAdmin}
             section={section}
             onSectionChange={setSection}
             doneOps={doneAdjustOps}
@@ -222,15 +214,12 @@ const REJECT_BTN_CLS =
 
 function ReviewSection({
   store,
-  isAdmin,
   section,
   onSectionChange,
   doneOps,
   onDoneOp,
 }: {
   store: string
-  /** 写操作限企业管理员（action 内强制）：非管理员不渲染操作列（点击只会得到 throw） */
-  isAdmin: boolean
   section: "review" | "adjust"
   onSectionChange: (v: "review" | "adjust") => void
   /** 已成功操作（同意/拒绝）的核价单号：按钮冻结 */
@@ -332,7 +321,7 @@ function ReviewSection({
                 <TableHead className="text-right">建议价</TableHead>
                 <TableHead className="text-right">价差</TableHead>
                 <TableHead>状态</TableHead>
-                {isAdmin && <TableHead className="text-right">操作</TableHead>}
+                <TableHead className="text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -380,65 +369,63 @@ function ReviewSection({
                   <TableCell>
                     <StatusBadge label={r.statusLabel} tone={reviewTone(r.status)} />
                   </TableCell>
-                  {isAdmin && (
-                    <TableCell className="text-right">
-                      {/* 0 待核价 / 1 待供应商确认：均为可操作态（1 是供应商
-                          确认建议价的主态；对齐调价单 0/1 可操作的口径）。
-                          canBargain=false：官方锁议价（极端压价单），拒绝置灰 */}
-                      {r.status === 0 || r.status === 1 ? (
-                        <div className="flex justify-end gap-1.5">
-                          {/* 已操作冻结（官方状态回写有秒级延迟，行仍留在列表）+
-                              in-flight 期间禁用，防重复提交（官方报 4000000）。
-                              Trigger 挂 span：Button disabled 带 pointer-events-none，
-                              悬浮事件挂按钮上永不触发 */}
-                          {frozen ? (
-                            <Tooltip>
-                              <TooltipTrigger render={<span className="inline-flex cursor-not-allowed" />}>
-                                <Button size="sm" variant="outline" className={AGREE_BTN_CLS} disabled>
-                                  <CheckCircle2 className="size-3.5" /> 同意
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent className="text-xs">
-                                该单已提交操作，等待官方同步（稍后自动从列表消失）
-                              </TooltipContent>
-                            </Tooltip>
-                          ) : (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className={AGREE_BTN_CLS}
-                              onClick={() => onConfirm(r)}
-                            >
-                              <CheckCircle2 className="size-3.5" /> 同意
-                            </Button>
-                          )}
-                          {frozen || !r.canBargain ? (
-                            <Tooltip>
-                              <TooltipTrigger render={<span className="inline-flex cursor-not-allowed" />}>
-                                <Button size="sm" variant="outline" className={REJECT_BTN_CLS} disabled>
-                                  <XCircle className="size-3.5" /> 拒绝
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent className="text-xs">
-                                {frozen ? "该单已提交操作，等待官方同步" : "该单不可重新报价"}
-                              </TooltipContent>
-                            </Tooltip>
-                          ) : (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className={REJECT_BTN_CLS}
-                              onClick={() => setRejecting(r)}
-                            >
-                              <XCircle className="size-3.5" /> 拒绝
-                            </Button>
-                          )}
-                        </div>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      )}
-                    </TableCell>
-                  )}
+                  <TableCell className="text-right">
+                    {/* 0 待核价 / 1 待供应商确认：均为可操作态（1 是供应商
+                        确认建议价的主态；对齐调价单 0/1 可操作的口径）。
+                        canBargain=false：官方锁议价（极端压价单），拒绝置灰 */}
+                    {r.status === 0 || r.status === 1 ? (
+                      <div className="flex justify-end gap-1.5">
+                        {/* 已操作冻结（官方状态回写有秒级延迟，行仍留在列表）+
+                            in-flight 期间禁用，防重复提交（官方报 4000000）。
+                            Trigger 挂 span：Button disabled 带 pointer-events-none，
+                            悬浮事件挂按钮上永不触发 */}
+                        {frozen ? (
+                          <Tooltip>
+                            <TooltipTrigger render={<span className="inline-flex cursor-not-allowed" />}>
+                              <Button size="sm" variant="outline" className={AGREE_BTN_CLS} disabled>
+                                <CheckCircle2 className="size-3.5" /> 同意
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent className="text-xs">
+                              该单已提交操作，等待官方同步（稍后自动从列表消失）
+                            </TooltipContent>
+                          </Tooltip>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className={AGREE_BTN_CLS}
+                            onClick={() => onConfirm(r)}
+                          >
+                            <CheckCircle2 className="size-3.5" /> 同意
+                          </Button>
+                        )}
+                        {frozen || !r.canBargain ? (
+                          <Tooltip>
+                            <TooltipTrigger render={<span className="inline-flex cursor-not-allowed" />}>
+                              <Button size="sm" variant="outline" className={REJECT_BTN_CLS} disabled>
+                                <XCircle className="size-3.5" /> 拒绝
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent className="text-xs">
+                              {frozen ? "该单已提交操作，等待官方同步" : "该单不可重新报价"}
+                            </TooltipContent>
+                          </Tooltip>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className={REJECT_BTN_CLS}
+                            onClick={() => setRejecting(r)}
+                          >
+                            <XCircle className="size-3.5" /> 拒绝
+                          </Button>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
                 </TableRow>
                 )
               })}
@@ -620,15 +607,12 @@ function RejectDialog({
 
 function AdjustSection({
   store,
-  isAdmin,
   section,
   onSectionChange,
   doneOps,
   onDoneOp,
 }: {
   store: string
-  /** 写操作限企业管理员（action 内强制）：非管理员不渲染操作列（点击只会得到 throw） */
-  isAdmin: boolean
   section: "review" | "adjust"
   onSectionChange: (v: "review" | "adjust") => void
   /** 已成功通过的调价单号：同意按钮冻结（防重复提交报 4000000） */
@@ -731,7 +715,7 @@ function AdjustSection({
                 <TableHead>价格类型</TableHead>
                 <TableHead>原因</TableHead>
                 <TableHead>创建时间</TableHead>
-                {actionable && isAdmin && <TableHead className="text-right">操作</TableHead>}
+                {actionable && <TableHead className="text-right">操作</TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -767,7 +751,7 @@ function AdjustSection({
                   <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                     {fmtTs(r.orderCreateTime)}
                   </TableCell>
-                  {actionable && isAdmin && (
+                  {actionable && (
                     <TableCell className="text-right">
                       {doneOps.has(r.priceOrderSn) ? (
                         <Tooltip>

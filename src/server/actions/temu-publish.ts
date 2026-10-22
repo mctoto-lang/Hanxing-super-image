@@ -11,9 +11,10 @@ import {
 } from "@/db/schema/temu"
 import {
   getCurrentEnterpriseScope,
-  requireEnterpriseAdmin,
   requireEnterpriseContext,
 } from "@/lib/auth/session"
+import type { ModuleName } from "@/db/schema/_shared"
+import { MODULE_LABELS } from "@/lib/modules"
 import {
   callTemuApi,
   isTemuPermissionError,
@@ -46,7 +47,8 @@ import {
  * 类目钻取用 parentCatId、属性父子联动、非服饰规格走 spec.create 自建（店铺级幂等）、
  * mainProductSkuSpecReqs 固定零值、素材图 1:1 ≥800×800。
  *
- * 权限：查询 requireEnterpriseContext；模板写与发品 requireEnterpriseAdmin。
+ * 权限：查询 requireEnterpriseContext；模板写与发品校验 temu_publish tab 模块
+ * 权限（可查看商品发布页即可创建模板/发品/传素材，2026-10-22 口径）。
  */
 
 /* ─── 公共守卫 ─── */
@@ -54,11 +56,26 @@ import {
 type StoreRow = typeof temuStores.$inferSelect
 type TemplateRow = typeof temuPublishTemplates.$inferSelect
 
+/** 发品链路写操作统一守卫：商品发布页 tab 权限（抛错口径与原 requireEnterpriseAdmin 一致） */
+async function requirePublishAccess() {
+  const ctx = await requireEnterpriseContext()
+  if (!ctx.canAccess("temu_publish")) {
+    throw new Error("当前账号没有「商品发布」页面权限，无法执行该操作")
+  }
+  return ctx
+}
+
 async function requireOwnedTemplate(
   templateId: string,
-  admin: boolean,
+  requireModule: ModuleName | null,
 ): Promise<{ ok: true; template: TemplateRow } | { ok: false; error: string }> {
-  const ctx = admin ? await requireEnterpriseAdmin() : await requireEnterpriseContext()
+  const ctx = await requireEnterpriseContext()
+  if (requireModule && !ctx.canAccess(requireModule)) {
+    return {
+      ok: false,
+      error: `当前账号没有「${MODULE_LABELS[requireModule]}」页面权限，无法执行该操作`,
+    }
+  }
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
   const [row] = await db
     .select()
@@ -74,8 +91,7 @@ async function requireOwnedTemplate(
 async function requirePublishStore(
   storeId: string,
 ): Promise<{ ok: true; store: StoreRow } | { ok: false; error: string }> {
-  await requireEnterpriseAdmin()
-  const ctx = await requireEnterpriseContext()
+  const ctx = await requirePublishAccess()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
   const [store] = await db
     .select()
@@ -317,7 +333,7 @@ function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null
 }
 
-/* ─── 模板 CRUD（管理员） ─── */
+/* ─── 模板 CRUD（需商品发布页权限） ─── */
 
 export interface TemuPublishTemplateRow {
   id: string
@@ -371,7 +387,7 @@ export async function createPublishTemplateAction(
   input: unknown,
 ): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   try {
-    const ctx = await requireEnterpriseAdmin()
+    const ctx = await requirePublishAccess()
     const q = temuPublishTemplateSchema.parse(input)
     const { enterpriseId } = getCurrentEnterpriseScope(ctx)
     const [row] = await db
@@ -399,11 +415,11 @@ export async function updatePublishTemplateAction(
   input: unknown,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
-    await requireEnterpriseAdmin()
+    await requirePublishAccess()
     // 编辑回填的 defaults 不含 base64（列表已剥离、向导不回传源）：必须先取库内模板、
     // 在 parse 前注入存量 PDF 源，否则 guideFile 的 refine「缺少 PDF 源」会先炸
     const rawId = (input as { id?: unknown } | null)?.id
-    const guard = await requireOwnedTemplate(typeof rawId === "string" ? rawId : "", true)
+    const guard = await requireOwnedTemplate(typeof rawId === "string" ? rawId : "", "temu_publish")
     if (!guard.ok) return guard
     const storedGuide = guard.template.defaults.guideFile
     const raw = input as { defaults?: { guideFile?: Record<string, unknown> } }
@@ -444,7 +460,7 @@ export async function updatePublishTemplateAction(
 export async function deletePublishTemplateAction(
   id: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const guard = await requireOwnedTemplate(id, true)
+  const guard = await requireOwnedTemplate(id, "temu_publish")
   if (!guard.ok) return guard
   await db
     .update(temuPublishTemplates)
@@ -555,7 +571,7 @@ export async function uploadPublishImageAction(
   const q = temuPublishImageSchema.parse(input)
   const kind = input.kind ?? "material"
   try {
-    await requireEnterpriseAdmin()
+    await requirePublishAccess()
     let buf: Buffer
     let mime: string
     if (q.imageDataUrl) {
@@ -644,7 +660,7 @@ export async function uploadPublishGuideFileAction(
 ): Promise<{ ok: true; pdfMaterialId: number } | { ok: false; error: string }> {
   const q = temuPublishGuideFileSchema.parse(input)
   try {
-    await requireEnterpriseAdmin()
+    await requirePublishAccess()
     const r = await callTemuApi<{ pdfId?: number }>(
       "bg.glo.goods.instructions.upload",
       { base64File: q.base64File },
@@ -678,7 +694,7 @@ export async function compressTemuImagesAction(
 ): Promise<{ ok: true; results: TemuCompressedImage[] } | { ok: false; error: string }> {
   const q = temuImageCompressSchema.parse(input)
   try {
-    await requireEnterpriseAdmin()
+    await requirePublishAccess()
     const r = await callTemuApi<{ results?: Array<Record<string, unknown>> }>(
       "bg.glo.picturecompression.get",
       { urls: q.urls },
@@ -761,7 +777,7 @@ export async function checkTemuDimensionImageAction(
 ): Promise<{ ok: true; result: TemuDimensionCheckResult } | { ok: false; error: string }> {
   const q = temuDimensionCheckSchema.parse(input)
   try {
-    await requireEnterpriseAdmin()
+    await requirePublishAccess()
     const ctx = await publishCtx()
     const submit = await callTemuApi<{ uniqueId?: string }>(
       "bg.algo.dimension.image.check",
@@ -794,7 +810,7 @@ export async function checkTemuDimensionImageAction(
   }
 }
 
-/* ─── 发品（管理员） ─── */
+/* ─── 发品（需商品发布页权限） ─── */
 
 export interface TemuPublishResult {
   ok: boolean
@@ -821,7 +837,7 @@ export async function publishFromTemplateAction(
     storeId = q.storeId
     const storeGuard = await requirePublishStore(q.storeId)
     if (!storeGuard.ok) return { ok: false, error: storeGuard.error }
-    const tplGuard = await requireOwnedTemplate(q.templateId, true)
+    const tplGuard = await requireOwnedTemplate(q.templateId, "temu_publish")
     if (!tplGuard.ok) return { ok: false, error: tplGuard.error }
     const tpl = tplGuard.template
     if (tpl.status === "archived") return { ok: false, error: "模板已删除" }

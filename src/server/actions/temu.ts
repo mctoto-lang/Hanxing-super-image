@@ -317,6 +317,8 @@ export interface TemuProductRow {
   totalSalesVolume: number | null
   last7DaysSalesVolume: number | null
   mainImageUrl: string | null
+  /** 主图转存 URL（COS/本地，同步链路增量转存；展示优先于 kwcdn 外链） */
+  mainImageCosUrl: string | null
   buyerName: string | null
   /** 上新生命周期状态文案（价格申报中等） */
   lifecycleStatus: string | null
@@ -451,6 +453,7 @@ async function loadTemuProducts(
     totalSalesVolume: temuProducts.totalSalesVolume,
     last7DaysSalesVolume: temuProducts.last7DaysSalesVolume,
     mainImageUrl: temuProducts.mainImageUrl,
+    mainImageCosUrl: temuProducts.mainImageCosUrl,
     buyerName: temuProducts.buyerName,
     lifecycleStatus: temuProducts.lifecycleStatus,
     siteName: temuProducts.siteName,
@@ -576,6 +579,8 @@ export interface TemuSalesTopRow {
   productSn: string | null
   /** 主图（关联 temu_product 补齐，榜单缩略图用） */
   mainImageUrl: string | null
+  /** 主图转存 URL（COS/本地；展示优先于 kwcdn 外链） */
+  mainImageCosUrl: string | null
   /** 申报供货价（分，CNY；预估销售额 = 销量 × 价格 / 100） */
   supplierPrice: number | null
   todaySalesVolume: number | null
@@ -627,6 +632,7 @@ async function loadTemuSalesTop(enterpriseId: string, storeId?: string): Promise
       category: sql<string | null>`max(${latestSq.category})`,
       productSn: sql<string | null>`coalesce(max(${latestSq.productSn}), max(${temuProducts.productSn}))`,
       mainImageUrl: sql<string | null>`max(${temuProducts.mainImageUrl})`,
+      mainImageCosUrl: sql<string | null>`max(${temuProducts.mainImageCosUrl})`,
       supplierPrice: sql<string | null>`max(${temuProducts.supplierPrice})`,
       // 今日口径只累计当日捕获的行（同类目占比）
       today: sql<string>`coalesce(sum(case when ${gte(latestSq.capturedAt, todayStart)} then coalesce(${latestSq.todaySalesVolume}, 0) else 0 end), 0)`,
@@ -648,6 +654,7 @@ async function loadTemuSalesTop(enterpriseId: string, storeId?: string): Promise
     category: r.category,
     productSn: r.productSn,
     mainImageUrl: r.mainImageUrl,
+    mainImageCosUrl: r.mainImageCosUrl,
     supplierPrice: r.supplierPrice != null ? Number(r.supplierPrice) : null,
     todaySalesVolume: Number(r.today),
     last7DaysSalesVolume: Number(r.last7),
@@ -955,6 +962,8 @@ export interface TemuAdsRow {
   productSn: string | null
   productName: string | null
   mainImageUrl: string | null
+  /** 主图转存 URL（COS/本地；展示优先于 kwcdn 外链） */
+  mainImageCosUrl: string | null
   /** 花费（分，ad 推广维度，窗口内求和） */
   adSpend: number | null
   /** 申报价销售额（分，ad 推广维度） */
@@ -1047,6 +1056,7 @@ async function loadTemuAds(enterpriseId: string, storeId?: string, range = 7) {
           productSn: temuProducts.productSn,
           productName: temuProducts.productName,
           mainImageUrl: temuProducts.mainImageUrl,
+          mainImageCosUrl: temuProducts.mainImageCosUrl,
         })
         .from(temuProducts)
         .where(
@@ -1077,6 +1087,7 @@ async function loadTemuAds(enterpriseId: string, storeId?: string, range = 7) {
       productSn: p?.productSn ?? null,
       productName: p?.productName ?? null,
       mainImageUrl: p?.mainImageUrl ?? null,
+      mainImageCosUrl: p?.mainImageCosUrl ?? null,
       adSpend,
       orderPayAmt,
       roas: adSpend != null && adSpend > 0 && orderPayAmt != null

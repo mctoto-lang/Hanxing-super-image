@@ -38,6 +38,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { temuImageSrc } from "@/lib/temu/image"
 import {
   getTemuProductsPageAction,
   type TemuProductRow,
@@ -722,7 +723,7 @@ export function ProductsInfiniteTable({
                   {r.mainImageUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
-                      src={r.mainImageUrl}
+                      src={temuImageSrc(r.mainImageCosUrl, r.mainImageUrl)}
                       alt=""
                       className="size-10 rounded-md object-cover"
                       loading="lazy"

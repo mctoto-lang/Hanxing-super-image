@@ -11,6 +11,7 @@ import { decrypt, encrypt } from "@/lib/crypto"
  * - config/     配置图（不过期）         logo/图标/模板图
  * - gen/        生成图（会过期）         AI 结果
  * - gen/thumb/  缩略图（会过期）
+ * - temu/       TEMU 商品主图转存（不过期）  店铺同步时从 kwcdn 外链增量转存
  *
  * 过期清理由腾讯云 COS 生命周期规则按前缀自动处理；应用侧仅清理 DB 死链接。
  */
@@ -23,8 +24,9 @@ export type StorageProvider = "local" | "cos"
  * - config：管理员上传的 logo/图标/模板图等（config/，不过期）
  * - generate：AI 生成的结果图（gen/，会过期）
  * - thumb：生成图缩略图（gen/thumb/，会过期）
+ * - temu：TEMU 商品主图转存（temu/，不过期；商品图随店铺长存，勿配过期规则）
  */
-export type ImageCategory = "reference" | "config" | "generate" | "thumb"
+export type ImageCategory = "reference" | "config" | "generate" | "thumb" | "temu"
 
 export interface StorageConfig {
   provider: StorageProvider
@@ -39,6 +41,8 @@ export interface StorageConfig {
   refPrefix: string
   configPrefix: string
   generatePrefix: string
+  /** TEMU 商品主图转存前缀（不过期，勿配置 COS 生命周期过期规则） */
+  temuPrefix: string
   /**
    * 服务器与 COS 之间的流量走内网域名（<bucket>.cos.<region>.tencentcos.cn）：
    * 上传（saveFromBuffer）与服务端拉取（saveFromUrl 下载、图片代理）都会改写。
@@ -52,7 +56,8 @@ export interface StorageConfig {
   allowedDownloadHosts: string[]
 }
 
-const DEFAULT_STORAGE: StorageConfig = {
+/** 存储配置默认值（loadStorageConfig 缺省合并基线；导出供单测断言） */
+export const DEFAULT_STORAGE: StorageConfig = {
   provider: "local",
   cosSecretId: "",
   cosSecretKey: "",
@@ -62,6 +67,7 @@ const DEFAULT_STORAGE: StorageConfig = {
   refPrefix: "ref/",
   configPrefix: "config/",
   generatePrefix: "gen/",
+  temuPrefix: "temu/",
   cosForceInternalEndpoint: false,
   localImagePrefix: "image/",
   allowedDownloadHosts: [],
@@ -149,6 +155,7 @@ export function normalizeStorageSubmission(
     generatePrefix: (
       input.generatePrefix ?? DEFAULT_STORAGE.generatePrefix
     ).trim(),
+    temuPrefix: (input.temuPrefix ?? DEFAULT_STORAGE.temuPrefix).trim(),
     localImagePrefix: (
       input.localImagePrefix ?? DEFAULT_STORAGE.localImagePrefix
     ).trim(),
@@ -240,6 +247,8 @@ export function resolveCosTarget(
       return { bucket, baseUrl, prefix: cfg.generatePrefix }
     case "thumb":
       return { bucket, baseUrl, prefix: `${cfg.generatePrefix}thumb/` }
+    case "temu":
+      return { bucket, baseUrl, prefix: cfg.temuPrefix }
   }
 }
 

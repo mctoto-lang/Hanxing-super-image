@@ -82,7 +82,7 @@ function StatusBadge({ status, label }: { status: number; label: string }) {
   return <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${cls}`}>{label}</span>
 }
 
-export function TemuPurchasePanel({ store, isAdmin }: { store?: string; isAdmin: boolean }) {
+export function TemuPurchasePanel({ store }: { store?: string }) {
   /** 视图：备货单（平台下的采购单）/ 申报备货（对商品主动申请新备货，VMI） */
   const [view, setView] = React.useState<"orders" | "stock">("orders")
   const [status, setStatus] = React.useState("todo")
@@ -121,7 +121,7 @@ export function TemuPurchasePanel({ store, isAdmin }: { store?: string; isAdmin:
   }
 
   if (view === "stock") {
-    return <StockView store={store} isAdmin={isAdmin} onBack={() => setView("orders")} />
+    return <StockView store={store} onBack={() => setView("orders")} />
   }
 
   const doCancel = async (sns: string[]) => {
@@ -214,7 +214,7 @@ export function TemuPurchasePanel({ store, isAdmin }: { store?: string; isAdmin:
                   <TableHead>状态</TableHead>
                   <TableHead>标记</TableHead>
                   <TableHead>最晚发货</TableHead>
-                  {isAdmin && <TableHead className="text-right">操作</TableHead>}
+                  <TableHead className="text-right">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -285,22 +285,20 @@ export function TemuPurchasePanel({ store, isAdmin }: { store?: string; isAdmin:
                           {r.expectLatestDeliverTime != null ? fmtTs(r.expectLatestDeliverTime) : <EmptyHint />}
                         </span>
                       </TableCell>
-                      {isAdmin && (
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-1.5">
-                            {cancellable(r) && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className={CANCEL_BTN_CLS}
-                                onClick={() => setCanceling([r.subPurchaseOrderSn])}
-                              >
-                                <PackageX className="size-3.5" /> 取消
-                              </Button>
-                            )}
-                          </div>
-                        </TableCell>
-                      )}
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-1.5">
+                          {cancellable(r) && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className={CANCEL_BTN_CLS}
+                              onClick={() => setCanceling([r.subPurchaseOrderSn])}
+                            >
+                              <PackageX className="size-3.5" /> 取消
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
                     </TableRow>
                   )
                 })}

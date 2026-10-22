@@ -64,7 +64,7 @@ function isAllowedHost(url: URL, cfg: StorageConfig): boolean {
 /**
  * 从平台存储路径中提取租户段（企业 ID）。
  * - 本应用 /uploads/<entId>/...（本地存储 key 规范）
- * - COS ref/<entId>/...、gen/<entId>/...、gen/thumb/<entId>/...（租户内容前缀）
+ * - COS ref/<entId>/...、gen/<entId>/...、gen/thumb/<entId>/...、temu/<entId>/...（租户内容前缀）
  * config/ 前缀为平台资产，返回 null（不绑定租户）。
  */
 function extractTenantSegment(pathname: string, cfg: StorageConfig): string | null {
@@ -72,7 +72,7 @@ function extractTenantSegment(pathname: string, cfg: StorageConfig): string | nu
   if (p.startsWith("uploads/")) {
     return p.split("/")[1] || null
   }
-  for (const prefix of [cfg.refPrefix, cfg.generatePrefix]) {
+  for (const prefix of [cfg.refPrefix, cfg.generatePrefix, cfg.temuPrefix]) {
     if (prefix && p.startsWith(prefix)) {
       const seg = p.slice(prefix.length).split("/")[0]
       return seg || null

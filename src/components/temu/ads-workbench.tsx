@@ -40,6 +40,7 @@ import {
 } from "@/components/ui/tooltip"
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import type { TemuAdsRow } from "@/server/actions/temu"
+import { temuImageSrc } from "@/lib/temu/image"
 import {
   getTemuAdPlansAction,
   listTemuAdProductsAction,
@@ -57,7 +58,7 @@ import {
  * 同名列报表窗口值优先、实时值兜底（刚创建未同步的行）；状态/操作列仅注册表行有。
  *
  * 平台限制（2026-10-20 实测）：卖家后台手动创建的广告对官方接口不可见，
- * 仅通过本页（API）创建的广告数据可同步展示。写操作限企业管理员（action 内强制）。
+ * 仅通过本页（API）创建的广告数据可同步展示。写操作需广告推广页 tab 权限（action 内强制）。
  */
 
 const yuan = (fen: number | null | undefined) =>
@@ -70,6 +71,8 @@ const num = (v: number | null | undefined) =>
 interface MergedAdRow {
   productId: string
   mainImageUrl: string | null
+  /** 主图转存 URL（报表行 temu_product 反查带出；展示优先） */
+  mainImageCosUrl: string | null
   productName: string | null
   productSn: string | null
   plan: TemuAdPlanRow | null
@@ -78,14 +81,12 @@ interface MergedAdRow {
 
 export function TemuAdsWorkbench({
   store,
-  isAdmin,
   reportRows,
   range,
   urlStore,
 }: {
   /** 工作台操作店铺（未选店时页面默认第一个启用店） */
   store?: string
-  isAdmin: boolean
   /** 报表同步聚合行（服务端 getTemuAdsAction，近 N 日窗口口径） */
   reportRows: TemuAdsRow[]
   range: number
@@ -126,6 +127,7 @@ export function TemuAdsWorkbench({
       byId.set(r.productId, {
         productId: r.productId,
         mainImageUrl: r.mainImageUrl,
+        mainImageCosUrl: r.mainImageCosUrl,
         productName: r.productName,
         productSn: r.productSn,
         plan: null,
@@ -137,6 +139,8 @@ export function TemuAdsWorkbench({
       byId.set(p.productId, {
         productId: p.productId,
         mainImageUrl: cur?.mainImageUrl ?? p.mainImageUrl,
+        // 注册表行（官方实时接口）无转存 URL，仅报表行（temu_product 反查）有
+        mainImageCosUrl: cur?.mainImageCosUrl ?? null,
         productName: cur?.productName ?? p.productName,
         productSn: cur?.productSn ?? p.productSn,
         plan: p,
@@ -212,11 +216,9 @@ export function TemuAdsWorkbench({
         <CardTitle className="text-base">商品推广报表（{merged.length}）</CardTitle>
         {/* 创建广告 / 窗口下拉 / 刷新 同一行 */}
         <div className="flex flex-wrap items-center gap-2">
-          {isAdmin && (
-            <Button size="sm" className="h-9 text-xs" onClick={() => setCreating(true)}>
-              <Megaphone className="size-3.5" /> 创建广告
-            </Button>
-          )}
+          <Button size="sm" className="h-9 text-xs" onClick={() => setCreating(true)}>
+            <Megaphone className="size-3.5" /> 创建广告
+          </Button>
           <Select value={String(range)} onValueChange={(v) => v && router.push(rangeHref(v))}>
             {/* base-ui SelectValue 默认渲染原始 value（7/30），须传 children 显示中文；
                 h-9! 压过触发器基类 data-[size=default]:h-8，与按钮等高 */}
@@ -263,7 +265,7 @@ export function TemuAdsWorkbench({
                   <TableHead className="text-right">每笔成交花费</TableHead>
                   <TableHead className="text-right">件数</TableHead>
                   <TableHead className="text-right">曝光 / 点击</TableHead>
-                  {isAdmin && <TableHead className="text-right">操作</TableHead>}
+                  <TableHead className="text-right">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -272,7 +274,7 @@ export function TemuAdsWorkbench({
                     <TableCell>
                       {row.mainImageUrl ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={row.mainImageUrl} alt="" className="size-10 rounded-md object-cover" loading="lazy" />
+                        <img src={temuImageSrc(row.mainImageCosUrl, row.mainImageUrl)} alt="" className="size-10 rounded-md object-cover" loading="lazy" />
                       ) : (
                         <div className="size-10 rounded-md bg-muted" />
                       )}
@@ -316,48 +318,46 @@ export function TemuAdsWorkbench({
                     <TableCell className="text-right tabular-nums text-muted-foreground">
                       {num(row.report?.imprCnt)} / {num(row.report?.clkCnt)}
                     </TableCell>
-                    {isAdmin && (
-                      <TableCell className="text-right">
-                        {row.plan ? (
-                          <div className="flex justify-end gap-1.5">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-7 text-xs"
-                              onClick={() => setModifying({ row: row.plan!, action: "budget" })}
-                            >
-                              改预算
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-7 text-xs"
-                              onClick={() => setModifying({ row: row.plan!, action: "roas" })}
-                            >
-                              改ROAS
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-7 text-xs"
-                              onClick={() => setModifying({ row: row.plan!, action: "pause" })}
-                            >
-                              <Pause className="size-3.5" /> 暂停
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-7 text-xs"
-                              onClick={() => setModifying({ row: row.plan!, action: "open" })}
-                            >
-                              <Play className="size-3.5" /> 开启
-                            </Button>
-                          </div>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">—</span>
-                        )}
-                      </TableCell>
-                    )}
+                    <TableCell className="text-right">
+                      {row.plan ? (
+                        <div className="flex justify-end gap-1.5">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs"
+                            onClick={() => setModifying({ row: row.plan!, action: "budget" })}
+                          >
+                            改预算
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs"
+                            onClick={() => setModifying({ row: row.plan!, action: "roas" })}
+                          >
+                            改ROAS
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs"
+                            onClick={() => setModifying({ row: row.plan!, action: "pause" })}
+                          >
+                            <Pause className="size-3.5" /> 暂停
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs"
+                            onClick={() => setModifying({ row: row.plan!, action: "open" })}
+                          >
+                            <Play className="size-3.5" /> 开启
+                          </Button>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>

@@ -4,11 +4,12 @@ import { and, desc, eq, ilike, inArray, or, sql } from "drizzle-orm"
 import { z } from "zod"
 import { db } from "@/db/client"
 import { temuProducts, temuSalesOverviews, temuStores } from "@/db/schema"
+import type { ModuleName } from "@/db/schema/_shared"
 import {
   requireEnterpriseContext,
-  requireEnterpriseAdmin,
   getCurrentEnterpriseScope,
 } from "@/lib/auth/session"
+import { MODULE_LABELS } from "@/lib/modules"
 import {
   callTemuApi,
   isTemuPermissionError,
@@ -30,7 +31,8 @@ import {
  * Temu 备货工作台 Server Actions（M5-A 履约：采购单查询/取消 + VMI 批量申报/自动备货）
  *
  * 与核价调价工作台同模式：实时拉取不落库（备货单时效强、状态随发货推进，
- * 落库反而陈旧），读走 temu-cache 30s 短缓存；写操作限企业管理员。
+ * 落库反而陈旧），读走 temu-cache 30s 短缓存；写操作校验备货页 tab 模块
+ * 权限（页面可见即可用按钮，2026-10-22 口径）。
  * 接口口径 docs §8.13：purchaseorderv2.get 分页 + statusList 过滤、
  * cancel 结构来自 temu-go SDK 并经实测推进验证（单条 apply/edit 与条码
  * labelv2 入口 2026-10-22 随备货单 UI 收敛移除，批量申报仍走 apply）。
@@ -52,18 +54,27 @@ const STATUS_PRESET: Record<string, number[] | undefined> = {
 
 type StoreRow = typeof temuStores.$inferSelect
 
+/** 校验店铺归属当前企业并返回店铺行（与 temu-workbench 同款守卫，
+ *  "use server" 文件仅能导出 async 函数故内联）。requireModule：写操作传
+ *  对应 tab 模块（页面可见即可用按钮）；查询传 null */
 async function requireTemuStore(
   storeId: string,
-  admin: boolean,
+  requireModule: ModuleName | null,
 ): Promise<{ ok: true; store: StoreRow } | { ok: false; error: string }> {
   let ctx
   try {
-    ctx = admin ? await requireEnterpriseAdmin() : await requireEnterpriseContext()
+    ctx = await requireEnterpriseContext()
   } catch (err) {
     // 鉴权层抛错（FORBIDDEN: 需要企业管理员权限 / 未登录）转面板可读信息
     return {
       ok: false,
       error: err instanceof Error ? err.message.replace(/^FORBIDDEN: /, "") : String(err),
+    }
+  }
+  if (requireModule && !ctx.canAccess(requireModule)) {
+    return {
+      ok: false,
+      error: `当前账号没有「${MODULE_LABELS[requireModule]}」页面权限，无法执行该操作`,
     }
   }
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
@@ -173,7 +184,7 @@ export async function getTemuPurchaseOrdersAction(input: {
   status?: string
 }): Promise<{ ok: true; rows: TemuPurchaseOrderRow[]; total: number } | { ok: false; error: string }> {
   const q = temuPurchaseQuerySchema.parse(input)
-  const guard = await requireTemuStore(q.store, false)
+  const guard = await requireTemuStore(q.store, null)
   if (!guard.ok) return guard
   const { store } = guard
   return temuCached(`${store.enterpriseId}:purchase:${store.id}:${q.status}`, () =>
@@ -255,14 +266,14 @@ async function loadPurchaseOrders(
   return { ok: true, rows, total }
 }
 
-/* ─── 写操作（管理员） ─── */
+/* ─── 写操作（需备货页 tab 权限） ─── */
 
 /** 批量取消备货单（bg.purchaseorder.cancel；仅待接单等早期状态，官方按单返回成败） */
 export async function cancelTemuPurchaseOrdersAction(
   input: unknown,
 ): Promise<{ ok: true; failed: Array<{ sn: string; reason: string }> } | { ok: false; error: string }> {
   const q = temuPurchaseCancelSchema.parse(input)
-  const guard = await requireTemuStore(q.store, true)
+  const guard = await requireTemuStore(q.store, "temu_purchase")
   if (!guard.ok) return { ok: false, error: guard.error }
   const built = await getTemuCallContext(guard.store)
   if ("error" in built) return { ok: false, error: built.error }
@@ -300,6 +311,8 @@ export interface TemuStockableRow {
   productSkcId: string
   productName: string | null
   mainImageUrl: string | null
+  /** 主图转存 URL（COS/本地；展示优先于 kwcdn 外链） */
+  mainImageCosUrl: string | null
   productSn: string | null
   last7DaysSalesVolume: number | null
   warehouseAvailableStock: number | null
@@ -320,7 +333,7 @@ export async function getStockableProductsAction(input: {
   onlyCanPurchase?: boolean
 }): Promise<{ ok: true; rows: TemuStockableRow[] } | { ok: false; error: string }> {
   const q = temuStockableQuerySchema.parse(input)
-  const guard = await requireTemuStore(q.store, false)
+  const guard = await requireTemuStore(q.store, null)
   if (!guard.ok) return guard
   const { store } = guard
 
@@ -347,6 +360,7 @@ export async function getStockableProductsAction(input: {
         productSkcId: temuProducts.productSkcId,
         productName: temuProducts.productName,
         mainImageUrl: temuProducts.mainImageUrl,
+        mainImageCosUrl: temuProducts.mainImageCosUrl,
         productSn: temuProducts.productSn,
       })
       .from(temuProducts)
@@ -408,6 +422,7 @@ export async function getStockableProductsAction(input: {
         productSkcId: p.productSkcId,
         productName: p.productName,
         mainImageUrl: p.mainImageUrl,
+        mainImageCosUrl: p.mainImageCosUrl,
         productSn: p.productSn,
         last7DaysSalesVolume: latest?.last7DaysSalesVolume ?? null,
         warehouseAvailableStock: sumSkuWarehouseStock(skuRows),
@@ -438,7 +453,7 @@ export async function batchApplyTemuStockingAction(
   input: unknown,
 ): Promise<{ ok: true; results: TemuStockApplyBatchResult[] } | { ok: false; error: string }> {
   const q = temuStockApplyBatchSchema.parse(input)
-  const guard = await requireTemuStore(q.store, true)
+  const guard = await requireTemuStore(q.store, "temu_purchase")
   if (!guard.ok) return guard
   const built = await getTemuCallContext(guard.store)
   if ("error" in built) return { ok: false, error: built.error }
@@ -510,7 +525,7 @@ export async function getTemuQualityInspectionsAction(input: {
   if (!parsed.success) {
     return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   }
-  const guard = await requireTemuStore(parsed.data.store, false)
+  const guard = await requireTemuStore(parsed.data.store, null)
   if (!guard.ok) return guard
   const { store } = guard
   const { skuQcResult, pageNo } = parsed.data
@@ -623,7 +638,7 @@ export async function getTemuQualityInspectionDetailAction(input: {
   if (!parsed.success) {
     return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   }
-  const guard = await requireTemuStore(parsed.data.store, false)
+  const guard = await requireTemuStore(parsed.data.store, null)
   if (!guard.ok) return guard
   const built = await getTemuCallContext(guard.store)
   if ("error" in built) return { ok: false, error: built.error }
@@ -775,7 +790,7 @@ export async function autoStockingLinkAction(
   input: unknown,
 ): Promise<{ ok: true; result: TemuAutoStockResult } | { ok: false; error: string }> {
   const q = temuAutoStockSchema.parse(input)
-  const guard = await requireTemuStore(q.store, true)
+  const guard = await requireTemuStore(q.store, "temu_purchase")
   if (!guard.ok) return guard
   const built = await getTemuCallContext(guard.store)
   if ("error" in built) return { ok: false, error: built.error }

@@ -21,10 +21,11 @@ import { encrypt } from "@/lib/crypto"
  * TEMU 官方 API 同步集成测试（真库写读 + mock fetch 按 type 分发）
  *
  * 覆盖：
- * 1. 四源全链路 upsert：goods-list → temu_product（含类目/主图）、
- *    product.search → hasSkcSelected、salesv2 → sales_overview + sku_map +
- *    标识回填、soldout → metric_snapshot；temu_ingest_log 落 api-* 审计；
- *    lastSyncStatus.ok = true；
+ * 1. 全源链路 upsert：goods-list → temu_product（含类目/主图）、
+ *    product-image-mirror → 主图转存回写 cos 两列、product.search →
+ *    hasSkcSelected、salesv2 → sales_overview + sku_map + 标识回填、
+ *    soldout → metric_snapshot；temu_ingest_log 落各源审计；
+ *    lastSyncStatus.ok = true；重跑幂等（已转存图不再重转）；
  * 2. token 过期（7000007）：余下源中止，店铺标记 invalid；
  * 3. verifyStoreToken：mall.info 半托回写。
  */
@@ -40,6 +41,19 @@ vi.mock("@/lib/temu-api/app-config", () => ({
 vi.mock("@/server/services/temu-cache", () => ({
   invalidateTemuCache: () => {},
 }))
+// 主图转存走 mock 存储：不打真库 system_setting、不写本地 uploads 目录；
+// 返回 URL 取源 URL 尾 8 字符（9001.jpg），断言可区分两张图
+const storageMock = vi.hoisted(() => ({
+  saveFromUrl: vi.fn(
+    async (
+      url: string,
+      _enterpriseId: string,
+      _category: string,
+      _trustedHostHints?: string[],
+    ) => `https://cos.example.com/temu/${url.slice(-8)}`,
+  ),
+}))
+vi.mock("@/lib/storage", () => ({ getStorage: async () => storageMock }))
 
 /** 官方接口响应夹具 */
 const GOODS_LIST_PAGE = {
@@ -244,14 +258,15 @@ afterAll(async () => {
   vi.unstubAllGlobals()
 })
 
-describe("syncStore 四源全链路", () => {
-  it("upsert 四张表并落审计与状态", async () => {
+describe("syncStore 全源链路", () => {
+  it("upsert 四张表 + 主图转存并落审计与状态", async () => {
     vi.stubGlobal("fetch", mockTemuFetch())
     const outcome = await syncStore(storeId)
     expect(outcome.skipped).toBeUndefined()
     expect(outcome.status?.ok).toBe(true)
     expect(Object.keys(outcome.status?.sources ?? {})).toEqual([
       "api-goods-list",
+      "product-image-mirror",
       "api-lifecycle",
       "api-sales-overview",
       "api-soldout",
@@ -270,6 +285,17 @@ describe("syncStore 四源全链路", () => {
     expect(p1?.cat1Name).toBe("女装")
     expect(p1?.productSn).toBe("SN-9001")
     expect(p1?.mainImageUrl).toContain("9001")
+
+    // 主图转存源：kwcdn/外链 → 自有存储（temu 类别 + kwcdn 可信提示），两列回写
+    expect(p1?.mainImageCosUrl).toBe("https://cos.example.com/temu/9001.jpg")
+    expect(p1?.mainImageCosSource).toBe("https://img.example.com/9001.jpg")
+    expect(storageMock.saveFromUrl).toHaveBeenCalledTimes(2)
+    const [mirroredUrl, mirroredEnt, mirroredCategory, mirroredHints] =
+      storageMock.saveFromUrl.mock.calls[0]!
+    expect(mirroredUrl).toContain("img.example.com")
+    expect(mirroredEnt).toBe(entId)
+    expect(mirroredCategory).toBe("temu")
+    expect(mirroredHints).toContain("img.kwcdn.com")
 
     // lifecycle：selectStatus=1 → 选中
     const [p2] = await db
@@ -339,6 +365,7 @@ describe("syncStore 四源全链路", () => {
       "api-price-list",
       "api-sales-overview",
       "api-soldout",
+      "product-image-mirror",
     ])
     const [storeAfter] = await db.select().from(temuStores).where(eq(temuStores.id, storeId))
     expect(storeAfter?.lastSyncAt).not.toBeNull()
@@ -346,9 +373,12 @@ describe("syncStore 四源全链路", () => {
     expect(storeAfter?.tokenState).toBe("active")
   })
 
-  it("幂等重跑不产生重复行，内容未变商品仍留在最新批次", async () => {
+  it("幂等重跑不产生重复行，内容未变商品仍留在最新批次（已转存图不重转）", async () => {
     vi.stubGlobal("fetch", mockTemuFetch())
+    const callsBefore = storageMock.saveFromUrl.mock.calls.length
     await syncStore(storeId)
+    // 主图未变（cos_source == main_image_url）→ 转存源零调用
+    expect(storageMock.saveFromUrl.mock.calls.length).toBe(callsBefore)
     const salesRows = await db
       .select()
       .from(temuSalesOverviews)

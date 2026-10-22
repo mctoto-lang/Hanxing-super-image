@@ -213,6 +213,10 @@ export const temuProducts = pgTable(
     last7DaysSalesVolume: integer("last7_days_sales_volume"),
     /** 主图 URL */
     mainImageUrl: text("main_image_url"),
+    /** 主图转存后的可访问 URL（COS/本地；同步时新图/换图增量转存，展示优先用） */
+    mainImageCosUrl: text("main_image_cos_url"),
+    /** 转存时的主图源 URL（与 main_image_url 不一致时下一轮同步重转存） */
+    mainImageCosSource: text("main_image_cos_source"),
     /** 对接买手/运营（生命周期源 nickContact） */
     buyerName: varchar("buyer_name", { length: 100 }),
     /** 上新生命周期状态文案（如 价格申报中；生命周期源 skcList 展开） */
