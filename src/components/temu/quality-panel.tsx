@@ -45,6 +45,8 @@ export function TemuQualityPanel({ store }: { store?: string }) {
   const [error, setError] = React.useState<string | null>(null)
   const [loading, startLoading] = React.useTransition()
   const [detailBillId, setDetailBillId] = React.useState<number | null>(null)
+  // 竞态守卫：筛选/翻页连续切换时，后到的旧请求不得覆盖新请求结果（return-panel 同款）
+  const loadReqRef = React.useRef(0)
   /** 切店（router.push 软导航、组件状态保留）时重置页码：若原店翻到第 N 页、新店
    *  不足 N 页，列表为空且分页条隐藏，用户被困空页。渲染期重置保证 load 只按第 1
    *  页发起，避免先按旧页码多发一次请求与第 1 页结果竞态。 */
@@ -57,11 +59,13 @@ export function TemuQualityPanel({ store }: { store?: string }) {
   const load = React.useCallback(() => {
     if (!store) return
     startLoading(async () => {
+      const reqId = ++loadReqRef.current
       const r = await getTemuQualityInspectionsAction({
         store,
         ...(filter === "all" ? {} : { skuQcResult: Number(filter) as 1 | 2 }),
         pageNo,
       })
+      if (reqId !== loadReqRef.current) return
       if (r.ok) {
         setRows(r.rows)
         setTotal(r.total)

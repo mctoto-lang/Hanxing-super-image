@@ -444,6 +444,36 @@ describe("发货单列表 action", () => {
       vi.unstubAllGlobals()
     },
   )
+
+  it(
+    "fresh 防误杀：缺席置已取消只对待装箱/待收货生效，已收货历史单保持原状态",
+    { timeout: 30_000 },
+    async () => {
+      mockSession.userId = ownerId
+      // 两张都很旧的单：待装箱（可被官方超时移除）+ 已收货（缺席多因超出官方保留期，≠已取消）
+      const born = new Date(Date.now() - 2 * 3600_000)
+      await db.insert(temuShipOrders).values([
+        {
+          storeId, deliveryOrderSn: "FH-FRESH-K1", skcExtCode: "B911", status: 0,
+          deliveryOrderCreateTime: born, contentHash: "freshk1", capturedAt: new Date(),
+        },
+        {
+          storeId, deliveryOrderSn: "FH-FRESH-K2", skcExtCode: "B912", status: 2,
+          deliveryOrderCreateTime: born, contentHash: "freshk2", capturedAt: new Date(),
+        },
+      ])
+      // 官方回查返回空：两张都缺席
+      vi.stubGlobal("fetch", mockWizardFetch({ "bg.shiporderv2.get": { total: 0, list: [] } }))
+      const r = await getTemuShipOrdersAction({ store: storeId, statusPreset: "all", pageSize: 2, fresh: true })
+      expect(r.ok).toBe(true)
+      if (!r.ok) return
+      expect(r.freshStats).toEqual({ fetched: 0, missing: 1 })
+      const after = await db.select().from(temuShipOrders).where(inArray(temuShipOrders.deliveryOrderSn, ["FH-FRESH-K1", "FH-FRESH-K2"]))
+      expect(after.find((o) => o.deliveryOrderSn === "FH-FRESH-K1")?.status).toBe(5)
+      expect(after.find((o) => o.deliveryOrderSn === "FH-FRESH-K2")?.status).toBe(2)
+      vi.unstubAllGlobals()
+    },
+  )
 })
 
 
@@ -683,6 +713,26 @@ describe("发货五步向导写操作", () => {
         .from(temuShipOrders)
         .where(eq(temuShipOrders.deliveryOrderSn, "FH-NEW-CREATE-1"))
       expect(cnt[0]?.n).toBe(1)
+      vi.unstubAllGlobals()
+    },
+  )
+
+  it(
+    "创建发货单：官方成功后本地回查失败 → ok:true + warning（防重试重复创建）",
+    { timeout: 30_000 },
+    async () => {
+      mockSession.userId = ownerId
+      const fn = mockWizardFetch(
+        {},
+        { "bg.shiporderv2.get": { errorCode: 1000000, errorMsg: "recheck down" } },
+      )
+      vi.stubGlobal("fetch", fn)
+      const r = await createShipOrderAction({ ...CREATE_INPUT, store: storeId })
+      expect(r.ok).toBe(true)
+      if (!r.ok) return
+      // 官方已建单：单号照常返回，失败降级为 warning 引导勿重试，而非误导「创建失败」
+      expect(r.deliveryOrderSns).toEqual(["FH-NEW-CREATE-1"])
+      expect(r.warning).toContain("请勿重复创建")
       vi.unstubAllGlobals()
     },
   )
@@ -1427,6 +1477,46 @@ describe("发货统计 action（概览三卡）", () => {
       expect(bOnly.week).toEqual({ packageNum: 2, skcNum: 8 })
       expect(bOnly.today.map(({ name, num }) => ({ name, num }))).toEqual([{ name: "T9", num: 8 }])
 
+      vi.unstubAllGlobals()
+    },
+  )
+
+  it(
+    "跨店去重保留 captured_at 最新行：两店快照件数不一时取最新鲜快照",
+    { timeout: 30_000 },
+    async () => {
+      mockSession.userId = ownerId
+      const dupStores = await db
+        .insert(temuStores)
+        .values([
+          { enterpriseId: entId, name: "去重新规甲店", accessTokenEncrypted: encrypt("dedup2-token-a"), tokenState: "active", mallType: "full" },
+          { enterpriseId: entId, name: "去重新规乙店", accessTokenEncrypted: encrypt("dedup2-token-b"), tokenState: "active", mallType: "full" },
+        ])
+        .returning()
+      const [storeA, storeB] = dupStores
+      // store_id 较大的一店持最新快照：旧规则（store_id 最小）会留旧行 7 件，
+      // 新规则（captured_at 最新）留新行 3 件——断言 3 才证明保留键已切换
+      const newest = storeA!.id > storeB!.id ? storeA!.id : storeB!.id
+      const oldest = newest === storeA!.id ? storeB!.id : storeA!.id
+      const todayStart = temuStartOfToday()
+      const row = {
+        deliveryOrderSn: "FH-DEDUP-3", subPurchaseOrderSn: "WB-DEDUP-3", skcExtCode: "TDUP", status: 1,
+        deliveryAddressId: 990002, deliverPackageNum: 1,
+        deliverTime: new Date(todayStart.getTime() + 60_000),
+        expectPickUpGoodsTime: new Date(todayStart.getTime() + 6 * 3600_000),
+      }
+      await db.insert(temuShipOrders).values([
+        { ...row, storeId: oldest, deliverSkcNum: 7, contentHash: "dedup2-old", capturedAt: new Date(Date.now() - 3600_000) },
+        { ...row, storeId: newest, deliverSkcNum: 3, contentHash: "dedup2-new", capturedAt: new Date() },
+      ])
+
+      vi.stubGlobal("fetch", mockWizardFetch({
+        "bg.mall.address.get": [{ id: 990002, addressLabel: "去重新规仓" }],
+      }))
+      const all = await getTemuShipStatsAction(null, "990002")
+      // 双计 10 或留旧行 7 都不对：只计最新快照 1 包 3 件
+      expect(all.week).toEqual({ packageNum: 1, skcNum: 3 })
+      expect(all.today.map(({ name, num }) => ({ name, num }))).toEqual([{ name: "TDUP", num: 3 }])
       vi.unstubAllGlobals()
     },
   )

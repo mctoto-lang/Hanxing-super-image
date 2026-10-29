@@ -77,6 +77,9 @@ export function TemuReturnPanel({ store }: { store?: string }) {
   const [error, setError] = React.useState<string | null>(null)
   const [loading, startLoading] = React.useTransition()
   const [detailPkg, setDetailPkg] = React.useState<TemuReturnPackageRow | null>(null)
+  // 竞态守卫：视图/状态/时间窗/筛选连续切换时，后到的旧请求不得覆盖新请求结果
+  //（与 quality-panel 同款；筛选与 Select 在 loading 期间不禁用，可并发在途）
+  const loadReqRef = React.useRef(0)
 
   /** 切店（router.push 软导航、组件状态保留）时重置页码（quality-panel 同款） */
   const [prevStore, setPrevStore] = React.useState(store)
@@ -95,6 +98,7 @@ export function TemuReturnPanel({ store }: { store?: string }) {
       ? (win as "30" | "90" | "365")
       : "90"
     startLoading(async () => {
+      const reqId = ++loadReqRef.current
       const base = { store, pageNo }
       const r =
         view === "packages"
@@ -112,6 +116,7 @@ export function TemuReturnPanel({ store }: { store?: string }) {
               ...(applied.pkg ? { returnSupplierPackageNo: applied.pkg } : {}),
               ...(applied.sub ? { purchaseSubOrderSn: applied.sub } : {}),
             })
+      if (reqId !== loadReqRef.current) return
       if (r.ok) {
         if (view === "packages") setPkgRows(r.rows as TemuReturnPackageRow[])
         else setSkuRows(r.rows as TemuReturnSkuRow[])
@@ -139,7 +144,8 @@ export function TemuReturnPanel({ store }: { store?: string }) {
     )
   }
 
-  const totalPages = Math.max(1, Math.ceil(total / 20))
+  // 官方分页 pageNo 上限 200（schema 同口径）：封顶防点到 201 页收到 zod 英文报错
+  const totalPages = Math.min(200, Math.max(1, Math.ceil(total / 20)))
   const commitDraft = () => {
     setApplied(draft)
     setPageNo(1)

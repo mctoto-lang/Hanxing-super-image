@@ -17,6 +17,8 @@ import {
   temuSkuMaps,
   temuActivities,
   temuIngestLogs,
+  temuShipOrders,
+  temuShipPackages,
   type TemuSyncStatus,
 } from "@/db/schema"
 import {
@@ -1452,6 +1454,13 @@ export async function clearTemuStoreDataAction(input: { id: string }) {
     ).length
     counts["temu_ingest_log"] = (
       await tx.delete(temuIngestLogs).where(eq(temuIngestLogs.storeId, id)).returning({ id: temuIngestLogs.id })
+    ).length
+    // 发货域（0079 批次起落库）：包裹先清再清发货单；清空后下轮同步因空表自动全窗重建
+    counts["temu_ship_package"] = (
+      await tx.delete(temuShipPackages).where(eq(temuShipPackages.storeId, id)).returning({ id: temuShipPackages.id })
+    ).length
+    counts["temu_ship_order"] = (
+      await tx.delete(temuShipOrders).where(eq(temuShipOrders.storeId, id)).returning({ id: temuShipOrders.id })
     ).length
   })
   invalidateTemuCache(enterpriseId)

@@ -317,9 +317,12 @@ export async function getTemuShipOrdersAction(input: unknown) {
           //（新建待装箱单按单号回查可能滞后数分钟；下一轮同步/刷新会收敛真状态）
           const nowMs = Date.now()
           const rowBySn = new Map(first.rows.map((x) => [x.order.deliveryOrderSn, x.order]))
+          // 只有待装箱(0)/待收货(1)可能被官方超时移除；已收货(2)/已入库(3)/已退货(4)
+          // 的历史单按单号回查缺席多因超出官方保留期，缺席≠已取消，不得改写
           const killable = missing.filter((sn) => {
             const row = rowBySn.get(sn)
-            const born = row?.deliveryOrderCreateTime?.getTime() ?? row?.capturedAt.getTime() ?? 0
+            if (row?.status !== 0 && row?.status !== 1) return false
+            const born = row.deliveryOrderCreateTime?.getTime() ?? row.capturedAt.getTime()
             return nowMs - born > 30 * 60_000
           })
           if (killable.length > 0) {
@@ -330,6 +333,7 @@ export async function getTemuShipOrdersAction(input: unknown) {
                 and(
                   eq(temuShipOrders.storeId, guard.store.id),
                   inArray(temuShipOrders.deliveryOrderSn, killable),
+                  inArray(temuShipOrders.status, [0, 1]),
                 ),
               )
           }
@@ -458,15 +462,19 @@ async function loadTemuShipStats(
     sql`${temuShipOrders.status} not in (0, 5)`,
   ]
   // 跨店去重（全部店铺模式）：官方 shiporderv2 同主体跨店可见，同一物理发货单会在
-  // 多家店各落一行（本地唯一键=店+单号）——聚合只计一次，保留同单号中 store_id 最小
-  // 的一行（限定本次店铺范围，防跨企业单号碰撞）。单店模式不加：唯一键已保证无重复，
+  // 多家店各落一行（本地唯一键=店+单号）——聚合只计一次，保留 captured_at 最新的一行
+  // （最新鲜的同步快照：预约取货时间/状态最全，归日最准；同刻平手取 store_id 最小，
+  // 限定本次店铺范围防跨企业单号碰撞）。单店模式不加：唯一键已保证无重复，
   // 且去重条件会把「单在别店也有」的行误删出本店视角
   if (storeIds.length > 1) {
     baseConds.push(sql`not exists (
       select 1 from temu_ship_order x
       where x.delivery_order_sn = ${temuShipOrders.deliveryOrderSn}
-        and x.store_id < ${temuShipOrders.storeId}
         and ${inArray(sql`x.store_id`, storeIds)}
+        and (
+          x.captured_at > ${temuShipOrders.capturedAt}
+          or (x.captured_at = ${temuShipOrders.capturedAt} and x.store_id < ${temuShipOrders.storeId})
+        )
     )`)
   }
   if (warehouse) {
@@ -704,7 +712,8 @@ export async function getShipStagingAction(input: unknown) {
       .split(/[,，\s]+/)
       .map((s) => s.trim())
       .filter(Boolean)
-      .slice(0, 50)
+      // 与 schema 2048 配套（约容百单）：截断会让预检漏查的单被误判「已不在发货台」
+      .slice(0, 100)
     const load = async () => {
       const built = await getTemuCallContext(store)
       if ("error" in built) return { error: built.error as string, rows: [] as TemuShipStagingRow[] }
@@ -1109,15 +1118,22 @@ export async function createShipOrderAction(input: unknown) {
           "官方接口已受理但返回中未解析到发货单号；请到「发货单跟踪」确认是否已创建，确认前请勿重试以免重复创建",
       }
     }
-    const { presentSns } = await upsertFromOfficial(store.id, built, sns)
-    // 官方索引延迟导致回查落空的单：用入参播种本地行（幂等，冲突跳过）
-    await seedCreatedOrders(store.id, sns, presentSns, q.groups, new Date())
-    invalidateTemuCache(store.enterpriseId)
+    let followUpWarning: string | undefined
+    try {
+      const { presentSns } = await upsertFromOfficial(store.id, built, sns)
+      // 官方索引延迟导致回查落空的单：用入参播种本地行（幂等，冲突跳过）
+      await seedCreatedOrders(store.id, sns, presentSns, q.groups, new Date())
+      invalidateTemuCache(store.enterpriseId)
+    } catch (err) {
+      // 官方已建单，本地回查失败若报「创建失败」会诱导重试→重复创建，降级为 warning
+      followUpWarning = `官方已创建 ${sns.length} 张发货单；本地回查落库失败（${await toWorkbenchError(store.id, err)}），列表稍后自动同步，请勿重复创建`
+    }
     return {
       ok: true as const,
       deliveryOrderSns: sns,
       isUrgencyType: (r.result as { isUrgencyType?: unknown } | null)?.isUrgencyType === true,
       raw: r.result as Record<string, unknown>,
+      warning: followUpWarning,
     }
   } catch (err) {
     return { ok: false as const, error: withShipCreateHint(await toWorkbenchError(store.id, err)) }
@@ -1473,11 +1489,17 @@ export async function sendPackingAction(input: unknown) {
     )
     const expressBatchSn =
       str((r.result as { expressBatchSn?: unknown } | null)?.expressBatchSn, 64) ?? null
-    // 库存扣减挂点：库存底座批次在此接入（本期空实现）
-    await shipmentShippedHook({ storeId: store.id, deliveryOrderSns: q.deliveryOrderSns })
-    await upsertFromOfficial(store.id, built, q.deliveryOrderSns)
-    invalidateTemuCache(store.enterpriseId)
-    return { ok: true as const, expressBatchSn }
+    let followUpWarning: string | undefined
+    try {
+      // 库存扣减挂点：库存底座批次在此接入（本期空实现）
+      await shipmentShippedHook({ storeId: store.id, deliveryOrderSns: q.deliveryOrderSns })
+      await upsertFromOfficial(store.id, built, q.deliveryOrderSns)
+      invalidateTemuCache(store.enterpriseId)
+    } catch (err) {
+      // 官方已发货不可回滚，本地善后失败降级为 warning，避免误导「发货失败」引发重发
+      followUpWarning = `官方已发货成功；本地回查/库存钩子失败（${await toWorkbenchError(store.id, err)}），状态稍后自动同步`
+    }
+    return { ok: true as const, expressBatchSn, warning: followUpWarning }
   } catch (err) {
     return { ok: false as const, error: await toWorkbenchError(store.id, err) }
   }
@@ -1499,9 +1521,14 @@ export async function cancelShipOrderAction(input: unknown) {
     const built = await getTemuCallContext(guard.store)
     if ("error" in built) return { ok: false as const, error: built.error }
     await callTemuApi("bg.shiporder.cancel", { deliveryOrderSn: q.deliveryOrderSn }, built)
-    await upsertFromOfficial(guard.store.id, built, [q.deliveryOrderSn])
-    invalidateTemuCache(guard.store.enterpriseId)
-    return { ok: true as const }
+    let followUpWarning: string | undefined
+    try {
+      await upsertFromOfficial(guard.store.id, built, [q.deliveryOrderSn])
+      invalidateTemuCache(guard.store.enterpriseId)
+    } catch (err) {
+      followUpWarning = `官方已取消；本地回查失败（${await toWorkbenchError(guard.store.id, err)}），状态稍后自动同步`
+    }
+    return { ok: true as const, warning: followUpWarning }
   } catch (err) {
     return { ok: false as const, error: await toWorkbenchError(guard.store.id, err) }
   }
@@ -1559,9 +1586,14 @@ export async function editShipPackagesAction(input: unknown) {
     const { store: _s, ...body } = q
     void _s
     await callTemuApi("bg.shiporder.package.edit", body, built)
-    await upsertFromOfficial(guard.store.id, built, [q.deliveryOrderSn])
-    invalidateTemuCache(guard.store.enterpriseId)
-    return { ok: true as const }
+    let followUpWarning: string | undefined
+    try {
+      await upsertFromOfficial(guard.store.id, built, [q.deliveryOrderSn])
+      invalidateTemuCache(guard.store.enterpriseId)
+    } catch (err) {
+      followUpWarning = `官方已调整包裹；本地回查失败（${await toWorkbenchError(guard.store.id, err)}），状态稍后自动同步`
+    }
+    return { ok: true as const, warning: followUpWarning }
   } catch (err2) {
     return { ok: false as const, error: await toWorkbenchError(guard.store.id, err2) }
   }

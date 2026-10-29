@@ -53,17 +53,24 @@ async function main() {
   }
   if (pendingSns.length === 0) console.log("  （today 窗口无 status=0 行）")
 
-  console.log("== 2) 按单号回查（deliveryOrderSnList）==")
+  console.log("== 2) 按单号回查（deliveryOrderSnList，50/批防单页截断误判）==")
   if (pendingSns.length > 0) {
-    const r = await callTemuApi<{ total?: number; list?: Record<string, unknown>[] }>(
-      "bg.shiporderv2.get",
-      { pageNo: 1, pageSize: 50, deliveryOrderSnList: pendingSns },
-      ctx,
-    )
-    console.log(`bySn 返回 ${r.result?.list?.length ?? 0}/${pendingSns.length} 行`)
-    for (const x of r.result?.list ?? []) {
-      console.log(`  ${x.deliveryOrderSn} status=${x.status}`)
+    let got = 0
+    for (let i = 0; i < pendingSns.length; i += 50) {
+      const batch = pendingSns.slice(i, i + 50)
+      const r = await callTemuApi<{ total?: number; list?: Record<string, unknown>[] }>(
+        "bg.shiporderv2.get",
+        { pageNo: 1, pageSize: 50, deliveryOrderSnList: batch },
+        ctx,
+      )
+      const rows = r.result?.list ?? []
+      got += rows.length
+      for (const x of rows) {
+        console.log(`  ${x.deliveryOrderSn} status=${x.status}`)
+      }
+      if (i + 50 < pendingSns.length) await new Promise((s) => setTimeout(s, 1500))
     }
+    console.log(`bySn 返回 ${got}/${pendingSns.length} 行`)
   }
 
   console.log("== 3) 无窗口裸查 p1（对照：官方不给窗口时返回什么）==")

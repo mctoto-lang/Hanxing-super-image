@@ -61,8 +61,9 @@ export type TemuShipListQuery = z.infer<typeof temuShipListQuerySchema>
 
 export const temuShipStagingQuerySchema = z.object({
   store: z.string().uuid(),
-  /** 备货单号筛选；支持逗号分隔多单号（创建发货单前预检用），映射官方 subPurchaseOrderSnList */
-  subPurchaseOrderSn: z.string().max(256).optional(),
+  /** 备货单号筛选；支持逗号分隔多单号（创建发货单前预检用），映射官方 subPurchaseOrderSnList。
+   *  上限 2048：预检需一次性带上全部勾选单（单号约 19 字符，约容百单），256 会静默截断批量预检 */
+  subPurchaseOrderSn: z.string().max(2048).optional(),
   skcExtCode: z.string().max(64).optional(),
   /** SKC（productSkcId）筛选，映射官方 productSkcIdList */
   skcId: z.string().max(64).optional(),

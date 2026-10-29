@@ -407,7 +407,8 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
     setCancelPending(true)
     try {
       const r = await cancelShipOrderAction({ store, deliveryOrderSn: sn })
-      if (r.ok) toast.success(`已取消 ${sn}`)
+      if (r.ok && r.warning) toast.warning(r.warning, { duration: 8000 })
+      else if (r.ok) toast.success(`已取消 ${sn}`)
       else
         toast.error(`${r.error}（本地状态可能滞后于官方，已实时核对并刷新列表）`, { duration: 8000 })
     } catch (e) {
@@ -459,7 +460,8 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
         })),
       })
       if (r.ok) {
-        toast.success("包裹已调整")
+        if (r.warning) toast.warning(r.warning, { duration: 8000 })
+        else toast.success("包裹已调整")
         setPkgEdit(null)
         setReloadTick((t) => t + 1)
       } else {

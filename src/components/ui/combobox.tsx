@@ -77,13 +77,17 @@ export function Combobox({
       '[data-slot="dialog-content"]',
     ) as HTMLElement | null) ?? undefined
 
-  // 打开时重置搜索并聚焦输入框（键盘激活时兜底计算碰撞边界）
+  // 打开时重置搜索并聚焦输入框（键盘激活时兜底计算碰撞边界）。
+  // 重置须同步通知调用方：onSearchChange 语义是「输入即筛选」，本地清空而外部
+  // 过滤态保留会导致主表仍按旧关键字过滤。仅挂 open 依赖（内联回调不重放重置）。
   React.useEffect(() => {
     if (open) {
       setKeyword("")
+      onSearchChange?.("")
       setDialogBoundary(resolveBoundary())
       requestAnimationFrame(() => searchRef.current?.focus())
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
   const kw = keyword.trim().toLowerCase()

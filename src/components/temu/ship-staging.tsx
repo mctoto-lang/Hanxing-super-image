@@ -843,6 +843,7 @@ export function ShipStaging({
       }
       const results: Array<{ sn: string; ok: boolean; msg?: string }> = []
       const createdSns = new Set<string>()
+      const followUpWarnings: string[] = []
       for (const g of groups) {
         try {
           const r = await createShipOrderAction({
@@ -869,6 +870,7 @@ export function ShipStaging({
           })
           if (r.ok) {
             results.push(...r.deliveryOrderSns.map((sn) => ({ sn, ok: true })))
+            if (r.warning) followUpWarnings.push(r.warning)
             for (const o of g.orders) createdSns.add(o.sn)
           } else {
             results.push({ sn: g.orders.map((o) => o.sn).join("、"), ok: false, msg: r.error })
@@ -878,6 +880,8 @@ export function ShipStaging({
         }
       }
       setCreateResults(results)
+      if (followUpWarnings.length > 0)
+        toast.warning(followUpWarnings.join("；"), { duration: 10_000 })
       const okCount = results.filter((r) => r.ok).length
       if (okCount === 0) {
         toast.error(`所有分组创建失败：${results.find((r) => !r.ok)?.msg ?? ""}`, { duration: 10000 })

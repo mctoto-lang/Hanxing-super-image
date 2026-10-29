@@ -29,12 +29,18 @@ async function main() {
   console.log("本地待装箱单:", pending.map((p) => p.sn).join(", ") || "（无）")
   if (pending.length === 0) process.exit(0)
 
-  const r = await callTemuApi<{ total?: number; list?: Array<Record<string, unknown>> }>(
-    "bg.shiporderv2.get",
-    { pageNo: 1, pageSize: 50, deliveryOrderSnList: pending.map((p) => p.sn) },
-    ctx,
-  )
-  const official = r.result?.list ?? []
+  // 按单号回查须分批（50/批 + 1.5s 限速）：单页 pageSize 50 截断会把第 51+ 张误判为「官方已不存在」
+  const official: Array<Record<string, unknown>> = []
+  for (let i = 0; i < pending.length; i += 50) {
+    const batch = pending.slice(i, i + 50).map((p) => p.sn)
+    const r = await callTemuApi<{ total?: number; list?: Array<Record<string, unknown>> }>(
+      "bg.shiporderv2.get",
+      { pageNo: 1, pageSize: 50, deliveryOrderSnList: batch },
+      ctx,
+    )
+    official.push(...(r.result?.list ?? []))
+    if (i + 50 < pending.length) await new Promise((s) => setTimeout(s, 1500))
+  }
   console.log("官方返回:", official.length, "张")
   const STATUS_LABEL = ["待装箱", "待仓库收货", "已收货", "已入库", "已退货", "已取消", "部分收货"]
   const bySn = new Map(official.map((o) => [String(o.deliveryOrderSn), o]))

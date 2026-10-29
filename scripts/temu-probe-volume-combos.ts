@@ -12,6 +12,10 @@ async function main() {
   const { callTemuApi } = await import("../src/lib/temu-api/client")
 
   const [store] = await db.select().from(temuStores).where(eq(temuStores.name, "RoseBlanche")).limit(1)
+  if (!store) {
+    console.log("店铺 RoseBlanche 不存在")
+    process.exit(0)
+  }
   const ctx = await getTemuCallContext(store)
   if ("error" in ctx) {
     console.log("ctx 失败:", ctx.error)

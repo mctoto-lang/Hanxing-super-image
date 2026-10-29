@@ -537,14 +537,18 @@ export function TemuShipStatsCards({
   const [stats, setStats] = React.useState(initial)
   const [warehouse, setWarehouse] = React.useState(ALL_WAREHOUSES)
   const [pending, startTransition] = React.useTransition()
+  // 竞态守卫：快速连续切换仓库时丢弃过期慢响应——统计查询带 30s 服务端缓存，
+  // 命中/未命中的响应时序可倒置，只有最后一次选择的仓库结果可写回
+  const statsReqRef = React.useRef(0)
 
   const onWarehouseChange = (v: string | null) => {
     const next = v || ALL_WAREHOUSES
     setWarehouse(next)
+    const reqId = ++statsReqRef.current
     startTransition(async () => {
       try {
         const res = await getTemuShipStatsAction(storeId ?? null, next === ALL_WAREHOUSES ? null : next)
-        if (res && Array.isArray(res.today)) setStats(res)
+        if (reqId === statsReqRef.current && res && Array.isArray(res.today)) setStats(res)
       } catch {
         // 地址标签拉取等偶发失败不阻断，保留现有数据
       }

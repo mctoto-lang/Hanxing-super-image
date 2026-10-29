@@ -584,6 +584,7 @@ export function PackingDialog({
         toast.error(r.error, { duration: 8000 })
         return
       }
+      if (r.warning) toast.warning(r.warning, { duration: 10_000 })
       toast.success(
         `装箱发货成功${r.expressBatchSn ? `，发货批次 ${r.expressBatchSn}` : ""}；运单标签与商品条码可在列表补打`,
         { duration: 10_000 },
