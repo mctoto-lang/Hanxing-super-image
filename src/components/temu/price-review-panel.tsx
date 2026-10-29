@@ -49,7 +49,8 @@ import {
   type TemuAdjustOrderRow,
 } from "@/server/actions/temu-workbench"
 import { BARGAIN_REASON_TYPES } from "@/lib/temu-api/workbench-labels"
-import { ProductNameCell } from "@/components/temu/products-table"
+import { ProductNameCell, EmptyHint } from "@/components/temu/products-table"
+import { formatDateTime as fmtTs } from "@/lib/datetime"
 
 /**
  * 核价调价工作台（官方 bg.price.review.* / bg.full.adjust.price.* 实时拉取）：
@@ -73,23 +74,10 @@ const ADJUST_STATUS_OPTIONS = [
 const yuan = (fen: number | null | undefined) =>
   fen == null ? "—" : `¥${(fen / 100).toLocaleString("zh-CN", { maximumFractionDigits: 2 }) }`
 
-/** 毫秒时间戳 → 月-日 时:分（秒/毫秒自适应） */
-const fmtTs = (t: number | null) => {
-  if (t == null) return "—"
-  const ms = t < 1e12 ? t * 1000 : t
-  return new Date(ms).toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  })
-}
-
 /** 价差百分比（正=建议/调价降价 → 红色下降趋势线；负=涨价 → 绿色；0 无图标）。
  *  核价单与调价单同款展示 */
 function DeltaPctCell({ deltaPct }: { deltaPct: number | null }) {
-  if (deltaPct == null) return <>{"—"}</>
+  if (deltaPct == null) return <EmptyHint />
   const tone =
     deltaPct > 0
       ? "text-red-600 dark:text-red-400"
@@ -346,10 +334,10 @@ function ReviewSection({
                   <TableCell className="max-w-56">
                     <ProductNameCell name={r.products[0]?.productName ?? null} />
                   </TableCell>
-                  <TableCell className="font-mono text-xs">{r.products[0]?.productSn ?? "—"}</TableCell>
+                  <TableCell className="font-mono text-xs">{r.products[0]?.productSn ?? <EmptyHint />}</TableCell>
                   <TableCell>
                     {r.skuIds.length === 0 ? (
-                      "—"
+                      <EmptyHint />
                     ) : r.skuIds.length === 1 ? (
                       <span className="font-mono text-xs">{r.skuIds[0]}</span>
                     ) : (
@@ -367,8 +355,12 @@ function ReviewSection({
                       </Tooltip>
                     )}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">{yuan(r.supplyPrice)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{yuan(r.suggestSupplyPrice)}</TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {r.supplyPrice != null ? yuan(r.supplyPrice) : <EmptyHint />}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {r.suggestSupplyPrice != null ? yuan(r.suggestSupplyPrice) : <EmptyHint />}
+                  </TableCell>
                   <TableCell className="text-right tabular-nums">
                     <DeltaPctCell deltaPct={r.deltaPct} />
                   </TableCell>
@@ -744,24 +736,30 @@ function AdjustSection({
                   <TableCell className="max-w-56">
                     <ProductNameCell name={r.productName} />
                   </TableCell>
-                  <TableCell className="font-mono text-xs">{r.skcExtCode ?? r.skcId ?? "—"}</TableCell>
+                  <TableCell className="font-mono text-xs">{r.skcExtCode ?? r.skcId ?? <EmptyHint />}</TableCell>
                   <TableCell className="text-xs">
                     {/* 货号 → 规格 → SKU ID 优先显示（官方部分行不返回 skuExtCode） */}
-                    {r.skuItems.length === 0
-                      ? "—"
-                      : `${r.skuItems[0]?.skuExtCode ?? r.skuItems[0]?.spec ?? r.skuItems[0]?.skuId ?? "—"}${r.skuItems.length > 1 ? ` 等 ${r.skuItems.length} 个` : ""}`}
+                    {r.skuItems.length === 0 ? (
+                      <EmptyHint />
+                    ) : (
+                      `${r.skuItems[0]?.skuExtCode ?? r.skuItems[0]?.spec ?? r.skuItems[0]?.skuId ?? "—"}${r.skuItems.length > 1 ? ` 等 ${r.skuItems.length} 个` : ""}`
+                    )}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">{yuan(r.currentSupplyPrice)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{yuan(r.newSupplyPrice)}</TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {r.currentSupplyPrice != null ? yuan(r.currentSupplyPrice) : <EmptyHint />}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {r.newSupplyPrice != null ? yuan(r.newSupplyPrice) : <EmptyHint />}
+                  </TableCell>
                   <TableCell className="text-right tabular-nums">
                     <DeltaPctCell deltaPct={deltaPctOf(r.currentSupplyPrice, r.newSupplyPrice)} />
                   </TableCell>
                   <TableCell className="text-xs">{r.priceType === 1 ? "活动价" : "日常价"}</TableCell>
                   <TableCell className="max-w-40 truncate text-xs text-muted-foreground" title={r.adjustReason ?? ""}>
-                    {r.adjustReason ?? "—"}
+                    {r.adjustReason ?? <EmptyHint />}
                   </TableCell>
                   <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                    {fmtTs(r.orderCreateTime)}
+                    {r.orderCreateTime != null ? fmtTs(r.orderCreateTime) : <EmptyHint />}
                   </TableCell>
                   {actionable && (
                     <TableCell className="text-right">

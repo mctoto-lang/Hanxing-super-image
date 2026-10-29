@@ -120,12 +120,25 @@ function MetricToggle({
 
 // ---------- 售出类目占比 ----------
 
+// 16 色环形调色板（globals.css --chart-1..16），按色相交错排序：相邻两项色相差 ≥80°，
+// 覆盖饼图切片上限（15 类目 + 其他），不再出现取模循环撞色
 const donutPalette = [
-  "var(--chart-1)",
-  "var(--chart-2)",
-  "var(--chart-3)",
-  "var(--chart-4)",
-  "var(--chart-5)",
+  "var(--chart-1)", // 蓝
+  "var(--chart-4)", // 琥珀
+  "var(--chart-2)", // 青
+  "var(--chart-5)", // 玫红
+  "var(--chart-3)", // 紫
+  "var(--chart-6)", // 绿
+  "var(--chart-7)", // 橙
+  "var(--chart-8)", // 靛
+  "var(--chart-9)", // 黄绿
+  "var(--chart-10)", // 绯红
+  "var(--chart-11)", // 天蓝
+  "var(--chart-12)", // 金黄
+  "var(--chart-13)", // 春绿
+  "var(--chart-14)", // 紫红
+  "var(--chart-15)", // 草绿
+  "var(--chart-16)", // 品红
 ]
 
 /** 类目占比 tooltip：类目名 · 数量 · 占圆环合计百分比 */
@@ -366,9 +379,30 @@ export function TemuSalesTop10({ data }: { data: TemuSalesTopRow[] }) {
 /** 领奖台名次勋章底色：金 / 银 / 铜（实底圆内嵌 Medal 白图标，名次由领奖台位置表达） */
 const RANK_MEDAL = ["bg-amber-500", "bg-slate-400", "bg-orange-700"]
 
-/** TOP20 主图缩略：转存 URL 优先（temuImageSrc 回落 kwcdn 外链），无图占位 */
-function Top20Thumb({ row, className }: { row: TemuSalesTopBySnRow; className?: string }) {
-  const src = temuImageSrc(row.mainImageCosUrl, row.mainImageUrl)
+/** TOP20 主图缩略：取「该口径销量最高 SKC」的图（转存 URL 优先，temuImageSrc 回落
+ *  kwcdn 外链），无图占位 */
+function Top20Thumb({
+  row,
+  metric,
+  className,
+}: {
+  row: TemuSalesTopBySnRow
+  metric: "today" | "7d" | "30d"
+  className?: string
+}) {
+  const cosUrl =
+    metric === "today"
+      ? row.todayMainImageCosUrl
+      : metric === "7d"
+        ? row.last7MainImageCosUrl
+        : row.last30MainImageCosUrl
+  const imageUrl =
+    metric === "today"
+      ? row.todayMainImageUrl
+      : metric === "7d"
+        ? row.last7MainImageUrl
+        : row.last30MainImageUrl
+  const src = temuImageSrc(cosUrl, imageUrl)
   return src ? (
     // eslint-disable-next-line @next/next/no-img-element -- kwcdn/COS 外链不走 next/image
     <img src={src} alt="" loading="lazy" className={cn("rounded-md object-cover", className)} />
@@ -388,9 +422,11 @@ function Top20Thumb({ row, className }: { row: TemuSalesTopBySnRow; className?: 
  *  第 4-20 名行内列表（序号+主图+货号+销量，固定高度内部滚动、隐藏滚动条） */
 function TemuTop20Card({
   title,
+  metric,
   rows,
 }: {
   title: string
+  metric: "today" | "7d" | "30d"
   rows: { row: TemuSalesTopBySnRow; value: number }[]
 }) {
   const podium = rows.slice(0, 3).map((x, i) => ({ ...x, rank: i + 1 }))
@@ -413,7 +449,7 @@ function TemuTop20Card({
               {podiumOrder.map((p) => (
                 <div key={p.row.sn} className="flex w-24 min-w-0 flex-col items-center gap-1">
                   <div className={cn("relative", p.rank === 1 ? "size-20" : "size-14")}>
-                    <Top20Thumb row={p.row} className="size-full" />
+                    <Top20Thumb row={p.row} metric={metric} className="size-full" />
                     <div
                       className={cn(
                         "absolute -left-2 -top-2 flex size-6 items-center justify-center rounded-full text-white shadow-md",
@@ -443,7 +479,7 @@ function TemuTop20Card({
                     <span className="w-5 shrink-0 text-center tabular-nums text-muted-foreground">
                       {i + 4}
                     </span>
-                    <Top20Thumb row={x.row} className="size-7 shrink-0" />
+                    <Top20Thumb row={x.row} metric={metric} className="size-7 shrink-0" />
                     <span className="min-w-0 flex-1 truncate" title={x.row.sn}>
                       {x.row.sn}
                     </span>
@@ -467,7 +503,7 @@ export function TemuSalesTop20Cards({ data }: { data: TemuSalesTopBySnRow[] }) {
     { key: "today", title: "今日销量 TOP 20" },
     { key: "7d", title: "七日销量 TOP 20" },
     { key: "30d", title: "三十日销量 TOP 20" },
-  ]
+  ] as const
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
       {cards.map((c) => {
@@ -484,7 +520,7 @@ export function TemuSalesTop20Cards({ data }: { data: TemuSalesTopBySnRow[] }) {
           .filter((x) => x.value > 0)
           .sort((a, b) => b.value - a.value)
           .slice(0, 20)
-        return <TemuTop20Card key={c.key} title={c.title} rows={rows} />
+        return <TemuTop20Card key={c.key} title={c.title} metric={c.key} rows={rows} />
       })}
     </div>
   )

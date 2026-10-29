@@ -21,6 +21,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { TemplateWizard } from "./template-wizard"
+import { formatDateTime } from "@/lib/datetime"
 
 /**
  * TEMU 刊登模板管理（本页只做模板的创建/编辑/删除）。
@@ -131,8 +132,8 @@ export function TemuTemplateManager({ canManage }: { canManage: boolean }) {
                     <TableCell className="tabular-nums">
                       ¥{(tpl.defaults.declaredPriceFen / 100).toFixed(2)}
                     </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {new Date(tpl.updatedAt).toLocaleString("zh-CN", { hour12: false })}
+                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                      {formatDateTime(tpl.updatedAt)}
                     </TableCell>
                     {canManage && (
                       <TableCell className="text-right">

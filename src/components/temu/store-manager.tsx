@@ -29,6 +29,7 @@ import {
   type TemuStoreBrief,
 } from "@/server/actions/temu"
 import { useDragSort, DragHandle } from "@/hooks/use-drag-sort"
+import { formatDateTime } from "@/lib/datetime"
 
 /**
  * Temu 店铺管理（官方 API 口径）：新增、access_token 录入（保存即验证）、
@@ -409,9 +410,7 @@ function StoreList({
               <div className="mt-0.5 text-xs text-muted-foreground">
                 {s.mallId ? `mall:${s.mallId} · ` : "未绑定 mallId · "}
                 {s.enabled ? "启用" : "已停用"} · 最近同步{" "}
-                {s.lastSyncAt
-                  ? new Date(s.lastSyncAt).toLocaleString("zh-CN", { hour12: false })
-                  : "从未"}
+                {s.lastSyncAt ? formatDateTime(s.lastSyncAt) : "从未"}
                 {expiry && <span className="ml-2 text-amber-600 dark:text-amber-400">{expiry}</span>}
               </div>
             </div>

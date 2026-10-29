@@ -23,6 +23,17 @@
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar: var(--sidebar);
+  --color-chart-16: var(--chart-16);
+  --color-chart-15: var(--chart-15);
+  --color-chart-14: var(--chart-14);
+  --color-chart-13: var(--chart-13);
+  --color-chart-12: var(--chart-12);
+  --color-chart-11: var(--chart-11);
+  --color-chart-10: var(--chart-10);
+  --color-chart-9: var(--chart-9);
+  --color-chart-8: var(--chart-8);
+  --color-chart-7: var(--chart-7);
+  --color-chart-6: var(--chart-6);
   --color-chart-5: var(--chart-5);
   --color-chart-4: var(--chart-4);
   --color-chart-3: var(--chart-3);
@@ -74,13 +85,25 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
-  /* 数据看板图表五色（Tailwind 分类色板：蓝/青/紫/琥珀/玫红，
-     统一 500 档亮度、色相均匀分布；暗色模式用 400 档提亮） */
+  /* 数据看板图表色板：1-5 为原五色（蓝/青/紫/琥珀/玫红，500 档亮度、暗色 400 档提亮）；
+     6-16 为类目饼图扩展色（切片上限 15+其他），补足绿/橙/靛/黄绿/绯红/天蓝/金黄/春绿/
+     紫红/草绿/品红，同族色相靠亮度/饱和度拉开（暗色统一提亮一档） */
   --chart-1: oklch(0.623 0.214 259.815);
   --chart-2: oklch(0.704 0.14 182.503);
   --chart-3: oklch(0.606 0.25 292.717);
   --chart-4: oklch(0.769 0.188 70.08);
   --chart-5: oklch(0.645 0.246 16.439);
+  --chart-6: oklch(0.63 0.17 145);
+  --chart-7: oklch(0.68 0.19 38);
+  --chart-8: oklch(0.58 0.19 235);
+  --chart-9: oklch(0.75 0.16 100);
+  --chart-10: oklch(0.56 0.22 355);
+  --chart-11: oklch(0.66 0.14 205);
+  --chart-12: oklch(0.82 0.15 55);
+  --chart-13: oklch(0.72 0.14 165);
+  --chart-14: oklch(0.58 0.22 315);
+  --chart-15: oklch(0.7 0.19 125);
+  --chart-16: oklch(0.62 0.24 335);
   --radius: 0.625rem;
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
@@ -116,6 +139,17 @@
   --chart-3: oklch(0.702 0.183 293.541);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.712 0.194 13.428);
+  --chart-6: oklch(0.72 0.16 145);
+  --chart-7: oklch(0.76 0.17 38);
+  --chart-8: oklch(0.68 0.16 235);
+  --chart-9: oklch(0.82 0.15 100);
+  --chart-10: oklch(0.66 0.2 355);
+  --chart-11: oklch(0.75 0.13 205);
+  --chart-12: oklch(0.87 0.14 55);
+  --chart-13: oklch(0.79 0.13 165);
+  --chart-14: oklch(0.68 0.2 315);
+  --chart-15: oklch(0.78 0.17 125);
+  --chart-16: oklch(0.71 0.21 335);
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.488 0.243 264.376);

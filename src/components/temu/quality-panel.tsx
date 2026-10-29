@@ -31,6 +31,8 @@ import {
   type TemuQcInspectionRow,
   type TemuQcDetail,
 } from "@/server/actions/temu-fulfillment"
+import { formatDateTime as fmtMs } from "@/lib/datetime"
+import { EmptyHint } from "@/components/temu/products-table"
 
 /**
  * 质检工作台（bg.goods.qualityinspection.get/detail，实时 + 30s 缓存）：
@@ -157,16 +159,16 @@ export function TemuQualityPanel({ store }: { store?: string }) {
                     )}
                   </TableCell>
                   <TableCell>
-                    <div className="font-mono text-xs">{r.productSkuId ?? "—"}</div>
-                    <div className="text-xs text-muted-foreground">{r.spec ?? "—"}</div>
+                    <div className="font-mono text-xs">{r.productSkuId ?? <EmptyHint />}</div>
+                    <div className="text-xs text-muted-foreground">{r.spec ?? <EmptyHint />}</div>
                   </TableCell>
                   <TableCell className="max-w-56">
-                    <div className="truncate text-xs">{r.skuName ?? "—"}</div>
-                    <div className="text-xs text-muted-foreground">{r.catName ?? "—"}</div>
+                    <div className="truncate text-xs">{r.skuName ?? <EmptyHint />}</div>
+                    <div className="text-xs text-muted-foreground">{r.catName ?? <EmptyHint />}</div>
                   </TableCell>
-                  <TableCell className="font-mono text-xs">{r.purchaseNo ?? "—"}</TableCell>
+                  <TableCell className="font-mono text-xs">{r.purchaseNo ?? <EmptyHint />}</TableCell>
                   <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                    {r.qcResultUpdateTime ?? "—"}
+                    {r.qcResultUpdateTime ?? <EmptyHint />}
                   </TableCell>
                   <TableCell className="text-right">
                     <Button
@@ -207,13 +209,6 @@ export function TemuQualityPanel({ store }: { store?: string }) {
 }
 
 const QC_TYPE_LABEL: Record<number, string> = { 1: "质检单", 2: "稽查单", 3: "更正单" }
-
-const fmtMs = (t: number | null) => {
-  if (t == null) return "—"
-  const ms = t < 1e12 ? t * 1000 : t
-  const d = new Date(ms)
-  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString("zh-CN", { hour12: false })
-}
 
 /** 质检详情：基本信息 + 质检历史时间线 + 疵点（含图）+ SKU 尺码表 */
 function QcDetailDialog({
@@ -305,11 +300,11 @@ function QcDetailDialog({
                     <TableBody>
                       {h.skus.map((s, j) => (
                         <TableRow key={j} className="hover:bg-transparent">
-                          <TableCell className="px-2 py-1.5 font-mono">{s.productSkuId ?? "—"}</TableCell>
-                          <TableCell>{s.sizeName ?? "—"}</TableCell>
-                          <TableCell className="text-right tabular-nums">{s.expectQcQuantity ?? "—"}</TableCell>
-                          <TableCell className="text-right tabular-nums">{s.defectiveQcQuantity ?? "—"}</TableCell>
-                          <TableCell className="text-right tabular-nums">{s.totalQuantity ?? "—"}</TableCell>
+                          <TableCell className="px-2 py-1.5 font-mono">{s.productSkuId ?? <EmptyHint />}</TableCell>
+                          <TableCell>{s.sizeName ?? <EmptyHint />}</TableCell>
+                          <TableCell className="text-right tabular-nums">{s.expectQcQuantity ?? <EmptyHint />}</TableCell>
+                          <TableCell className="text-right tabular-nums">{s.defectiveQcQuantity ?? <EmptyHint />}</TableCell>
+                          <TableCell className="text-right tabular-nums">{s.totalQuantity ?? <EmptyHint />}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -363,8 +358,8 @@ function QcDetailDialog({
                     <TableBody>
                       {h.sizes.map((s, j) => (
                         <TableRow key={j} className="hover:bg-transparent">
-                          <TableCell className="px-2 py-1.5">{s.location ?? "—"}</TableCell>
-                          <TableCell>{s.sizeName ?? "—"}</TableCell>
+                          <TableCell className="px-2 py-1.5">{s.location ?? <EmptyHint />}</TableCell>
+                          <TableCell>{s.sizeName ?? <EmptyHint />}</TableCell>
                           <TableCell>{s.minQcSize ?? "?"} ~ {s.maxQcSize ?? "?"}</TableCell>
                           <TableCell className="text-muted-foreground">
                             {s.expectMinSize ?? "?"} ~ {s.expectMaxSize ?? "?"}

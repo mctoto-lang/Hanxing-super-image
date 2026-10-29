@@ -42,6 +42,7 @@ import {
   type TemuShipStagingRow,
 } from "@/server/actions/temu-ship"
 import { EmptyHint } from "@/components/temu/products-table"
+import { formatDateTime as fmtMs } from "@/lib/datetime"
 import { openShipBarcodePrint } from "./ship-packing"
 
 /**
@@ -51,13 +52,6 @@ import { openShipBarcodePrint } from "./ship-packing"
  * - 勾选后点「创建发货单」进入独立创建视图（同 tab 第三界面）：
  *   规则提示条 + 汇总 + 按收货仓分组编辑（数量/每箱件数/分箱/卖家地址）→ 创建成功回发货单列表·待装箱发货。
  */
-
-const fmtMs = (t: number | null) => {
-  if (!t) return "—"
-  const d = new Date(t < 1e12 ? t * 1000 : t)
-  const p = (n: number) => String(n).padStart(2, "0")
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
-}
 
 /* ─── 分箱编辑器（发货单列表·「调整备货信息」弹窗用，ship-panel 引用） ─── */
 
@@ -190,7 +184,9 @@ function DeliverNumCell({
   }
 
   return (
-    <div className="flex flex-nowrap items-center gap-1.5 whitespace-nowrap">
+    <div
+      className={`flex flex-nowrap items-center gap-1.5 whitespace-nowrap${modified ? " justify-end" : ""}`}
+    >
       <Popover
         open={open}
         onOpenChange={(v) => {
@@ -387,8 +383,8 @@ function AdjustPackagesSheet({
               <p className="mt-0.5 text-[11px] text-muted-foreground">创建时间 {fmtMs(st?.purchaseTime ?? null)}</p>
               <p className="mt-0.5 flex flex-wrap items-center gap-1">
                 {st?.urgencyType === 1 && <Badge className="rounded-[4px] bg-red-500/15 px-1 text-[10px] text-red-700 dark:text-red-400">急采</Badge>}
-                {st?.purchaseStockType === 1 && <Badge variant="secondary" className="rounded-[4px] px-1 text-[10px]">JIT</Badge>}
-                {st?.isCustomProduct && <Badge variant="outline" className="rounded-[4px] px-1 text-[10px]">定制</Badge>}
+                {st?.purchaseStockType === 1 && <Badge className="rounded-[4px] bg-muted px-1 text-[10px] text-muted-foreground">JIT</Badge>}
+                {st?.isCustomProduct && <Badge className="rounded-[4px] bg-violet-500/15 px-1 text-[10px] text-violet-700 dark:text-violet-400">定制</Badge>}
               </p>
             </div>
             <div className="shrink-0 space-y-1.5 text-right">
@@ -1348,8 +1344,8 @@ export function ShipStaging({
                             <p className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
                               <span>SKC {r.productSkcId ?? <EmptyHint />}</span>
                               {r.urgencyType === 1 && <Badge className="rounded-[4px] bg-red-500/15 px-1 text-[10px] text-red-700 dark:text-red-400">急采</Badge>}
-                              {r.purchaseStockType === 1 && <Badge variant="secondary" className="rounded-[4px] px-1 text-[10px]">JIT</Badge>}
-                              {r.isCustomProduct && <Badge variant="outline" className="rounded-[4px] px-1 text-[10px]">定制</Badge>}
+                              {r.purchaseStockType === 1 && <Badge className="rounded-[4px] bg-muted px-1 text-[10px] text-muted-foreground">JIT</Badge>}
+                              {r.isCustomProduct && <Badge className="rounded-[4px] bg-violet-500/15 px-1 text-[10px] text-violet-700 dark:text-violet-400">定制</Badge>}
                             </p>
                           </div>
                         </div>
@@ -1375,7 +1371,9 @@ export function ShipStaging({
                       >
                         {remain}
                       </TableCell>
-                      <TableCell className="whitespace-nowrap text-xs">{fmtMs(r.purchaseTime)}</TableCell>
+                      <TableCell className="whitespace-nowrap text-xs">
+                        {r.purchaseTime != null ? fmtMs(r.purchaseTime) : <EmptyHint />}
+                      </TableCell>
                       <TableCell>
                         <Button
                           variant="ghost"

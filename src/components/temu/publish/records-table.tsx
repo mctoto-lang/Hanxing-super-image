@@ -24,7 +24,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import type { TemuPublishRecordRow } from "@/server/actions/temu-publish"
-import { toImageSrc } from "@/lib/utils"
+import { cn, toImageSrc } from "@/lib/utils"
+import { formatDateTime } from "@/lib/datetime"
+import { EmptyHint } from "@/components/temu/products-table"
 
 /** 发品记录表（商品发布面板复用；错误 Tooltip 看完整官方原因，
  *  「详情」弹窗看提交官方的请求/响应快照——排障回溯用） */
@@ -37,52 +39,48 @@ export function PublishRecordsTable({ rows }: { rows: TemuPublishRecordRow[] }) 
       <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
         <TableHeader className="sticky top-0 z-10 bg-card">
           <TableRow>
-            <TableHead>时间</TableHead>
-            <TableHead>创建人</TableHead>
-            <TableHead>模板 / 店铺</TableHead>
-            <TableHead>商品名</TableHead>
             <TableHead>图片</TableHead>
+            <TableHead>商品名</TableHead>
+            <TableHead>模板</TableHead>
+            <TableHead>店铺</TableHead>
             <TableHead>状态</TableHead>
             <TableHead>结果</TableHead>
+            <TableHead>创建人</TableHead>
+            <TableHead>时间</TableHead>
             <TableHead className="text-right">操作</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {rows.length === 0 && (
             <TableRow>
-              <TableCell colSpan={8} className="h-20 text-center text-muted-foreground">
+              <TableCell colSpan={9} className="h-20 text-center text-muted-foreground">
                 暂无发品记录。
               </TableCell>
             </TableRow>
           )}
           {rows.map((rec) => (
             <TableRow key={rec.id}>
-              <TableCell className="whitespace-nowrap text-muted-foreground">
-                {new Date(rec.createdAt).toLocaleString("zh-CN", { hour12: false })}
-              </TableCell>
-              <TableCell className="whitespace-nowrap">
-                {rec.creatorName ?? "—"}
-              </TableCell>
               <TableCell>
-                <div className="font-medium">{rec.templateName}</div>
-                <div className="text-muted-foreground">{rec.storeName}</div>
+                <RecordThumbs imageUrls={rec.imageUrls} />
               </TableCell>
               <TableCell className="max-w-40">
                 <span className="line-clamp-2 text-xs">{rec.title || rec.templateName}</span>
               </TableCell>
               <TableCell>
-                <RecordThumbs imageUrls={rec.imageUrls} />
+                <TruncTip text={rec.templateName} width="max-w-40 font-medium" />
+              </TableCell>
+              <TableCell>
+                <TruncTip text={rec.storeName} width="max-w-36 text-muted-foreground" />
               </TableCell>
               <TableCell>
                 <Badge
-                  className="rounded-[4px]"
-                  variant={
+                  className={`rounded-[4px] ${
                     rec.status === "success"
-                      ? "default"
+                      ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
                       : rec.status === "failed"
-                        ? "destructive"
-                        : "secondary"
-                  }
+                        ? "bg-red-500/15 text-red-700 dark:text-red-400"
+                        : "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                  }`}
                 >
                   {rec.status === "success" ? "成功" : rec.status === "failed" ? "失败" : "处理中"}
                 </Badge>
@@ -108,6 +106,12 @@ export function PublishRecordsTable({ rows }: { rows: TemuPublishRecordRow[] }) 
                   </Tooltip>
                 )}
               </TableCell>
+              <TableCell>
+                <TruncTip text={rec.creatorName ?? ""} width="max-w-28" />
+              </TableCell>
+              <TableCell className="whitespace-nowrap text-muted-foreground">
+                {formatDateTime(rec.createdAt)}
+              </TableCell>
               <TableCell className="text-right">
                 <Button
                   variant="ghost"
@@ -130,8 +134,7 @@ export function PublishRecordsTable({ rows }: { rows: TemuPublishRecordRow[] }) 
             <DialogHeader>
               <DialogTitle>发品详情</DialogTitle>
               <DialogDescription>
-                {detail.templateName} → {detail.storeName} ·{" "}
-                {new Date(detail.createdAt).toLocaleString("zh-CN", { hour12: false })}
+                {detail.templateName} → {detail.storeName} · {formatDateTime(detail.createdAt)}
               </DialogDescription>
             </DialogHeader>
             <div className="max-h-[60vh] space-y-3 overflow-y-auto">
@@ -159,10 +162,27 @@ export function PublishRecordsTable({ rows }: { rows: TemuPublishRecordRow[] }) 
   )
 }
 
-/** 本次发品图源缩略条：前 3 张代理小图 + 剩余计数（旧记录无图源显示 —） */
+/** 限长列共用：单行截断 + Tooltip 悬浮看全文；空值显示感叹号占位 */
+function TruncTip({ text, width }: { text: string; width?: string }) {
+  if (!text) return <EmptyHint />
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span className={cn("block max-w-32 truncate text-xs", width)}>
+            {text}
+          </span>
+        }
+      />
+      <TooltipContent className="max-w-sm">{text}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+/** 本次发品图源缩略条：前 3 张代理小图 + 剩余计数（旧记录无图源显示空值占位） */
 function RecordThumbs({ imageUrls }: { imageUrls: string[] | null }) {
   if (!imageUrls || imageUrls.length === 0) {
-    return <span className="text-xs text-muted-foreground">—</span>
+    return <EmptyHint />
   }
   const shown = imageUrls.slice(0, 3)
   const rest = imageUrls.length - shown.length

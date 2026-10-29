@@ -41,6 +41,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { temuImageSrc } from "@/lib/temu/image"
+import { formatDate } from "@/lib/datetime"
 import {
   getTemuProductsPageAction,
   type TemuProductRow,
@@ -397,12 +398,12 @@ export function skcStatusView(skcStatus: number | null): SkcStatusView {
   }
 }
 
-/** 上架时间戳格式化（goods-list createdAt 实测为毫秒；按量级自适应兼容秒；无效返回 null 由外层显空值占位） */
+/** 上架时间戳格式化（goods-list createdAt 实测为毫秒；按量级自适应兼容秒；日粒度 YYYY-MM-DD；
+ *  无效返回 null 由外层显空值占位） */
 function formatListedAt(ts: number | null): string | null {
   if (ts == null) return null
-  const ms = ts >= 1e12 ? ts : ts * 1000
-  const d = new Date(ms)
-  return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString("zh-CN")
+  const s = formatDate(ts)
+  return s === "—" ? null : s
 }
 
 /** 悬停明细文案 = 官方 bg.goods.salesv2.get 参数表 desc 原文，顺序同官方（消除歧义） */

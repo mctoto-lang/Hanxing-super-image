@@ -35,6 +35,8 @@ import {
   type TemuReturnDetailRow,
   type TemuReturnSkuRow,
 } from "@/server/actions/temu-return"
+import { formatDateTime as fmtMs } from "@/lib/datetime"
+import { EmptyHint } from "@/components/temu/products-table"
 
 /** 出库时间窗预设按视图区分：退供包裹 30/90/365；SKU 明细上限 31 天（官方 100000004） */
 const PKG_WINDOWS = [
@@ -294,22 +296,24 @@ export function TemuReturnPanel({ store }: { store?: string }) {
                     )}
                     {pkgRows.map((r, i) => (
                       <TableRow key={`${r.returnSupplierPackageNo ?? ""}-${r.purchaseSubOrderSn ?? ""}-${i}`}>
-                        <TableCell className="font-mono">{r.returnSupplierPackageNo ?? "—"}</TableCell>
-                        <TableCell className="font-mono">{r.purchaseSubOrderSn ?? "—"}</TableCell>
-                        <TableCell className="font-mono">{r.expressDeliverySn ?? "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums">{r.returnSupplierQuantity ?? "—"}</TableCell>
+                        <TableCell className="font-mono">{r.returnSupplierPackageNo ?? <EmptyHint />}</TableCell>
+                        <TableCell className="font-mono">{r.purchaseSubOrderSn ?? <EmptyHint />}</TableCell>
+                        <TableCell className="font-mono">{r.expressDeliverySn ?? <EmptyHint />}</TableCell>
+                        <TableCell className="text-right tabular-nums">{r.returnSupplierQuantity ?? <EmptyHint />}</TableCell>
                         <TableCell>
                           <StatusBadge desc={r.packageStatusDesc} />
                         </TableCell>
                         <TableCell className="max-w-44">
                           <div className="truncate" title={r.returnSupplierReasonDesc ?? undefined}>
-                            {r.returnSupplierReasonDesc ?? "—"}
+                            {r.returnSupplierReasonDesc ?? <EmptyHint />}
                           </div>
                         </TableCell>
-                        <TableCell>{r.logisticsTypeDesc ?? "—"}</TableCell>
-                        <TableCell>{r.returnHandOverTypeDesc ?? "—"}</TableCell>
-                        <TableCell>{r.payMethodDesc ?? "—"}</TableCell>
-                        <TableCell className="whitespace-nowrap text-muted-foreground">{fmtMs(r.outboundTime)}</TableCell>
+                        <TableCell>{r.logisticsTypeDesc ?? <EmptyHint />}</TableCell>
+                        <TableCell>{r.returnHandOverTypeDesc ?? <EmptyHint />}</TableCell>
+                        <TableCell>{r.payMethodDesc ?? <EmptyHint />}</TableCell>
+                        <TableCell className="whitespace-nowrap text-muted-foreground">
+                          {r.outboundTime != null ? fmtMs(r.outboundTime) : <EmptyHint />}
+                        </TableCell>
                         <TableCell className="text-right">
                           <Button
                             size="sm"
@@ -347,17 +351,19 @@ export function TemuReturnPanel({ store }: { store?: string }) {
                     )}
                     {skuRows.map((r, i) => (
                       <TableRow key={`${r.packageSn ?? ""}-${r.productSkuId ?? ""}-${i}`}>
-                        <TableCell className="font-mono">{r.packageSn ?? "—"}</TableCell>
+                        <TableCell className="font-mono">{r.packageSn ?? <EmptyHint />}</TableCell>
                         <TableCell className="max-w-56">
-                          <div className="font-mono">{r.productSn ?? "—"}</div>
+                          <div className="font-mono">{r.productSn ?? <EmptyHint />}</div>
                           <div className="truncate text-muted-foreground" title={r.productName ?? undefined}>
-                            {r.productName ?? "—"}
+                            {r.productName ?? <EmptyHint />}
                           </div>
                         </TableCell>
-                        <TableCell className="font-mono">{r.productSkuId ?? "—"}</TableCell>
-                        <TableCell>{r.mainSaleSpec ?? "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums">{r.quantity ?? "—"}</TableCell>
-                        <TableCell className="whitespace-nowrap text-muted-foreground">{fmtMs(r.outboundTime)}</TableCell>
+                        <TableCell className="font-mono">{r.productSkuId ?? <EmptyHint />}</TableCell>
+                        <TableCell>{r.mainSaleSpec ?? <EmptyHint />}</TableCell>
+                        <TableCell className="text-right tabular-nums">{r.quantity ?? <EmptyHint />}</TableCell>
+                        <TableCell className="whitespace-nowrap text-muted-foreground">
+                          {r.outboundTime != null ? fmtMs(r.outboundTime) : <EmptyHint />}
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -397,13 +403,6 @@ function StatusBadge({ desc }: { desc: string | null }) {
         ? "bg-muted text-muted-foreground"
         : "bg-muted text-muted-foreground"
   return <Badge className={`rounded-[4px] ${cls}`}>{label}</Badge>
-}
-
-const fmtMs = (t: number | null) => {
-  if (t == null) return "—"
-  const ms = t < 1e12 ? t * 1000 : t
-  const d = new Date(ms)
-  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString("zh-CN", { hour12: false })
 }
 
 /** 退供包裹详情：SKC 明细（缩略图 + 本地反查货号/品名 + 规格 + 退供数量） */
@@ -478,14 +477,14 @@ function ReturnDetailDialog({
                       )}
                     </TableCell>
                     <TableCell className="max-w-56">
-                      <div className="font-mono">{r.productSn ?? "—"}</div>
+                      <div className="font-mono">{r.productSn ?? <EmptyHint />}</div>
                       <div className="truncate text-muted-foreground" title={r.productName ?? undefined}>
-                        {r.productName ?? "—"}
+                        {r.productName ?? <EmptyHint />}
                       </div>
                     </TableCell>
-                    <TableCell>{r.mainSaleSpec ?? "—"}</TableCell>
-                    <TableCell>{r.secondarySaleSpec ?? "—"}</TableCell>
-                    <TableCell className="text-right tabular-nums">{r.returnSupplierQuantity ?? "—"}</TableCell>
+                    <TableCell>{r.mainSaleSpec ?? <EmptyHint />}</TableCell>
+                    <TableCell>{r.secondarySaleSpec ?? <EmptyHint />}</TableCell>
+                    <TableCell className="text-right tabular-nums">{r.returnSupplierQuantity ?? <EmptyHint />}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

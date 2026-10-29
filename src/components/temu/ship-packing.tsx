@@ -761,9 +761,9 @@ export function PackingDialog({
                     >
                       <span className="text-xs font-medium">
                         {opt.expressCompanyName ?? "—"}
-                        {opt.hasUsedThisLogistics && <Badge variant="secondary" className="ml-1.5 rounded-[4px]">用过</Badge>}
+                        {opt.hasUsedThisLogistics && <Badge className="ml-1.5 rounded-[4px] bg-blue-500/15 text-blue-700 dark:text-blue-400">用过</Badge>}
                         {opt.courierTimeType === 1 && <Badge className="ml-1.5 rounded-[4px] bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">次日达</Badge>}
-                        {opt.courierTimeType === 2 && <Badge variant="secondary" className="ml-1.5 rounded-[4px]">隔日达</Badge>}
+                        {opt.courierTimeType === 2 && <Badge className="ml-1.5 rounded-[4px] bg-cyan-500/15 text-cyan-700 dark:text-cyan-400">隔日达</Badge>}
                       </span>
                       <span className="text-xs tabular-nums text-muted-foreground">
                         {opt.minSupplierChargeAmount != null || opt.maxSupplierChargeAmount != null

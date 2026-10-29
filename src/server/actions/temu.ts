@@ -1,6 +1,7 @@
 "use server"
 
-import { and, asc, count, desc, eq, gte, inArray, sql } from "drizzle-orm"
+import { and, asc, count, desc, eq, gte, inArray, sql, type SQL } from "drizzle-orm"
+import type { PgColumn } from "drizzle-orm/pg-core"
 import { z } from "zod"
 import { revalidatePath } from "next/cache"
 import { db } from "@/db/client"
@@ -696,9 +697,14 @@ export interface TemuSalesTopBySnRow {
   /** 分组键：货号（销售总览优先，回落商品表；两者皆空以 "SKC {id}" 兜底成组） */
   sn: string
   productName: string | null
-  mainImageUrl: string | null
-  /** 主图转存 URL（COS/本地；展示优先于 kwcdn 外链） */
-  mainImageCosUrl: string | null
+  /** 各口径主图：取「该口径销量最高的有图 SKC」（TOP20 三卡各用各的，kwcdn 外链） */
+  todayMainImageUrl: string | null
+  last7MainImageUrl: string | null
+  last30MainImageUrl: string | null
+  /** 主图转存 URL（COS/本地；展示优先于 kwcdn 外链），口径同上 */
+  todayMainImageCosUrl: string | null
+  last7MainImageCosUrl: string | null
+  last30MainImageCosUrl: string | null
   todaySalesVolume: number
   last7DaysSalesVolume: number
   last30DaysSalesVolume: number
@@ -738,6 +744,13 @@ async function loadTemuSalesTopBySn(enterpriseId: string, storeId?: string): Pro
     )
     .as("latest_skc")
   const todayStart = startOfToday()
+  // 行级三口径销量（今日口径只计当日捕获行，同下方 today 合计），供主图按口径选「销量最高 SKC」
+  const todayVal = sql<number>`case when ${gte(latestSq.capturedAt, todayStart)} then coalesce(${latestSq.todaySalesVolume}, 0) else 0 end`
+  const last7Val = sql<number>`coalesce(${latestSq.last7DaysSalesVolume}, 0)`
+  const last30Val = sql<number>`coalesce(${latestSq.last30DaysSalesVolume}, 0)`
+  // 货号组主图 = 该口径销量最高的「有图」SKC 的图（榜首无图顺延次位；组内全无图返回 null）
+  const topImg = (val: SQL, col: PgColumn) =>
+    sql<string | null>`(array_agg(${col} order by ${val} desc) filter (where ${col} is not null))[1]`
   // 货号优先取销售总览自带值，缺失回落商品表，两者皆空以 SKC 兜底（展示名与
   // TOP10 图一致）；三口径销量跨店求和
   const snExpr = sql<string>`coalesce(nullif(trim(${latestSq.productSn}), ''), nullif(trim(${temuProducts.productSn}), ''), 'SKC ' || ${latestSq.skcId})`
@@ -745,8 +758,12 @@ async function loadTemuSalesTopBySn(enterpriseId: string, storeId?: string): Pro
     .select({
       sn: snExpr,
       productName: sql<string | null>`max(${latestSq.productName})`,
-      mainImageUrl: sql<string | null>`max(${temuProducts.mainImageUrl})`,
-      mainImageCosUrl: sql<string | null>`max(${temuProducts.mainImageCosUrl})`,
+      todayMainImageUrl: topImg(todayVal, temuProducts.mainImageUrl),
+      todayMainImageCosUrl: topImg(todayVal, temuProducts.mainImageCosUrl),
+      last7MainImageUrl: topImg(last7Val, temuProducts.mainImageUrl),
+      last7MainImageCosUrl: topImg(last7Val, temuProducts.mainImageCosUrl),
+      last30MainImageUrl: topImg(last30Val, temuProducts.mainImageUrl),
+      last30MainImageCosUrl: topImg(last30Val, temuProducts.mainImageCosUrl),
       // 今日口径只累计当日捕获的行（同 SKC 口径 TOP 榜，防跨日重复计入）
       today: sql<string>`coalesce(sum(case when ${gte(latestSq.capturedAt, todayStart)} then coalesce(${latestSq.todaySalesVolume}, 0) else 0 end), 0)`,
       last7: sql<string>`coalesce(sum(${latestSq.last7DaysSalesVolume}), 0)`,
@@ -764,8 +781,12 @@ async function loadTemuSalesTopBySn(enterpriseId: string, storeId?: string): Pro
   const mapped: TemuSalesTopBySnRow[] = rows.map((r) => ({
     sn: r.sn,
     productName: r.productName,
-    mainImageUrl: r.mainImageUrl,
-    mainImageCosUrl: r.mainImageCosUrl,
+    todayMainImageUrl: r.todayMainImageUrl,
+    todayMainImageCosUrl: r.todayMainImageCosUrl,
+    last7MainImageUrl: r.last7MainImageUrl,
+    last7MainImageCosUrl: r.last7MainImageCosUrl,
+    last30MainImageUrl: r.last30MainImageUrl,
+    last30MainImageCosUrl: r.last30MainImageCosUrl,
     todaySalesVolume: Number(r.today),
     last7DaysSalesVolume: Number(r.last7),
     last30DaysSalesVolume: Number(r.last30),

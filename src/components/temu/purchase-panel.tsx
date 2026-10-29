@@ -37,6 +37,7 @@ import { addShipStagingAction } from "@/server/actions/temu-ship"
 import { StockView } from "./stock-view"
 import { ProductNameCell, EmptyHint } from "@/components/temu/products-table"
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
+import { formatDateTime as fmtTs } from "@/lib/datetime"
 
 /**
  * 备货工作台（官方 bg.purchaseorderv2.get / purchaseorder.cancel 实时拉取）：
@@ -66,18 +67,6 @@ function canJoinStage(row: TemuPurchaseOrderRow): boolean {
 /** 取消按钮：同核价调价「拒绝」的红色描边口径（仅图标与文字着色） */
 const CANCEL_BTN_CLS =
   "h-7 border-red-600/40 text-xs text-red-700 hover:bg-red-600/10 hover:text-red-700 dark:border-red-500/40 dark:text-red-400"
-
-const fmtTs = (t: number | null) => {
-  if (t == null) return "—"
-  const ms = t < 1e12 ? t * 1000 : t
-  return new Date(ms).toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  })
-}
 
 function StatusBadge({ status, label }: { status: number; label: string }) {
   const cls =

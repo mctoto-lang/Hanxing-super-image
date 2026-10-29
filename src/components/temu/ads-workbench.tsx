@@ -41,6 +41,7 @@ import {
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import type { TemuAdsRow } from "@/server/actions/temu"
 import { temuImageSrc } from "@/lib/temu/image"
+import { EmptyHint } from "@/components/temu/products-table"
 import {
   getTemuAdPlansAction,
   listTemuAdProductsAction,
@@ -285,7 +286,7 @@ export function TemuAdsWorkbench({
                     </TableCell>
                     <TableCell className="max-w-56">
                       <p className="truncate text-xs font-medium" title={row.productName ?? ""}>
-                        {row.productName ?? "—"}
+                        {row.productName ?? <EmptyHint />}
                       </p>
                       <p className="truncate font-mono text-xs text-muted-foreground">
                         {row.productSn ?? row.productId}
@@ -295,32 +296,39 @@ export function TemuAdsWorkbench({
                       {row.plan ? (
                         <Badge variant="secondary" className="rounded-[4px]">{row.plan.adShowStatusLabel}</Badge>
                       ) : (
-                        <span className="text-xs text-muted-foreground">—</span>
+                        <EmptyHint />
                       )}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {row.plan ? yuan(row.plan.budget) : "—"}
+                      {row.plan ? yuan(row.plan.budget) : <EmptyHint />}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {row.plan?.roas ?? "—"}
+                      {row.plan?.roas ?? <EmptyHint />}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {yuan(row.report?.adSpend ?? row.plan?.spendFen)}
+                      {(row.report?.adSpend ?? row.plan?.spendFen) != null
+                        ? yuan(row.report?.adSpend ?? row.plan?.spendFen)
+                        : <EmptyHint />}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {yuan(row.report?.orderPayAmt ?? row.plan?.orderPayAmtFen)}
+                      {(row.report?.orderPayAmt ?? row.plan?.orderPayAmtFen) != null
+                        ? yuan(row.report?.orderPayAmt ?? row.plan?.orderPayAmtFen)
+                        : <EmptyHint />}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {row.report?.roas != null ? row.report.roas.toFixed(2) : (row.plan?.roasSummary ?? "—")}
+                      {row.report?.roas != null ? row.report.roas.toFixed(2) : (row.plan?.roasSummary ?? <EmptyHint />)}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {yuan(row.report?.transactionCost)}
+                      {row.report?.transactionCost != null
+                        ? yuan(row.report.transactionCost)
+                        : <EmptyHint />}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {num(row.report?.goodsNum)}
+                      {row.report?.goodsNum != null ? num(row.report.goodsNum) : <EmptyHint />}
                     </TableCell>
                     <TableCell className="text-right tabular-nums text-muted-foreground">
-                      {num(row.report?.imprCnt)} / {num(row.report?.clkCnt)}
+                      {row.report?.imprCnt != null ? num(row.report.imprCnt) : <EmptyHint />} /{" "}
+                      {row.report?.clkCnt != null ? num(row.report.clkCnt) : <EmptyHint />}
                     </TableCell>
                     <TableCell className="text-right">
                       {row.plan ? (
@@ -554,19 +562,23 @@ function CreateAdsDialog({
                       )}
                       <span className="min-w-0 flex-1">
                         <span className="block max-w-80 truncate text-xs font-medium" title={p.productName ?? ""}>
-                          {p.productName ?? "—"}
+                          {p.productName ?? <EmptyHint />}
                         </span>
                         <span className="block max-w-80 truncate font-mono text-[11px] text-muted-foreground">
                           {p.productSn ?? p.productId}
                         </span>
                       </span>
                       {p.advertised ? (
-                        <Badge variant="outline" className="rounded-[4px]">已创建</Badge>
+                        <Badge className="rounded-[4px] bg-blue-500/15 text-blue-700 dark:text-blue-400">已创建</Badge>
                       ) : p.eligible ? (
                         <Badge className="rounded-[4px] bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">可投</Badge>
                       ) : (
                         <Tooltip>
-                          <TooltipTrigger render={<Badge variant="secondary" className="rounded-[4px]" />}>
+                          <TooltipTrigger
+                            render={
+                              <Badge className="rounded-[4px] bg-red-500/15 text-red-700 dark:text-red-400" />
+                            }
+                          >
                             不可投
                           </TooltipTrigger>
                           <TooltipContent className="max-w-56 text-xs">

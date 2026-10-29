@@ -44,6 +44,7 @@ import {
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import { EmptyHint } from "@/components/temu/products-table"
 import { SHIP_DELIVERY_METHOD, SHIP_ORDER_STATUS } from "@/lib/temu-api/workbench-labels"
+import { formatDateTime as fmtTs } from "@/lib/datetime"
 import { ShipStaging, PackageSplitTable, type ShipPackageDraft } from "./ship-staging"
 import {
   DeliverMethodTabs,
@@ -73,19 +74,6 @@ const VIEW_OPTIONS = [
   { value: "staging", label: "发货台" },
   { value: "orders", label: "发货单列表" },
 ]
-
-const fmtTs = (iso: string | null) => {
-  if (!iso) return "—"
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return "—"
-  return d.toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  })
-}
 
 /** 绝对截止时间 → 「X小时Y分后自动取消」；过期返回「已到期」 */
 const fmtCancelLeft = (iso: string | null): string | null => {
@@ -117,7 +105,7 @@ function StatusBadge({ status }: { status: number }) {
   )
 }
 
-/** 商品信息块（官方图3/图4）：图 + 备货单号（链接色）+ 商品名 + SKC/货号 + 标记 */
+/** 商品信息块（官方图3/图4）：图 + 备货单号（链接色）+ 货号 + SKC + 标记（柔和底徽章） */
 function ProductInfoCell({ row }: { row: TemuShipOrderRow }) {
   return (
     <div className="flex items-center gap-2.5">
@@ -128,18 +116,16 @@ function ProductInfoCell({ row }: { row: TemuShipOrderRow }) {
         <div className="size-10 shrink-0 rounded bg-muted" />
       )}
       <div className="min-w-0">
-        <p className="font-mono text-xs text-primary">{row.subPurchaseOrderSn ?? "—"}</p>
-        <p className="mt-0.5 max-w-56 truncate text-[11px]" title={row.productName ?? undefined}>
-          {row.productName ?? "—"}
+        <p className="font-mono text-xs text-primary">{row.subPurchaseOrderSn ?? <EmptyHint />}</p>
+        <p className="mt-0.5 max-w-56 truncate text-[11px]" title={row.skcExtCode ?? undefined}>
+          货号 {row.skcExtCode ?? <EmptyHint />}
         </p>
         <p className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
-          <span>
-            SKC {row.productSkcId ?? <EmptyHint />} · 货号 {row.skcExtCode ?? <EmptyHint />}
-          </span>
+          <span>SKC {row.productSkcId ?? <EmptyHint />}</span>
           {row.urgencyType === 1 && <Badge className="rounded-[4px] bg-red-500/15 px-1 text-[10px] text-red-700 dark:text-red-400">急采</Badge>}
-          {row.purchaseStockType === 1 && <Badge variant="secondary" className="rounded-[4px] px-1 text-[10px]">JIT</Badge>}
-          {row.isCustomProduct && <Badge variant="outline" className="rounded-[4px] px-1 text-[10px]">定制</Badge>}
-          {row.fragileTag && <Badge variant="outline" className="rounded-[4px] px-1 text-[10px] text-orange-700 dark:text-orange-400">易破损</Badge>}
+          {row.purchaseStockType === 1 && <Badge className="rounded-[4px] bg-muted px-1 text-[10px] text-muted-foreground">JIT</Badge>}
+          {row.isCustomProduct && <Badge className="rounded-[4px] bg-violet-500/15 px-1 text-[10px] text-violet-700 dark:text-violet-400">定制</Badge>}
+          {row.fragileTag && <Badge className="rounded-[4px] bg-orange-500/15 px-1 text-[10px] text-orange-700 dark:text-orange-400">易破损</Badge>}
         </p>
       </div>
     </div>
