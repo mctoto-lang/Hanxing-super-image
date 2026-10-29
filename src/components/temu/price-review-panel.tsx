@@ -11,6 +11,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Dialog,
@@ -122,7 +123,7 @@ function StatusBadge({ label, tone }: { label: string; tone: "warn" | "ok" | "ba
         : tone === "bad"
           ? "bg-red-500/15 text-red-700 dark:text-red-400"
           : "bg-muted text-muted-foreground"
-  return <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${cls}`}>{label}</span>
+  return <Badge className={`rounded-[4px] ${cls}`}>{label}</Badge>
 }
 
 function reviewTone(status: number): "warn" | "ok" | "bad" | "muted" {
@@ -193,7 +194,7 @@ function SectionSelect({
       }}
     >
       {/* base-ui SelectValue 默认渲染原始 value（review/adjust），须传 children 显示中文 */}
-      <SelectTrigger className="h-9! w-28 text-xs" aria-label="单据类型切换">
+      <SelectTrigger className="h-8 w-28 text-xs" aria-label="单据类型切换">
         <SelectValue>{section === "review" ? "核价单" : "调价单"}</SelectValue>
       </SelectTrigger>
       <SelectContent>
@@ -283,7 +284,7 @@ function ReviewSection({
         <div className="flex flex-wrap items-center gap-2">
           <SectionSelect section={section} onSectionChange={onSectionChange} />
           <Select value={status} onValueChange={(v) => v && setStatus(v)}>
-            <SelectTrigger className="h-9! w-32 text-xs" aria-label="核价单状态筛选">
+            <SelectTrigger className="h-8 w-32 text-xs" aria-label="核价单状态筛选">
               <SelectValue>
                 {REVIEW_STATUS_OPTIONS.find((o) => o.value === status)?.label ?? status}
               </SelectValue>
@@ -296,7 +297,7 @@ function ReviewSection({
               ))}
             </SelectContent>
           </Select>
-          <Button variant="outline" size="sm" className="h-9! text-xs" onClick={load} disabled={loading} aria-label="刷新核价单">
+          <Button variant="outline" size="sm" className="h-8 text-xs" onClick={load} disabled={loading} aria-label="刷新核价单">
             {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
             刷新
           </Button>
@@ -305,13 +306,11 @@ function ReviewSection({
       <CardContent className="min-h-0 flex-1 overflow-auto scrollbar-hide">
         {error ? (
           <p className="py-8 text-center text-sm text-red-600 dark:text-red-400">{error}</p>
-        ) : rows.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">
-            {loading ? "加载中…" : "该状态下暂无核价单"}
-          </p>
         ) : (
-          <table className="w-max min-w-full caption-bottom text-sm">
-            <TableHeader className="sticky top-0 z-10 bg-background">
+          // overflow-clip 只按圆角裁剪（非滚动容器，sticky 表头仍锚定页侧 CardContent）
+          <div className="w-max min-w-full overflow-clip rounded-md border">
+          <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
+            <TableHeader className="sticky top-0 z-10 bg-card">
               <TableRow>
                 <TableHead>主图</TableHead>
                 <TableHead>商品名</TableHead>
@@ -325,6 +324,13 @@ function ReviewSection({
               </TableRow>
             </TableHeader>
             <TableBody>
+              {rows.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={9} className="h-20 text-center text-muted-foreground">
+                    {loading ? "加载中…" : "该状态下暂无核价单"}
+                  </TableCell>
+                </TableRow>
+              )}
               {rows.map((r) => {
                 const frozen = pendingOps.has(r.orderId) || doneOps.has(r.orderId)
                 return (
@@ -332,9 +338,9 @@ function ReviewSection({
                   <TableCell>
                     {r.products[0]?.mainImageUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={r.products[0].mainImageUrl} alt="" className="size-10 rounded-md object-cover" loading="lazy" />
+                      <img src={r.products[0].mainImageUrl} alt="" className="size-10 rounded object-cover" loading="lazy" />
                     ) : (
-                      <div className="size-10 rounded-md bg-muted" />
+                      <div className="size-10 rounded bg-muted" />
                     )}
                   </TableCell>
                   <TableCell className="max-w-56">
@@ -431,6 +437,7 @@ function ReviewSection({
               })}
             </TableBody>
           </table>
+          </div>
         )}
       </CardContent>
       {rejecting && (
@@ -525,7 +532,7 @@ function RejectDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="max-h-72 space-y-3 overflow-y-auto">
-          <div className="space-y-1.5">
+          <div className="space-y-1">
             <Label className="text-xs">SKU 新申报价（{row.skuIds.length} 个）</Label>
             {row.skuIds.map((id) => (
               <div key={id} className="flex items-center gap-2">
@@ -540,7 +547,7 @@ function RejectDialog({
               </div>
             ))}
           </div>
-          <div className="space-y-1.5">
+          <div className="space-y-1">
             <Label className="text-xs">重新报价原因</Label>
             {reasons.map((r, i) => (
               <div key={i} className="flex items-center gap-2">
@@ -675,7 +682,7 @@ function AdjustSection({
         <div className="flex flex-wrap items-center gap-2">
           <SectionSelect section={section} onSectionChange={onSectionChange} />
           <Select value={status} onValueChange={(v) => v && setStatus(v)}>
-            <SelectTrigger className="h-9! w-32 text-xs" aria-label="调价单状态筛选">
+            <SelectTrigger className="h-8 w-32 text-xs" aria-label="调价单状态筛选">
               <SelectValue>
                 {ADJUST_STATUS_OPTIONS.find((o) => o.value === status)?.label ?? status}
               </SelectValue>
@@ -688,7 +695,7 @@ function AdjustSection({
               ))}
             </SelectContent>
           </Select>
-          <Button variant="outline" size="sm" className="h-9! text-xs" onClick={load} disabled={loading} aria-label="刷新调价单">
+          <Button variant="outline" size="sm" className="h-8 text-xs" onClick={load} disabled={loading} aria-label="刷新调价单">
             {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
             刷新
           </Button>
@@ -697,13 +704,11 @@ function AdjustSection({
       <CardContent className="min-h-0 flex-1 overflow-auto scrollbar-hide">
         {error ? (
           <p className="py-8 text-center text-sm text-red-600 dark:text-red-400">{error}</p>
-        ) : rows.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">
-            {loading ? "加载中…" : "该状态下暂无调价单"}
-          </p>
         ) : (
-          <table className="w-max min-w-full caption-bottom text-sm">
-            <TableHeader className="sticky top-0 z-10 bg-background">
+          // overflow-clip 只按圆角裁剪（非滚动容器，sticky 表头仍锚定页侧 CardContent）
+          <div className="w-max min-w-full overflow-clip rounded-md border">
+          <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
+            <TableHeader className="sticky top-0 z-10 bg-card">
               <TableRow>
                 <TableHead>主图</TableHead>
                 <TableHead>商品名</TableHead>
@@ -719,14 +724,21 @@ function AdjustSection({
               </TableRow>
             </TableHeader>
             <TableBody>
+              {rows.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={11} className="h-20 text-center text-muted-foreground">
+                    {loading ? "加载中…" : "该状态下暂无调价单"}
+                  </TableCell>
+                </TableRow>
+              )}
               {rows.map((r) => (
                 <TableRow key={r.priceOrderSn}>
                   <TableCell>
                     {r.image ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={r.image} alt="" className="size-10 rounded-md object-cover" loading="lazy" />
+                      <img src={r.image} alt="" className="size-10 rounded object-cover" loading="lazy" />
                     ) : (
-                      <div className="size-10 rounded-md bg-muted" />
+                      <div className="size-10 rounded bg-muted" />
                     )}
                   </TableCell>
                   <TableCell className="max-w-56">
@@ -778,6 +790,7 @@ function AdjustSection({
               ))}
             </TableBody>
           </table>
+          </div>
         )}
       </CardContent>
       {approving && (

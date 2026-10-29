@@ -4,11 +4,16 @@ import { requireUserContext, getCurrentEnterpriseScope } from "@/lib/auth/sessio
 import { apiError, withRouteHandler } from "@/lib/api/route-helpers"
 import { loadStorageConfig } from "@/lib/storage/config"
 import { createCosAdapter } from "@/lib/storage/cos"
-import { safeImageExt } from "@/lib/storage/ext"
+import { safeImageExt, pdfExt } from "@/lib/storage/ext"
 import {
   ALLOWED_IMAGE_TYPES,
+  ALLOWED_PDF_TYPES,
   MAX_IMAGE_UPLOAD_BYTES,
   MAX_IMAGE_UPLOAD_MESSAGE,
+  MAX_PDF_UPLOAD_BYTES,
+  MAX_PDF_UPLOAD_MESSAGE,
+  UPLOAD_CATEGORIES,
+  type UploadCategory,
 } from "@/lib/upload/limits"
 
 /**
@@ -19,11 +24,13 @@ import {
  * 由前端回退到 POST /api/upload（服务器转存，local 模式）。
  *
  * 鉴权 / 校验与 /api/upload 一致：仅登录用户、仅图片、单文件 ≤ 20MB。
+ * category=temu（发品素材源，temu/ 前缀不过期）额外放行说明书 PDF（≤15MB）。
  */
 interface PresignBody {
   filename?: string
   contentType?: string
   size?: number
+  category?: string
 }
 
 export const POST = withRouteHandler(async (request: Request) => {
@@ -40,18 +47,32 @@ export const POST = withRouteHandler(async (request: Request) => {
   const body = (await request.json().catch(() => ({}))) as PresignBody
   const contentType = body.contentType ?? ""
   const size = Number(body.size ?? 0)
+  const category: UploadCategory = UPLOAD_CATEGORIES.includes(
+    body.category as UploadCategory,
+  )
+    ? (body.category as UploadCategory)
+    : "reference"
 
-  if (!ALLOWED_IMAGE_TYPES.includes(contentType as (typeof ALLOWED_IMAGE_TYPES)[number])) {
-    return apiError("only images allowed", 415)
-  }
-  if (size <= 0) {
-    return apiError("invalid size", 400)
-  }
-  if (size > MAX_IMAGE_UPLOAD_BYTES) {
-    return apiError(MAX_IMAGE_UPLOAD_MESSAGE, 413)
+  const isPdf = ALLOWED_PDF_TYPES.includes(contentType as (typeof ALLOWED_PDF_TYPES)[number])
+  if (isPdf) {
+    // 说明书 PDF 仅限 TEMU 素材源（temu/ 不过期）；落 ref/ 会被生命周期清掉
+    if (category !== "temu") return apiError("PDF 仅支持 TEMU 素材上传", 400)
+    if (pdfExt(body.filename) == null) return apiError("仅支持 .pdf 文件", 415)
+    if (size <= 0) return apiError("invalid size", 400)
+    if (size > MAX_PDF_UPLOAD_BYTES) return apiError(MAX_PDF_UPLOAD_MESSAGE, 413)
+  } else {
+    if (!ALLOWED_IMAGE_TYPES.includes(contentType as (typeof ALLOWED_IMAGE_TYPES)[number])) {
+      return apiError("only images allowed", 415)
+    }
+    if (size <= 0) {
+      return apiError("invalid size", 400)
+    }
+    if (size > MAX_IMAGE_UPLOAD_BYTES) {
+      return apiError(MAX_IMAGE_UPLOAD_MESSAGE, 413)
+    }
   }
 
-  const ext = safeImageExt(body.filename)
+  const ext = isPdf ? "pdf" : safeImageExt(body.filename)
   const cfg = await loadStorageConfig()
 
   // 仅当 COS 配齐（凭证 + 桶名）时启用客户端直传；否则前端回退服务器上传
@@ -68,7 +89,7 @@ export const POST = withRouteHandler(async (request: Request) => {
     const { presignedUrl, finalUrl, key } = await adapter.presignPut(
       enterpriseId,
       ext,
-      "reference",
+      category,
       contentType,
       size,
     )

@@ -33,6 +33,8 @@ const MODULE_NAV: Record<ModuleName, { title: string; url: string; icon: string 
   temu_price: { title: "TEMU-核价调价", url: "/temu?tab=price", icon: "temu" },
   temu_purchase: { title: "TEMU-备货", url: "/temu?tab=purchase", icon: "temu" },
   temu_qc: { title: "TEMU-质检", url: "/temu?tab=qc", icon: "temu" },
+  temu_ship: { title: "TEMU-发货", url: "/temu?tab=ship", icon: "temu" },
+  temu_return: { title: "TEMU-退货", url: "/temu?tab=return", icon: "temu" },
   settings: { title: "个人设置", url: "/settings", icon: "settings" },
 }
 

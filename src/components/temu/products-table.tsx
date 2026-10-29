@@ -19,6 +19,8 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import {
   Select,
@@ -244,12 +246,12 @@ export function TemuProductsSaleFilter({
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <input
+      <Input
         type="search"
         defaultValue={q ?? ""}
         placeholder="搜索 SKC/SPU/货号/商品名"
         onChange={(e) => onSearch(e.target.value)}
-        className="h-9 w-56 rounded-md border bg-background px-3 text-sm"
+        className="h-8 w-56 text-xs"
       />
       <Select
         items={saleItems}
@@ -258,7 +260,7 @@ export function TemuProductsSaleFilter({
           if (v) push({ sale: v })
         }}
       >
-        <SelectTrigger className="h-9 w-28" aria-label="状态筛选">
+        <SelectTrigger className="h-8 w-28 text-xs" aria-label="状态筛选">
           <SelectValue placeholder="全部状态" />
         </SelectTrigger>
         <SelectContent>
@@ -276,7 +278,7 @@ export function TemuProductsSaleFilter({
           if (v) push({ sort: v })
         }}
       >
-        <SelectTrigger className="h-9 w-28" aria-label="排序方式">
+        <SelectTrigger className="h-8 w-28 text-xs" aria-label="排序方式">
           <SelectValue placeholder="上架时间" />
         </SelectTrigger>
         <SelectContent>
@@ -337,20 +339,16 @@ const PRODUCTS_PAGE_SIZE = 20
  * 预载 200px）自动调用组合 action 追加下一页；按 id 去重，销量/趋势信息浅合并；
  * 取回不足一页即"已全部加载"。表头 sticky 吸顶（滚动容器在页侧 CardContent）。
  */
-/** 库存数据单元格：主值 = 细分库存求和 − 不可用；悬停逐类换行展示官方七类口径 */
+/** 库存数据单元格：主值 = 仓内库存（warehouseInventoryNum，卖家口径「可用库存」，
+ *  与申报备货视图同口径）；悬停按官方参数表顺序逐项展示九项官方 desc 文案 */
 function AvailableStockCell({ info }: { info: TemuInventoryInfo | null }) {
   if (!info) return <EmptyHint />
-  const available =
-    (info.waitOnShelfNum ?? 0) +
-    (info.waitApproveInventoryNum ?? 0) +
-    (info.waitInStock ?? 0) +
-    (info.waitReceiveNum ?? 0) +
-    (info.waitDeliveryInventoryNum ?? 0) +
-    (info.waitQcNum ?? 0)
   return (
     <TooltipProvider>
       <Tooltip>
-        <TooltipTrigger className="cursor-default tabular-nums">{available}</TooltipTrigger>
+        <TooltipTrigger className="cursor-default tabular-nums">
+          {info.warehouseInventoryNum ?? 0}
+        </TooltipTrigger>
         <TooltipContent className="text-xs">
           {/* 固定宽度单列容器：TooltipContent 多子元素默认会横向铺开成多列 */}
           <div className="flex w-44 flex-col gap-0.5">
@@ -407,14 +405,17 @@ function formatListedAt(ts: number | null): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString("zh-CN")
 }
 
+/** 悬停明细文案 = 官方 bg.goods.salesv2.get 参数表 desc 原文，顺序同官方（消除歧义） */
 const INVENTORY_LABELS: Array<[keyof TemuInventoryInfo, string]> = [
-  ["waitOnShelfNum", "待上架"],
-  ["waitApproveInventoryNum", "待审核备货"],
-  ["waitInStock", "待入库"],
-  ["waitReceiveNum", "待收货"],
-  ["waitDeliveryInventoryNum", "待发货"],
-  ["waitQcNum", "待质检"],
-  ["unavailableWarehouseInventoryNum", "不可用"],
+  ["waitOnShelfNum", "待上架库存"],
+  ["warehouseInventoryNum", "仓内库存"],
+  ["expectedOccupiedInventoryNum", "预计占用库存"],
+  ["waitApproveInventoryNum", "待审核备货库存"],
+  ["waitQcNum", "已上架待质检库存"],
+  ["unavailableWarehouseInventoryNum", "仓内暂不可用库存"],
+  ["waitInStock", "待入库库存"],
+  ["waitReceiveNum", "待收货库存"],
+  ["waitDeliveryInventoryNum", "待发货库存"],
 ]
 
 /** 商品级信息面板（展开行上半段）：三组呈现——商品 / 交易与备货 / 其他信息 */
@@ -666,9 +667,11 @@ export function ProductsInfiniteTable({
     <>
       {/* TooltipProvider 上提共享：原先每行两个 Provider，几百行时 DOM 显著膨胀 */}
       <TooltipProvider>
-      <table className="w-max min-w-full caption-bottom text-sm">
-        <TableHeader className="sticky top-0 z-10 bg-background">
-          <TableRow>
+      {/* 无滚动容器（保 sticky 吸顶锚定页侧 CardContent）；overflow-clip 仅按圆角裁剪内容 */}
+      <div className="w-max min-w-full overflow-clip rounded-md border">
+      <table className="w-max min-w-full caption-bottom text-xs">
+        <TableHeader className="sticky top-0 z-10 bg-card">
+          <TableRow className="[&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
             <TableHead className="w-8" />
             <TableHead>主图</TableHead>
             <TableHead>SKC</TableHead>
@@ -698,6 +701,8 @@ export function ProductsInfiniteTable({
                   货号排序时同组行共享浅蓝/浅紫交替底色（同货号跨店分组辨识） */}
               <TableRow
                 className={[
+                  // 列间竖线挂行上而非外层 table：变体按后代匹配，挂 table 会波及展开行内嵌套的 SKU 子表
+                  "[&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border",
                   expandable ? "cursor-pointer" : "",
                   (() => {
                     const g = snGroupOf.get(r.id)
@@ -725,11 +730,11 @@ export function ProductsInfiniteTable({
                     <img
                       src={temuImageSrc(r.mainImageCosUrl, r.mainImageUrl)}
                       alt=""
-                      className="size-10 rounded-md object-cover"
+                      className="size-10 rounded object-cover"
                       loading="lazy"
                     />
                   ) : (
-                    <div className="size-10 rounded-md bg-muted" />
+                    <div className="size-10 rounded bg-muted" />
                   )}
                 </TableCell>
                 <TableCell className="font-mono text-xs">{r.productSkcId}</TableCell>
@@ -747,9 +752,9 @@ export function ProductsInfiniteTable({
                     {sales?.extra.isFirst && (
                       <Tooltip>
                         <TooltipTrigger className="cursor-default" aria-label="首单">
-                          <span className="rounded-sm bg-sky-100 px-1 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-950 dark:text-sky-300">
+                          <Badge className="rounded-[4px] bg-sky-100 px-1 text-[10px] text-sky-700 dark:bg-sky-950 dark:text-sky-300">
                             首单
-                          </span>
+                          </Badge>
                         </TooltipTrigger>
                         <TooltipContent className="text-xs">平台标记的首单商品（isFirst）</TooltipContent>
                       </Tooltip>
@@ -763,9 +768,7 @@ export function ProductsInfiniteTable({
                 <TableCell>
                   <Tooltip>
                     <TooltipTrigger className="cursor-default">
-                      <span className={`rounded-sm px-1.5 py-0.5 text-xs font-medium ${status.className}`}>
-                        {status.label}
-                      </span>
+                      <Badge className={`rounded-[4px] ${status.className}`}>{status.label}</Badge>
                     </TooltipTrigger>
                     <TooltipContent className="text-xs">
                       <div>SKC 站点状态码：{r.skcStatus ?? "未知"}</div>
@@ -808,13 +811,14 @@ export function ProductsInfiniteTable({
           })}
           {rows.length === 0 && (
             <TableRow>
-              <TableCell colSpan={12} className="h-20 text-center text-sm text-muted-foreground">
+              <TableCell colSpan={12} className="h-20 text-center text-muted-foreground">
                 暂无数据：店铺完成一次官方 API 同步后自动出现
               </TableCell>
             </TableRow>
           )}
         </TableBody>
       </table>
+      </div>
       </TooltipProvider>
       <div ref={sentinelRef} className="py-4 text-center text-xs text-muted-foreground">
         {done && visibleCount >= rows.length

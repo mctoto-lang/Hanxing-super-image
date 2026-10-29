@@ -1,6 +1,6 @@
 "use server"
 
-import { and, desc, eq, ilike, inArray, or, sql } from "drizzle-orm"
+import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm"
 import { z } from "zod"
 import { db } from "@/db/client"
 import { temuProducts, temuSalesOverviews, temuStores } from "@/db/schema"
@@ -147,6 +147,9 @@ export interface TemuPurchaseSkuRow {
 }
 
 export interface TemuPurchaseOrderRow {
+  /** 行级店铺归属（全部店铺视图按此分组/展示；写操作也按行级店铺发起） */
+  storeId: string
+  storeName: string
   subPurchaseOrderSn: string
   originalPurchaseOrderSn: string | null
   productSkcId: string | null
@@ -180,16 +183,60 @@ export interface TemuPurchaseOrderRow {
 
 /** 备货单列表（bg.purchaseorderv2.get，实时 + 30s 缓存；默认待办=待接单+已接单待发货） */
 export async function getTemuPurchaseOrdersAction(input: {
-  store: string
+  store?: string
   status?: string
-}): Promise<{ ok: true; rows: TemuPurchaseOrderRow[]; total: number } | { ok: false; error: string }> {
+}): Promise<
+  | {
+      ok: true
+      rows: TemuPurchaseOrderRow[]
+      total: number
+      /** 全部店铺视图：个别店铺失败不阻断（未录 token/过期等），收集供 UI 提示 */
+      errors?: Array<{ store: string; error: string }>
+    }
+  | { ok: false; error: string }
+> {
   const q = temuPurchaseQuerySchema.parse(input)
-  const guard = await requireTemuStore(q.store, null)
-  if (!guard.ok) return guard
-  const { store } = guard
-  return temuCached(`${store.enterpriseId}:purchase:${store.id}:${q.status}`, () =>
-    loadPurchaseOrders(store, q.status),
-  )
+  if (q.store) {
+    const guard = await requireTemuStore(q.store, null)
+    if (!guard.ok) return guard
+    const { store } = guard
+    return temuCached(`${store.enterpriseId}:purchase:${store.id}:${q.status}`, () =>
+      loadPurchaseOrders(store, q.status),
+    )
+  }
+  // 全部店铺：企业鉴权 → 启用店铺逐店串行扇出（共用 3qps 限速闸门），
+  // 个别店铺失败不阻断整体（收集 errors），合并后按 purchaseTime 重排
+  let ctx
+  try {
+    ctx = await requireEnterpriseContext()
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message.replace(/^FORBIDDEN: /, "") : String(err),
+    }
+  }
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  return temuCached(`${enterpriseId}:purchase:all:${q.status}`, async () => {
+    const storeRows = await db
+      .select()
+      .from(temuStores)
+      .where(and(eq(temuStores.enterpriseId, enterpriseId), eq(temuStores.enabled, true)))
+      .orderBy(asc(temuStores.sortOrder), asc(temuStores.createdAt))
+    const rows: TemuPurchaseOrderRow[] = []
+    const errors: Array<{ store: string; error: string }> = []
+    let total = 0
+    for (const store of storeRows) {
+      const r = await loadPurchaseOrders(store, q.status)
+      if (r.ok) {
+        rows.push(...r.rows)
+        total += r.total
+      } else {
+        errors.push({ store: store.name, error: r.error })
+      }
+    }
+    rows.sort((a, b) => (b.purchaseTime ?? 0) - (a.purchaseTime ?? 0))
+    return { ok: true as const, rows, total, ...(errors.length ? { errors } : {}) }
+  })
 }
 
 async function loadPurchaseOrders(
@@ -227,7 +274,10 @@ async function loadPurchaseOrders(
           .filter((s) => !!s.productSkuId)
         const statusNum = num(it.status) ?? -1
         const deliverInfo = isRecord(it.deliverInfo) ? it.deliverInfo : {}
+        const receiveWarehouseName = str(deliverInfo.receiveWarehouseName, 120)
         rows.push({
+          storeId: store.id,
+          storeName: store.name,
           subPurchaseOrderSn: sn,
           originalPurchaseOrderSn: str(it.originalPurchaseOrderSn, 64),
           productSkcId: idStr(it.productSkcId, 32),
@@ -250,7 +300,7 @@ async function loadPurchaseOrders(
           expectLatestArrivalTime: num(
             deliverInfo.expectLatestArrivalTimeOrDefault ?? it.expectLatestArrivalTimeOrDefault,
           ),
-          receiveWarehouseName: str(deliverInfo.receiveWarehouseName, 120),
+          receiveWarehouseName,
           skuRows,
           adviceTotal: skuRows.reduce((s, r) => s + (r.adviceQuantity ?? 0), 0),
           purchaseTotal: skuRows.reduce((s, r) => s + (r.purchaseQuantity ?? 0), 0),

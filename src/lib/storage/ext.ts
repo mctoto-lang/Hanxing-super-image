@@ -20,3 +20,9 @@ export function safeImageExt(
   if (!ALLOWED_IMAGE_EXTS.has(last)) return "png"
   return last === "jpeg" ? "jpg" : (last as SafeImageExt)
 }
+
+/** TEMU 说明书 PDF 扩展名校验：filename 以 .pdf 结尾才放行，否则 null（调用方拒绝）。
+ *  pdf 不进图片白名单（扩展名是落盘后响应 Content-Type 的依据，白名单外一律拒）。 */
+export function pdfExt(filename: string | undefined | null): "pdf" | null {
+  return filename?.toLowerCase().endsWith(".pdf") ? "pdf" : null
+}

@@ -17,6 +17,8 @@ export const temuTabSchema = z.enum([
   "price",
   "purchase",
   "qc",
+  "ship",
+  "return",
   "stores",
 ])
 export type TemuTab = z.infer<typeof temuTabSchema>
@@ -36,6 +38,312 @@ export const temuListQuerySchema = z.object({
   sort: z.enum(["listed", "today", "last7", "sn"]).optional(),
 })
 export type TemuListQuery = z.infer<typeof temuListQuerySchema>
+
+// ---------- 发货工作台（本地落库查询 + 官方写操作） ----------
+
+export const temuShipListQuerySchema = z.object({
+  store: z.string().uuid(),
+  page: z.coerce.number().int().min(1).max(500).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  /** 状态预设：pending 待装箱(0) / shipping 待仓库收货(1) / done 已收货入库(2,3) /
+   *  partial 部分收货(6) / closed 退货取消(4,5) / all */
+  statusPreset: z.enum(["pending", "shipping", "done", "partial", "closed", "all"]).default("all"),
+  /** 货号（skcExtCode 精确） */
+  skcExtCode: z.string().max(64).optional(),
+  subPurchaseOrderSn: z.string().max(64).optional(),
+  deliveryOrderSn: z.string().max(64).optional(),
+  /** 实时核对：按当前页单号回查官方 shiporderv2 并落库；官方已移除的单本地置为已取消 */
+  fresh: z.boolean().optional(),
+})
+export type TemuShipListQuery = z.infer<typeof temuShipListQuerySchema>
+
+// ---------- 发货五步向导（批次二写侧） ----------
+
+export const temuShipStagingQuerySchema = z.object({
+  store: z.string().uuid(),
+  /** 备货单号筛选；支持逗号分隔多单号（创建发货单前预检用），映射官方 subPurchaseOrderSnList */
+  subPurchaseOrderSn: z.string().max(256).optional(),
+  skcExtCode: z.string().max(64).optional(),
+  /** SKC（productSkcId）筛选，映射官方 productSkcIdList */
+  skcId: z.string().max(64).optional(),
+  /** 跳过 30s 缓存强制实时（创建发货单前预检必须实时） */
+  fresh: z.boolean().optional(),
+})
+export type TemuShipStagingQuery = z.infer<typeof temuShipStagingQuerySchema>
+
+export const temuShipStagingAddSchema = z.object({
+  store: z.string().uuid(),
+  subPurchaseOrderSns: z.array(z.string().min(1).max(64)).min(1).max(50),
+})
+export type TemuShipStagingAddInput = z.infer<typeof temuShipStagingAddSchema>
+
+/** 打包标签（箱唛）打印直出：boxmarkinfo.get + return_data_key → 官方打印页（链接 10min 单次有效） */
+export const temuShipBoxMarkPrintSchema = z.object({
+  store: z.string().uuid(),
+  deliveryOrderSns: z.array(z.string().min(1).max(64)).min(1).max(50),
+})
+export type TemuShipBoxMarkPrintQuery = z.infer<typeof temuShipBoxMarkPrintSchema>
+
+/** 商品条码打印直出（labelv2.get + return_data_key → 官方打印页，同 10min 单次有效口径）；
+ *  按 SKC 维度取条码（发货台/发货单列表行均持有 productSkcId） */
+export const temuShipBarcodePrintSchema = z.object({
+  store: z.string().uuid(),
+  productSkcIds: z.array(z.number().int().positive()).min(1).max(50),
+})
+export type TemuShipBarcodePrintQuery = z.infer<typeof temuShipBarcodePrintSchema>
+
+/** 发货总体积官方预估（predict.volume.get，出参 predictVolume 字符串，单位立方米）；
+ *  供 logisticsmatch 的 predictVolume 与 packing.send 的 predictPackageVolume 自动回填 */
+export const temuShipPredictVolumeQuerySchema = z.object({
+  store: z.string().uuid(),
+  deliveryOrderSns: z.array(z.string().min(1).max(64)).min(1).max(50),
+})
+export type TemuShipPredictVolumeQuery = z.infer<typeof temuShipPredictVolumeQuerySchema>
+
+export const temuShipReceiveAddressQuerySchema = z.object({
+  store: z.string().uuid(),
+  subPurchaseOrderSns: z.array(z.string().min(1).max(64)).min(1).max(50),
+})
+export type TemuShipReceiveAddressQuery = z.infer<typeof temuShipReceiveAddressQuerySchema>
+
+/** 卖家发货地址创建（mall.address.add；省市区 Code+Name 都必填，官方口径） */
+export const temuShipMallAddressCreateSchema = z.object({
+  store: z.string().uuid(),
+  addressLabel: z.string().min(1).max(60),
+  contactPersonName: z.string().min(1).max(60),
+  contactPersonPhone: z.string().min(5).max(32),
+  provinceCode: z.number().int(),
+  provinceName: z.string().min(1).max(60),
+  cityCode: z.number().int(),
+  cityName: z.string().min(1).max(60),
+  districtCode: z.number().int(),
+  districtName: z.string().min(1).max(60),
+  addressDetail: z.string().min(1).max(200),
+  /** 仓库类型/面积类型（官方必填枚举，前端用 Select 传码值） */
+  warehouseType: z.number().int(),
+  warehouseAreaType: z.number().int(),
+})
+export type TemuShipMallAddressCreateInput = z.infer<typeof temuShipMallAddressCreateSchema>
+
+/** 发货单创建（shiporderv3.create 三级嵌套）；superRefine：每单每 SKU 分箱合计 = 发货数 */
+export const temuShipCreateOrderSchema = z.object({
+  store: z.string().uuid(),
+  groups: z
+    .array(
+      z.object({
+        subWarehouseId: z.number().int(),
+        receiveAddressInfo: z.object({
+          receiverName: z.string().max(120),
+          phone: z.string().max(32),
+          provinceName: z.string().max(60),
+          provinceCode: z.number().int(),
+          cityName: z.string().max(60),
+          cityCode: z.number().int(),
+          districtName: z.string().max(60),
+          districtCode: z.number().int(),
+          detailAddress: z.string().max(300),
+        }),
+        deliveryAddressId: z.number().int(),
+        orders: z
+          .array(
+            z.object({
+              subPurchaseOrderSn: z.string().min(1).max(64),
+              deliverOrderDetailInfos: z
+                .array(
+                  z.object({
+                    productSkuId: z.number().int(),
+                    deliverSkuNum: z.number().int().min(1).max(1_000_000),
+                  }),
+                )
+                .min(1),
+              packageInfos: z
+                .array(
+                  z.object({
+                    packageDetailSaveInfos: z
+                      .array(
+                        z.object({
+                          productSkuId: z.number().int(),
+                          skuNum: z.number().int().min(1).max(1_000_000),
+                        }),
+                      )
+                      .min(1),
+                  }),
+                )
+                .min(1)
+                .max(10),
+            }),
+          )
+          .min(1),
+      }),
+    )
+    .min(1),
+})
+export type TemuShipCreateOrderInput = z.infer<typeof temuShipCreateOrderSchema>
+
+export const temuShipPackingMatchSchema = z.object({
+  store: z.string().uuid(),
+  deliveryOrderSns: z.array(z.string().min(1).max(64)).min(1).max(50),
+})
+export type TemuShipPackingMatchInput = z.infer<typeof temuShipPackingMatchSchema>
+
+/** 平台推荐物流（logisticsmatch 官方六必填） */
+export const temuShipLogisticsMatchSchema = z.object({
+  store: z.string().uuid(),
+  deliveryOrderSns: z.array(z.string().min(1).max(64)).min(1).max(50),
+  receiveAddressInfo: z.object({
+    receiverName: z.string().max(120),
+    phone: z.string().max(32),
+    provinceName: z.string().max(60),
+    provinceCode: z.number().int(),
+    cityName: z.string().max(60),
+    cityCode: z.number().int(),
+    districtName: z.string().max(60),
+    districtCode: z.number().int(),
+    detailAddress: z.string().max(300),
+  }),
+  deliveryAddressId: z.number().int(),
+  predictTotalPackageWeight: z.number().int().min(1000),
+  subWarehouseId: z.number().int(),
+  totalPackageNum: z.number().int().min(1),
+  predictVolume: z.string().max(32).optional(),
+})
+export type TemuShipLogisticsMatchInput = z.infer<typeof temuShipLogisticsMatchSchema>
+
+/** 装箱发货（packing.send 三方式 discriminatedUnion）。
+ *  方式 2 平台推荐：predictTotalPackageWeight 官方要求 ≥1kg 且整千克 */
+const shipSkuSelfDelivery = z.object({
+  deliverMethod: z.literal(1),
+  driverName: z.string().min(1).max(60),
+  plateNumber: z.string().min(1).max(20),
+  expressPackageNum: z.number().int().min(1),
+})
+const shipSkuThirdPartyDelivery = z
+  .object({
+    deliverMethod: z.literal(2),
+    expressCompanyId: z.number().int(),
+    predictTotalPackageWeight: z
+      .number()
+      .int()
+      .min(1000)
+      .refine((v) => v % 1000 === 0, { message: "预估总重量须为整千克（克数须为 1000 的倍数）" }),
+    /** 预约取货时间：channelScheduleTimeList 原值透传（epoch 毫秒，格式官方未实证） */
+    expectPickUpGoodsTime: z.number().int().optional(),
+    /** 揽收方式 0 上门揽收（默认）/ 1 送网点；送网点时自送网点四件套必传（官方口径） */
+    pickupMethod: z.number().int().min(0).max(1).optional(),
+    predictId: z.number().int().optional(),
+    expressPackageNum: z.number().int().min(1),
+    selfDeliverSitePhone: z.string().max(32).optional(),
+    selfDeliverSiteAddress: z.string().max(200).optional(),
+    selfDeliverSiteUserCode: z.string().max(64).optional(),
+    selfDeliverSiteCompanyCode: z.string().max(64).optional(),
+  })
+  .superRefine((d, ctx) => {
+    if (d.pickupMethod === 1) {
+      const required: Array<keyof typeof d> = [
+        "selfDeliverSitePhone",
+        "selfDeliverSiteAddress",
+        "selfDeliverSiteUserCode",
+        "selfDeliverSiteCompanyCode",
+      ]
+      for (const k of required) {
+        if (!d[k]) ctx.addIssue({ code: "custom", message: `送网点方式必填 ${k}` })
+      }
+    }
+  })
+const shipSkuThirdExpress = z.object({
+  deliverMethod: z.literal(3),
+  expressCompanyId: z.number().int(),
+  expressCompanyName: z.string().min(1).max(120),
+  expressDeliverySn: z.string().min(1).max(64),
+  expressPackageNum: z.number().int().min(1),
+})
+
+export const temuShipPackingSendSchema = z.discriminatedUnion("deliverMethod", [
+  shipSkuSelfDelivery,
+  shipSkuThirdPartyDelivery,
+  shipSkuThirdExpress,
+])
+export type TemuShipPackingSendInput = z.infer<typeof temuShipPackingSendSchema>
+
+export const temuShipSendActionSchema = z.object({
+  store: z.string().uuid(),
+  deliveryOrderSns: z.array(z.string().min(1).max(64)).min(1).max(50),
+  deliveryAddressId: z.number().int(),
+  predictPackageVolume: z.string().max(32).optional(),
+  payload: temuShipPackingSendSchema,
+})
+export type TemuShipSendActionInput = z.infer<typeof temuShipSendActionSchema>
+
+export const temuShipCancelSchema = z.object({
+  store: z.string().uuid(),
+  deliveryOrderSn: z.string().min(1).max(64),
+})
+export type TemuShipCancelInput = z.infer<typeof temuShipCancelSchema>
+
+/** 调整包裹（package.edit）：与创建同款「每 SKU 分箱合计 = 发货数」校验 */
+export const temuShipPackageEditSchema = z.object({
+  store: z.string().uuid(),
+  deliveryOrderSn: z.string().min(1).max(64),
+  deliverOrderDetailInfos: z
+    .array(
+      z.object({
+        productSkuId: z.number().int(),
+        deliverSkuNum: z.number().int().min(1).max(1_000_000),
+      }),
+    )
+    .min(1),
+  packageInfos: z
+    .array(
+      z.object({
+        packageDetailSaveInfos: z
+          .array(z.object({ productSkuId: z.number().int(), skuNum: z.number().int().min(1) }))
+          .min(1),
+      }),
+    )
+    .min(1)
+    .max(10),
+})
+export type TemuShipPackageEditInput = z.infer<typeof temuShipPackageEditSchema>
+
+/** 修改物流（logistics.change by expressBatchSn，三选一同 packing.send） */
+export const temuShipLogisticsChangeSchema = z.object({
+  store: z.string().uuid(),
+  expressBatchSn: z.string().min(1).max(64),
+  deliveryAddressId: z.number().int(),
+  payload: temuShipPackingSendSchema,
+})
+export type TemuShipLogisticsChangeInput = z.infer<typeof temuShipLogisticsChangeSchema>
+
+export const temuShipExpressNoValidateSchema = z.object({
+  store: z.string().uuid(),
+  shippingId: z.number().int(),
+  expressNo: z.string().min(1).max(64),
+})
+export type TemuShipExpressNoValidateInput = z.infer<typeof temuShipExpressNoValidateSchema>
+
+/** 每单每 SKU：packageInfos 合计 skuNum 必须等于 deliverSkuNum（create/edit 共用） */
+export function refineShipPackageSum(order: {
+  deliverOrderDetailInfos: Array<{ productSkuId: number; deliverSkuNum: number }>
+  packageInfos: Array<{ packageDetailSaveInfos: Array<{ productSkuId: number; skuNum: number }> }>
+}): string | null {
+  for (const d of order.deliverOrderDetailInfos) {
+    const sum = order.packageInfos.reduce(
+      (acc, p) => acc + (p.packageDetailSaveInfos.find((s) => s.productSkuId === d.productSkuId)?.skuNum ?? 0),
+      0,
+    )
+    if (sum !== d.deliverSkuNum) {
+      return `SKU ${d.productSkuId} 分箱合计 ${sum} ≠ 发货数 ${d.deliverSkuNum}`
+    }
+  }
+  // 分箱里出现发货明细之外的 SKU 也算不匹配
+  const detailIds = new Set(order.deliverOrderDetailInfos.map((d) => d.productSkuId))
+  for (const p of order.packageInfos) {
+    for (const s of p.packageDetailSaveInfos) {
+      if (!detailIds.has(s.productSkuId)) return `分箱包含发货明细之外的 SKU ${s.productSkuId}`
+    }
+  }
+  return null
+}
 
 // ---------- 店铺管理（企业管理员） ----------
 
@@ -197,11 +505,14 @@ export const temuTemplateSpecSchema = z.object({
   specName: z.string().trim().min(1).max(100),
 })
 
-/** 图源数组口径：http(s) URL 或浏览器压缩 dataUrl（模板存源，发品按店上传） */
-export const IMAGE_SOURCE = z.union([
-  z.string().url().max(1000),
-  z.string().max(8_000_000).regex(/^data:image\/(?:png|jpeg);base64,/),
-])
+/** 图源口径：http(s) URL（>2MB 图选图时浏览器压缩后直传存储 temu/ 前缀，模板只存 URL）。
+ *  dataUrl 已停用：会把发品/建模板 server action 载荷顶到 MB 级，被反向代理 413 拒绝。 */
+export const IMAGE_SOURCE = z
+  .string()
+  .max(1000)
+  .refine((s) => /^https?:\/\/\S+$/.test(s), {
+    message: "图源仅支持 http(s) URL（页面版本过旧时请刷新后重试）",
+  })
 const IMAGE_SOURCE_ARRAY = z.array(IMAGE_SOURCE)
 
 /** 模板默认层（锁定骨架 + 发品可覆盖项） */
@@ -243,19 +554,22 @@ export const temuTemplateDefaultsSchema = z
     // 尺寸图源（可选；发品时按目标店上传后固定插入轮播第 2 张——卖家中心页面口径，
     // API 实测不校验位置（§8.15），按页面口径固定最稳）
     dimensionImageUrl: IMAGE_SOURCE.optional(),
-    // 电子说明书（存 PDF 源；发品时按目标店铺 instructions.upload 换 pdfId。pdfMaterialId 兼容旧模板）
+    // 电子说明书（模板只存存储 sourceUrl；发品时服务端取回字节按目标店铺
+    // instructions.upload 换 pdfId。base64 为存量模板兼容，列表响应剥离）
     guideFile: z
       .object({
         fileName: z.string().trim().min(1).max(200),
-        /** 兼容旧模板（无 base64 源时发品用存量 id，跨店可能报错） */
+        /** 兼容旧模板（无源时发品用存量 id，跨店可能报错） */
         pdfMaterialId: z.coerce.number().int().positive().optional(),
         languages: z.array(z.string().trim().min(2).max(10)).min(1).max(10).default(["en"]),
-        /** PDF 源（base64，保存模板时不再调官方接口；列表响应剥离） */
+        /** PDF 源（选择时已直传存储 temu/ 前缀；不过期长存） */
+        sourceUrl: z.string().url().max(1000).optional(),
+        /** 存量模板的 PDF 源（base64；物化脚本迁移后不再产生） */
         base64: z.string().min(10).max(20_000_000).optional(),
       })
-      .refine((g) => Boolean(g.base64 ?? g.pdfMaterialId), {
+      .refine((g) => Boolean(g.base64 ?? g.sourceUrl ?? g.pdfMaterialId), {
         message: "缺少 PDF 源（请重新选择 PDF 文件）",
-        path: ["base64"],
+        path: ["sourceUrl"],
       })
       .optional(),
     // 定制商品工艺（firstType/twiceType 枚举见 docs §13.6；technologyType 官方未文档化，实测 1 可用）
@@ -312,18 +626,11 @@ export const temuPublishTemplateUpdateSchema = temuPublishTemplateSchema.extend(
   id: z.string().uuid(),
 })
 
-/** 图片上传（imageUrl 外链由服务端拉取；imageDataUrl 为浏览器压缩后的直传数据） */
-export const temuPublishImageSchema = z
-  .object({
-    imageUrl: z.string().url().max(1000).optional(),
-    /** data:image/(png|jpeg);base64,...（>2MB 浏览器压缩后的产物，服务端免拉取） */
-    imageDataUrl: z
-      .string()
-      .max(8_000_000)
-      .regex(/^data:image\/(?:png|jpeg);base64,/)
-      .optional(),
-  })
-  .refine((v) => Boolean(v.imageUrl ?? v.imageDataUrl), { message: "缺少图片来源" })
+/** 图片上传（imageUrl 由服务端拉取后传官方图床；dataUrl 入参已停用——
+ *  调用方（向导官方校验/尺寸图）先物化为存储 URL 再调用） */
+export const temuPublishImageSchema = z.object({
+  imageUrl: z.string().url().max(1000),
+})
 
 /** 发品（模板 + 店铺 + 覆盖默认层） */
 export const temuPublishActionSchema = z.object({
@@ -347,9 +654,9 @@ export const temuPublishRecordsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
 })
 
-/** 电子说明书 PDF 上传（base64 → bg.glo.goods.instructions.upload → pdfId） */
+/** 电子说明书 PDF 独立上传（sourceUrl → 服务端取回字节 → bg.glo.goods.instructions.upload → pdfId） */
 export const temuPublishGuideFileSchema = z.object({
-  base64File: z.string().min(10).max(20_000_000),
+  sourceUrl: z.string().url().max(1000),
   fileName: z.string().trim().min(1).max(200),
 })
 
@@ -369,7 +676,8 @@ export const temuDimensionCheckSchema = z.object({
 export const temuPurchaseStatusSchema = z.enum(["todo", "shipped", "closed", "all"])
 
 export const temuPurchaseQuerySchema = z.object({
-  store: z.string().uuid(),
+  /** 缺省=全部店铺（逐店扇出查询合并，行级带 storeId/storeName） */
+  store: z.string().uuid().optional(),
   status: temuPurchaseStatusSchema.default("todo"),
 })
 
@@ -415,3 +723,41 @@ export const temuAutoStockSchema = z.object({
   probeQuantity: z.coerce.number().int().min(1).max(100_000).default(100_000),
   dryRun: z.boolean().default(false),
 })
+
+// ---------- 退货工作台（退供三件套，实时拉取不落库；docs §8.17） ----------
+
+/** 出库时间窗预设（天）。退供接口查询结果超 5 万条报 100000001，
+ *  无界查询不可用，强制有界窗口（returnpackage.get 可选窗 / returnpackagelist.get 必填窗）。
+ *  returnpackagelist.get（SKU 明细）窗口上限 31 天——2026-10-29 真实店实测
+ *  100000004「Participation time exceeds 31 day」，预设独立收窄 */
+export const temuReturnWindowSchema = z.enum(["30", "90", "365"])
+export const temuReturnSkuWindowSchema = z.enum(["7", "30", "31"])
+
+/** 退供包裹列表（bg.refund.returnpackage.get：supplierId 必填来自本地 ship_order，分页 1~200） */
+export const temuReturnListQuerySchema = z.object({
+  store: z.string().uuid(),
+  /** 1-待提货 2-已出库；缺省=全部 */
+  status: z.enum(["1", "2"]).optional(),
+  window: temuReturnWindowSchema.default("90"),
+  /** 精确筛选（逗号分隔多值 → 官方数组参数），三参数独立映射不做模糊合一 */
+  expressDeliverySn: z.string().trim().max(256).optional(),
+  purchaseSubOrderSn: z.string().trim().max(256).optional(),
+  returnSupplierPackageNo: z.string().trim().max(256).optional(),
+  pageNo: z.coerce.number().int().min(1).max(200).default(1),
+})
+
+/** 退供包裹详情（bg.refund.returnpackagedetail.get：supplierId + 退供包裹号） */
+export const temuReturnDetailQuerySchema = z.object({
+  store: z.string().uuid(),
+  returnSupplierPackageNo: z.string().trim().min(1).max(64),
+})
+
+/** 退供包裹 SKU 明细列表（bg.refund.returnpackagelist.get：出库时间窗必填，≤31 天） */
+export const temuReturnSkuQuerySchema = z.object({
+  store: z.string().uuid(),
+  window: temuReturnSkuWindowSchema.default("30"),
+  returnSupplierPackageNo: z.string().trim().max(256).optional(),
+  purchaseSubOrderSn: z.string().trim().max(256).optional(),
+  pageNo: z.coerce.number().int().min(1).max(200).default(1),
+})
+

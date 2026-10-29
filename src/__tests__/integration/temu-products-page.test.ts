@@ -113,6 +113,8 @@ beforeAll(async () => {
           // 细分库存实测随 SKU 行返回（SKC 级 overview 不带）
           inventoryNumInfo: {
             waitOnShelfNum: 3,
+            warehouseInventoryNum: 46,
+            expectedOccupiedInventoryNum: 5,
             waitApproveInventoryNum: 0,
             waitInStock: 10,
             waitReceiveNum: 2,
@@ -193,9 +195,11 @@ describe("商品信息页 salesInfo 链路", () => {
     expect(a?.illegalReason).toBeNull()
     expect(a?.inventoryInfo?.waitQcNum).toBe(1)
     expect(a?.inventoryInfo?.waitInStock).toBe(10)
-    // 七类恒定齐全：夹具中为 0 的待审核备货也在
+    // 九项恒定齐全（官方 inventoryNumInfo 全量口径）：主值仓内库存 + 预计占用也聚合
     expect(a?.inventoryInfo).toMatchObject({
       waitOnShelfNum: 3,
+      warehouseInventoryNum: 46,
+      expectedOccupiedInventoryNum: 5,
       waitApproveInventoryNum: 0,
       waitInStock: 10,
       waitReceiveNum: 2,

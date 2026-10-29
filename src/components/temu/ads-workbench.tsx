@@ -216,13 +216,12 @@ export function TemuAdsWorkbench({
         <CardTitle className="text-base">商品推广报表（{merged.length}）</CardTitle>
         {/* 创建广告 / 窗口下拉 / 刷新 同一行 */}
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" className="h-9 text-xs" onClick={() => setCreating(true)}>
+          <Button size="sm" className="h-8 text-xs" onClick={() => setCreating(true)}>
             <Megaphone className="size-3.5" /> 创建广告
           </Button>
           <Select value={String(range)} onValueChange={(v) => v && router.push(rangeHref(v))}>
-            {/* base-ui SelectValue 默认渲染原始 value（7/30），须传 children 显示中文；
-                h-9! 压过触发器基类 data-[size=default]:h-8，与按钮等高 */}
-            <SelectTrigger className="h-9! w-28 text-xs" aria-label="统计窗口切换">
+            {/* base-ui SelectValue 默认渲染原始 value（7/30），须传 children 显示中文 */}
+            <SelectTrigger className="h-8 w-28 text-xs" aria-label="统计窗口切换">
               <SelectValue>近 {range} 日</SelectValue>
             </SelectTrigger>
             <SelectContent>
@@ -233,7 +232,7 @@ export function TemuAdsWorkbench({
             <Button
               variant="outline"
               size="sm"
-              className="h-9! text-xs"
+              className="h-8 text-xs"
               onClick={refreshAll}
               disabled={loading}
               aria-label="刷新商品推广报表"
@@ -246,13 +245,11 @@ export function TemuAdsWorkbench({
         <CardContent className="min-h-0 flex-1 overflow-auto scrollbar-hide">
           {error ? (
             <p className="py-8 text-center text-sm text-red-600 dark:text-red-400">{error}</p>
-          ) : merged.length === 0 ? (
-            <p className="py-8 text-center text-sm text-muted-foreground">
-              {loading ? "加载中…" : "暂无广告数据——通过「创建广告」经官方 API 创建后，投放数据将在此展示"}
-            </p>
           ) : (
-            <table className="w-max min-w-full caption-bottom text-sm">
-              <TableHeader className="sticky top-0 z-10 bg-background">
+            // overflow-clip 只按圆角裁剪（非滚动容器，sticky 表头仍锚定页侧 CardContent）
+            <div className="w-max min-w-full overflow-clip rounded-md border">
+            <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
+              <TableHeader className="sticky top-0 z-10 bg-card">
                 <TableRow>
                   <TableHead>主图</TableHead>
                   <TableHead>商品</TableHead>
@@ -269,27 +266,34 @@ export function TemuAdsWorkbench({
                 </TableRow>
               </TableHeader>
               <TableBody>
+                {merged.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={12} className="h-20 text-center text-muted-foreground">
+                      {loading ? "加载中…" : "暂无广告数据——通过「创建广告」经官方 API 创建后，投放数据将在此展示"}
+                    </TableCell>
+                  </TableRow>
+                )}
                 {merged.map((row) => (
                   <TableRow key={row.productId}>
                     <TableCell>
                       {row.mainImageUrl ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={temuImageSrc(row.mainImageCosUrl, row.mainImageUrl)} alt="" className="size-10 rounded-md object-cover" loading="lazy" />
+                        <img src={temuImageSrc(row.mainImageCosUrl, row.mainImageUrl)} alt="" className="size-10 rounded object-cover" loading="lazy" />
                       ) : (
-                        <div className="size-10 rounded-md bg-muted" />
+                        <div className="size-10 rounded bg-muted" />
                       )}
                     </TableCell>
                     <TableCell className="max-w-56">
                       <p className="truncate text-xs font-medium" title={row.productName ?? ""}>
                         {row.productName ?? "—"}
                       </p>
-                      <p className="truncate font-mono text-[11px] text-muted-foreground">
+                      <p className="truncate font-mono text-xs text-muted-foreground">
                         {row.productSn ?? row.productId}
                       </p>
                     </TableCell>
                     <TableCell>
                       {row.plan ? (
-                        <Badge variant="secondary">{row.plan.adShowStatusLabel}</Badge>
+                        <Badge variant="secondary" className="rounded-[4px]">{row.plan.adShowStatusLabel}</Badge>
                       ) : (
                         <span className="text-xs text-muted-foreground">—</span>
                       )}
@@ -362,6 +366,7 @@ export function TemuAdsWorkbench({
                 ))}
               </TableBody>
             </table>
+            </div>
           )}
         </CardContent>
         {/* 弹窗为 Portal 渲染，挂在 Card 内不影响布局 */}
@@ -509,7 +514,7 @@ function CreateAdsDialog({
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="space-y-1.5">
+            <div className="space-y-1">
               <Label className="text-xs">商品（可投性实时校验）</Label>
               <Input
                 className="h-8 text-xs"
@@ -556,12 +561,12 @@ function CreateAdsDialog({
                         </span>
                       </span>
                       {p.advertised ? (
-                        <Badge variant="outline">已创建</Badge>
+                        <Badge variant="outline" className="rounded-[4px]">已创建</Badge>
                       ) : p.eligible ? (
-                        <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">可投</Badge>
+                        <Badge className="rounded-[4px] bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">可投</Badge>
                       ) : (
                         <Tooltip>
-                          <TooltipTrigger render={<Badge variant="secondary" />}>
+                          <TooltipTrigger render={<Badge variant="secondary" className="rounded-[4px]" />}>
                             不可投
                           </TooltipTrigger>
                           <TooltipContent className="max-w-56 text-xs">
@@ -575,7 +580,7 @@ function CreateAdsDialog({
               )}
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 <Label className="text-xs">日预算（元 / 全部选中商品）</Label>
                 <Input
                   className="h-8 text-xs"
@@ -585,7 +590,7 @@ function CreateAdsDialog({
                   onChange={(e) => setBudgetYuan(e.target.value)}
                 />
               </div>
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 <Label className="text-xs">目标 ROAS（如 3.5）</Label>
                 <Input
                   className="h-8 text-xs"
@@ -660,7 +665,7 @@ function ModifyAdDialog({
                 : `，当前 ${modifying.row.roas ?? "—"}`}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-1.5">
+          <div className="space-y-1">
             <Label className="text-xs">{modifying.action === "budget" ? "新日预算（元）" : "新目标 ROAS"}</Label>
             <Input
               className="h-8 text-xs"

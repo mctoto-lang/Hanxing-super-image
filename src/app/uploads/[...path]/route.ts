@@ -34,6 +34,9 @@ const CONTENT_TYPES: Record<string, string> = {
   // SVG 图标（仅 /api/upload/config 清洗后落盘）：强制 attachment——
   // 直接导航变下载而非执行（防同源存储型 XSS），<img> 渲染不受影响
   svg: "image/svg+xml",
+  // TEMU 说明书 PDF（category=temu，local 模式同样落 uploads/ 由本路由托管）：
+  // application/pdf + nosniff 由浏览器 PDF 查看器渲染，无同源脚本执行面
+  pdf: "application/pdf",
 }
 
 export const dynamic = "force-dynamic"

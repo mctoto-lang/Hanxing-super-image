@@ -272,6 +272,7 @@ describe("syncStore 全源链路", () => {
       "api-soldout",
       "api-price-list",
       "api-ads-reports",
+      "api-ship-orders",
     ])
 
     // goods-list：temu_product 基础字段（类目叶名 / 主图 / 货号）+ SKU 映射
@@ -364,6 +365,7 @@ describe("syncStore 全源链路", () => {
       "api-lifecycle",
       "api-price-list",
       "api-sales-overview",
+      "api-ship-orders",
       "api-soldout",
       "product-image-mirror",
     ])
@@ -373,7 +375,7 @@ describe("syncStore 全源链路", () => {
     expect(storeAfter?.tokenState).toBe("active")
   })
 
-  it("幂等重跑不产生重复行，内容未变商品仍留在最新批次（已转存图不重转）", async () => {
+  it("幂等重跑不产生重复行，内容未变商品仍留在最新批次（已转存图不重转）", { timeout: 30_000 }, async () => {
     vi.stubGlobal("fetch", mockTemuFetch())
     const callsBefore = storageMock.saveFromUrl.mock.calls.length
     await syncStore(storeId)

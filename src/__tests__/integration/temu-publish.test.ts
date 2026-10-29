@@ -491,11 +491,15 @@ describe("发品", () => {
       productOrigin: { countryShortName: "CN", region2Id: 43000000000006 },
     })
 
-    const recs = await listPublishRecordsAction({})
+    const recs = await listPublishRecordsAction({ templateId: created.id })
     expect(recs.ok).toBe(true)
     if (!recs.ok) return
     const row = recs.rows.find((x) => x.status === "success")
     expect(row?.productId).toBe("388095145")
+    // 记录新列：创建人 / 生效商品名 / 实际提交图源
+    expect(row?.creatorName).toBe("发品管理员")
+    expect(row?.title).toBe("覆盖标题")
+    expect(row?.imageUrls).toEqual(TEMPLATE_PAYLOAD.defaults.imageUrls)
   }, 30_000)
 
   it("四块扩展配置（包装/说明书/定制/SKU分类）随发品提交，未配置块不提交", async () => {
@@ -659,6 +663,99 @@ describe("发品", () => {
     ])
   }, 30_000)
 
+  it("说明书 sourceUrl（新版口径）：发品时服务端取回字节重传换新 pdfId", async () => {
+    mockSession.userId = ownerId
+    const created = await createPublishTemplateAction({
+      ...TEMPLATE_PAYLOAD,
+      defaults: {
+        ...TEMPLATE_PAYLOAD.defaults,
+        guideFile: {
+          fileName: "manual-new.pdf",
+          pdfMaterialId: 222,
+          languages: ["en"],
+          sourceUrl: "https://img.kwcdn.com/manual/manual-new.pdf",
+        },
+      },
+    })
+    expect(created.ok).toBe(true)
+    if (!created.ok) return
+
+    const fn = mockPublishFetch({
+      "bg.glo.goods.instructions.upload": { result: { pdfId: 2610202728805 } },
+      "bg.glo.goods.add": { result: GOODS_ADD_OK },
+    })
+    vi.stubGlobal("fetch", fn)
+    const r = await publishFromTemplateAction({ templateId: created.id, storeId, overrides: {} })
+    expect(r.ok).toBe(true)
+    const calls = fn.mock.calls.filter((c) => c[1]?.body)
+      .map((c) => JSON.parse(String(c[1]!.body)) as Record<string, unknown>)
+    const reUp = calls.find((c) => c.type === "bg.glo.goods.instructions.upload")!
+    // 服务端从存储 sourceUrl 取回字节（mock 返回内建 PNG）转 base64 提交
+    expect(typeof reUp.base64File).toBe("string")
+    expect((reUp.base64File as string).length).toBeGreaterThan(100)
+    const add = calls.find((c) => c.type === "bg.glo.goods.add")!
+    expect(add.productGuideFileReqs).toEqual([
+      { fileName: "manual-new.pdf", pdfMaterialId: 2610202728805, languages: ["en"] },
+    ])
+  }, 30_000)
+
+  it("素材图上传失败也落发品记录（早退分支可观测性）并带创建人/商品名/图源", async () => {
+    mockSession.userId = memberWithPermId
+    const created = await createPublishTemplateAction({ ...TEMPLATE_PAYLOAD, name: "鸟笼-失败观测" })
+    expect(created.ok).toBe(true)
+    if (!created.ok) return
+
+    const fn = mockPublishFetch({
+      "bg.goods.image.upload.global": { success: false, errorCode: 2000021, errorMsg: "image invalid" },
+    })
+    vi.stubGlobal("fetch", fn)
+    const r = await publishFromTemplateAction({
+      templateId: created.id,
+      storeId,
+      overrides: { title: "失败观测标题" },
+    })
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.error).toContain("素材图第 1 张上传失败")
+
+    // 此前早退失败不落记录（排障盲区）；现在留痕且新列齐全
+    const recs = await listPublishRecordsAction({ templateId: created.id })
+    expect(recs.ok).toBe(true)
+    if (!recs.ok) return
+    const row = recs.rows.find((x) => x.status === "failed")
+    expect(row?.errorMsg).toContain("素材图第 1 张上传失败")
+    expect(row?.creatorName).toBe("发品页权限成员")
+    expect(row?.title).toBe("失败观测标题")
+    expect(row?.imageUrls).toEqual(TEMPLATE_PAYLOAD.defaults.imageUrls)
+  }, 30_000)
+
+  it("图源 dataUrl 被拒（载荷根治护栏）：模板与发品 overrides 均明确报错", async () => {
+    mockSession.userId = ownerId
+    const r = await createPublishTemplateAction({
+      ...TEMPLATE_PAYLOAD,
+      defaults: {
+        ...TEMPLATE_PAYLOAD.defaults,
+        imageUrls: [
+          "data:image/jpeg;base64,/9j/4AAQSkZJRg==",
+          ...TEMPLATE_PAYLOAD.defaults.imageUrls.slice(1),
+        ],
+      },
+    })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toContain("http(s)")
+
+    const created = await createPublishTemplateAction(TEMPLATE_PAYLOAD)
+    expect(created.ok).toBe(true)
+    if (!created.ok) return
+    const p = await publishFromTemplateAction({
+      templateId: created.id,
+      storeId,
+      overrides: { imageUrls: ["data:image/png;base64,iVBORw0KGgo="] },
+    })
+    expect(p.ok).toBe(false)
+    if (!p.ok) expect(p.error).toContain("http(s)")
+  })
+
   it("素材图可空/少于 5 张可建模板，发品时预检拦截（官方最少 5 张）", async () => {
     mockSession.userId = ownerId
     // 空素材：建模板 OK（保存零 TEMU 调用）
@@ -710,21 +807,32 @@ describe("发品", () => {
     expect((add.carouselImageUrls as unknown[]).length).toBe(5)
   }, 30_000)
 
-  it("说明书 PDF 上传：base64File 直传换 pdfId", async () => {
+  it("说明书 PDF 上传：sourceUrl 取回字节换 pdfId", async () => {
     mockSession.userId = ownerId
     const fn = mockPublishFetch({
       "bg.glo.goods.instructions.upload": { result: { pdfId: 2610202676393 } },
     })
     vi.stubGlobal("fetch", fn)
-    const r = await uploadPublishGuideFileAction({ base64File: "JVBERi0xLjQ=", fileName: "manual.pdf" })
+    const r = await uploadPublishGuideFileAction({
+      sourceUrl: "https://img.kwcdn.com/manual/test.pdf",
+      fileName: "manual.pdf",
+    })
     expect(r.ok).toBe(true)
-    const body = JSON.parse(String(fn.mock.calls[0]![1]!.body)) as Record<string, unknown>
-    expect(body.base64File).toBe("JVBERi0xLjQ=")
+    const up = fn.mock.calls
+      .filter((c) => c[1]?.body)
+      .map((c) => JSON.parse(String(c[1]!.body)) as Record<string, unknown>)
+      .find((c) => c.type === "bg.glo.goods.instructions.upload")!
+    // sourceUrl 取回字节（mock 无 body 调用返回内建 PNG）→ base64 提交官方
+    expect(typeof up.base64File).toBe("string")
+    expect((up.base64File as string).length).toBeGreaterThan(0)
     if (!r.ok) return
     expect(r.pdfMaterialId).toBe(2610202676393)
     // 无商品发布页权限的成员被拒（页面权限口径）
     mockSession.userId = memberId
-    const r2 = await uploadPublishGuideFileAction({ base64File: "JVBERi0xLjQ=", fileName: "m.pdf" })
+    const r2 = await uploadPublishGuideFileAction({
+      sourceUrl: "https://img.kwcdn.com/manual/m.pdf",
+      fileName: "m.pdf",
+    })
     expect(r2.ok).toBe(false)
   })
 

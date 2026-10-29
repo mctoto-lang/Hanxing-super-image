@@ -34,6 +34,8 @@ interface ComboboxProps {
   value: string | null | undefined
   /** 选中项变化；清除时传入空串 */
   onChange: (value: string) => void
+  /** 搜索关键字变化（本地过滤照常；调用方可用它做服务端防抖搜索） */
+  onSearchChange?: (keyword: string) => void
   options: ComboboxOption[]
   placeholder?: string
   searchPlaceholder?: string
@@ -48,6 +50,7 @@ interface ComboboxProps {
 export function Combobox({
   value,
   onChange,
+  onSearchChange,
   options,
   placeholder = "请选择",
   searchPlaceholder = "搜索...",
@@ -163,7 +166,10 @@ export function Combobox({
           <input
             ref={searchRef}
             value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
+            onChange={(e) => {
+              setKeyword(e.target.value)
+              onSearchChange?.(e.target.value)
+            }}
             placeholder={searchPlaceholder}
             className="h-8 w-full rounded-md border border-input bg-transparent pl-8 pr-2 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 dark:bg-input/30"
           />

@@ -12,7 +12,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import {
-  Table,
   TableBody,
   TableCell,
   TableHead,
@@ -25,38 +24,58 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import type { TemuPublishRecordRow } from "@/server/actions/temu-publish"
+import { toImageSrc } from "@/lib/utils"
 
 /** 发品记录表（商品发布面板复用；错误 Tooltip 看完整官方原因，
  *  「详情」弹窗看提交官方的请求/响应快照——排障回溯用） */
 export function PublishRecordsTable({ rows }: { rows: TemuPublishRecordRow[] }) {
   const [detail, setDetail] = React.useState<TemuPublishRecordRow | null>(null)
-  if (rows.length === 0) {
-    return <p className="py-8 text-center text-sm text-muted-foreground">暂无发品记录。</p>
-  }
   return (
     <>
-      <Table>
-        <TableHeader>
+      {/* overflow-clip 只按圆角裁剪（非滚动容器，sticky 表头仍锚定页侧 CardContent） */}
+      <div className="w-max min-w-full overflow-clip rounded-md border">
+      <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
+        <TableHeader className="sticky top-0 z-10 bg-card">
           <TableRow>
             <TableHead>时间</TableHead>
+            <TableHead>创建人</TableHead>
             <TableHead>模板 / 店铺</TableHead>
+            <TableHead>商品名</TableHead>
+            <TableHead>图片</TableHead>
             <TableHead>状态</TableHead>
             <TableHead>结果</TableHead>
             <TableHead className="text-right">操作</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
+          {rows.length === 0 && (
+            <TableRow>
+              <TableCell colSpan={8} className="h-20 text-center text-muted-foreground">
+                暂无发品记录。
+              </TableCell>
+            </TableRow>
+          )}
           {rows.map((rec) => (
             <TableRow key={rec.id}>
-              <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+              <TableCell className="whitespace-nowrap text-muted-foreground">
                 {new Date(rec.createdAt).toLocaleString("zh-CN", { hour12: false })}
               </TableCell>
+              <TableCell className="whitespace-nowrap">
+                {rec.creatorName ?? "—"}
+              </TableCell>
               <TableCell>
-                <div className="text-sm">{rec.templateName}</div>
-                <div className="text-xs text-muted-foreground">{rec.storeName}</div>
+                <div className="font-medium">{rec.templateName}</div>
+                <div className="text-muted-foreground">{rec.storeName}</div>
+              </TableCell>
+              <TableCell className="max-w-40">
+                <span className="line-clamp-2 text-xs">{rec.title || rec.templateName}</span>
+              </TableCell>
+              <TableCell>
+                <RecordThumbs imageUrls={rec.imageUrls} />
               </TableCell>
               <TableCell>
                 <Badge
+                  className="rounded-[4px]"
                   variant={
                     rec.status === "success"
                       ? "default"
@@ -102,7 +121,8 @@ export function PublishRecordsTable({ rows }: { rows: TemuPublishRecordRow[] }) 
             </TableRow>
           ))}
         </TableBody>
-      </Table>
+      </table>
+      </div>
 
       {detail && (
         <Dialog open onOpenChange={(v) => !v && setDetail(null)}>
@@ -136,6 +156,31 @@ export function PublishRecordsTable({ rows }: { rows: TemuPublishRecordRow[] }) 
         </Dialog>
       )}
     </>
+  )
+}
+
+/** 本次发品图源缩略条：前 3 张代理小图 + 剩余计数（旧记录无图源显示 —） */
+function RecordThumbs({ imageUrls }: { imageUrls: string[] | null }) {
+  if (!imageUrls || imageUrls.length === 0) {
+    return <span className="text-xs text-muted-foreground">—</span>
+  }
+  const shown = imageUrls.slice(0, 3)
+  const rest = imageUrls.length - shown.length
+  return (
+    <div className="flex items-center gap-1">
+      {shown.map((src, i) => (
+        <div key={src.slice(0, 120) + i} className="size-9 overflow-hidden rounded border">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={toImageSrc(src, { width: 96 })}
+            alt={`图 ${i + 1}`}
+            className="size-full object-cover"
+            loading="lazy"
+          />
+        </div>
+      ))}
+      {rest > 0 && <span className="text-xs text-muted-foreground">+{rest}</span>}
+    </div>
   )
 }
 

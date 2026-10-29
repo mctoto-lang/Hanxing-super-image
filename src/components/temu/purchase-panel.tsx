@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { Clock3, Flame, Loader2, PackageX, RefreshCw } from "lucide-react"
+import { Clock3, Flame, Loader2, PackageX, RefreshCw, Truck } from "lucide-react"
 import {
   TableBody,
   TableCell,
@@ -11,6 +11,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Dialog,
@@ -32,8 +33,10 @@ import {
   cancelTemuPurchaseOrdersAction,
   type TemuPurchaseOrderRow,
 } from "@/server/actions/temu-fulfillment"
+import { addShipStagingAction } from "@/server/actions/temu-ship"
 import { StockView } from "./stock-view"
 import { ProductNameCell, EmptyHint } from "@/components/temu/products-table"
+import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 
 /**
  * 备货工作台（官方 bg.purchaseorderv2.get / purchaseorder.cancel 实时拉取）：
@@ -52,6 +55,12 @@ const STATUS_OPTIONS = [
 /** 可取消状态：待接单/已接单待发货（官方业务门槛，实测送货后报 100000002） */
 function cancellable(row: TemuPurchaseOrderRow): boolean {
   return row.status === 0 || row.status === 1
+}
+
+/** 可加入发货台（创建发货单第一步）：官方标记 + 已接单状态（staging.add 门槛；
+ *  待接单(0) 无 API 可推进，需在卖家中心接单后才会出现按钮） */
+function canJoinStage(row: TemuPurchaseOrderRow): boolean {
+  return row.status === 1 && row.isCanJoinDeliverPlatform
 }
 
 /** 取消按钮：同核价调价「拒绝」的红色描边口径（仅图标与文字着色） */
@@ -79,29 +88,35 @@ function StatusBadge({ status, label }: { status: number; label: string }) {
         : status === 8 || status === 9 || status === 10 || status === 4 || status === 5
           ? "bg-red-500/15 text-red-700 dark:text-red-400"
           : "bg-muted text-muted-foreground"
-  return <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${cls}`}>{label}</span>
+  return <Badge className={`rounded-[4px] ${cls}`}>{label}</Badge>
 }
 
 export function TemuPurchasePanel({ store }: { store?: string }) {
-  /** 视图：备货单（平台下的采购单）/ 申报备货（对商品主动申请新备货，VMI） */
+  /** 视图：备货单（平台下的采购单）/ 申报备货（对商品主动申请新备货，VMI）。
+   *  store 缺省=全部店铺（扇出合并视图，行级带店铺列；申报备货需具体店，此时不可进） */
   const [view, setView] = React.useState<"orders" | "stock">("orders")
   const [status, setStatus] = React.useState("todo")
   const [rows, setRows] = React.useState<TemuPurchaseOrderRow[]>([])
   const [total, setTotal] = React.useState(0)
   const [error, setError] = React.useState<string | null>(null)
+  /** 全部店铺视图下个别店铺失败（未录 token 等）不阻断，展示为部分失败提示 */
+  const [partialErrors, setPartialErrors] = React.useState<Array<{ store: string; error: string }>>([])
   const [loading, startLoading] = React.useTransition()
-  const [canceling, setCanceling] = React.useState<string[] | null>(null)
+  const [canceling, setCanceling] = React.useState<Array<{ sn: string; storeId: string }> | null>(null)
+  const [joining, setJoining] = React.useState<{ sn: string; storeId: string } | null>(null)
+  const [joiningPending, setJoiningPending] = React.useState(false)
 
   const load = React.useCallback(() => {
-    if (!store) return
     startLoading(async () => {
-      const r = await getTemuPurchaseOrdersAction({ store, status })
+      const r = await getTemuPurchaseOrdersAction({ status, ...(store ? { store } : {}) })
       if (r.ok) {
         setRows(r.rows)
         setTotal(r.total)
+        setPartialErrors(r.errors ?? [])
         setError(null)
       } else {
         setRows([])
+        setPartialErrors([])
         setError(r.error)
       }
     })
@@ -109,33 +124,64 @@ export function TemuPurchasePanel({ store }: { store?: string }) {
 
   React.useEffect(load, [load])
 
-  if (!store) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">备货单</CardTitle>
-          <p className="text-sm text-muted-foreground">请在右上角选择具体店铺后操作（备货接口按店铺 token 调用）。</p>
-        </CardHeader>
-      </Card>
-    )
+  if (!store && view === "stock") {
+    // 全部店铺下不可进申报备货（候选池按店查询）——防御性回落
+    setView("orders")
   }
 
-  if (view === "stock") {
+  if (store && view === "stock") {
     return <StockView store={store} onBack={() => setView("orders")} />
   }
 
-  const doCancel = async (sns: string[]) => {
+  const doJoinStage = async (storeId: string, sn: string) => {
+    setJoiningPending(true)
     try {
-      const r = await cancelTemuPurchaseOrdersAction({ store, subPurchaseOrderSns: sns })
-      if (r.ok) {
-        if (r.failed.length > 0) {
-          toast.warning(`取消完成：${sns.length - r.failed.length} 成功 / ${r.failed.length} 失败`, { duration: 8000 })
-          for (const f of r.failed) toast.error(`${f.sn || "单据"}：${f.reason}`, { duration: 8000 })
-        } else {
-          toast.success(`已取消 ${sns.length} 个备货单`)
-        }
+      const r = await addShipStagingAction({ store: storeId, subPurchaseOrderSns: [sn] })
+      if (!r.ok) {
+        toast.error(r.error, { duration: 6000 })
+        return
+      }
+      if (r.errors.length > 0) {
+        toast.warning(`加入发货台失败：${r.errors[0]?.reason ?? "官方未返回原因"}`, { duration: 8000 })
       } else {
-        toast.error(r.error ?? "操作失败", { duration: 6000 })
+        toast.success(`已加入发货台，可在「发货」页向导继续创建发货单`)
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "操作失败", { duration: 6000 })
+    } finally {
+      setJoiningPending(false)
+      setJoining(null)
+      load()
+    }
+  }
+
+  /** 批量取消：全部店铺视图下勾选行可能跨店——按行级 storeId 分组逐店调用 */
+  const doCancel = async (items: Array<{ sn: string; storeId: string }>) => {
+    try {
+      let okCount = 0
+      const failed: Array<{ sn: string; reason: string }> = []
+      const hardErrors: string[] = []
+      for (const [storeId, group] of Object.entries(
+        items.reduce<Record<string, string[]>>((acc, it) => {
+          ;(acc[it.storeId] ??= []).push(it.sn)
+          return acc
+        }, {}),
+      )) {
+        const r = await cancelTemuPurchaseOrdersAction({ store: storeId, subPurchaseOrderSns: group })
+        if (r.ok) {
+          okCount += group.length - r.failed.length
+          failed.push(...r.failed)
+        } else {
+          hardErrors.push(r.error)
+        }
+      }
+      if (hardErrors.length > 0) {
+        toast.error(hardErrors[0] ?? "操作失败", { duration: 6000 })
+      } else if (failed.length > 0) {
+        toast.warning(`取消完成：${okCount} 成功 / ${failed.length} 失败`, { duration: 8000 })
+        for (const f of failed) toast.error(`${f.sn || "单据"}：${f.reason}`, { duration: 8000 })
+      } else {
+        toast.success(`已取消 ${okCount} 个备货单`)
       }
     } catch (e) {
       // action 内权限校验等以 throw 结束（不走 {ok:false} 分支）：提示错误并
@@ -157,25 +203,29 @@ export function TemuPurchasePanel({ store }: { store?: string }) {
           </CardTitle>
           <div className="flex flex-wrap items-center gap-2">
             <Select
-              items={[
-                { value: "orders", label: "备货单" },
-                { value: "stock", label: "申报备货" },
-              ]}
+              items={
+                store
+                  ? [
+                      { value: "orders", label: "备货单" },
+                      { value: "stock", label: "申报备货" },
+                    ]
+                  : [{ value: "orders", label: "备货单" }]
+              }
               value="orders"
               onValueChange={(v) => {
-                if (v === "stock") setView("stock")
+                if (v === "stock" && store) setView("stock")
               }}
             >
-              <SelectTrigger className="h-9! w-28 text-xs" aria-label="切换视图">
+              <SelectTrigger className="h-8 w-28 text-xs" aria-label="切换视图">
                 <SelectValue>备货单</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="orders">备货单</SelectItem>
-                <SelectItem value="stock">申报备货</SelectItem>
+                {store && <SelectItem value="stock">申报备货</SelectItem>}
               </SelectContent>
             </Select>
             <Select value={status} onValueChange={(v) => v && setStatus(v)}>
-              <SelectTrigger className="h-9! w-44 text-xs" aria-label="备货单状态筛选">
+              <SelectTrigger className="h-8 w-44 text-xs" aria-label="备货单状态筛选">
                 <SelectValue>{STATUS_OPTIONS.find((o) => o.value === status)?.label ?? status}</SelectValue>
               </SelectTrigger>
               <SelectContent>
@@ -186,22 +236,25 @@ export function TemuPurchasePanel({ store }: { store?: string }) {
                 ))}
               </SelectContent>
             </Select>
-            <Button variant="outline" size="sm" className="h-9! text-xs" onClick={load} disabled={loading} aria-label="刷新备货单">
+            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={load} disabled={loading} aria-label="刷新备货单">
               {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
               刷新
             </Button>
           </div>
         </CardHeader>
         <CardContent className="min-h-0 flex-1 overflow-auto scrollbar-hide">
-          {error ? (
+        {partialErrors.length > 0 && (
+          <p className="mb-2 rounded-md bg-amber-500/10 px-3 py-1.5 text-xs text-amber-700 dark:text-amber-400">
+            部分店铺加载失败：{partialErrors.map((e) => `${e.store}（${e.error}）`).join("；")}
+          </p>
+        )}
+        {error ? (
             <p className="py-8 text-center text-sm text-red-600 dark:text-red-400">{error}</p>
-          ) : rows.length === 0 ? (
-            <p className="py-8 text-center text-sm text-muted-foreground">
-              {loading ? "加载中…" : "该状态下暂无备货单"}
-            </p>
           ) : (
-            <table className="w-max min-w-full caption-bottom text-sm [&_td]:px-3 [&_th]:px-3">
-              <TableHeader className="sticky top-0 z-10 bg-background">
+            // overflow-clip 只按圆角裁剪（非滚动容器，sticky 表头仍锚定页侧 CardContent）
+            <div className="w-max min-w-full overflow-clip rounded-md border">
+            <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
+              <TableHeader className="sticky top-0 z-10 bg-card">
                 <TableRow>
                   <TableHead>主图</TableHead>
                   <TableHead>商品名</TableHead>
@@ -213,20 +266,28 @@ export function TemuPurchasePanel({ store }: { store?: string }) {
                   <TableHead className="text-right">已发货</TableHead>
                   <TableHead>状态</TableHead>
                   <TableHead>标记</TableHead>
+                  <TableHead>店铺</TableHead>
                   <TableHead>最晚发货</TableHead>
                   <TableHead className="text-right">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
+                {rows.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={13} className="h-20 text-center text-muted-foreground">
+                      {loading ? "加载中…" : "该状态下暂无备货单"}
+                    </TableCell>
+                  </TableRow>
+                )}
                 {rows.map((r) => {
                   return (
                     <TableRow key={r.subPurchaseOrderSn}>
                       <TableCell>
                         {r.productPicture ? (
                           // eslint-disable-next-line @next/next/no-img-element
-                          <img src={r.productPicture} alt="" className="size-10 rounded-md object-cover" loading="lazy" />
+                          <img src={r.productPicture} alt="" className="size-10 rounded object-cover" loading="lazy" />
                         ) : (
-                          <div className="size-10 rounded-md bg-muted" />
+                          <div className="size-10 rounded bg-muted" />
                         )}
                       </TableCell>
                       <TableCell className="max-w-56">
@@ -258,27 +319,22 @@ export function TemuPurchasePanel({ store }: { store?: string }) {
                       <TableCell>
                         <div className="flex flex-wrap gap-1">
                           {r.urgencyType === 1 && (
-                            <span className="inline-flex items-center gap-0.5 rounded bg-red-500/10 px-1 py-0.5 text-[11px] text-red-600 dark:text-red-400">
+                            <Badge className="gap-0.5 rounded-[4px] bg-red-500/15 text-red-700 dark:text-red-400">
                               <Flame className="size-3" /> 紧急
-                            </span>
+                            </Badge>
                           )}
                           {r.lackTag && (
-                            <span className="rounded bg-orange-500/10 px-1 py-0.5 text-[11px] text-orange-600 dark:text-orange-400">
-                              缺货
-                            </span>
+                            <Badge className="rounded-[4px] bg-orange-500/15 text-orange-700 dark:text-orange-400">缺货</Badge>
                           )}
                           {r.isCustomProduct && (
-                            <span className="rounded bg-violet-500/10 px-1 py-0.5 text-[11px] text-violet-600 dark:text-violet-400">
-                              定制
-                            </span>
+                            <Badge className="rounded-[4px] bg-violet-500/15 text-violet-700 dark:text-violet-400">定制</Badge>
                           )}
                           {r.todayCanDeliver && (
-                            <span className="rounded bg-emerald-500/10 px-1 py-0.5 text-[11px] text-emerald-600 dark:text-emerald-400">
-                              今日可发
-                            </span>
+                            <Badge className="rounded-[4px] bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">今日可发</Badge>
                           )}
                         </div>
                       </TableCell>
+                      <TableCell className="whitespace-nowrap text-xs">{r.storeName}</TableCell>
                       <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                         <span className="inline-flex items-center gap-1">
                           <Clock3 className="size-3" />
@@ -287,12 +343,23 @@ export function TemuPurchasePanel({ store }: { store?: string }) {
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1.5">
+                          {canJoinStage(r) && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-xs"
+                              title="加入发货台（创建发货单第一步）"
+                              onClick={() => setJoining({ sn: r.subPurchaseOrderSn, storeId: r.storeId })}
+                            >
+                              <Truck className="size-3.5" /> 创建
+                            </Button>
+                          )}
                           {cancellable(r) && (
                             <Button
                               size="sm"
                               variant="outline"
                               className={CANCEL_BTN_CLS}
-                              onClick={() => setCanceling([r.subPurchaseOrderSn])}
+                              onClick={() => setCanceling([{ sn: r.subPurchaseOrderSn, storeId: r.storeId }])}
                             >
                               <PackageX className="size-3.5" /> 取消
                             </Button>
@@ -304,6 +371,7 @@ export function TemuPurchasePanel({ store }: { store?: string }) {
                 })}
               </TableBody>
             </table>
+            </div>
           )}
         </CardContent>
       </Card>
@@ -316,6 +384,19 @@ export function TemuPurchasePanel({ store }: { store?: string }) {
           onOpenChange={(v) => !v && setCanceling(null)}
         />
       )}
+
+      {/* 加入发货台二次确认（官方无移出发货台接口，需确认） */}
+      <ConfirmDialog
+        open={joining != null}
+        onOpenChange={(v) => !v && setJoining(null)}
+        title="加入发货台"
+        description={`将备货单 ${joining?.sn ?? ""} 加入发货台（创建发货单第一步）。官方无移出发货台接口，加入后请到「发货」页向导继续创建发货单。`}
+        confirmText="确认加入"
+        pending={joiningPending}
+        onConfirm={() => {
+          if (joining) void doJoinStage(joining.storeId, joining.sn)
+        }}
+      />
     </>
   )
 }

@@ -102,7 +102,7 @@ export function TemuQualityPanel({ store }: { store?: string }) {
               setPageNo(1)
             }
           }}>
-            <SelectTrigger size="sm" className="h-9! w-36 text-xs" aria-label="质检结果筛选">
+            <SelectTrigger size="sm" className="h-8 w-36 text-xs" aria-label="质检结果筛选">
               <SelectValue>{filter === "2" ? "不合格" : filter === "1" ? "合格" : "全部结果"}</SelectValue>
             </SelectTrigger>
             <SelectContent>
@@ -111,7 +111,7 @@ export function TemuQualityPanel({ store }: { store?: string }) {
               <SelectItem value="all">全部结果</SelectItem>
             </SelectContent>
           </Select>
-          <Button variant="outline" size="sm" className="h-9! text-xs" onClick={load} disabled={loading} aria-label="刷新质检列表">
+          <Button variant="outline" size="sm" className="h-8 text-xs" onClick={load} disabled={loading} aria-label="刷新质检列表">
             {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
             刷新
           </Button>
@@ -120,13 +120,11 @@ export function TemuQualityPanel({ store }: { store?: string }) {
       <CardContent className="min-h-0 flex-1 overflow-auto scrollbar-hide">
         {error ? (
           <p className="py-8 text-center text-sm text-red-600 dark:text-red-400">{error}</p>
-        ) : rows.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">
-            {loading ? "加载中…" : "该筛选下暂无质检记录（仅平台送检后产生）"}
-          </p>
         ) : (
-          <table className="w-max min-w-full caption-bottom text-sm">
-            <TableHeader className="sticky top-0 z-10 bg-background">
+          // overflow-clip 只按圆角裁剪（非滚动容器，sticky 表头仍锚定页侧 CardContent）
+          <div className="w-max min-w-full overflow-clip rounded-md border">
+          <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
+            <TableHeader className="sticky top-0 z-10 bg-card">
               <TableRow>
                 <TableHead>缩略图</TableHead>
                 <TableHead>SKU</TableHead>
@@ -137,14 +135,21 @@ export function TemuQualityPanel({ store }: { store?: string }) {
               </TableRow>
             </TableHeader>
             <TableBody>
+              {rows.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={6} className="h-20 text-center text-muted-foreground">
+                    {loading ? "加载中…" : "该筛选下暂无质检记录（仅平台送检后产生）"}
+                  </TableCell>
+                </TableRow>
+              )}
               {rows.map((r) => (
                 <TableRow key={`${r.qcBillId ?? ""}-${r.productSkuId ?? ""}`}>
                   <TableCell>
                     {r.thumbUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={r.thumbUrl} alt="" className="size-10 rounded-md object-cover" loading="lazy" />
+                      <img src={r.thumbUrl} alt="" className="size-10 rounded object-cover" loading="lazy" />
                     ) : (
-                      <div className="size-10 rounded-md bg-muted" />
+                      <div className="size-10 rounded bg-muted" />
                     )}
                   </TableCell>
                   <TableCell>
@@ -174,18 +179,19 @@ export function TemuQualityPanel({ store }: { store?: string }) {
               ))}
             </TableBody>
           </table>
+          </div>
         )}
       </CardContent>
       {totalPages > 1 && (
         <div className="flex items-center justify-end gap-2 border-t px-4 py-2">
-          <Button variant="outline" size="sm" disabled={pageNo <= 1 || loading} onClick={() => setPageNo((p) => p - 1)}>
-            <ChevronLeft className="size-4" /> 上一页
+          <Button variant="outline" size="sm" className="h-7 text-xs" disabled={pageNo <= 1 || loading} onClick={() => setPageNo((p) => p - 1)}>
+            <ChevronLeft className="size-3.5" /> 上一页
           </Button>
           <span className="text-xs text-muted-foreground">
             {pageNo} / {totalPages}
           </span>
-          <Button variant="outline" size="sm" disabled={pageNo >= totalPages || loading} onClick={() => setPageNo((p) => p + 1)}>
-            下一页 <ChevronRight className="size-4" />
+          <Button variant="outline" size="sm" className="h-7 text-xs" disabled={pageNo >= totalPages || loading} onClick={() => setPageNo((p) => p + 1)}>
+            下一页 <ChevronRight className="size-3.5" />
           </Button>
         </div>
       )}

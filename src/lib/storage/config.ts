@@ -24,7 +24,8 @@ export type StorageProvider = "local" | "cos"
  * - config：管理员上传的 logo/图标/模板图等（config/，不过期）
  * - generate：AI 生成的结果图（gen/，会过期）
  * - thumb：生成图缩略图（gen/thumb/，会过期）
- * - temu：TEMU 商品主图转存（temu/，不过期；商品图随店铺长存，勿配过期规则）
+ * - temu：TEMU 长存素材（temu/，不过期；商品主图转存 + 发品素材源
+ *   ——压缩衍生图/说明书 PDF，模板长期引用，勿配过期规则）
  */
 export type ImageCategory = "reference" | "config" | "generate" | "thumb" | "temu"
 

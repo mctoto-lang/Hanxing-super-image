@@ -24,7 +24,11 @@ import {
 import { getTemuCallContext } from "@/server/services/temu-sync"
 import { temuCached, invalidateTemuCache } from "@/server/services/temu-cache"
 import { isAllowedDownloadHost } from "@/lib/storage/cos"
+import { signUploadToken } from "@/lib/storage/upload-token"
 import { loadStorageConfig, type StorageConfig } from "@/lib/storage/config"
+import { env } from "@/lib/env"
+import { MAX_PDF_UPLOAD_BYTES, MAX_PDF_UPLOAD_MESSAGE } from "@/lib/upload/limits"
+import { users } from "@/db/schema/auth"
 import {
   temuAttrTemplateQuerySchema,
   temuCategoryQuerySchema,
@@ -416,25 +420,26 @@ export async function updatePublishTemplateAction(
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
     await requirePublishAccess()
-    // 编辑回填的 defaults 不含 base64（列表已剥离、向导不回传源）：必须先取库内模板、
-    // 在 parse 前注入存量 PDF 源，否则 guideFile 的 refine「缺少 PDF 源」会先炸
+    // 编辑回填的 defaults 不含 PDF 源（列表已剥离 base64、向导不回传）：必须先取库内模板、
+    // 在 parse 前注入存量源（sourceUrl/base64/存量 pdfMaterialId），否则 guideFile 的
+    // refine「缺少 PDF 源」会先炸
     const rawId = (input as { id?: unknown } | null)?.id
     const guard = await requireOwnedTemplate(typeof rawId === "string" ? rawId : "", "temu_publish")
     if (!guard.ok) return guard
     const storedGuide = guard.template.defaults.guideFile
     const raw = input as { defaults?: { guideFile?: Record<string, unknown> } }
     const rawGuide = raw.defaults?.guideFile
-    if (storedGuide && rawGuide && !rawGuide.base64 && !rawGuide.pdfMaterialId) {
+    if (storedGuide && rawGuide && !rawGuide.base64 && !rawGuide.sourceUrl && !rawGuide.pdfMaterialId) {
       const sameGuide =
         storedGuide.pdfMaterialId === rawGuide.pdfMaterialId ||
         storedGuide.fileName === rawGuide.fileName
       if (sameGuide) {
-        raw.defaults!.guideFile = {
-          ...rawGuide,
-          ...(storedGuide.base64
-            ? { base64: storedGuide.base64 }
-            : { pdfMaterialId: storedGuide.pdfMaterialId }),
-        }
+        const source = storedGuide.base64
+          ? { base64: storedGuide.base64 }
+          : storedGuide.sourceUrl
+            ? { sourceUrl: storedGuide.sourceUrl }
+            : { pdfMaterialId: storedGuide.pdfMaterialId }
+        raw.defaults!.guideFile = { ...rawGuide, ...source }
       }
     }
     const q = temuPublishTemplateUpdateSchema.parse(input)
@@ -478,10 +483,23 @@ let imgSrcCfgCache: { at: number; cfg: StorageConfig } | null = null
  * 服务端回拉图片源前的 host 白名单校验（防 SSRF）：复用 cos.ts
  * isAllowedDownloadHost 同一口径（https + COS 桶域名 + 云存储/AI 上游后缀 +
  * system_setting allowedDownloadHosts——显式白名单命中时 http 源站亦放行），
- * 另放行 TEMU 官方图床（模板默认层/轮播复用会回存 temuUrl 源），
+ * 另放行 TEMU 官方图床（模板默认层/轮播复用会回存 temuUrl 源）与本站
+ * /uploads 托管对象（local 存储模式素材源，对象经登录态上传路由落盘），
  * 拒绝内网/任意外链地址被服务端拉取。
  */
 const TEMU_IMAGE_HOST_SUFFIX = ".kwcdn.com"
+
+/** 本站 /uploads 托管对象（local 存储模式 temu 素材源直传落盘产物）：
+ *  host 与 NEXT_PUBLIC_APP_URL 一致且路径以 /uploads/ 开头。对象全部经
+ *  登录态上传路由写入，服务端回拉无 SSRF 面（local.ts 同源判定同口径） */
+function isOwnUploadsObject(parsed: URL): boolean {
+  try {
+    const app = new URL(env.NEXT_PUBLIC_APP_URL)
+    return parsed.host === app.host && parsed.pathname.startsWith("/uploads/")
+  } catch {
+    return false
+  }
+}
 
 async function assertAllowedImageSource(src: string): Promise<void> {
   let parsed: URL
@@ -495,6 +513,7 @@ async function assertAllowedImageSource(src: string): Promise<void> {
   }
   if (
     !isAllowedDownloadHost(parsed, imgSrcCfgCache.cfg) &&
+    !isOwnUploadsObject(parsed) &&
     !parsed.hostname.endsWith(TEMU_IMAGE_HOST_SUFFIX)
   ) {
     throw new Error(
@@ -530,7 +549,8 @@ async function uploadImageToStore(
     buf = Buffer.from(b64!, "base64")
   } else {
     await assertAllowedImageSource(src)
-    const res = await fetch(src, { signal: AbortSignal.timeout(20_000) })
+    // 本站 /uploads 对象需短时效令牌（宽限期后强制 401）；外域 URL 原样透传
+    const res = await fetch(signUploadToken(src), { signal: AbortSignal.timeout(20_000) })
     if (!res.ok) throw new Error(`图片拉取失败（HTTP ${res.status}）`)
     buf = Buffer.from(await res.arrayBuffer())
     mime = res.headers.get("content-type") ?? sniffMime(buf)
@@ -566,7 +586,7 @@ async function uploadImageToStore(
  * 本地预校验官方硬口径：1:1、≥800×800、≤2M、JPG/PNG（2000017/2000021）。
  */
 export async function uploadPublishImageAction(
-  input: { imageUrl?: string; imageDataUrl?: string; kind?: "material" | "package" },
+  input: { imageUrl: string; kind?: "material" | "package" },
 ): Promise<{ ok: true; image: TemuUploadedImage } | { ok: false; error: string }> {
   const q = temuPublishImageSchema.parse(input)
   const kind = input.kind ?? "material"
@@ -574,14 +594,9 @@ export async function uploadPublishImageAction(
     await requirePublishAccess()
     let buf: Buffer
     let mime: string
-    if (q.imageDataUrl) {
-      // 浏览器压缩直传：data:image/xxx;base64 解码
-      const [prefix, b64] = q.imageDataUrl.split(",")
-      mime = prefix!.slice(5, prefix!.indexOf(";"))
-      buf = Buffer.from(b64!, "base64")
-    } else {
-      await assertAllowedImageSource(q.imageUrl!)
-      const res = await fetch(q.imageUrl!, { signal: AbortSignal.timeout(20_000) })
+    {
+      await assertAllowedImageSource(q.imageUrl)
+      const res = await fetch(signUploadToken(q.imageUrl), { signal: AbortSignal.timeout(20_000) })
       if (!res.ok) return { ok: false, error: `图片拉取失败（HTTP ${res.status}）` }
       buf = Buffer.from(await res.arrayBuffer())
       mime = res.headers.get("content-type") ?? sniffMime(buf)
@@ -654,16 +669,21 @@ function sniffMime(buf: Buffer): string {
   return "application/octet-stream"
 }
 
-/** 电子说明书 PDF 上传：base64 → instructions.upload → pdfId（发品时随 productGuideFileReqs 提交） */
+/** 电子说明书 PDF 上传：sourceUrl 取回字节 → instructions.upload → pdfId（发品时随 productGuideFileReqs 提交） */
 export async function uploadPublishGuideFileAction(
-  input: { base64File: string; fileName: string },
+  input: { sourceUrl: string; fileName: string },
 ): Promise<{ ok: true; pdfMaterialId: number } | { ok: false; error: string }> {
   const q = temuPublishGuideFileSchema.parse(input)
   try {
     await requirePublishAccess()
+    await assertAllowedImageSource(q.sourceUrl)
+    const res = await fetch(signUploadToken(q.sourceUrl), { signal: AbortSignal.timeout(20_000) })
+    if (!res.ok) return { ok: false, error: `PDF 拉取失败（HTTP ${res.status}）` }
+    const buf = Buffer.from(await res.arrayBuffer())
+    if (buf.length > MAX_PDF_UPLOAD_BYTES) return { ok: false, error: MAX_PDF_UPLOAD_MESSAGE }
     const r = await callTemuApi<{ pdfId?: number }>(
       "bg.glo.goods.instructions.upload",
-      { base64File: q.base64File },
+      { base64File: buf.toString("base64") },
       await publishCtx(),
     )
     if (!r.result.pdfId) return { ok: false, error: "官方接口未返回 pdfId" }
@@ -832,15 +852,60 @@ export async function publishFromTemplateAction(
   let storeId = ""
   /** 已组装的 goods.add 请求（失败记录快照用） */
   let builtBody: Record<string, unknown> | null = null
+  /** 发品人（记录创建人列；守卫抛错时保持 null，记录仍落） */
+  let userId: string | null = null
+  /** 本次生效商品名 / 实际提交轮播（记录新列；eff 合并后回填，早退失败也尽量带上） */
+  let effTitle: string | undefined
+  let effImageUrls: string[] | undefined
+
+  /**
+   * 失败统一出口：先 best-effort 落失败记录再返回错误——含素材图/外包装图/尺寸图/
+   * 说明书等早退分支（此前早退 return 绕过 catch 落库，发品记录无痕，排障盲区）。
+   * 插库自身失败吞掉，不影响错误返回。
+   */
+  const fail = async (
+    error: string,
+    errorCode: number | null = null,
+  ): Promise<TemuPublishResult> => {
+    try {
+      const parsed = temuPublishActionSchema.safeParse(input)
+      if (parsed.success) {
+        // 归属口径：失败记录落「操作者所属企业」。storeGuard/tplGuard 失败时店铺/
+        // 模板尚未通过归属校验（templateId 可能是他企业的），若按裸查模板表的
+        // enterpriseId 落库会写到他企业名下——跨租户污染他企业的发品记录列表
+        const ctx = await requireEnterpriseContext()
+        const enterpriseId = getCurrentEnterpriseScope(ctx).enterpriseId
+        await db.insert(temuPublishRecords).values({
+          enterpriseId,
+          templateId: parsed.data.templateId,
+          storeId: parsed.data.storeId,
+          userId,
+          overrides: parsed.data.overrides ?? {},
+          status: "failed",
+          errorCode,
+          errorMsg: error.slice(0, 1000),
+          ...(effTitle != null ? { productTitle: effTitle } : {}),
+          ...(effImageUrls != null ? { imageUrls: effImageUrls } : {}),
+          ...(builtBody ? { requestSnapshot: builtBody } : {}),
+        })
+      }
+    } catch {
+      // 记录失败不影响错误返回
+    }
+    return { ok: false, error }
+  }
+
   try {
     const q = temuPublishActionSchema.parse(input)
     storeId = q.storeId
+    const access = await requirePublishAccess()
+    userId = access.user.id
     const storeGuard = await requirePublishStore(q.storeId)
-    if (!storeGuard.ok) return { ok: false, error: storeGuard.error }
+    if (!storeGuard.ok) return await fail(storeGuard.error)
     const tplGuard = await requireOwnedTemplate(q.templateId, "temu_publish")
-    if (!tplGuard.ok) return { ok: false, error: tplGuard.error }
+    if (!tplGuard.ok) return await fail(tplGuard.error)
     const tpl = tplGuard.template
-    if (tpl.status === "archived") return { ok: false, error: "模板已删除" }
+    if (tpl.status === "archived") return await fail("模板已删除")
 
     // 默认层 + 覆盖合并（锁定层字段不受覆盖影响）
     const d = tpl.defaults
@@ -850,18 +915,21 @@ export async function publishFromTemplateAction(
       declaredPriceFen: q.overrides.declaredPriceFen ?? d.declaredPriceFen,
       extCode: q.overrides.extCode ?? d.extCode,
     }
+    effTitle = eff.title
     const pre = precheck(tpl, eff)
-    if (pre) return { ok: false, error: pre }
+    if (pre) return await fail(pre)
     // 官方最少 5 张按最终轮播计数：素材 + 尺寸图（尺寸图提交时插回轮播第 2 位）
-    const carouselTotal =
-      eff.imageUrls.length +
-      ((q.overrides.dimensionImageUrl ?? d.dimensionImageUrl ?? null) ? 1 : 0)
+    const dimensionSource = q.overrides.dimensionImageUrl ?? d.dimensionImageUrl ?? null
+    const carouselTotal = eff.imageUrls.length + (dimensionSource ? 1 : 0)
     if (carouselTotal < 5) {
-      return { ok: false, error: "轮播图至少 5 张（官方非服饰规则，含第 2 位尺寸图；可在模板或发品时补传）" }
+      return await fail("轮播图至少 5 张（官方非服饰规则，含第 2 位尺寸图；可在模板或发品时补传）")
     }
+    // 记录列：实际提交的轮播（与提交官方一致——尺寸图插回第 2 位）
+    effImageUrls = [...eff.imageUrls]
+    if (dimensionSource) effImageUrls.splice(1, 0, dimensionSource)
 
     const built = await getTemuCallContext(storeGuard.store)
-    if ("error" in built) return { ok: false, error: built.error }
+    if ("error" in built) return await fail(built.error)
     const ctx = built
 
     // 店铺级自建规格（同名幂等，实测返回同一 specId）
@@ -871,30 +939,40 @@ export async function publishFromTemplateAction(
       ctx,
     )
     const specId = spec.result.specId
-    if (!specId) return { ok: false, error: "spec.create 未返回 specId" }
+    if (!specId) return await fail("spec.create 未返回 specId")
 
     // 说明书 pdfId 是店铺级素材：发品到其他店会「查询素材中心pdf文件信息失败」（实测）——
-    // 模板存有 PDF 源时按目标店铺重传换新 pdfId
+    // 模板存有 PDF 源（新版存储 sourceUrl / 存量 base64）时按目标店铺重传换新 pdfId
     let tplForBody = tpl
     const guide = tpl.defaults.guideFile
-    if (guide?.base64) {
+    if (guide?.base64 || guide?.sourceUrl) {
       try {
+        let base64File = guide!.base64
+        if (!base64File && guide!.sourceUrl) {
+          // sourceUrl 是选择 PDF 时直传存储的对象（temu/ 前缀不过期）；
+          // 回拉前白名单校验同图源口径（防 SSRF，自有存储域名天然在列）
+          await assertAllowedImageSource(guide!.sourceUrl)
+          const res = await fetch(signUploadToken(guide!.sourceUrl), {
+            signal: AbortSignal.timeout(20_000),
+          })
+          if (!res.ok) throw new Error(`PDF 拉取失败（HTTP ${res.status}）`)
+          base64File = Buffer.from(await res.arrayBuffer()).toString("base64")
+        }
         const reUp = await callTemuApi<{ pdfId?: number }>(
           "bg.glo.goods.instructions.upload",
-          { base64File: guide.base64 },
+          { base64File },
           ctx,
         )
         if (reUp.result.pdfId) {
           tplForBody = {
             ...tpl,
-            defaults: { ...tpl.defaults, guideFile: { ...guide, pdfMaterialId: reUp.result.pdfId } },
+            defaults: { ...tpl.defaults, guideFile: { ...guide!, pdfMaterialId: reUp.result.pdfId } },
           }
         }
       } catch (err) {
-        return {
-          ok: false,
-          error: `说明书重传失败：${err instanceof Error ? err.message.slice(0, 200) : String(err)}`,
-        }
+        return await fail(
+          `说明书重传失败：${err instanceof Error ? err.message.slice(0, 200) : String(err)}`,
+        )
       }
     }
 
@@ -904,10 +982,9 @@ export async function publishFromTemplateAction(
       try {
         materialUploads.push(await uploadImageToStore(eff.imageUrls[i]!, ctx, "material"))
       } catch (err) {
-        return {
-          ok: false,
-          error: `素材图第 ${i + 1} 张上传失败：${err instanceof Error ? err.message : String(err)}`,
-        }
+        return await fail(
+          `素材图第 ${i + 1} 张上传失败：${err instanceof Error ? err.message : String(err)}`,
+        )
       }
     }
     // 官方高清压缩（probe9 实证 fancy URL 可作轮播图，2026-10-21）：上传体积 >1MB
@@ -945,15 +1022,13 @@ export async function publishFromTemplateAction(
       try {
         pkgTemuUrls.push((await uploadImageToStore(pkgSources[i]!, ctx, "package")).url)
       } catch (err) {
-        return {
-          ok: false,
-          error: `外包装图第 ${i + 1} 张上传失败：${err instanceof Error ? err.message : String(err)}`,
-        }
+        return await fail(
+          `外包装图第 ${i + 1} 张上传失败：${err instanceof Error ? err.message : String(err)}`,
+        )
       }
     }
     // 尺寸图按目标店上传（与轮播同口径 1:1 ≥800），提交时固定插到第 2 张
     // （卖家中心页面口径；API 实测不校验位置 §8.15）；覆盖层优先于模板
-    const dimensionSource = q.overrides.dimensionImageUrl ?? tpl.defaults.dimensionImageUrl ?? null
     let dimensionTemuUrl: string | null = null
     let dimensionCheck: TemuPublishResult["dimensionCheck"]
     if (dimensionSource) {
@@ -964,10 +1039,7 @@ export async function publishFromTemplateAction(
         // 「图片md5获取失败」，结论随发品结果返回如实展示）
         dimensionCheck = await checkDimensionBestEffort(dimUp.url, ctx)
       } catch (err) {
-        return {
-          ok: false,
-          error: `尺寸图上传失败：${err instanceof Error ? err.message : String(err)}`,
-        }
+        return await fail(`尺寸图上传失败：${err instanceof Error ? err.message : String(err)}`)
       }
     }
 
@@ -1001,49 +1073,24 @@ export async function publishFromTemplateAction(
       enterpriseId: storeGuard.store.enterpriseId,
       templateId: tpl.id,
       storeId: q.storeId,
-      userId: null,
+      userId,
       overrides: q.overrides ?? {},
       status: "success",
       productId,
+      productTitle: effTitle,
+      imageUrls: effImageUrls,
       requestSnapshot: body,
       responseSnapshot: { ...r.result, ...(actualMallName ? { actualMallName } : {}) },
     })
     return { ok: true, productId: productId ?? undefined, ...(dimensionCheck ? { dimensionCheck } : {}) }
   } catch (err) {
     const message = storeId ? await toPublishError(storeId, err) : String(err)
-    // 失败也落记录（templateId 已知时）
-    try {
-      const parsed = temuPublishActionSchema.safeParse(input)
-      if (parsed.success) {
-        const enterpriseId = await recordEnterpriseId(parsed.data.templateId)
-        if (enterpriseId) {
-          const apiErr = err as { errorCode?: number }
-          await db.insert(temuPublishRecords).values({
-            enterpriseId,
-            templateId: parsed.data.templateId,
-            storeId: parsed.data.storeId,
-            overrides: parsed.data.overrides ?? {},
-            status: "failed",
-            errorCode: typeof apiErr?.errorCode === "number" ? apiErr.errorCode : null,
-            errorMsg: message.slice(0, 1000),
-            requestSnapshot: builtBody ?? undefined,
-          })
-        }
-      }
-    } catch {
-      // 记录失败不影响错误返回
-    }
-    return { ok: false, error: message }
+    const apiErr = err as { errorCode?: number }
+    return await fail(
+      message,
+      typeof apiErr?.errorCode === "number" ? apiErr.errorCode : null,
+    )
   }
-}
-
-function recordEnterpriseId(templateId: string): Promise<string | null> {
-  return db
-    .select({ enterpriseId: temuPublishTemplates.enterpriseId })
-    .from(temuPublishTemplates)
-    .where(eq(temuPublishTemplates.id, templateId))
-    .limit(1)
-    .then((r) => r[0]?.enterpriseId ?? null)
 }
 
 /** 本地预检（官方校验前的快速失败；官方侧校验仍以错误码透传为准） */
@@ -1223,6 +1270,10 @@ export interface TemuPublishRecordRow {
   errorCode: number | null
   errorMsg: string | null
   title: string
+  /** 发品人显示名（users.name ?? username；旧记录无 userId 时 null） */
+  creatorName: string | null
+  /** 本次实际提交的图源列表（旧记录可能为空） */
+  imageUrls: string[] | null
   createdAt: string
   /** 提交官方的完整请求体（排障回溯；jsonb 原样透传，可能较大） */
   requestSnapshot: unknown
@@ -1247,7 +1298,10 @@ export async function listPublishRecordsAction(
     .limit(q.limit)
   const tplIds = [...new Set(rows.map((r) => r.rec.templateId))]
   const storeIds = [...new Set(rows.map((r) => r.rec.storeId))]
-  const [tpls, stores] = await Promise.all([
+  const userIds = [
+    ...new Set(rows.map((r) => r.rec.userId).filter((x): x is string => Boolean(x))),
+  ]
+  const [tpls, stores, us] = await Promise.all([
     tplIds.length
       ? db
           .select({ id: temuPublishTemplates.id, name: temuPublishTemplates.name })
@@ -1260,9 +1314,16 @@ export async function listPublishRecordsAction(
           .from(temuStores)
           .where(inArray(temuStores.id, storeIds))
       : Promise.resolve([]),
+    userIds.length
+      ? db
+          .select({ id: users.id, name: users.name, username: users.username })
+          .from(users)
+          .where(inArray(users.id, userIds))
+      : Promise.resolve([]),
   ])
   const tplMap = new Map(tpls.map((t) => [t.id, t.name]))
   const storeMap = new Map(stores.map((s) => [s.id, s.name]))
+  const userMap = new Map(us.map((u) => [u.id, u.name?.trim() || u.username]))
   return {
     ok: true,
     rows: rows.map(({ rec }) => ({
@@ -1275,7 +1336,9 @@ export async function listPublishRecordsAction(
       productId: rec.productId,
       errorCode: rec.errorCode,
       errorMsg: rec.errorMsg,
-      title: rec.overrides?.title ?? "",
+      title: rec.productTitle ?? rec.overrides?.title ?? "",
+      creatorName: rec.userId ? (userMap.get(rec.userId) ?? null) : null,
+      imageUrls: rec.imageUrls ?? null,
       createdAt: rec.createdAt.toISOString(),
       requestSnapshot: rec.requestSnapshot ?? null,
       responseSnapshot: rec.responseSnapshot ?? null,

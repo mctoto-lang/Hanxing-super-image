@@ -32,7 +32,9 @@ import { listMockupDesignAssetsAction } from "@/server/actions/mockup"
 import type { MockupLibraryImage } from "@/lib/mockup/types"
 import { Switch } from "@/components/ui/switch"
 import { cn } from "@/lib/utils"
+import { uploadTemuAsset } from "@/lib/upload/upload-image"
 import { ImageUploadField } from "./image-upload-field"
+import { materializeImageSources } from "./image-utils"
 
 /** 包装/工艺/SKU 分类枚举（包装值域 2026-10-20 实测；官方未公开名称） */
 const PACKAGE_SHAPE_OPTIONS = [
@@ -119,7 +121,7 @@ export function TemplateWizard({
   // Step3 默认层
   const [name, setName] = useState("")
   const [title, setTitle] = useState("")
-  /** 素材图源（http URL 或压缩 dataUrl；发品时按目标店上传） */
+  /** 素材图源（存储 URL；>2MB 选图时浏览器压缩后直传 temu/ 前缀换 URL，不存 dataUrl） */
   const [images, setImages] = useState<string[]>([])
   /** 尺寸图源（可选；发品时按目标店上传后固定插轮播第 2 张） */
   const [dimensionImage, setDimensionImage] = useState<string | null>(null)
@@ -141,8 +143,9 @@ export function TemplateWizard({
   /** 外包装三图（正拍/侧拍/俯拍，temu 图床 URL；三张齐才随发品提交） */
   const [pkgImages, setPkgImages] = useState<Array<string | null>>([null, null, null])
   const [guideFile, setGuideFile] = useState<{ fileName: string } | null>(null)
-  /** PDF 源（发品时按目标店重传；编辑回填不带、更新时服务端沿用库内源） */
-  const [guideB64, setGuideB64] = useState<string | null>(null)
+  /** PDF 存储源（选择时直传 temu/ 前缀；发品时服务端取回字节按目标店重传。
+   *  编辑回填带存量 sourceUrl；旧 base64 模板回填为 null、更新时服务端沿用库内源） */
+  const [guideSourceUrl, setGuideSourceUrl] = useState<string | null>(null)
   const [guideUploading, setGuideUploading] = useState(false)
   const [customEnabled, setCustomEnabled] = useState(false)
   const [customFirst, setCustomFirst] = useState<string | null>(null)
@@ -194,7 +197,7 @@ export function TemplateWizard({
     ])
     setDimensionImage(d.dimensionImageUrl ?? null)
     setGuideFile(d.guideFile ? { fileName: d.guideFile.fileName } : null)
-    setGuideB64(null)
+    setGuideSourceUrl(d.guideFile?.sourceUrl ?? null)
     setCustomEnabled(Boolean(d.customized))
     setCustomFirst(d.customized ? String(d.customized.firstType) : null)
     setCustomTwice(d.customized ? d.customized.twiceType.join(",") : "")
@@ -240,9 +243,18 @@ export function TemplateWizard({
       let url = dimensionImage
       if (!url.includes("img.kwcdn.com")) {
         // 校验只认官方图床 URL：先上传（显式用户操作——保存模板本身零 TEMU 调用的口径不变）
-        const up = url.startsWith("data:")
-          ? await uploadPublishImageAction({ imageDataUrl: url, kind: "material" })
-          : await uploadPublishImageAction({ imageUrl: url, kind: "material" })
+        let src = url
+        if (src.startsWith("data:")) {
+          // 存量 dataUrl 先物化为存储 URL（action 已停收 dataUrl）；顺手回写状态
+          try {
+            src = (await materializeImageSources([src]))[0]!
+            setDimensionImage(src)
+          } catch (err) {
+            toast.error(`尺寸图转存失败：${err instanceof Error ? err.message : String(err)}`, { duration: 6000 })
+            return
+          }
+        }
+        const up = await uploadPublishImageAction({ imageUrl: src, kind: "material" })
         if (!up.ok) {
           toast.error(`尺寸图上传失败：${up.error}`, { duration: 6000 })
           return
@@ -333,7 +345,8 @@ export function TemplateWizard({
     // 定制开关开启时一级/二级工艺必填（与界面 * 标注对齐，避免静默按非定制保存）
     (!customEnabled || (customFirst != null && customTwice.trim().length > 0))
 
-  const buildPayload = () => {
+  /** imgs/dim 为物化后的图源（save 时对存量 dataUrl 兜底转存换 URL 后传入） */
+  const buildPayload = (imgs: string[], dim: string | null) => {
     const attributes = requiredProps.map((p) => {
       const sel = selected[p.templatePid]
       const typedVal = typed[p.templatePid]?.trim()
@@ -360,7 +373,7 @@ export function TemplateWizard({
       },
       defaults: {
         title: title.trim(),
-        imageUrls: images,
+        imageUrls: imgs,
         declaredPriceFen: fen,
         extCode: extCode.trim(),
         countryShortName: country,
@@ -385,13 +398,14 @@ export function TemplateWizard({
         ...(pkgImages.some(Boolean)
           ? { outerPackageImages: pkgImages.filter((x): x is string => Boolean(x)) }
           : {}),
-        ...(dimensionImage ? { dimensionImageUrl: dimensionImage } : {}),
+        ...(dim ? { dimensionImageUrl: dim } : {}),
         ...(guideFile
           ? {
               guideFile: {
                 fileName: guideFile.fileName,
                 languages: ["en"],
-                ...(guideB64 ? { base64: guideB64 } : {}),
+                // 选择时已直传存储；旧模板编辑未重选时不带源，服务端沿用库内源
+                ...(guideSourceUrl ? { sourceUrl: guideSourceUrl } : {}),
               },
             }
           : {}),
@@ -420,7 +434,22 @@ export function TemplateWizard({
   const save = async () => {
     setSaving(true)
     try {
-      const payload = buildPayload()
+      // 兜底物化：编辑回填的存量 dataUrl（物化脚本未跑的窗口期）转存换 URL，
+      // 保证保存载荷恒 KB 级（否则被反向代理 413 拒且无失败记录）；顺手回写状态
+      let materialized = images
+      let dim = dimensionImage
+      try {
+        materialized = await materializeImageSources(images)
+        if (dim?.startsWith("data:")) {
+          dim = (await materializeImageSources([dim]))[0]!
+        }
+      } catch (err) {
+        toast.error(`素材图转存失败：${err instanceof Error ? err.message : String(err)}`)
+        return
+      }
+      setImages(materialized)
+      if (dim !== dimensionImage) setDimensionImage(dim)
+      const payload = buildPayload(materialized, dim)
       const r = editing
         ? await updatePublishTemplateAction({ id: editing.id, ...payload })
         : await createPublishTemplateAction(payload)
@@ -429,8 +458,8 @@ export function TemplateWizard({
         onOpenChange(false)
       } else toast.error(r.error)
     } catch {
-      // server action promise reject（请求体超 20mb 被拒 / 网络错）时兜底提示，避免静默失败
-      toast.error("保存失败：请求过大或网络错误，请重试")
+      // server action promise reject（网络错）时兜底提示，避免静默失败
+      toast.error("保存失败：网络错误，请重试")
     } finally {
       setSaving(false)
     }
@@ -456,12 +485,13 @@ export function TemplateWizard({
             <div className="space-y-3">
               <div className="flex gap-2">
                 <Input
+                  className="h-8 text-xs"
                   placeholder="关键词搜索叶子类目（如：收纳架、鸟笼、台灯）"
                   value={keyword}
                   onChange={(e) => setKeyword(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && void doSearch()}
                 />
-                <Button onClick={() => void doSearch()} disabled={searching}>
+                <Button size="sm" className="h-8 text-xs" onClick={() => void doSearch()} disabled={searching}>
                   {searching ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
                   搜索
                 </Button>
@@ -558,7 +588,7 @@ export function TemplateWizard({
                   )}
                   <div className="grid max-h-64 grid-cols-1 gap-3 overflow-y-auto sm:grid-cols-2">
                     {requiredProps.map((p) => (
-                      <div key={p.templatePid} className="space-y-1.5">
+                      <div key={p.templatePid} className="space-y-1">
                         <Label className="text-xs">
                           {p.name}
                           <span className="text-destructive">*</span>
@@ -585,10 +615,11 @@ export function TemplateWizard({
                             options={valuesFor(p).map((v) => ({ value: String(v.vid), label: v.value }))}
                             placeholder={`选择${p.name}`}
                             searchPlaceholder={`搜索${p.name}…`}
-                            className="w-full"
+                            className="h-8 w-full text-xs"
                           />
                         ) : (
                           <Input
+                            className="h-8 text-xs"
                             placeholder={`输入${p.name}`}
                             value={typed[p.templatePid] ?? ""}
                             onChange={(e) => setTyped((prev) => ({ ...prev, [p.templatePid]: e.target.value }))}
@@ -596,7 +627,7 @@ export function TemplateWizard({
                         )}
                       </div>
                     ))}
-                    <div className="space-y-1.5">
+                    <div className="space-y-1">
                       <Label className="text-xs">规格父级（决定 SKU 维度）</Label>
                       <Combobox
                         value={specParentId ? String(specParentId) : null}
@@ -604,14 +635,15 @@ export function TemplateWizard({
                         options={parentSpecs.map((x) => ({ value: String(x.parentSpecId), label: x.parentSpecName }))}
                         placeholder="选择父规格"
                         searchPlaceholder="搜索父规格…"
-                        className="w-full"
+                        className="h-8 w-full text-xs"
                       />
                     </div>
-                    <div className="space-y-1.5">
+                    <div className="space-y-1">
                       <Label className="text-xs">
                         规格值名<span className="text-destructive">*</span>
                       </Label>
                       <Input
+                        className="h-8 text-xs"
                         placeholder="如：藏青 / 黑色 / 标准款"
                         value={specName}
                         onChange={(e) => setSpecName(e.target.value)}
@@ -628,19 +660,19 @@ export function TemplateWizard({
 
           {step === 3 && (
             <div className="grid max-h-105 gap-3 overflow-y-auto pr-1 sm:grid-cols-2">
-              <div className="space-y-1.5 sm:col-span-2">
+              <div className="space-y-1 sm:col-span-2">
                 <Label className="text-xs">模板名 *</Label>
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="如：宠物用品-鸟笼-标准款" />
+                <Input className="h-8 text-xs" value={name} onChange={(e) => setName(e.target.value)} placeholder="如：宠物用品-鸟笼-标准款" />
               </div>
-              <div className="space-y-1.5 sm:col-span-2">
+              <div className="space-y-1 sm:col-span-2">
                 <Label className="text-xs">商品名（发品时可覆盖）*</Label>
-                <Input value={title} onChange={(e) => setTitle(e.target.value)} />
+                <Input className="h-8 text-xs" value={title} onChange={(e) => setTitle(e.target.value)} />
               </div>
-              <div className="space-y-1.5 sm:col-span-2">
+              <div className="space-y-1 sm:col-span-2">
                 <Label className="text-xs">素材图（发品时必须 ≥5 张，可不配置）</Label>
                 <ImageUploadField images={images} onChange={setImages} />
               </div>
-              <div className="space-y-1.5 sm:col-span-2">
+              <div className="space-y-1 sm:col-span-2">
                 <div className="flex items-center justify-between">
                   <Label className="text-xs">尺寸图（可选，固定轮播第 2 张）</Label>
                   <Button
@@ -662,15 +694,15 @@ export function TemplateWizard({
                   hint="卖家中心口径尺寸图放轮播第 2 张（API 实测不校验位置）；随素材一起按目标店铺上传。「官方校验」为参考性结论，不拦截发品。"
                 />
               </div>
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 <Label className="text-xs">申报价（元，SKU 同价）*</Label>
-                <Input type="number" min="0.01" step="0.01" value={priceYuan} onChange={(e) => setPriceYuan(e.target.value)} />
+                <Input className="h-8 text-xs" type="number" min="0.01" step="0.01" value={priceYuan} onChange={(e) => setPriceYuan(e.target.value)} />
               </div>
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 <Label className="text-xs">货号（可空）</Label>
-                <Input value={extCode} onChange={(e) => setExtCode(e.target.value)} placeholder="字母/数字/标点" />
+                <Input className="h-8 text-xs" value={extCode} onChange={(e) => setExtCode(e.target.value)} placeholder="字母/数字/标点" />
               </div>
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 <Label className="text-xs">产地 *</Label>
                 <Combobox
                   value={country}
@@ -681,11 +713,11 @@ export function TemplateWizard({
                   options={COUNTRY_OPTIONS}
                   placeholder="选择产地"
                   searchPlaceholder="搜索产地…"
-                  className="w-full"
+                  className="h-8 w-full text-xs"
                 />
               </div>
               {country === "CN" && (
-                <div className="space-y-1.5">
+                <div className="space-y-1">
                   <Label className="text-xs">
                     省份<span className="text-destructive">*</span>
                     <span className="ml-1 font-normal text-muted-foreground">（中国产地官方必填）</span>
@@ -696,26 +728,26 @@ export function TemplateWizard({
                     options={PROVINCE_OPTIONS}
                     placeholder="选择省份"
                     searchPlaceholder="搜索省份…"
-                    className="w-full"
+                    className="h-8 w-full text-xs"
                   />
                 </div>
               )}
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 <Label className="text-xs">SKU 重量（克）*</Label>
-                <Input type="number" min="0.1" step="0.1" value={weightG} onChange={(e) => setWeightG(e.target.value)} />
+                <Input className="h-8 text-xs" type="number" min="0.1" step="0.1" value={weightG} onChange={(e) => setWeightG(e.target.value)} />
               </div>
               <div className="grid grid-cols-3 gap-2 sm:col-span-2">
-                <div className="space-y-1.5">
+                <div className="space-y-1">
                   <Label className="text-xs">长（cm）*</Label>
-                  <Input type="number" min="0.1" step="0.1" value={lenCm} onChange={(e) => setLenCm(e.target.value)} />
+                  <Input className="h-8 text-xs" type="number" min="0.1" step="0.1" value={lenCm} onChange={(e) => setLenCm(e.target.value)} />
                 </div>
-                <div className="space-y-1.5">
+                <div className="space-y-1">
                   <Label className="text-xs">宽（cm）*（次长边）</Label>
-                  <Input type="number" min="0.1" step="0.1" value={widthCm} onChange={(e) => setWidthCm(e.target.value)} />
+                  <Input className="h-8 text-xs" type="number" min="0.1" step="0.1" value={widthCm} onChange={(e) => setWidthCm(e.target.value)} />
                 </div>
-                <div className="space-y-1.5">
+                <div className="space-y-1">
                   <Label className="text-xs">高（cm）*（最短边）</Label>
-                  <Input type="number" min="0.1" step="0.1" value={heightCm} onChange={(e) => setHeightCm(e.target.value)} />
+                  <Input className="h-8 text-xs" type="number" min="0.1" step="0.1" value={heightCm} onChange={(e) => setHeightCm(e.target.value)} />
                 </div>
                 <p className="col-span-3 text-[11px] text-muted-foreground">官方口径：最长边 ≥ 次长边 ≥ 最短边。</p>
               </div>
@@ -724,12 +756,12 @@ export function TemplateWizard({
                 <Label className="text-xs">敏感商品（含电池/液体等；纯电需填储电容量）</Label>
               </div>
               {sensitive && (
-                <div className="space-y-1.5 sm:col-span-2">
+                <div className="space-y-1 sm:col-span-2">
                   <Label className="text-xs">敏感类型与储电容量</Label>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <BadgeLike>纯电（110001）</BadgeLike>
                     <Input
-                      className="h-8 w-40"
+                      className="h-8 w-40 text-xs"
                       type="number"
                       min="1"
                       placeholder="储电容量上限 Wh"
@@ -743,7 +775,7 @@ export function TemplateWizard({
               <div className="flex items-center gap-3 sm:col-span-2">
                 <span className="text-xs font-medium text-muted-foreground">外包装信息（可选）</span>
               </div>
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 <Label className="text-xs">外包装形状</Label>
                 <Combobox
                   value={pkgShape}
@@ -751,10 +783,10 @@ export function TemplateWizard({
                   options={PACKAGE_SHAPE_OPTIONS}
                   placeholder="长方体 / 圆柱体（其他不规则可不选）"
                   searchPlaceholder="搜索形状…"
-                  className="w-full"
+                  className="h-8 w-full text-xs"
                 />
               </div>
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 <Label className="text-xs">外包装类型</Label>
                 <Combobox
                   value={pkgType}
@@ -762,14 +794,14 @@ export function TemplateWizard({
                   options={PACKAGE_TYPE_OPTIONS}
                   placeholder="选择类型"
                   searchPlaceholder="搜索类型…"
-                  className="w-full"
+                  className="h-8 w-full text-xs"
                 />
               </div>
               <p className="text-[11px] text-muted-foreground sm:col-span-2">
                 官方未公开形状/类型名称，值为实测合法值域（形状 1-2 / 类型 0-2），与卖家中心选项对照后选择。
               </p>
 
-              <div className="space-y-1.5 sm:col-span-2">
+              <div className="space-y-1 sm:col-span-2">
                 <Label className="text-xs">外包装图片（正拍 / 侧拍 / 俯拍）</Label>
                 <PackagingImageSlots images={pkgImages} onChange={setPkgImages} />
                 <p className="text-[11px] text-muted-foreground">
@@ -777,7 +809,7 @@ export function TemplateWizard({
                 </p>
               </div>
 
-              <div className="space-y-1.5 sm:col-span-2">
+              <div className="space-y-1 sm:col-span-2">
                 <Label className="text-xs">电子说明书（可选，PDF）</Label>
                 {guideFile ? (
                   <div className="flex items-center gap-2 text-xs">
@@ -797,30 +829,21 @@ export function TemplateWizard({
                         const file = e.target.files?.[0]
                         e.target.value = ""
                         if (!file) return
-                        // 与服务端口径对齐：schemas/temu.ts guideFile.base64 为
-                        // z.string().max(20_000_000)，base64 长度 = 4·ceil(size/3)，
-                        // 精确上限 15_000_000 字节；取 14_500_000 给 JSON 其余字段
-                        // （素材图 dataUrl 等）与 multipart 开销留余量，避免走完
-                        // 4 步后才被 zod/20mb 请求体上限拒绝
-                        if (file.size > 14_500_000) {
-                          toast.error("PDF 超过 14.5MB（服务端 base64 上限换算，请压缩后重试）")
+                        // 选择即直传存储 temu/ 前缀（不过期），模板只存 sourceUrl——
+                        // base64 进保存载荷会顶到十几 MB，被反向代理 413 拒绝
+                        if (file.size > 15 * 1024 * 1024) {
+                          toast.error("PDF 超过 15MB 上限，请压缩后重试")
                           return
                         }
                         void (async () => {
                           setGuideUploading(true)
                           try {
-                            const b64 = await new Promise<string>((resolve, reject) => {
-                              const fr = new FileReader()
-                              fr.onload = () => {
-                                const dataUrl = String(fr.result)
-                                resolve(dataUrl.slice(dataUrl.indexOf(",") + 1))
-                              }
-                              fr.onerror = () => reject(new Error("读取文件失败"))
-                              fr.readAsDataURL(file)
-                            })
+                            const url = await uploadTemuAsset(file)
                             setGuideFile({ fileName: file.name })
-                            setGuideB64(b64)
-                            toast.success("说明书已就绪（发品时按目标店铺自动上传）")
+                            setGuideSourceUrl(url)
+                            toast.success("说明书已上传（发品时按目标店铺自动提交）")
+                          } catch (err) {
+                            toast.error(`说明书上传失败：${err instanceof Error ? err.message : String(err)}`)
                           } finally {
                             setGuideUploading(false)
                           }
@@ -847,7 +870,7 @@ export function TemplateWizard({
               </div>
               {customEnabled && (
                 <>
-                  <div className="space-y-1.5">
+                  <div className="space-y-1">
                     <Label className="text-xs">一级工艺 *</Label>
                     <Combobox
                       value={customFirst}
@@ -855,12 +878,13 @@ export function TemplateWizard({
                       options={FIRST_TYPE_OPTIONS}
                       placeholder="选择一级工艺"
                       searchPlaceholder="搜索工艺…"
-                      className="w-full"
+                      className="h-8 w-full text-xs"
                     />
                   </div>
-                  <div className="space-y-1.5">
+                  <div className="space-y-1">
                     <Label className="text-xs">二级工艺 id *</Label>
                     <Input
+                      className="h-8 text-xs"
                       placeholder="如 20001（激光雕刻-文字），多个逗号分隔，范围 20001-20040"
                       value={customTwice}
                       onChange={(e) => setCustomTwice(e.target.value)}
@@ -872,7 +896,7 @@ export function TemplateWizard({
               <div className="flex items-center gap-3 sm:col-span-2">
                 <span className="text-xs font-medium text-muted-foreground">SKU 分类 / 多件装（默认单品 1 件）</span>
               </div>
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 <Label className="text-xs">SKU 分类</Label>
                 <Combobox
                   value={skuClass}
@@ -880,15 +904,15 @@ export function TemplateWizard({
                   options={SKU_CLASS_OPTIONS}
                   placeholder="单品"
                   searchPlaceholder="搜索…"
-                  className="w-full"
+                  className="h-8 w-full text-xs"
                 />
               </div>
               <div className="grid grid-cols-2 gap-2">
-                <div className="space-y-1.5">
+                <div className="space-y-1">
                   <Label className="text-xs">件数</Label>
-                  <Input type="number" min="1" max="999" value={skuPieces} onChange={(e) => setSkuPieces(e.target.value)} />
+                  <Input className="h-8 text-xs" type="number" min="1" max="999" value={skuPieces} onChange={(e) => setSkuPieces(e.target.value)} />
                 </div>
-                <div className="space-y-1.5">
+                <div className="space-y-1">
                   <Label className="text-xs">单位</Label>
                   <Combobox
                     value={skuUnit}
@@ -896,7 +920,7 @@ export function TemplateWizard({
                     options={PIECE_UNIT_OPTIONS}
                     placeholder="件"
                     searchPlaceholder="搜索…"
-                    className="w-full"
+                    className="h-8 w-full text-xs"
                   />
                 </div>
               </div>

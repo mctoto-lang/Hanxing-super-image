@@ -16,6 +16,9 @@ interface PresignResponse {
   contentType?: string
 }
 
+/** 上传目标前缀（与 /api/upload、/api/upload/presign 的 category 参数一致） */
+export type UploadCategory = "reference" | "temu"
+
 /** 读取失败响应的明文原因（路由返回纯文本，如"单张图片最大 20MB"），无则回退状态码 */
 async function errText(res: Response, fallback: string): Promise<Error> {
   const text = (await res.text().catch(() => "")).trim()
@@ -57,11 +60,12 @@ function xhrSend(
 }
 
 /**
- * 上传单张图片，返回可访问 URL。
+ * 上传单个文件，返回可访问 URL。
  * @throws 上传失败时抛错（尽量携带服务端返回的具体原因），调用方负责 toast 提示。
  */
-export async function uploadImage(
+async function uploadFile(
   file: File,
+  category: UploadCategory,
   opts?: {
     /** 上传进度回调（0-100；presign 完成即 ≥10） */
     onProgress?: (percent: number) => void
@@ -75,6 +79,7 @@ export async function uploadImage(
       filename: file.name,
       contentType: file.type,
       size: file.size,
+      category,
     }),
   })
   if (!presignResp.ok) throw await errText(presignResp, "presign failed")
@@ -102,6 +107,7 @@ export async function uploadImage(
   // 3. 本地回退：服务器转存
   const formData = new FormData()
   formData.append("file", file)
+  formData.append("category", category)
   const text = await xhrSend("/api/upload", {
     method: "POST",
     body: formData,
@@ -110,4 +116,30 @@ export async function uploadImage(
   opts?.onProgress?.(100)
   const data = JSON.parse(text) as { url: string }
   return data.url
+}
+
+/** 上传单张图片（参考图 ref/ 前缀），返回可访问 URL。 */
+export async function uploadImage(
+  file: File,
+  opts?: {
+    /** 上传进度回调（0-100；presign 完成即 ≥10） */
+    onProgress?: (percent: number) => void
+  },
+): Promise<string> {
+  return uploadFile(file, "reference", opts)
+}
+
+/**
+ * 上传 TEMU 发品素材源到不过期的 temu/ 前缀（图片压缩衍生图 / 说明书 PDF）。
+ * 模板长期引用该 URL，ref/ 前缀会随生命周期过期，故必须落 temu/。
+ * @throws 上传失败时抛错（携带服务端具体原因），调用方负责 toast 提示。
+ */
+export async function uploadTemuAsset(
+  file: File,
+  opts?: {
+    /** 上传进度回调（0-100；presign 完成即 ≥10） */
+    onProgress?: (percent: number) => void
+  },
+): Promise<string> {
+  return uploadFile(file, "temu", opts)
 }

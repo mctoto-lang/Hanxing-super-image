@@ -5,6 +5,7 @@ import { toast } from "sonner"
 import { RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import {
   Dialog,
@@ -125,7 +126,7 @@ export function TemuStoreManager({ stores }: { stores: TemuStoreBrief[] }) {
             「授权管理」复制的 access_token，保存时自动验证店铺类型；全托/半托均可。
           </p>
         </div>
-        <Button size="sm" className="h-9! text-xs" disabled={pending} onClick={() => setAdding({ name: "", mallId: "", mallName: "" })}>
+        <Button size="sm" className="h-8 text-xs" disabled={pending} onClick={() => setAdding({ name: "", mallId: "", mallName: "" })}>
           新增店铺
         </Button>
       </div>
@@ -137,22 +138,22 @@ export function TemuStoreManager({ stores }: { stores: TemuStoreBrief[] }) {
             <DialogTitle>编辑店铺</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
-            <div>
-              <label className="text-sm text-muted-foreground">店铺名称</label>
-              <Input value={editing?.name ?? ""} onChange={(e) => setEditing(editing && { ...editing, name: e.target.value })} className="mt-1" />
+            <div className="space-y-1">
+              <Label className="text-xs">店铺名称</Label>
+              <Input value={editing?.name ?? ""} onChange={(e) => setEditing(editing && { ...editing, name: e.target.value })} className="h-8 text-xs" />
             </div>
-            <div>
-              <label className="text-sm text-muted-foreground">Temu mallId（可选，授权验证时自动回填）</label>
+            <div className="space-y-1">
+              <Label className="text-xs">Temu mallId（可选，授权验证时自动回填）</Label>
               <Input
                 value={editing?.mallId ?? ""}
                 onChange={(e) => setEditing(editing && { ...editing, mallId: e.target.value })}
                 placeholder="授权验证自动回填的 base64 串（留空 = 未绑定）"
-                className="mt-1"
+                className="h-8 text-xs"
               />
             </div>
-            <div>
-              <label className="text-sm text-muted-foreground">Temu 店铺名</label>
-              <Input value={editing?.mallName ?? ""} onChange={(e) => setEditing(editing && { ...editing, mallName: e.target.value })} className="mt-1" />
+            <div className="space-y-1">
+              <Label className="text-xs">Temu 店铺名</Label>
+              <Input value={editing?.mallName ?? ""} onChange={(e) => setEditing(editing && { ...editing, mallName: e.target.value })} className="h-8 text-xs" />
             </div>
           </div>
           <DialogFooter>
@@ -191,30 +192,30 @@ export function TemuStoreManager({ stores }: { stores: TemuStoreBrief[] }) {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
-            <div>
-              <label className="text-sm text-muted-foreground">店铺名称（必填）</label>
+            <div className="space-y-1">
+              <Label className="text-xs">店铺名称（必填）</Label>
               <Input
                 value={adding?.name ?? ""}
                 onChange={(e) => setAdding(adding && { ...adding, name: e.target.value })}
                 placeholder="如 RoseBlanche 主店"
-                className="mt-1"
+                className="h-8 text-xs"
               />
             </div>
-            <div>
-              <label className="text-sm text-muted-foreground">Temu mallId（可选，可稍后编辑或自动回填）</label>
+            <div className="space-y-1">
+              <Label className="text-xs">Temu mallId（可选，可稍后编辑或自动回填）</Label>
               <Input
                 value={adding?.mallId ?? ""}
                 onChange={(e) => setAdding(adding && { ...adding, mallId: e.target.value })}
                 placeholder="授权验证自动回填的 base64 串（留空 = 暂不绑定）"
-                className="mt-1"
+                className="h-8 text-xs"
               />
             </div>
-            <div>
-              <label className="text-sm text-muted-foreground">Temu 店铺名（可选）</label>
+            <div className="space-y-1">
+              <Label className="text-xs">Temu 店铺名（可选）</Label>
               <Input
                 value={adding?.mallName ?? ""}
                 onChange={(e) => setAdding(adding && { ...adding, mallName: e.target.value })}
-                className="mt-1"
+                className="h-8 text-xs"
               />
             </div>
           </div>
@@ -257,7 +258,7 @@ export function TemuStoreManager({ stores }: { stores: TemuStoreBrief[] }) {
             value={tokenInput?.value ?? ""}
             onChange={(e) => setTokenInput(tokenInput && { ...tokenInput, value: e.target.value })}
             placeholder="粘贴 access_token"
-            className="font-mono text-sm"
+            className="h-8 font-mono text-xs"
           />
           <DialogFooter>
             <Button variant="outline" onClick={() => setTokenInput(null)}>取消</Button>

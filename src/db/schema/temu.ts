@@ -27,7 +27,8 @@ import { enterprises } from "./enterprise"
  * 归属链：store（店铺，企业可多店铺，官方 API 店铺级 access_token）→ 各数据表。
  *
  * 数据域：商品、生命周期、销售管理、售罄、广告（官方 API 实时 + 历史插件存档）；
- * 流量表仅存档；核价/调价/活动工作台为实时拉取不落库；订单/备货单/发货批次未建表。
+ * 流量表仅存档；核价/调价/活动/备货工作台为实时拉取不落库；发货单已建表落库
+ * （temu_ship_order/package，同步源 api-ship-orders，2026-10-23）；订单/备货单未建表。
  */
 
 /** 店铺（一个企业可配置多个 Temu 店铺；官方 API token 由企业管理员录入） */
@@ -577,8 +578,15 @@ export interface TemuTemplateDefaults {
   outerPackageImages?: string[]
   /** 尺寸图源（可选；发品时按目标店上传后固定插轮播第 2 张——卖家中心页面口径，API 实测不校验位置） */
   dimensionImageUrl?: string
-  /** 电子说明书（存 base64 源——发品时对目标店重传换 pdfId，需含英文内容 2000163；pdfMaterialId 兼容旧模板） */
-  guideFile?: { fileName: string; pdfMaterialId?: number; languages: string[]; base64?: string }
+  /** 电子说明书（选择时直传存储 temu/，模板存 sourceUrl——发品时服务端取回字节对
+   *  目标店重传换 pdfId，需含英文内容 2000163；base64 为存量模板兼容，pdfMaterialId 兼容旧模板） */
+  guideFile?: {
+    fileName: string
+    pdfMaterialId?: number
+    languages: string[]
+    sourceUrl?: string
+    base64?: string
+  }
   /** 定制商品工艺（§13.6；不配=非定制不提交该块） */
   customized?: { firstType: number; twiceType: number[]; technologyType: number }
   /** SKU 分类/多件装（不配=单品 1 件） */
@@ -640,6 +648,10 @@ export const temuPublishRecords = pgTable(
     overrides: jsonb("overrides")
       .$type<Partial<Pick<TemuTemplateDefaults, "title" | "imageUrls" | "declaredPriceFen" | "extCode">>>()
       .notNull(),
+    /** 本次发品生效的商品名（覆盖层 ?? 模板默认；早于覆盖合并的失败回填模板值） */
+    productTitle: text("product_title"),
+    /** 本次实际提交的图源列表（素材+尺寸图，物化后的存储 URL；失败早退时回填模板值） */
+    imageUrls: jsonb("image_urls").$type<string[]>(),
     /** pending 组装中 / success / failed */
     status: varchar("status", { length: 16 }).default("pending").notNull(),
     /** 官方返回的货品 id（成功时） */
@@ -656,5 +668,130 @@ export const temuPublishRecords = pgTable(
   (t) => [
     index("gt_temu_pub_rec_ent").on(t.enterpriseId, t.createdAt),
     index("gt_temu_pub_rec_tpl").on(t.templateId),
+  ],
+)
+
+/** 大仓收货地址（shiporderv2 行内 receiveAddressInfo / receiveaddressv2 分组同构） */
+export type TemuShipReceiveAddress = {
+  receiverName: string | null
+  phone: string | null
+  provinceName: string | null
+  provinceCode: number | null
+  cityName: string | null
+  cityCode: number | null
+  districtName: string | null
+  districtCode: number | null
+  detailAddress: string | null
+}
+
+/** 发货单明细行 SKU（packageDetailList 原始结构） */
+export type TemuShipPackageSkuRow = {
+  productSkuId: string
+  skuNum: number
+}
+
+/**
+ * 发货单（bg.shiporderv2.get 同步落库，按 (店, deliveryOrderSn) upsert 全列覆盖；
+ * 状态机 0 待装箱发货 / 1 待仓库收货 / 2 已收货 / 3 已入库 / 4 已退货 / 5 已取消 / 6 部分收货）。
+ * 发货工作台写操作（创建/装箱/取消/改物流）成功后按单号回查即时刷新本表；
+ * raw 保留整行官方快照，未展开字段（subPurchaseOrderBasicVO 等）从 raw 取。
+ */
+export const temuShipOrders = pgTable(
+  "temu_ship_order",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => temuStores.id, { onDelete: "cascade" }),
+    deliveryOrderSn: varchar("delivery_order_sn", { length: 64 }).notNull(),
+    subPurchaseOrderSn: varchar("sub_purchase_order_sn", { length: 64 }),
+    productSkcId: bigint("product_skc_id", { mode: "number" }),
+    /** 货号（行顶层实证字段，库存/商品匹配直接用） */
+    skcExtCode: varchar("skc_ext_code", { length: 64 }),
+    subWarehouseId: bigint("sub_warehouse_id", { mode: "number" }),
+    subWarehouseName: varchar("sub_warehouse_name", { length: 120 }),
+    status: integer("status").notNull(),
+    /** 0 普通 / 1 急采 */
+    urgencyType: integer("urgency_type"),
+    isCustomProduct: boolean("is_custom_product"),
+    /** 1 国内 / 2 海外 / 3 保税仓 */
+    inventoryRegion: integer("inventory_region"),
+    /** 0 普通备货 / 1 JIT */
+    purchaseStockType: integer("purchase_stock_type"),
+    /** 0 无 / 1 自送 / 2 公司指定物流 / 3 第三方物流 */
+    deliveryMethod: integer("delivery_method"),
+    expressBatchSn: varchar("express_batch_sn", { length: 64 }),
+    expressCompanyId: bigint("express_company_id", { mode: "number" }),
+    expressCompany: varchar("express_company", { length: 120 }),
+    expressDeliverySn: varchar("express_delivery_sn", { length: 64 }),
+    /** 卖家发货地址 id（mall.address） */
+    deliveryAddressId: bigint("delivery_address_id", { mode: "number" }),
+    receiveAddressInfo: jsonb("receive_address_info").$type<TemuShipReceiveAddress | null>(),
+    deliverPackageNum: integer("deliver_package_num"),
+    otherDeliveryPackageNum: integer("other_delivery_package_num"),
+    /** 预估总包裹重量（克） */
+    predictTotalPackageWeight: integer("predict_total_package_weight"),
+    deliveryOrderCreateTime: timestamp("delivery_order_create_time", { withTimezone: true }),
+    deliverTime: timestamp("deliver_time", { withTimezone: true }),
+    receiveTime: timestamp("receive_time", { withTimezone: true }),
+    inboundTime: timestamp("inbound_time", { withTimezone: true }),
+    purchaseTime: timestamp("purchase_time", { withTimezone: true }),
+    expectPickUpGoodsTime: timestamp("expect_pick_up_goods_time", { withTimezone: true }),
+    expectLatestPickTime: timestamp("expect_latest_pick_time", { withTimezone: true }),
+    /** 0 无异常 / 1 已提交 / 2 物流商处理中 / 3 已撤销 / 4 已反馈 */
+    latestFeedbackStatus: integer("latest_feedback_status"),
+    /** 运单计费重量异常 0 无 / 1 异常待确认 / 2 已提交待处理 / 3 物流商完成 / 4 平台介入 / 5 平台完成 / 6 卖家确认 / 7 超期自动确认 */
+    expressWeightFeedbackStatus: integer("express_weight_feedback_status"),
+    /** 物流单拒收 0 无 / 1 待物流商处理 / 2 已处理 */
+    expressRejectStatus: integer("express_reject_status"),
+    exceptionFeedBackTotalCount: integer("exception_feedback_total_count"),
+    receiveSkcNum: integer("receive_skc_num"),
+    defectiveSkcNum: integer("defective_skc_num"),
+    receivePackageNum: integer("receive_package_num"),
+    skcPurchaseNum: integer("skc_purchase_num"),
+    deliverSkcNum: integer("deliver_skc_num"),
+    /** 官方「可打箱唛」标记（打印按钮显隐） */
+    isPrintBoxMark: boolean("is_print_box_mark"),
+    supplierId: bigint("supplier_id", { mode: "number" }),
+    isClothCategory: boolean("is_cloth_category"),
+    ifCanOperateDeliver: boolean("if_can_operate_deliver"),
+    driverName: varchar("driver_name", { length: 120 }),
+    plateNumber: varchar("plate_number", { length: 32 }),
+    /** SKC 主图（官方 subPurchaseOrderBasicVO.productSkcPicture，kwcdn 外链） */
+    productSkcPicture: text("product_skc_picture"),
+    /** 易破损标（官方 subPurchaseOrderBasicVO.fragileTag） */
+    fragileTag: boolean("fragile_tag"),
+    /** 自动取消截止（落库时 captured_at + 官方剩余毫秒换算的绝对时间；仅待装箱单有值） */
+    cancelDeadline: timestamp("cancel_deadline", { withTimezone: true }),
+    raw: jsonb("raw").$type<Record<string, unknown>>(),
+    contentHash: varchar("content_hash", { length: 40 }).notNull(),
+    capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    uniqueIndex("gt_temu_ship_order_sn").on(t.storeId, t.deliveryOrderSn),
+    index("gt_temu_ship_order_time").on(t.storeId, t.deliverTime),
+    index("gt_temu_ship_order_status").on(t.storeId, t.status),
+    index("gt_temu_ship_order_ext").on(t.storeId, t.skcExtCode),
+    index("gt_temu_ship_order_sub").on(t.storeId, t.subPurchaseOrderSn),
+  ],
+)
+
+/** 发货单包裹（packageList + packageDetailList 明细；receiveTime 取 packageReceiveInfoVOList 匹配值） */
+export const temuShipPackages = pgTable(
+  "temu_ship_package",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => temuStores.id, { onDelete: "cascade" }),
+    deliveryOrderSn: varchar("delivery_order_sn", { length: 64 }).notNull(),
+    packageSn: varchar("package_sn", { length: 64 }).notNull(),
+    skcNum: integer("skc_num"),
+    packageDetail: jsonb("package_detail").$type<TemuShipPackageSkuRow[]>(),
+    receiveTime: timestamp("receive_time", { withTimezone: true }),
+    capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    uniqueIndex("gt_temu_ship_pkg_sn").on(t.storeId, t.deliveryOrderSn, t.packageSn),
   ],
 )

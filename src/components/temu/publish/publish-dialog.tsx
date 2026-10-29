@@ -23,7 +23,7 @@ import { ImageLibraryDialog } from "@/components/mockup/image-library-dialog"
 import { listMockupDesignAssetsAction } from "@/server/actions/mockup"
 import type { MockupLibraryImage } from "@/lib/mockup/types"
 import { toImageSrc } from "@/lib/utils"
-import { checkImageDims, compressToDataUrl, probeImageBlob } from "./image-utils"
+import { checkImageDims, compressToJpegBlob, probeImageBlob, storeImageBlob, materializeImageSources } from "./image-utils"
 
 /** 发品：锁定层自模板，默认层（标题/图/申报价/货号）可覆盖；提交 goods.add 到页面选中店铺。
  *  轮播图 = 单一有序列表（模板图打开即回填：素材 + 尺寸图插到第 2 位），全槽位可删/换/
@@ -59,6 +59,21 @@ export function PublishDialog({
       // 第 2 张 = 尺寸图：从素材中拆出单独传，服务端校验后插回轮播第 2 位（顺序不变）
       const dimension = images[1] ?? null
       const materials = images.filter((_, i) => i !== 1)
+      // 兜底物化：模板里的存量 dataUrl（物化脚本未跑的窗口期）转存换 URL，
+      // 保证发品载荷恒 KB 级（否则被反向代理 413 拒且发品记录无痕）
+      let materialUrls: string[] = materials
+      let dimensionUrl: string | null = dimension
+      try {
+        if (materials.some((s) => s.startsWith("data:"))) {
+          materialUrls = await materializeImageSources(materials)
+        }
+        if (dimensionUrl?.startsWith("data:")) {
+          dimensionUrl = (await materializeImageSources([dimensionUrl]))[0]!
+        }
+      } catch (err) {
+        toast.error(`图片转存失败：${err instanceof Error ? err.message : String(err)}`, { duration: 8000 })
+        return
+      }
       const r = await publishFromTemplateAction({
         templateId: template.id,
         storeId: store.id,
@@ -66,8 +81,8 @@ export function PublishDialog({
           title: title.trim(),
           declaredPriceFen: fen,
           extCode: extCode.trim(),
-          imageUrls: materials,
-          ...(dimension ? { dimensionImageUrl: dimension } : {}),
+          imageUrls: materialUrls,
+          ...(dimensionUrl ? { dimensionImageUrl: dimensionUrl } : {}),
         },
       })
       if (r.ok) {
@@ -85,8 +100,9 @@ export function PublishDialog({
         toast.error(r.error?.slice(0, 1500) ?? "发品失败", { duration: 8000 })
       }
     } catch {
-      // server action promise reject（请求体超限被拒 / 网络错）时兜底提示，避免静默失败
-      toast.error("发品失败：请求过大或网络错误，请重试", { duration: 8000 })
+      // server action promise reject（网络错）时兜底提示，避免静默失败；
+      // 载荷超限已根治（图源物化为存储 URL，恒 KB 级）
+      toast.error("发品失败：网络错误，请重试", { duration: 8000 })
     } finally {
       setSubmitting(false)
     }
@@ -103,22 +119,22 @@ export function PublishDialog({
         </DialogHeader>
 
         <div className="space-y-4">
-          <div className="space-y-1.5">
+          <div className="space-y-1">
             <Label className="text-xs">商品名</Label>
-            <Input value={title} onChange={(e) => setTitle(e.target.value)} />
+            <Input className="h-8 text-xs" value={title} onChange={(e) => setTitle(e.target.value)} />
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
+            <div className="space-y-1">
               <Label className="text-xs">申报价（元）</Label>
-              <Input type="number" min="0.01" step="0.01" value={priceYuan} onChange={(e) => setPriceYuan(e.target.value)} />
+              <Input className="h-8 text-xs" type="number" min="0.01" step="0.01" value={priceYuan} onChange={(e) => setPriceYuan(e.target.value)} />
             </div>
-            <div className="space-y-1.5">
+            <div className="space-y-1">
               <Label className="text-xs">货号</Label>
-              <Input value={extCode} onChange={(e) => setExtCode(e.target.value)} />
+              <Input className="h-8 text-xs" value={extCode} onChange={(e) => setExtCode(e.target.value)} />
             </div>
           </div>
 
-          <div className="space-y-1.5">
+          <div className="space-y-1">
             <Label className="text-xs">
               轮播图（模板图已回填；全部可删除/替换/拖动排序，第 2 张视为尺寸图）
             </Label>
@@ -176,7 +192,8 @@ function CarouselSlots({
     }
   }
 
-  /** 选图落位：>2MB 静默浏览器压缩（官方上传闸门 2M）+ 1:1 ≥800 软校验 */
+  /** 选图落位：>2MB 静默浏览器压缩后直传存储换 URL（官方上传闸门 2M；
+   *  不存 dataUrl——发品载荷会被反向代理 413 拒且失败无记录）+ 1:1 ≥800 软校验 */
   const acceptSources = async (
     intent: { mode: "add" } | { mode: "replace"; index: number },
     sources: string[],
@@ -189,9 +206,9 @@ function CarouselSlots({
         let use: string | null = src
         if (blob && blob.size > 2 * 1024 * 1024) {
           try {
-            use = await compressToDataUrl(blob)
+            use = await storeImageBlob(await compressToJpegBlob(blob))
           } catch {
-            toast.error("图片超过 2MB 且压缩失败，已跳过")
+            toast.error("图片超过 2MB，压缩转存失败，已跳过")
             continue
           }
         }

@@ -133,12 +133,12 @@ export interface TemuOverview {
   /** 各店铺（含 token 状态与最近同步时间） */
   stores: TemuStoreBrief[]
   /** 顶部四卡片（value 当前值，delta 环比昨日百分比；null = 无数据）：
-   *  今日销量 / 七日销量 / 30日销量 / 今日广告消耗 */
+   *  今日销量 / 七日销量 / 30日销量 / 今日预估销售额（Σ 今日销量×申报价） */
   cards: {
     todaySales: { value: number | null; delta: number | null }
     sevenDaySales: { value: number | null; delta: number | null }
     thirtyDaySales: { value: number | null; delta: number | null }
-    adSpend: { value: number | null; delta: number | null }
+    estSalesAmount: { value: number | null; delta: number | null }
   }
 }
 
@@ -165,7 +165,7 @@ async function loadTemuOverview(enterpriseId: string, storeId?: string): Promise
       todaySales: { value: null, delta: null },
       sevenDaySales: { value: null, delta: null },
       thirtyDaySales: { value: null, delta: null },
-      adSpend: { value: null, delta: null },
+      estSalesAmount: { value: null, delta: null },
     },
   }
   if (storeIds.length === 0) return empty
@@ -174,8 +174,11 @@ async function loadTemuOverview(enterpriseId: string, storeId?: string): Promise
   const since = new Date(Date.now() - 90 * 86400 * 1000)
   // 日界取北京时间（Temu 卖家中心口径；服务器容器时区不参与分日）
   const tz = TEMU_TZ
+  const todayStr = temuDayStr()
+  const yesterdayStr = temuYesterdayStr()
+  const yesterdayStart = new Date(temuStartOfToday().getTime() - 86400_000)
 
-  const [trendAgg, productCountRows, soldoutRows, adsRows] = await Promise.all([
+  const [trendAgg, productCountRows, soldoutRows, estSalesRows] = await Promise.all([
     // 销售管理口径按日聚合：每 (店, 日, 批次 capturedAt) 先对 SKC 求和，再每
     // (店, 日) 取最新批次（官方 API 每轮同步一个 capturedAt；插件历史行按
     // 上报时间），最后跨店求和成当日合计。sum 忽略 null、全 null 得 null。
@@ -220,16 +223,36 @@ async function loadTemuOverview(enterpriseId: string, storeId?: string): Promise
       )
       .orderBy(desc(temuMetricSnapshots.capturedAt))
       .limit(1),
-    // 广告日报（今日 + 昨日；官方广告 API mall.query 同步写入，每轮滚动覆盖）
-    db
-      .select({ date: temuAdsDailies.date, adSpend: temuAdsDailies.adSpend })
-      .from(temuAdsDailies)
-      .where(
-        and(
-          inArray(temuAdsDailies.storeId, storeIds),
-          gte(temuAdsDailies.date, sql`current_date - 1`),
-        ),
+    // 今日预估销售额（Σ 今日销量×申报价，分）：每 SKC 每日最新批次左联商品表
+    // 取申报价，今日/昨日两列求和（环比用昨日同口径；无价商品按 0 计入）。
+    // DISTINCT ON 必须引用内层别名列——表达式里带参数占位符时 PG 判定与
+    // ORDER BY 不匹配（即使同一参数）；且按日取最新批次，全局最新行会把
+    // 昨日行顶掉、环比恒空（与 trendAgg 同款两层写法）
+    db.execute<{ todayFen: string | null; yesterdayFen: string | null }>(sql`
+      WITH per_day AS (
+        SELECT s.store_id, s.skc_id,
+               (s.captured_at AT TIME ZONE ${tz})::date AS day,
+               s.captured_at, s.id, s.today_sales_volume
+        FROM ${temuSalesOverviews} s
+        WHERE s.store_id IN (${sql.join(storeIds.map((id) => sql`${id}::uuid`), sql`, `)})
+          AND s.captured_at >= ${yesterdayStart.toISOString()}::timestamptz
       ),
+      latest AS (
+        SELECT DISTINCT ON (store_id, skc_id, day) store_id, skc_id, day, today_sales_volume
+        FROM per_day
+        ORDER BY store_id, skc_id, day, captured_at DESC, id DESC
+      )
+      SELECT
+        coalesce(sum(CASE WHEN l.day = ${todayStr}::date
+                          THEN coalesce(l.today_sales_volume, 0) * coalesce(p.supplier_price, 0)
+                          ELSE 0 END), 0)::bigint AS "todayFen",
+        coalesce(sum(CASE WHEN l.day = ${yesterdayStr}::date
+                          THEN coalesce(l.today_sales_volume, 0) * coalesce(p.supplier_price, 0)
+                          ELSE 0 END), 0)::bigint AS "yesterdayFen"
+      FROM latest l
+      LEFT JOIN ${temuProducts} p
+        ON p.store_id = l.store_id AND p.product_skc_id = l.skc_id
+    `),
   ])
 
   const byDay = new Map<
@@ -244,13 +267,10 @@ async function loadTemuOverview(enterpriseId: string, storeId?: string): Promise
     })
   }
 
-  const todayStr = temuDayStr()
-  const yesterdayStr = temuYesterdayStr()
   const todaySnap = byDay.get(todayStr)
   const yesterdaySnap = byDay.get(yesterdayStr)
-  const adToday = adsRows.filter((r) => String(r.date) === todayStr).reduce((s, r) => s + (r.adSpend ?? 0), 0)
-  const adYesterday = adsRows.filter((r) => String(r.date) === yesterdayStr).reduce((s, r) => s + (r.adSpend ?? 0), 0)
-  const hasAds = adsRows.some((r) => String(r.date) === todayStr)
+  const estTodayFen = Number(estSalesRows[0]?.todayFen ?? 0)
+  const estYesterdayFen = Number(estSalesRows[0]?.yesterdayFen ?? 0)
 
   // 趋势双线：今日销量 + 七日滚动销量（口径互相独立，不堆叠）
   const days = [...byDay.keys()].sort()
@@ -292,9 +312,9 @@ async function loadTemuOverview(enterpriseId: string, storeId?: string): Promise
         value: todaySnap?.thirtyDays ?? 0,
         delta: deltaPct(todaySnap?.thirtyDays ?? null, yesterdaySnap?.thirtyDays ?? null),
       },
-      adSpend: {
-        value: hasAds ? Math.round(adToday * 100) / 100 : 0,
-        delta: hasAds && adYesterday > 0 ? deltaPct(adToday, adYesterday) : null,
+      estSalesAmount: {
+        value: Math.round(estTodayFen) / 100,
+        delta: estYesterdayFen > 0 ? deltaPct(estTodayFen, estYesterdayFen) : null,
       },
     },
   }
@@ -670,6 +690,94 @@ async function loadTemuSalesTop(enterpriseId: string, storeId?: string): Promise
   return [...union.values()].sort((a, b) => b.last7DaysSalesVolume - a.last7DaysSalesVolume)
 }
 
+export interface TemuSalesTopBySnRow {
+  /** 分组键：货号（销售总览优先，回落商品表；两者皆空以 "SKC {id}" 兜底成组） */
+  sn: string
+  productName: string | null
+  mainImageUrl: string | null
+  /** 主图转存 URL（COS/本地；展示优先于 kwcdn 外链） */
+  mainImageCosUrl: string | null
+  todaySalesVolume: number
+  last7DaysSalesVolume: number
+  last30DaysSalesVolume: number
+}
+
+/** 售出 TOP 榜（按货号）：概览页底部 TOP20 卡片用。同货号多 SKC 合并为一个
+ *  货号，与 SKC 口径的 getTemuSalesTopAction（TOP10 条形图）并存互不影响 */
+export async function getTemuSalesTopBySnAction(storeId?: string): Promise<TemuSalesTopBySnRow[]> {
+  const ctx = await requireEnterpriseContext()
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  return temuCached(`${enterpriseId}:${storeId ?? "all"}:sales-top-sn`, () =>
+    loadTemuSalesTopBySn(enterpriseId, storeId),
+  )
+}
+
+async function loadTemuSalesTopBySn(enterpriseId: string, storeId?: string): Promise<TemuSalesTopBySnRow[]> {
+  const storeIds = await resolveStoreIds(enterpriseId, storeId)
+  if (storeIds.length === 0) return []
+  const latestSq = db
+    .selectDistinctOn([temuSalesOverviews.storeId, temuSalesOverviews.skcId], {
+      storeId: temuSalesOverviews.storeId,
+      skcId: temuSalesOverviews.skcId,
+      productName: temuSalesOverviews.productName,
+      productSn: temuSalesOverviews.productSn,
+      capturedAt: temuSalesOverviews.capturedAt,
+      todaySalesVolume: temuSalesOverviews.todaySalesVolume,
+      last7DaysSalesVolume: temuSalesOverviews.last7DaysSalesVolume,
+      last30DaysSalesVolume: temuSalesOverviews.last30DaysSalesVolume,
+    })
+    .from(temuSalesOverviews)
+    .where(inArray(temuSalesOverviews.storeId, storeIds))
+    .orderBy(
+      temuSalesOverviews.storeId,
+      temuSalesOverviews.skcId,
+      desc(temuSalesOverviews.capturedAt),
+      desc(temuSalesOverviews.id),
+    )
+    .as("latest_skc")
+  const todayStart = startOfToday()
+  // 货号优先取销售总览自带值，缺失回落商品表，两者皆空以 SKC 兜底（展示名与
+  // TOP10 图一致）；三口径销量跨店求和
+  const snExpr = sql<string>`coalesce(nullif(trim(${latestSq.productSn}), ''), nullif(trim(${temuProducts.productSn}), ''), 'SKC ' || ${latestSq.skcId})`
+  const rows = await db
+    .select({
+      sn: snExpr,
+      productName: sql<string | null>`max(${latestSq.productName})`,
+      mainImageUrl: sql<string | null>`max(${temuProducts.mainImageUrl})`,
+      mainImageCosUrl: sql<string | null>`max(${temuProducts.mainImageCosUrl})`,
+      // 今日口径只累计当日捕获的行（同 SKC 口径 TOP 榜，防跨日重复计入）
+      today: sql<string>`coalesce(sum(case when ${gte(latestSq.capturedAt, todayStart)} then coalesce(${latestSq.todaySalesVolume}, 0) else 0 end), 0)`,
+      last7: sql<string>`coalesce(sum(${latestSq.last7DaysSalesVolume}), 0)`,
+      last30: sql<string>`coalesce(sum(${latestSq.last30DaysSalesVolume}), 0)`,
+    })
+    .from(latestSq)
+    .leftJoin(
+      temuProducts,
+      and(
+        eq(temuProducts.storeId, latestSq.storeId),
+        eq(temuProducts.productSkcId, latestSq.skcId),
+      ),
+    )
+    .groupBy(snExpr)
+  const mapped: TemuSalesTopBySnRow[] = rows.map((r) => ({
+    sn: r.sn,
+    productName: r.productName,
+    mainImageUrl: r.mainImageUrl,
+    mainImageCosUrl: r.mainImageCosUrl,
+    todaySalesVolume: Number(r.today),
+    last7DaysSalesVolume: Number(r.last7),
+    last30DaysSalesVolume: Number(r.last30),
+  }))
+  // 三口径各自 top20 并集（与 SKC 口径同因：只按单一口径预筛会漏其他口径的真实前二十）
+  const bySnMetric = (key: "todaySalesVolume" | "last7DaysSalesVolume" | "last30DaysSalesVolume") =>
+    [...mapped].sort((a, b) => b[key] - a[key]).slice(0, 20)
+  const union = new Map<string, TemuSalesTopBySnRow>()
+  for (const r of [...bySnMetric("todaySalesVolume"), ...bySnMetric("last7DaysSalesVolume"), ...bySnMetric("last30DaysSalesVolume")]) {
+    union.set(r.sn, r)
+  }
+  return [...union.values()].sort((a, b) => b.last7DaysSalesVolume - a.last7DaysSalesVolume)
+}
+
 /** SKU 明细行（salesv2 skuQuantityDetailList 原样字段，前端防御性取值） */
 export interface TemuSkuDetailRow {
   productSkuId?: number | string | null
@@ -696,9 +804,12 @@ export interface TemuSkuDetailRow {
   inventoryNumInfo?: TemuInventoryInfo | null
 }
 
-/** 细分库存（salesv2 inventoryNumInfo，官方 7 项口径） */
+/** 细分库存（salesv2 inventoryNumInfo，官方 9 项口径；文案/顺序见官方参数表 desc） */
 export interface TemuInventoryInfo {
   waitOnShelfNum?: number | null
+  /** 仓内库存（卖家口径「可用库存」，商品页主值） */
+  warehouseInventoryNum?: number | null
+  expectedOccupiedInventoryNum?: number | null
   waitApproveInventoryNum?: number | null
   waitInStock?: number | null
   waitReceiveNum?: number | null
@@ -877,9 +988,11 @@ async function loadTemuProductSalesInfo(
       skus.reduce((acc, s) => acc + (pick(s) ?? 0), 0)
     const inv = (ov.inventoryNumInfo ?? null) as TemuInventoryInfo | null
     // 细分库存实测随 SKU 行返回（SKC 级 overview 不带）：跨 SKU 求和为 SKC 口径；
-    // 七类恒定齐全（无值补 0），供库存数据悬停逐类换行展示
+    // 官方 9 项恒定齐全（无值补 0），供库存数据主值（仓内库存）与悬停逐类展示
     const invKeys: Array<keyof TemuInventoryInfo> = [
       "waitOnShelfNum",
+      "warehouseInventoryNum",
+      "expectedOccupiedInventoryNum",
       "waitApproveInventoryNum",
       "waitInStock",
       "waitReceiveNum",

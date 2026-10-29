@@ -271,6 +271,52 @@ describe("备货单查询", () => {
   })
 })
 
+describe("备货单全部店铺视图", () => {
+  it(
+    "逐店扇出合并 + 行级店铺归属 + 无 token 店部分失败不阻断",
+    { timeout: 30_000 },
+    async () => {
+      mockSession.userId = ownerId
+      const [store2] = await db
+        .insert(temuStores)
+        .values({
+          enterpriseId: entId,
+          name: "备货测试店铺B",
+          accessTokenEncrypted: encrypt("po-test-token-b"),
+          tokenState: "active",
+          mallType: "full",
+        })
+        .returning()
+      await db.insert(temuStores).values({
+        enterpriseId: entId,
+        name: "无令牌店铺",
+        tokenState: "none",
+        mallType: "full",
+      })
+
+      const fn = mockFulfillmentFetch()
+      vi.stubGlobal("fetch", fn)
+      const r = await getTemuPurchaseOrdersAction({ status: "todo" })
+      expect(r.ok).toBe(true)
+      if (!r.ok) return
+      // 两家有 token 店各回 2 行（mock 同页）→ 合并 4 行；无 token 店进 errors 不阻断
+      expect(r.rows).toHaveLength(4)
+      expect(r.total).toBe(4)
+      expect(new Set(r.rows.map((x) => x.storeName))).toEqual(
+        new Set(["备货测试店铺", "备货测试店铺B"]),
+      )
+      expect(r.rows.every((x) => x.storeId)).toBe(true)
+      expect(r.rows.every((x) => x.storeId === storeId || x.storeId === store2!.id)).toBe(true)
+      expect(r.errors).toEqual([{ store: "无令牌店铺", error: "未录入 access_token" }])
+      // 每家有 token 店各一发查询（无 token 店在调用前被拦）
+      const bodies = fn.mock.calls
+        .map((c) => (c[1] && c[1]!.body ? JSON.parse(String(c[1]!.body)) : null))
+        .filter((b) => b?.type === "bg.purchaseorderv2.get")
+      expect(bodies).toHaveLength(2)
+    },
+  )
+})
+
 describe("备货写操作（管理员）", () => {
   it("cancel：批量单号 + 官方按单失败原因透出", async () => {
     mockSession.userId = ownerId

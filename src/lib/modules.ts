@@ -25,6 +25,8 @@ export const MODULE_LABELS: Record<ModuleName, string> = {
   temu_price: "TEMU-核价调价",
   temu_purchase: "TEMU-备货",
   temu_qc: "TEMU-质检",
+  temu_ship: "TEMU-发货",
+  temu_return: "TEMU-退货",
   settings: "个人设置",
 }
 
@@ -49,5 +51,7 @@ export const TEMU_TAB_OPTIONS: Array<{ value: TemuTabModule; label: string }> = 
   { value: "temu_ads", label: MODULE_LABELS.temu_ads },
   { value: "temu_price", label: MODULE_LABELS.temu_price },
   { value: "temu_purchase", label: MODULE_LABELS.temu_purchase },
+  { value: "temu_ship", label: MODULE_LABELS.temu_ship },
   { value: "temu_qc", label: MODULE_LABELS.temu_qc },
+  { value: "temu_return", label: MODULE_LABELS.temu_return },
 ]

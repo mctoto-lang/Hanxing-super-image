@@ -4,11 +4,13 @@ import {
   Megaphone,
   Package,
   Scale,
+  Ship,
   Store as StoreIcon,
   Gauge,
   Truck,
   Upload,
   ClipboardCheck,
+  Undo2,
 } from "lucide-react"
 import { requireUserContext } from "@/lib/auth/session"
 import { TEMU_TAB_MODULES } from "@/db/schema"
@@ -19,14 +21,18 @@ import {
   getTemuAdsAction,
   getTemuCategoryShareAction,
   getTemuSalesTopAction,
+  getTemuSalesTopBySnAction,
   type TemuOverview,
 } from "@/server/actions/temu"
+import { getTemuShipStatsAction } from "@/server/actions/temu-ship"
 import { temuListQuerySchema } from "@/server/schemas/temu"
 import { getTemuAdPlansAction } from "@/server/actions/temu-workbench"
 import { NoPermission } from "@/components/shared/no-permission"
 import { TemuPriceReviewPanel } from "@/components/temu/price-review-panel"
 import { TemuPurchasePanel } from "@/components/temu/purchase-panel"
 import { TemuQualityPanel } from "@/components/temu/quality-panel"
+import { TemuReturnPanel } from "@/components/temu/return-panel"
+import { TemuShipPanel } from "@/components/temu/ship-panel"
 import { cn } from "@/lib/utils"
 import {
   Card,
@@ -41,6 +47,8 @@ import { ChartAreaInteractive } from "@/components/chart-area-interactive"
 import {
   TemuCategoryShare,
   TemuSalesTop10,
+  TemuSalesTop20Cards,
+  TemuShipStatsCards,
   TemuStoreSelect,
   TemuStoreManager,
   TemuAdsWorkbench,
@@ -58,7 +66,9 @@ const TABS = [
   { value: "ads", label: "广告推广", icon: Megaphone },
   { value: "price", label: "核价调价", icon: Scale },
   { value: "purchase", label: "备货", icon: Truck },
+  { value: "ship", label: "发货", icon: Ship },
   { value: "qc", label: "质检", icon: ClipboardCheck },
+  { value: "return", label: "退货", icon: Undo2 },
   { value: "stores", label: "店铺", icon: StoreIcon },
 ] as const
 
@@ -133,15 +143,20 @@ export default async function TemuPage({
     return `/temu?${p.toString()}`
   }
 
-  // 店铺下拉只列启用店铺；核价调价/广告/备货工作台按店铺 token 调接口，
-  // 未选店时默认第一个启用店铺；发品 tab 只列可发布店（全托+token 有效）且必须选具体店
+  // 店铺下拉只列启用店铺；核价调价/广告/备货/质检/发货/退货工作台按店铺 token 调接口，
+  // 未选店时默认第一个启用店铺；备货支持全部店铺（扇出合并）——不默认选店；
+  // 发品 tab 只列可发布店（全托+token 有效）且必须选具体店
   const enabledStores = overview.stores.filter((s) => s.enabled)
   const publishableStores = overview.stores.filter(
     (s) => s.enabled && s.tokenState === "active" && s.mallType === "full",
   )
   const isPublishTab = activeTab === "publish"
   const workbenchDefaultStore =
-    (activeTab === "price" || activeTab === "ads" || activeTab === "purchase" || activeTab === "qc") &&
+    (activeTab === "price" ||
+      activeTab === "ads" ||
+      activeTab === "qc" ||
+      activeTab === "ship" ||
+      activeTab === "return") &&
     !query.store
       ? (enabledStores[0]?.id as string | undefined)
       : isPublishTab && !query.store
@@ -171,12 +186,14 @@ export default async function TemuPage({
             </Link>
           ))}
         </div>
-        {/* 核价/备货/质检/广告/发布五个工作台 tab 按单店 token 调官方接口，
-            不提供「全部店铺」；概览/商品信息为本地聚合支持全店 */}
+        {/* 核价/质检/广告/发布/退货工作台按单店 token 调官方接口，不提供「全部店铺」；
+            概览/商品信息为本地聚合、备货为逐店扇出合并——支持全店 */}
         <TemuStoreSelect
           tab={activeTab}
           current={effectiveStore}
-          allowAll={activeTab === "overview" || activeTab === "products"}
+          allowAll={
+            activeTab === "overview" || activeTab === "products" || activeTab === "purchase"
+          }
           stores={(isPublishTab ? publishableStores : enabledStores).map((s) => ({
             id: s.id,
             name: s.name,
@@ -203,6 +220,13 @@ export default async function TemuPage({
         {activeTab === "price" && <TemuPriceReviewPanel store={effectiveStore} />}
         {activeTab === "purchase" && <TemuPurchasePanel store={effectiveStore} />}
         {activeTab === "qc" && <TemuQualityPanel store={effectiveStore} />}
+        {activeTab === "return" && <TemuReturnPanel store={effectiveStore} />}
+        {activeTab === "ship" && (
+          <TemuShipPanel
+            store={effectiveStore}
+            storeName={enabledStores.find((s) => s.id === effectiveStore)?.name}
+          />
+        )}
         {activeTab === "stores" && <TemuStoreManager stores={overview.stores} />}
       </div>
     </div>
@@ -226,9 +250,11 @@ async function OverviewTab({
   storeId?: string
 }) {
   // overview 复用页面级已查结果（店铺选择栏也要用），不在此重复执行整组聚合查询
-  const [categoryShare, salesTop] = await Promise.all([
+  const [categoryShare, salesTop, salesTopBySn, shipStats] = await Promise.all([
     getTemuCategoryShareAction(storeId),
     getTemuSalesTopAction(storeId),
+    getTemuSalesTopBySnAction(storeId),
+    getTemuShipStatsAction(storeId ?? null, null),
   ])
   const c = overview.cards
   const lead = (delta: number | null) =>
@@ -259,10 +285,10 @@ async function OverviewTab({
             footerLead: lead(c.thirtyDaySales.delta),
           },
           {
-            label: "今日广告消耗",
-            value: fmtMetric(c.adSpend.value, "yuan"),
-            delta: c.adSpend.delta,
-            footerLead: lead(c.adSpend.delta),
+            label: "今日预估销售额",
+            value: fmtMetric(c.estSalesAmount.value, "yuan"),
+            delta: c.estSalesAmount.delta,
+            footerLead: lead(c.estSalesAmount.delta),
           },
         ]}
       />
@@ -281,6 +307,14 @@ async function OverviewTab({
         <TemuCategoryShare data={categoryShare} />
         <TemuSalesTop10 data={salesTop} />
       </div>
+
+      {/* Row4 售出 TOP20 三卡（今日/七日/三十日，按货号汇总：前 3 名主图领奖台 + 4-20 名滚动列表） */}
+      <TemuSalesTop20Cards data={salesTopBySn} />
+
+      {/* Row5 发货统计三卡：今日发货占比环形图 + 本周发货包裹/货物数量（发货仓库可筛选）。
+          key=storeId：切店是 soft navigation，组件树位置不变时 client state 不会重置——
+          不加 key 会停留在前一店铺的预取数据（useState(initial) 不随 props 更新） */}
+      <TemuShipStatsCards key={storeId ?? "all"} initial={shipStats} storeId={storeId} />
     </div>
   )
 }

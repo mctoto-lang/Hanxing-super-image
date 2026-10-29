@@ -23,6 +23,8 @@ export const MODULE_NAMES = [
   "temu_price", // TEMU tab：核价调价
   "temu_purchase", // TEMU tab：备货
   "temu_qc", // TEMU tab：质检
+  "temu_ship", // TEMU tab：发货（发货台→创建发货单→装箱发货→打印→跟踪/统计）
+  "temu_return", // TEMU tab：退货（退供包裹三件套，实时查询）
   "settings", // 用户个人设置（默认开通）
 ] as const
 export type ModuleName = (typeof MODULE_NAMES)[number]
@@ -36,6 +38,8 @@ export const TEMU_TAB_MODULES = {
   price: "temu_price",
   purchase: "temu_purchase",
   qc: "temu_qc",
+  ship: "temu_ship",
+  return: "temu_return",
 } as const
 export type TemuTabModule = (typeof TEMU_TAB_MODULES)[keyof typeof TEMU_TAB_MODULES]
 

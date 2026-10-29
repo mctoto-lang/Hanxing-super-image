@@ -53,6 +53,37 @@ export const PURCHASE_ORDER_STATUS: Record<number, string> = {
   10: "已取消",
 }
 
+/** 发货单状态机（shiporderv2.get status，官方参数表枚举） */
+export const SHIP_ORDER_STATUS: Record<number, string> = {
+  0: "待装箱发货",
+  1: "待仓库收货",
+  2: "已收货",
+  3: "已入库",
+  4: "已退货",
+  5: "已取消",
+  6: "部分收货",
+}
+
+/** 发货方式（shiporderv2/packing.send deliveryMethod） */
+export const SHIP_DELIVERY_METHOD: Record<number, string> = {
+  0: "未下单",
+  1: "自送",
+  2: "平台推荐物流",
+  3: "第三方物流",
+}
+
+/** 运单计费重量异常状态（shiporderv2 expressWeightFeedbackStatus，官方枚举 0-7） */
+export const EXPRESS_WEIGHT_FEEDBACK_STATUS: Record<number, string> = {
+  0: "无异常",
+  1: "重量异常待确认",
+  2: "已提交异常反馈",
+  3: "物流商已处理",
+  4: "平台介入处理中",
+  5: "平台处理完成",
+  6: "卖家已确认",
+  7: "超期自动确认",
+}
+
 /** 广告展示状态（ad.detail.query adShowStatus）与阶段（adPhase）——
  *  官方文档未提供枚举含义，以下映射为占位，拿到真实广告后按实测补全；
  *  未命中码值时前端回退展示「状态码 n」。 */

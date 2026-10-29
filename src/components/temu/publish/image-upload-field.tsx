@@ -9,13 +9,13 @@ import type { MockupLibraryImage } from "@/lib/mockup/types"
 import { toImageSrc } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
-import { checkImageDims, compressToDataUrl, probeImageBlob } from "./image-utils"
+import { checkImageDims, compressToJpegBlob, probeImageBlob, storeImageBlob } from "./image-utils"
 
 /**
  * 素材图组字段（模板存源、发品时按目标店铺上传官方图床——保存模板零 TEMU 调用）：
  * 从图片库选图（我的上传/生成图资产，可在弹窗内上传）→ 本地探测尺寸/大小
  * （1:1 ≥800 提前提示）→ >2MB 压缩（autoCompress=静默自动，默认弹窗确认）
- * → 存「源 URL 或压缩 dataUrl」。
+ * → 压缩产物直传存储 temu/ 换 URL（不存 dataUrl——server action 载荷会被反向代理 413）。
  * 图[0] 兼作素材图/SKU 预览/缩略，全部进轮播；官方 1:1/≥800/≤2M 终校验在发品侧。
  */
 export function ImageUploadField({
@@ -67,7 +67,8 @@ export function ImageUploadField({
     [images, onChange],
   )
 
-  /** >2MB 批量压缩后并入（autoCompress 静默执行；确认流程复用同一函数） */
+  /** >2MB 批量压缩转存后并入（autoCompress 静默执行；确认流程复用同一函数）。
+   *  压缩产物直传存储 temu/ 换 URL——不存 dataUrl（server action 载荷会被反向代理 413） */
   const runCompress = useCallback(
     async (oversized: Array<{ img: MockupLibraryImage; blob: Blob }>, pendingUrls: string[]) => {
       setUploading(true)
@@ -76,14 +77,14 @@ export function ImageUploadField({
         let failed = 0
         for (const { img, blob } of oversized) {
           try {
-            items.push(await compressToDataUrl(blob))
+            items.push(await storeImageBlob(await compressToJpegBlob(blob)))
           } catch (err) {
             failed++
-            toast.error(`${img.fileName ?? "图片"}：${err instanceof Error ? err.message : "压缩失败"}`)
+            toast.error(`${img.fileName ?? "图片"}：${err instanceof Error ? err.message : "压缩转存失败"}`)
           }
         }
         await acceptSources(items)
-        if (failed > 0) toast.error(`${failed} 张压缩失败已跳过`)
+        if (failed > 0) toast.error(`${failed} 张压缩转存失败已跳过`)
       } finally {
         setUploading(false)
       }
@@ -194,7 +195,7 @@ export function ImageUploadField({
           }
         }}
         title="压缩后使用"
-        description={`有 ${compressAsk?.oversized.length ?? 0} 张图片大于 2MB（官方上限），将在浏览器中压缩（限宽 1600、JPEG 降质）后存为模板素材。是否继续？取消则跳过这些图片。`}
+        description={`有 ${compressAsk?.oversized.length ?? 0} 张图片大于 2MB（官方上限），将在浏览器中压缩（限宽 1600、JPEG 降质）后转存为模板素材。是否继续？取消则跳过这些图片。`}
         confirmText="压缩使用"
         destructive={false}
         pending={uploading}

@@ -8,6 +8,8 @@ import {
   temuMetricSnapshots,
   temuProducts,
   temuSalesOverviews,
+  temuShipOrders,
+  temuShipPackages,
   temuSkuMaps,
   temuStores,
   type TemuSyncStatus,
@@ -17,6 +19,7 @@ import {
   callTemuApi,
   forEachTemuPage,
   isTemuTokenExpired,
+  TemuApiError,
   type TemuCallContext,
 } from "@/lib/temu-api/client"
 import { getTemuAppCredential } from "@/lib/temu-api/app-config"
@@ -35,6 +38,7 @@ import { temuDayOfTs, temuDayStr } from "@/server/services/temu-time"
  * - api-soldout         bg.glo.goods.topselling.soldout.get（PA）→ temu_metric_snapshot
  * - api-price-list      bg.glo.goods.price.list.get（PA）→ SKC 级申报价全量回填
  * - api-ads-reports     bg.glo.searchrec.ad.reports.mall/goods.query（PA，全托）→ 广告日报两表
+ * - api-ship-orders     bg.shiporderv2.get（CN，全托）→ temu_ship_order/package 发货单落库
  *
  * 核价/调价/活动工作台为实时拉取（bg.price.review.* / bg.full.adjust.price.* /
  * bg.marketing.activity.*），不经本同步落库。
@@ -778,6 +782,284 @@ export async function getTemuCallContext(
   }
 }
 
+/* ─── 发货单（shiporderv2，2026-10-23 发货 tab 底座） ─── */
+
+/** 毫秒时间戳 → Date（非数值/0 返回 null） */
+function msToDate(v: unknown): Date | null {
+  const n = num(v)
+  return n && n > 0 ? new Date(n) : null
+}
+
+/** bg.shiporderv2.get（CN，pageNo/pageSize）→ temu_ship_order + temu_ship_package。
+ *  ⚠️ 官方窗口上限 60 天（真实店实测 2000000「最大允许查询60天的数据」）→ 取 59 天。
+ *  ⚠️ 真实店实测连续翻页数页后官方持续返回 4000000（网关级节流，单页/间隔探测
+ *  正常，client 短重试吸不住）→ 翻页间 1s 间隔 + 节流按「部分成功」收尾。
+ *  断点续拉（幂等 upsert，每轮 worker 咬一口）：
+ *  - 无数据 → 整窗 [59天前, now]；
+ *  - min(deliverTime) 晚于窗口下界 1 天以上 = 初次回填有老缺口 → 只拉缺口段
+ *    [59天前, min-1ms]（sortType 0 页序从缺口上端向下推进，不重走已同步段）；
+ *    缺口段 0 行 = 缺口确认为空（新店首单晚于窗口下界属常态，min 永不下降）
+ *    → 本轮直接接增量段，否则增量段永不执行、状态推进只剩裸查兜底；
+ *  - 缺口补完（或缺口为空）→ 增量 [max-3天, now]（3 天重叠刷状态推进）。
+ *  未装箱（status=0，deliverTime 为空）的单不进任何窗口——由发货工作台写操作
+ *  成功后按单号回查落库（temu-ship.ts），卖家中心手工创建的同状态单不覆盖。 */
+async function syncShipOrders(storeId: string, ctx: TemuCallContext): Promise<number> {
+  const [bounds] = await db
+    .select({
+      maxDeliverTime: sql<string | null>`max(${temuShipOrders.deliverTime})`,
+      minDeliverTime: sql<string | null>`min(${temuShipOrders.deliverTime})`,
+    })
+    .from(temuShipOrders)
+    .where(eq(temuShipOrders.storeId, storeId))
+  const now = Date.now()
+  const floor = now - 59 * 86400_000
+
+  const capturedAt = new Date()
+  let accepted = 0
+
+  /** 单窗口断点续拉：返回窗口内官方返回行数与是否被网关节流（4000000 按部分成功收尾） */
+  const pullWindow = async (from: number, to: number) => {
+    let rowsSeen = 0
+    try {
+      await forEachTemuPage<{ list?: unknown[]; total?: number }>(
+        "bg.shiporderv2.get",
+        { deliverTimeFrom: from, deliverTimeTo: to, sortType: 0 },
+        ctx,
+        async (result, pageNo) => {
+          const rows = Array.isArray(result?.list) ? (result.list as Record<string, unknown>[]) : []
+          if (rows.length > 0) {
+            rowsSeen += rows.length
+            accepted += await upsertShipOrderRows(storeId, capturedAt, rows)
+          }
+          // 真实店实测：qps3 连续翻页数页后官方持续返回 4000000（网关级节流，
+          // 单页/间隔探测正常，client 短重试吸不住）——翻页间加 1s 间隔缓解；
+          // 仍节流时按部分成功收尾（见下方 catch），后续轮次继续回填
+          if (rows.length >= 50) await new Promise((r) => setTimeout(r, 1000))
+          return rows.length >= 50 && pageNo < 200
+        },
+        { pageSize: 50, pageField: "pageNo" },
+      )
+      return { rowsSeen, throttled: false }
+    } catch (err) {
+      if (err instanceof TemuApiError && err.errorCode === 4000000) {
+        return { rowsSeen, throttled: true }
+      }
+      throw err
+    }
+  }
+
+  let throttled = false
+  const incremental = async (maxMs: number) => {
+    const r = await pullWindow(Math.max(floor, maxMs - 3 * 86400_000), now)
+    throttled = throttled || r.throttled
+  }
+  if (!bounds?.maxDeliverTime) {
+    const r = await pullWindow(floor, now)
+    throttled = r.throttled
+  } else {
+    const maxMs = new Date(bounds.maxDeliverTime).getTime()
+    const minMs = bounds.minDeliverTime ? new Date(bounds.minDeliverTime).getTime() : maxMs
+    if (minMs > floor + 86400_000) {
+      const gap = await pullWindow(floor, minMs - 1)
+      throttled = gap.throttled
+      // 缺口段 0 行（未节流）= 更老发货单不存在（新店常态）→ 本轮直接接增量段，
+      // 否则 min 永不下降、增量分支永不进入，状态推进只剩裸查最新一页兜底
+      if (!gap.throttled && gap.rowsSeen === 0) await incremental(maxMs)
+    } else {
+      await incremental(maxMs)
+    }
+  }
+  // 补捞：无窗口裸查最新一页（按创建时间倒序，含全部状态）。deliverTime 窗口
+  // 结构性漏掉待装箱等新单（2026-10-27 探针实证：今日窗口 0 行 status=0、裸查 p1 有），
+  // create 回查也可能因官方索引延迟落空——裸查是这些单进入本地库的兜底通道。
+  if (!throttled) {
+    try {
+      await new Promise((r) => setTimeout(r, 1200))
+      const r = await callTemuApi<{ list?: unknown[] }>(
+        "bg.shiporderv2.get",
+        { pageNo: 1, pageSize: 50, sortType: 0 },
+        ctx,
+      )
+      const rows = Array.isArray(r.result?.list) ? (r.result.list as Record<string, unknown>[]) : []
+      if (rows.length > 0) accepted += await upsertShipOrderRows(storeId, capturedAt, rows)
+    } catch (err) {
+      if (!(err instanceof TemuApiError && err.errorCode === 4000000)) throw err
+      // 补捞被节流：放弃本轮，下一轮 15 分钟再接
+    }
+  }
+  if (throttled) {
+    console.warn(
+      `[temu-sync] shiporderv2 网关节流（4000000），本轮部分落库 ${accepted} 行，后续轮次继续回填`,
+    )
+  }
+  return accepted
+}
+
+/** shiporderv2 行 → temu_ship_order/package upsert（幂等全列覆盖）。
+ *  导出供发货写操作回查复用（temu-ship.ts：创建/装箱/取消/改物流成功后按单号刷新本地库）。 */
+export async function upsertShipOrderRows(
+  storeId: string,
+  capturedAt: Date,
+  items: Record<string, unknown>[],
+): Promise<number> {
+  let accepted = 0
+  for (const row of items) {
+    const deliveryOrderSn = str(row.deliveryOrderSn, 64)
+    if (!deliveryOrderSn) continue
+    const addr = isRecord(row.receiveAddressInfo) ? row.receiveAddressInfo : {}
+    const basic = isRecord(row.subPurchaseOrderBasicVO) ? row.subPurchaseOrderBasicVO : {}
+    const pkgReceive = new Map<string, Date | null>()
+    for (const p of Array.isArray(row.packageReceiveInfoVOList) ? row.packageReceiveInfoVOList : []) {
+      if (isRecord(p)) {
+        const sn = str(p.packageSn, 64)
+        if (sn) pkgReceive.set(sn, msToDate(p.receiveTime))
+      }
+    }
+    const values = {
+      storeId,
+      deliveryOrderSn,
+      subPurchaseOrderSn: str(row.subPurchaseOrderSn, 64),
+      productSkcId: num(row.productSkcId),
+      skcExtCode: str(row.skcExtCode, 64),
+      subWarehouseId: num(row.subWarehouseId),
+      subWarehouseName: str(row.subWarehouseName, 120),
+      status: num(row.status) ?? -1,
+      urgencyType: num(row.urgencyType),
+      isCustomProduct: typeof row.isCustomProduct === "boolean" ? row.isCustomProduct : null,
+      inventoryRegion: num(row.inventoryRegion),
+      purchaseStockType: num(row.purchaseStockType),
+      deliveryMethod: num(row.deliveryMethod),
+      expressBatchSn: str(row.expressBatchSn, 64),
+      expressCompanyId: num(row.expressCompanyId),
+      expressCompany: str(row.expressCompany, 120),
+      expressDeliverySn: str(row.expressDeliverySn, 64),
+      deliveryAddressId: num(row.deliveryAddressId),
+      receiveAddressInfo: {
+        receiverName: str(addr.receiverName, 120),
+        phone: str(addr.phone, 32),
+        provinceName: str(addr.provinceName, 60),
+        provinceCode: num(addr.provinceCode),
+        cityName: str(addr.cityName, 60),
+        cityCode: num(addr.cityCode),
+        districtName: str(addr.districtName, 60),
+        districtCode: num(addr.districtCode),
+        detailAddress: str(addr.detailAddress, 300),
+      },
+      deliverPackageNum: num(row.deliverPackageNum),
+      otherDeliveryPackageNum: num(row.otherDeliveryPackageNum),
+      predictTotalPackageWeight: num(row.predictTotalPackageWeight),
+      deliveryOrderCreateTime: msToDate(row.deliveryOrderCreateTime),
+      deliverTime: msToDate(row.deliverTime),
+      receiveTime: msToDate(row.receiveTime),
+      inboundTime: msToDate(row.inboundTime),
+      purchaseTime: msToDate(row.purchaseTime),
+      expectPickUpGoodsTime: msToDate(row.expectPickUpGoodsTime),
+      expectLatestPickTime: msToDate(row.expectLatestPickTime),
+      latestFeedbackStatus: num(row.latestFeedbackStatus),
+      expressWeightFeedbackStatus: num(row.expressWeightFeedbackStatus),
+      expressRejectStatus: num(row.expressRejectStatus),
+      exceptionFeedBackTotalCount: num(row.exceptionFeedBackTotalCount),
+      receiveSkcNum: num(row.receiveSkcNum),
+      defectiveSkcNum: num(row.defectiveSkcNum),
+      receivePackageNum: num(row.receivePackageNum),
+      skcPurchaseNum: num(row.skcPurchaseNum),
+      deliverSkcNum: num(row.deliverSkcNum),
+      isPrintBoxMark: typeof row.isPrintBoxMark === "boolean" ? row.isPrintBoxMark : null,
+      supplierId: num(row.supplierId),
+      isClothCategory: typeof row.isClothCategory === "boolean" ? row.isClothCategory : null,
+      ifCanOperateDeliver: typeof row.ifCanOperateDeliver === "boolean" ? row.ifCanOperateDeliver : null,
+      driverName: str(row.driverName, 120),
+      plateNumber: str(row.plateNumber, 32),
+      productSkcPicture: str(basic.productSkcPicture, 300),
+      fragileTag: typeof basic.fragileTag === "boolean" ? basic.fragileTag : null,
+      cancelDeadline:
+        typeof row.deliveryOrderCancelLeftTime === "number" && row.deliveryOrderCancelLeftTime > 0
+          ? new Date(capturedAt.getTime() + row.deliveryOrderCancelLeftTime)
+          : null,
+      raw: row,
+      contentHash: contentHashOf(row),
+      capturedAt,
+    }
+    await db
+      .insert(temuShipOrders)
+      .values(values)
+      .onConflictDoUpdate({
+        target: [temuShipOrders.storeId, temuShipOrders.deliveryOrderSn],
+        set: {
+          subPurchaseOrderSn: values.subPurchaseOrderSn,
+          productSkcId: values.productSkcId,
+          skcExtCode: values.skcExtCode,
+          subWarehouseId: values.subWarehouseId,
+          subWarehouseName: values.subWarehouseName,
+          status: values.status,
+          urgencyType: values.urgencyType,
+          isCustomProduct: values.isCustomProduct,
+          inventoryRegion: values.inventoryRegion,
+          purchaseStockType: values.purchaseStockType,
+          deliveryMethod: values.deliveryMethod,
+          expressBatchSn: values.expressBatchSn,
+          expressCompanyId: values.expressCompanyId,
+          expressCompany: values.expressCompany,
+          expressDeliverySn: values.expressDeliverySn,
+          deliveryAddressId: values.deliveryAddressId,
+          receiveAddressInfo: values.receiveAddressInfo,
+          deliverPackageNum: values.deliverPackageNum,
+          otherDeliveryPackageNum: values.otherDeliveryPackageNum,
+          predictTotalPackageWeight: values.predictTotalPackageWeight,
+          deliveryOrderCreateTime: values.deliveryOrderCreateTime,
+          deliverTime: values.deliverTime,
+          receiveTime: values.receiveTime,
+          inboundTime: values.inboundTime,
+          purchaseTime: values.purchaseTime,
+          expectPickUpGoodsTime: values.expectPickUpGoodsTime,
+          expectLatestPickTime: values.expectLatestPickTime,
+          latestFeedbackStatus: values.latestFeedbackStatus,
+          expressWeightFeedbackStatus: values.expressWeightFeedbackStatus,
+          expressRejectStatus: values.expressRejectStatus,
+          exceptionFeedBackTotalCount: values.exceptionFeedBackTotalCount,
+          receiveSkcNum: values.receiveSkcNum,
+          defectiveSkcNum: values.defectiveSkcNum,
+          receivePackageNum: values.receivePackageNum,
+          skcPurchaseNum: values.skcPurchaseNum,
+          deliverSkcNum: values.deliverSkcNum,
+          isPrintBoxMark: values.isPrintBoxMark,
+          supplierId: values.supplierId,
+          isClothCategory: values.isClothCategory,
+          ifCanOperateDeliver: values.ifCanOperateDeliver,
+          driverName: values.driverName,
+          plateNumber: values.plateNumber,
+          productSkcPicture: values.productSkcPicture,
+          fragileTag: values.fragileTag,
+          cancelDeadline: values.cancelDeadline,
+          raw: values.raw,
+          contentHash: values.contentHash,
+          capturedAt: values.capturedAt,
+        },
+      })
+    for (const p of Array.isArray(row.packageList) ? row.packageList : []) {
+      if (!isRecord(p)) continue
+      const packageSn = str(p.packageSn, 64)
+      if (!packageSn) continue
+      await db
+        .insert(temuShipPackages)
+        .values({
+          storeId,
+          deliveryOrderSn,
+          packageSn,
+          skcNum: num(p.skcNum),
+          receiveTime: pkgReceive.get(packageSn) ?? null,
+          capturedAt,
+        })
+        .onConflictDoUpdate({
+          target: [temuShipPackages.storeId, temuShipPackages.deliveryOrderSn, temuShipPackages.packageSn],
+          set: { skcNum: num(p.skcNum), receiveTime: pkgReceive.get(packageSn) ?? null, capturedAt },
+        })
+    }
+    accepted++
+  }
+  return accepted
+}
+
 const SOURCES: Array<{ source: string; run: (storeId: string, ctx: TemuCallContext) => Promise<number> }> = [
   { source: "api-goods-list", run: syncGoodsList },
   { source: "product-image-mirror", run: (storeId) => mirrorProductImages(storeId) },
@@ -786,6 +1068,7 @@ const SOURCES: Array<{ source: string; run: (storeId: string, ctx: TemuCallConte
   { source: "api-soldout", run: syncSoldout },
   { source: "api-price-list", run: syncPriceList },
   { source: "api-ads-reports", run: syncAdsReports },
+  { source: "api-ship-orders", run: syncShipOrders },
 ]
 
 /** 同步单个店铺（手动按钮与 worker 循环共用）。token 失效会标记店铺并中止。 */
@@ -812,7 +1095,9 @@ export async function syncStore(storeId: string): Promise<StoreSyncOutcome> {
     // 跳过不算失败
     if (
       store.mallType === "semi" &&
-      (source === "api-sales-overview" || source === "api-ads-reports")
+      (source === "api-sales-overview" ||
+        source === "api-ads-reports" ||
+        source === "api-ship-orders")
     ) {
       status.sources[source] = { ok: true, count: 0, skipped: true }
       await db.insert(temuIngestLogs).values({

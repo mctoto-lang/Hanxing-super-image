@@ -21,7 +21,6 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
-  Table,
   TableBody,
   TableCell,
   TableHead,
@@ -92,7 +91,7 @@ export function TemuPublishPanel({
               <Button
                 variant="outline"
                 size="sm"
-                className="h-9! text-xs"
+                className="h-8 text-xs"
                 nativeButton={false}
                 render={<Link href="/templates/temu" />}
               >
@@ -100,13 +99,13 @@ export function TemuPublishPanel({
                 管理模板
               </Button>
               <ViewSwitch value={view} onChange={setView} />
-              <Button variant="outline" size="sm" className="h-9! text-xs" onClick={() => void refresh()} disabled={loading}>
+              <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => void refresh()} disabled={loading}>
                 {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                 刷新
               </Button>
             </div>
           </CardHeader>
-          <CardContent className="min-h-0 flex-1 overflow-y-auto scrollbar-hide">
+          <CardContent className="min-h-0 flex-1 overflow-auto scrollbar-hide">
             {templates.length === 0 && !loading ? (
               <p className="py-8 text-center text-sm text-muted-foreground">
                 还没有模板。先到
@@ -116,8 +115,10 @@ export function TemuPublishPanel({
                 创建模板。
               </p>
             ) : (
-              <Table>
-                <TableHeader>
+              // overflow-clip 只按圆角裁剪（非滚动容器，sticky 表头仍锚定页侧 CardContent）
+              <div className="w-max min-w-full overflow-clip rounded-md border">
+              <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
+                <TableHeader className="sticky top-0 z-10 bg-card">
                   <TableRow>
                     <TableHead>模板</TableHead>
                     <TableHead>类目</TableHead>
@@ -171,8 +172,9 @@ export function TemuPublishPanel({
                     </TableRow>
                   ))}
                 </TableBody>
-              </Table>
-            )}
+              </table>
+              </div>
+              )}
           </CardContent>
         </Card>
       ) : (
@@ -181,13 +183,13 @@ export function TemuPublishPanel({
             <CardTitle className="text-base">发品记录</CardTitle>
             <div className="flex items-center gap-2">
               <ViewSwitch value={view} onChange={setView} />
-              <Button variant="outline" size="sm" className="h-9! text-xs" onClick={() => void refresh()} disabled={loading}>
+              <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => void refresh()} disabled={loading}>
                 {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                 刷新
               </Button>
             </div>
           </CardHeader>
-          <CardContent className="min-h-0 flex-1 overflow-y-auto scrollbar-hide">
+          <CardContent className="min-h-0 flex-1 overflow-auto scrollbar-hide">
             <PublishRecordsTable rows={records} />
           </CardContent>
         </Card>
@@ -226,7 +228,7 @@ function ViewSwitch({
       value={value}
       onValueChange={(v) => v && onChange(v as "publish" | "records")}
     >
-      <SelectTrigger className="h-9! w-32 text-xs" aria-label="切换视图">
+      <SelectTrigger className="h-8 w-32 text-xs" aria-label="切换视图">
         <SelectValue>{value === "publish" ? "商品发布" : "发品记录"}</SelectValue>
       </SelectTrigger>
       <SelectContent>

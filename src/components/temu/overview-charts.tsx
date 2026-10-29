@@ -2,11 +2,10 @@
 
 import * as React from "react"
 import { useRouter } from "next/navigation"
+import { Medal } from "lucide-react"
 import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, XAxis, YAxis } from "recharts"
 import {
   ChartContainer,
-  ChartLegend,
-  ChartLegendContent,
   ChartTooltip,
   type ChartConfig,
 } from "@/components/ui/chart"
@@ -18,6 +17,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { KpiTile } from "@/components/ui/kpi-tile"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import {
   Select,
@@ -26,13 +26,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { cn } from "@/lib/utils"
+import { temuImageSrc } from "@/lib/temu/image"
+import { getTemuShipStatsAction, type TemuShipStats } from "@/server/actions/temu-ship"
 import type {
   TemuCategoryShare,
+  TemuSalesTopBySnRow,
   TemuSalesTopRow,
 } from "@/server/actions/temu"
 
 /**
- * Temu 面板概览组件：店铺切换下拉、类目占比、售出 TOP10。
+ * Temu 面板概览组件：店铺切换下拉、类目占比、售出 TOP10、售出 TOP20（按货号）。
  * 趋势图与顶部卡片用 dashboard-01 真源组件
  * （@/components/chart-area-interactive、@/components/section-cards）。
  */
@@ -68,7 +72,7 @@ export function TemuStoreSelect({
         router.push(`/temu?${p.toString()}`)
       }}
     >
-      <SelectTrigger className="h-9! w-44" aria-label="切换店铺">
+      <SelectTrigger className="h-8 w-44 text-xs" aria-label="切换店铺">
         <SelectValue placeholder={allowAll ? "全部店铺" : "选择店铺"} />
       </SelectTrigger>
       <SelectContent>
@@ -131,18 +135,26 @@ function ShareTooltip({
   total,
 }: {
   active?: boolean
-  payload?: Array<{ name?: string | number; value?: number | string }>
+  payload?: Array<{ name?: string | number; value?: number | string; payload?: { imageUrl?: string | null; imageCosUrl?: string | null } }>
   total: number
 }) {
   if (!active || !payload?.length) return null
   const p = payload[0]
   const value = Number(p.value ?? 0)
   const pct = total > 0 ? Math.round((value / total) * 1000) / 10 : 0
+  const d = p.payload
+  const src = d?.imageCosUrl || d?.imageUrl ? temuImageSrc(d.imageCosUrl ?? null, d.imageUrl ?? null) : null
   return (
-    <div className="min-w-36 rounded-lg border bg-background px-3 py-2 text-xs shadow-xl">
-      <div className="max-w-48 truncate font-medium">{String(p.name ?? "")}</div>
-      <div className="mt-0.5 text-muted-foreground">
-        {value.toLocaleString("zh-CN")} 件 · 占比 <span className="text-foreground">{pct}%</span>
+    <div className="flex min-w-36 items-center gap-2 rounded-lg border bg-background px-3 py-2 text-xs shadow-xl">
+      {src ? (
+        // eslint-disable-next-line @next/next/no-img-element -- TEMU/COS image URLs are external
+        <img src={src} alt="" className="size-10 shrink-0 rounded object-cover" />
+      ) : null}
+      <div className="min-w-0">
+        <div className="max-w-48 truncate font-medium">{String(p.name ?? "")}</div>
+        <div className="mt-0.5 whitespace-nowrap text-muted-foreground">
+          {value.toLocaleString("zh-CN")} 件 · 占比 <span className="text-foreground">{pct}%</span>
+        </div>
       </div>
     </div>
   )
@@ -196,25 +208,48 @@ export function TemuCategoryShare({ data }: { data: TemuCategoryShare[] }) {
             所选口径暂无数据（数据随官方 API 定时同步更新）
           </div>
         ) : (
-          <ChartContainer config={config} className="mx-auto h-[280px] w-full">
-            <PieChart>
-              <ChartTooltip content={<ShareTooltip total={total} />} />
-              <Pie
-                data={slices}
-                dataKey="value"
-                nameKey="label"
-                innerRadius={52}
-                outerRadius={86}
-                paddingAngle={slices.length > 10 ? 1 : 2}
-                strokeWidth={2}
-              >
-                {slices.map((s) => (
-                  <Cell key={s.label} fill={s.color} />
-                ))}
-              </Pie>
-              <ChartLegend content={<ChartLegendContent nameKey="label" />} />
-            </PieChart>
-          </ChartContainer>
+          <>
+            <ChartContainer config={config} className="mx-auto h-[280px] w-full">
+              <PieChart>
+                <ChartTooltip content={<ShareTooltip total={total} />} />
+                <Pie
+                  data={slices}
+                  dataKey="value"
+                  nameKey="label"
+                  innerRadius={52}
+                  outerRadius={86}
+                  paddingAngle={slices.length > 10 ? 1 : 2}
+                  strokeWidth={2}
+                >
+                  {slices.map((s) => (
+                    <Cell key={s.label} fill={s.color} />
+                  ))}
+                </Pie>
+              </PieChart>
+            </ChartContainer>
+            {/* 自渲染图例（替代 ChartLegend）：slices 已按当前口径占比降序（「其他」
+                垫尾），类目名单行省略不折行，右侧跟占比百分比 */}
+            <div className="mt-2 flex flex-wrap justify-center gap-x-3 gap-y-1">
+              {slices.map((s) => {
+                const pct = total > 0 ? Math.round((s.value / total) * 1000) / 10 : 0
+                return (
+                  <div
+                    key={s.label}
+                    className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
+                  >
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-[2px]"
+                      style={{ backgroundColor: s.color }}
+                    />
+                    <span className="max-w-32 truncate" title={s.label}>
+                      {s.label}
+                    </span>
+                    <span className="tabular-nums">{pct}%</span>
+                  </div>
+                )
+              })}
+            </div>
+          </>
         )}
       </CardContent>
     </Card>
@@ -323,5 +358,342 @@ export function TemuSalesTop10({ data }: { data: TemuSalesTopRow[] }) {
         )}
       </CardContent>
     </Card>
+  )
+}
+
+// ---------- 售出 TOP20（按货号，概览页底部三卡） ----------
+
+/** 领奖台名次勋章底色：金 / 银 / 铜（实底圆内嵌 Medal 白图标，名次由领奖台位置表达） */
+const RANK_MEDAL = ["bg-amber-500", "bg-slate-400", "bg-orange-700"]
+
+/** TOP20 主图缩略：转存 URL 优先（temuImageSrc 回落 kwcdn 外链），无图占位 */
+function Top20Thumb({ row, className }: { row: TemuSalesTopBySnRow; className?: string }) {
+  const src = temuImageSrc(row.mainImageCosUrl, row.mainImageUrl)
+  return src ? (
+    // eslint-disable-next-line @next/next/no-img-element -- kwcdn/COS 外链不走 next/image
+    <img src={src} alt="" loading="lazy" className={cn("rounded-md object-cover", className)} />
+  ) : (
+    <div
+      className={cn(
+        "flex items-center justify-center rounded-md bg-muted text-muted-foreground",
+        className,
+      )}
+    >
+      <span className="text-[10px]">无图</span>
+    </div>
+  )
+}
+
+/** 售出 TOP20 单卡：前 3 名主图领奖台（2-1-3 排列，第一名居中更大）+
+ *  第 4-20 名行内列表（序号+主图+货号+销量，固定高度内部滚动、隐藏滚动条） */
+function TemuTop20Card({
+  title,
+  rows,
+}: {
+  title: string
+  rows: { row: TemuSalesTopBySnRow; value: number }[]
+}) {
+  const podium = rows.slice(0, 3).map((x, i) => ({ ...x, rank: i + 1 }))
+  const podiumOrder = podium.length === 3 ? [podium[1], podium[0], podium[2]] : podium
+  const rest = rows.slice(3)
+  return (
+    <Card className="@container/card">
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+        <CardDescription>按货号汇总销量（件）</CardDescription>
+      </CardHeader>
+      <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
+        {rows.length === 0 ? (
+          <div className="flex h-[320px] items-center justify-center text-sm text-muted-foreground">
+            暂无数据（数据随官方 API 定时同步更新）
+          </div>
+        ) : (
+          <>
+            <div className="flex items-end justify-center gap-4 px-2 pt-2">
+              {podiumOrder.map((p) => (
+                <div key={p.row.sn} className="flex w-24 min-w-0 flex-col items-center gap-1">
+                  <div className={cn("relative", p.rank === 1 ? "size-20" : "size-14")}>
+                    <Top20Thumb row={p.row} className="size-full" />
+                    <div
+                      className={cn(
+                        "absolute -left-2 -top-2 flex size-6 items-center justify-center rounded-full text-white shadow-md",
+                        RANK_MEDAL[p.rank - 1],
+                      )}
+                    >
+                      <Medal className="size-3.5" />
+                    </div>
+                  </div>
+                  <div className="w-full truncate text-center text-xs font-medium" title={p.row.sn}>
+                    {p.row.sn}
+                  </div>
+                  <div className="text-xs tabular-nums text-muted-foreground">
+                    {p.value.toLocaleString("zh-CN")} 件
+                  </div>
+                </div>
+              ))}
+            </div>
+            {rest.length > 0 && (
+              /* 高度 = 恰好 8 行（行高 36 + 行间 2：8×36+7×2=302），第 9 行起滚动查看 */
+              <div className="scrollbar-hide mt-3 max-h-[302px] space-y-0.5 overflow-y-auto">
+                {rest.map((x, i) => (
+                  <div
+                    key={x.row.sn}
+                    className="flex items-center gap-2 rounded-md px-1.5 py-1 text-xs hover:bg-muted/50"
+                  >
+                    <span className="w-5 shrink-0 text-center tabular-nums text-muted-foreground">
+                      {i + 4}
+                    </span>
+                    <Top20Thumb row={x.row} className="size-7 shrink-0" />
+                    <span className="min-w-0 flex-1 truncate" title={x.row.sn}>
+                      {x.row.sn}
+                    </span>
+                    <span className="shrink-0 font-medium tabular-nums">
+                      {x.value.toLocaleString("zh-CN")}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+/** 售出 TOP20 三卡（今日/七日/三十日，按货号汇总；口径固定无切换） */
+export function TemuSalesTop20Cards({ data }: { data: TemuSalesTopBySnRow[] }) {
+  const cards = [
+    { key: "today", title: "今日销量 TOP 20" },
+    { key: "7d", title: "七日销量 TOP 20" },
+    { key: "30d", title: "三十日销量 TOP 20" },
+  ]
+  return (
+    <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+      {cards.map((c) => {
+        const rows = data
+          .map((r) => ({
+            row: r,
+            value:
+              c.key === "today"
+                ? r.todaySalesVolume
+                : c.key === "7d"
+                  ? r.last7DaysSalesVolume
+                  : r.last30DaysSalesVolume,
+          }))
+          .filter((x) => x.value > 0)
+          .sort((a, b) => b.value - a.value)
+          .slice(0, 20)
+        return <TemuTop20Card key={c.key} title={c.title} rows={rows} />
+      })}
+    </div>
+  )
+}
+
+// ---------- 发货统计（概览页底部两卡） ----------
+
+const ALL_WAREHOUSES = "__all__"
+
+const WEEKDAY_ZH = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"] as const
+
+/** "2026-10-28" → "10/28 周二"（按日期串本地构造取星期，不受运行时区影响） */
+function weekDayLabel(day: string) {
+  const [y = 0, m = 1, d = 1] = day.split("-").map(Number)
+  const weekday = WEEKDAY_ZH[new Date(y, m - 1, d).getDay()] ?? ""
+  return `${day.slice(5).replace("-", "/")} ${weekday}`
+}
+
+/** 本周发货两张 KPI 卡共用 props：value=本周合计、delta=较上周 ±%、trend=本周 7 天逐日 */
+function shipWeekTile(
+  label: string,
+  current: number,
+  last: number,
+  trend: number[],
+  trendLabels: string[],
+) {
+  return {
+    label,
+    value: current,
+    format: (v: number) => v.toLocaleString("zh-CN"),
+    delta: last > 0 ? ((current - last) / last) * 100 : undefined,
+    deltaLabel: "较上周",
+    trend,
+    trendLabels,
+  }
+}
+
+/** 发货统计两卡（概览页底部）：今日发货占比环形图（货号口径，占两列）+
+ *  右列「2 行 1 列」两张 KPI 卡（货物/包裹数量，本周一~周日 7 节点 sparkline，
+ *  flex-1 均分与左卡等高）。时间轴=预约取货时间（无预约回落装箱时间）：
+ *  折线止于今天、未来天空心点带出已预约量。发货仓库（卖家发货地址）筛选对
+ *  所有卡同时生效；初始数据由服务端预取传入，切换仓库后客户端重取（30s 缓存）。 */
+export function TemuShipStatsCards({
+  initial,
+  storeId,
+}: {
+  initial: TemuShipStats
+  storeId?: string
+}) {
+  const [stats, setStats] = React.useState(initial)
+  const [warehouse, setWarehouse] = React.useState(ALL_WAREHOUSES)
+  const [pending, startTransition] = React.useTransition()
+
+  const onWarehouseChange = (v: string | null) => {
+    const next = v || ALL_WAREHOUSES
+    setWarehouse(next)
+    startTransition(async () => {
+      try {
+        const res = await getTemuShipStatsAction(storeId ?? null, next === ALL_WAREHOUSES ? null : next)
+        if (res && Array.isArray(res.today)) setStats(res)
+      } catch {
+        // 地址标签拉取等偶发失败不阻断，保留现有数据
+      }
+    })
+  }
+
+  const today = stats.today
+  const total = today.reduce((s, d) => s + d.num, 0)
+  const slices = React.useMemo(() => {
+    const kept: Array<{ label: string; value: number }> = []
+    for (const d of today) {
+      if (kept.length >= 15) break
+      if (total > 0 && d.num / total < 0.01) break
+      kept.push({ label: d.name, value: d.num })
+    }
+    const rest = today.slice(kept.length).reduce((s, d) => s + d.num, 0)
+    if (rest > 0) kept.push({ label: "其他", value: rest })
+    return kept.map((s, i) => {
+      const product = s.label === "其他" ? null : today.find((d) => d.name === s.label)
+      return {
+        ...s,
+        imageUrl: product?.imageUrl ?? null,
+        imageCosUrl: product?.imageCosUrl ?? null,
+        color: s.label === "其他" ? "var(--muted)" : donutPalette[i % donutPalette.length],
+      }
+    })
+  }, [today, total])
+
+  const config = Object.fromEntries(
+    slices.map((s) => [s.label, { label: s.label, color: s.color }]),
+  ) satisfies ChartConfig
+
+  // 周卡趋势：未来天（已预约量）从首个 future 项起折线止步、画空心点，label 后缀「已预约」
+  const weekFutureFrom = stats.weekDaily.findIndex((d) => d.future)
+  const weekTrendLabels = stats.weekDaily.map((d) =>
+    d.future ? `${weekDayLabel(d.day)}（已预约）` : weekDayLabel(d.day),
+  )
+
+  return (
+    <div
+      className={cn(
+        "grid grid-cols-1 gap-4 *:data-[slot=card]:bg-linear-to-t *:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card *:data-[slot=card]:shadow-xs xl:grid-cols-3 dark:*:data-[slot=card]:bg-card",
+        pending && "opacity-60",
+      )}
+    >
+      <Card className="@container/card xl:col-span-2">
+        <CardHeader>
+          <CardTitle>今日发货占比</CardTitle>
+          <CardDescription>今日=预约取货日为今天（无预约回落装箱时间）；按货号汇总发货件数（展示占比 ≥1% 的货号，至多 15 条；无货号归「无货号」）</CardDescription>
+          <CardAction>
+            <Select
+              items={[
+                { value: ALL_WAREHOUSES, label: "全部发货仓库" },
+                ...stats.warehouses.map((w) => ({ value: w.key, label: w.label })),
+              ]}
+              value={warehouse}
+              onValueChange={onWarehouseChange}
+            >
+              <SelectTrigger className="h-8 w-40 text-xs" aria-label="筛选发货仓库（对下方发货卡全部生效）">
+                <SelectValue placeholder="全部发货仓库" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL_WAREHOUSES}>全部发货仓库</SelectItem>
+                {stats.warehouses.map((w) => (
+                  <SelectItem key={w.key} value={w.key}>
+                    {w.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </CardAction>
+        </CardHeader>
+        <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
+          {total === 0 ? (
+            <div className="flex h-[280px] items-center justify-center text-sm text-muted-foreground">
+              {pending ? "加载中…" : "今日暂无发货数据（数据随官方 API 定时同步更新）"}
+            </div>
+          ) : (
+            <>
+              <ChartContainer config={config} className="mx-auto h-[280px] w-full">
+                <PieChart>
+                  <ChartTooltip content={<ShareTooltip total={total} />} />
+                  <Pie
+                    data={slices}
+                    dataKey="value"
+                    nameKey="label"
+                    innerRadius={52}
+                    outerRadius={86}
+                    paddingAngle={slices.length > 10 ? 1 : 2}
+                    strokeWidth={2}
+                  >
+                    {slices.map((s) => (
+                      <Cell key={s.label} fill={s.color} />
+                    ))}
+                  </Pie>
+                </PieChart>
+              </ChartContainer>
+              <div className="mt-2 flex flex-wrap justify-center gap-x-3 gap-y-1">
+                {slices.map((s) => {
+                  const pct = total > 0 ? Math.round((s.value / total) * 1000) / 10 : 0
+                  return (
+                    <div
+                      key={s.label}
+                      className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
+                    >
+                      <span
+                        className="h-2 w-2 shrink-0 rounded-[2px]"
+                        style={{ backgroundColor: s.color }}
+                      />
+                      <span className="max-w-32 truncate" title={s.label}>
+                        {s.label}
+                      </span>
+                      <span className="tabular-nums">{pct}%</span>
+                    </div>
+                  )
+                })}
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+      {/* 右列 2 行 1 列两张 KPI 卡（货物/包裹数量 + 本周 7 节点 sparkline，折线止于今天、
+          未来天空心点=已预约量），flex-1 均分与左卡等高 */}
+      <div className="flex min-w-0 flex-col gap-4">
+        <KpiTile
+          className="flex-1"
+          showPoints
+          futureFrom={weekFutureFrom >= 0 ? weekFutureFrom : undefined}
+          {...shipWeekTile(
+            "本周发货货物数量",
+            stats.week.skcNum,
+            stats.lastWeek.skcNum,
+            stats.weekDaily.map((d) => d.skcNum),
+            weekTrendLabels,
+          )}
+        />
+        <KpiTile
+          className="flex-1"
+          showPoints
+          futureFrom={weekFutureFrom >= 0 ? weekFutureFrom : undefined}
+          {...shipWeekTile(
+            "本周发货包裹数量",
+            stats.week.packageNum,
+            stats.lastWeek.packageNum,
+            stats.weekDaily.map((d) => d.packageNum),
+            weekTrendLabels,
+          )}
+        />
+      </div>
+    </div>
   )
 }

@@ -25,6 +25,17 @@ export function temuYesterdayStr(): string {
   return temuDayStr(new Date(Date.now() - 24 * 3600 * 1000))
 }
 
+/** 北京时间"本周一零点"对应的绝对时间点（UTC Date；发货统计周口径起点） */
+export function temuStartOfWeek(now: Date = new Date()): Date {
+  const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(
+    new Intl.DateTimeFormat("en-US", { timeZone: TEMU_TZ, weekday: "short" }).format(now),
+  )
+  // 北京时间的星期几不能取 UTC instant 的 getUTCDay（CST 00-08 点会差一天），
+  // 星期序换算回退天数：周一=0、周日回退 6 天
+  const diffDays = weekday === 0 ? 6 : Math.max(weekday - 1, 0)
+  return new Date(new Date(`${temuDayStr(now)}T00:00:00+08:00`).getTime() - diffDays * 86_400_000)
+}
+
 /** epoch 毫秒 → 北京时间日期串（广告日报行分日用） */
 export function temuDayOfTs(ts: number): string {
   return new Date(ts).toLocaleDateString("sv-SE", { timeZone: TEMU_TZ })

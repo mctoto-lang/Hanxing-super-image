@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { CheckSquare, Loader2, RefreshCw, Send, Square, Zap } from "lucide-react"
+import { Loader2, RefreshCw, Send, Zap } from "lucide-react"
 import {
   TableBody,
   TableCell,
@@ -11,9 +11,11 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
   DialogContent,
@@ -120,18 +122,18 @@ export function StockView({
         <div className="flex flex-wrap items-center gap-2">
           {selectedRows.length > 0 && (
             <>
-              <Button size="sm" className="h-9! text-xs" disabled={applying} onClick={runBatch}>
+              <Button size="sm" className="h-8 text-xs" disabled={applying} onClick={runBatch}>
                 {applying ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
                 批量申报（{selectedRows.length}）
               </Button>
-              <Button variant="outline" size="sm" className="h-9! text-xs" onClick={() => setAutoOpen(true)}>
+              <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setAutoOpen(true)}>
                 <Zap className="size-4" />
                 自动备货（{selectedRows.length}）
               </Button>
             </>
           )}
           <Input
-            className="h-9 w-56 text-xs"
+            className="h-8 w-56 text-xs"
             placeholder="搜索商品名 / 货号 / SKC（防抖 400ms）"
             value={q}
             onChange={(e) => setQ(e.target.value)}
@@ -146,7 +148,7 @@ export function StockView({
               if (v === "orders") onBack()
             }}
           >
-            <SelectTrigger className="h-9! w-28 text-xs" aria-label="切换视图">
+            <SelectTrigger className="h-8 w-28 text-xs" aria-label="切换视图">
               <SelectValue>申报备货</SelectValue>
             </SelectTrigger>
             <SelectContent>
@@ -158,7 +160,7 @@ export function StockView({
             value={onlyCanPurchase ? "yes" : "all"}
             onValueChange={(v) => setOnlyCanPurchase(v !== "all")}
           >
-            <SelectTrigger className="h-9! w-32 text-xs" aria-label="可备货筛选">
+            <SelectTrigger className="h-8 w-32 text-xs" aria-label="可备货筛选">
               <SelectValue>{onlyCanPurchase ? "仅可备货" : "全部商品"}</SelectValue>
             </SelectTrigger>
             <SelectContent>
@@ -166,7 +168,7 @@ export function StockView({
               <SelectItem value="all">全部商品</SelectItem>
             </SelectContent>
           </Select>
-          <Button variant="outline" size="sm" className="h-9! text-xs" onClick={load} disabled={loading} aria-label="刷新可申报商品">
+          <Button variant="outline" size="sm" className="h-8 text-xs" onClick={load} disabled={loading} aria-label="刷新可申报商品">
             {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
             刷新
           </Button>
@@ -195,13 +197,11 @@ export function StockView({
         )}
         {error ? (
           <p className="py-8 text-center text-sm text-red-600 dark:text-red-400">{error}</p>
-        ) : rows.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">
-            {loading ? "加载中…" : "无可申报商品（可切「全部商品」或调整搜索）"}
-          </p>
         ) : (
-          <table className="w-max min-w-full caption-bottom text-sm [&_td]:px-3 [&_th]:px-3">
-            <TableHeader className="sticky top-0 z-10 bg-background">
+          // overflow-clip 只按圆角裁剪（非滚动容器，sticky 表头仍锚定页侧 CardContent）
+          <div className="w-max min-w-full overflow-clip rounded-md border">
+          <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
+            <TableHeader className="sticky top-0 z-10 bg-card">
               <TableRow>
                 <TableHead className="w-8"></TableHead>
                 <TableHead>主图</TableHead>
@@ -216,18 +216,23 @@ export function StockView({
               </TableRow>
             </TableHeader>
             <TableBody>
+              {rows.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={10} className="h-20 text-center text-muted-foreground">
+                    {loading ? "加载中…" : "无可申报商品（可切「全部商品」或调整搜索）"}
+                  </TableCell>
+                </TableRow>
+              )}
               {rows.map((r) => {
                 const checked = selected.has(r.productSkcId)
                 const selectable = r.skus.length > 0
                 return (
                   <TableRow key={r.productSkcId}>
                     <TableCell>
-                      <button
-                        type="button"
-                        aria-label="选择"
+                      <Checkbox
+                        checked={checked}
                         disabled={!selectable}
-                        className="text-muted-foreground hover:text-foreground disabled:opacity-40"
-                        onClick={() =>
+                        onCheckedChange={() =>
                           setSelected((s) => {
                             const n = new Set(s)
                             if (n.has(r.productSkcId)) n.delete(r.productSkcId)
@@ -235,16 +240,15 @@ export function StockView({
                             return n
                           })
                         }
-                      >
-                        {checked ? <CheckSquare className="size-4" /> : <Square className="size-4" />}
-                      </button>
+                        aria-label="选择"
+                      />
                     </TableCell>
                     <TableCell>
                       {r.mainImageUrl ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={temuImageSrc(r.mainImageCosUrl, r.mainImageUrl)} alt="" className="size-10 rounded-md object-cover" loading="lazy" />
+                        <img src={temuImageSrc(r.mainImageCosUrl, r.mainImageUrl)} alt="" className="size-10 rounded object-cover" loading="lazy" />
                       ) : (
-                        <div className="size-10 rounded-md bg-muted" />
+                        <div className="size-10 rounded bg-muted" />
                       )}
                     </TableCell>
                     <TableCell className="max-w-56">
@@ -265,14 +269,14 @@ export function StockView({
                     </TableCell>
                     <TableCell>
                       {r.canPurchase ? (
-                        <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-xs text-emerald-700 dark:text-emerald-400">可备货</span>
+                        <Badge className="rounded-[4px] bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">可备货</Badge>
                       ) : (
-                        <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">—</span>
+                        <span className="text-xs text-muted-foreground">—</span>
                       )}
                     </TableCell>
                     <TableCell className="text-right">
                       <Input
-                        className="ml-auto h-8 w-20 text-xs"
+                        className="ml-auto h-7 w-20 text-xs tabular-nums"
                         type="number"
                         inputMode="numeric"
                         min={1}
@@ -286,6 +290,7 @@ export function StockView({
               })}
             </TableBody>
           </table>
+          </div>
         )}
       </CardContent>
       {autoOpen && (
@@ -477,10 +482,10 @@ function AutoStockDialog({
         <div className="max-h-[65vh] space-y-3 overflow-y-auto">
           {phase === "config" && (
             <div className="space-y-2">
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 <Label className="text-xs">最低申请备货量（SKU 级门槛）*</Label>
                 <Input
-                  className="h-9 text-xs"
+                  className="h-8 text-xs"
                   inputMode="numeric"
                   min={1}
                   value={minQty}
