@@ -28,6 +28,7 @@ export const MAX_PDF_UPLOAD_MESSAGE = "说明书 PDF 最大 15MB"
 export const ALLOWED_PDF_TYPES = ["application/pdf"] as const
 
 /** 上传目标前缀类别：reference=参考图（ref/，会过期）；temu=发品素材源
- *  （temu/，不过期——压缩衍生图与说明书必须长存，模板会长期引用） */
-export const UPLOAD_CATEGORIES = ["reference", "temu"] as const
+ *  （temu/，不过期——压缩衍生图与说明书必须长存，模板会长期引用）；
+ *  inventory=库存商品档案图（inventory/，不过期——档案长期引用） */
+export const UPLOAD_CATEGORIES = ["reference", "temu", "inventory"] as const
 export type UploadCategory = (typeof UPLOAD_CATEGORIES)[number]

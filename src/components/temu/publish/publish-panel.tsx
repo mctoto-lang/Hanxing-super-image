@@ -27,6 +27,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { TEMU_TABLE_HEADER_CLASS } from "@/components/temu/table-header-style"
 import {
   Tooltip,
   TooltipContent,
@@ -117,15 +118,15 @@ export function TemuPublishPanel({
             ) : (
               // overflow-clip 只按圆角裁剪（非滚动容器，sticky 表头仍锚定页侧 CardContent）
               <div className="w-max min-w-full overflow-clip rounded-md border">
-              <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
-                <TableHeader className="sticky top-0 z-10 bg-card">
+              <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border">
+                <TableHeader className={TEMU_TABLE_HEADER_CLASS}>
                   <TableRow>
                     <TableHead>模板</TableHead>
                     <TableHead>类目</TableHead>
                     <TableHead>规格</TableHead>
                     <TableHead>默认申报价</TableHead>
                     <TableHead>素材图</TableHead>
-                    <TableHead className="text-right">操作</TableHead>
+                    <TableHead>操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -147,7 +148,7 @@ export function TemuPublishPanel({
                         ¥{(tpl.defaults.declaredPriceFen / 100).toFixed(2)}
                       </TableCell>
                       <TableCell>{tpl.defaults.imageUrls.length} 张</TableCell>
-                      <TableCell className="text-right">
+                      <TableCell>
                         <Tooltip>
                           <TooltipTrigger
                             render={
@@ -190,7 +191,7 @@ export function TemuPublishPanel({
             </div>
           </CardHeader>
           <CardContent className="min-h-0 flex-1 overflow-auto scrollbar-hide">
-            <PublishRecordsTable rows={records} />
+            <PublishRecordsTable rows={records} loading={loading} />
           </CardContent>
         </Card>
       )}

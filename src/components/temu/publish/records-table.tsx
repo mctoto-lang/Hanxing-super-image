@@ -18,26 +18,36 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { TEMU_TABLE_HEADER_CLASS } from "@/components/temu/table-header-style"
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import type { TemuPublishRecordRow } from "@/server/actions/temu-publish"
-import { cn, toImageSrc } from "@/lib/utils"
+import { toImageSrc } from "@/lib/utils"
 import { formatDateTime } from "@/lib/datetime"
 import { EmptyHint } from "@/components/temu/products-table"
+import { TruncTip } from "@/components/temu/trunc-tip"
+import { TableSkeletonRows } from "@/components/temu/table-skeleton"
 
 /** 发品记录表（商品发布面板复用；错误 Tooltip 看完整官方原因，
  *  「详情」弹窗看提交官方的请求/响应快照——排障回溯用） */
-export function PublishRecordsTable({ rows }: { rows: TemuPublishRecordRow[] }) {
+export function PublishRecordsTable({
+  rows,
+  loading,
+}: {
+  rows: TemuPublishRecordRow[]
+  /** 首次加载中（无数据时渲染统一骨架行） */
+  loading?: boolean
+}) {
   const [detail, setDetail] = React.useState<TemuPublishRecordRow | null>(null)
   return (
     <>
       {/* overflow-clip 只按圆角裁剪（非滚动容器，sticky 表头仍锚定页侧 CardContent） */}
       <div className="w-max min-w-full overflow-clip rounded-md border">
-      <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
-        <TableHeader className="sticky top-0 z-10 bg-card">
+      <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border">
+        <TableHeader className={TEMU_TABLE_HEADER_CLASS}>
           <TableRow>
             <TableHead>图片</TableHead>
             <TableHead>商品名</TableHead>
@@ -47,11 +57,12 @@ export function PublishRecordsTable({ rows }: { rows: TemuPublishRecordRow[] }) 
             <TableHead>结果</TableHead>
             <TableHead>创建人</TableHead>
             <TableHead>时间</TableHead>
-            <TableHead className="text-right">操作</TableHead>
+            <TableHead>操作</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {rows.length === 0 && (
+          {loading && rows.length === 0 && <TableSkeletonRows rows={4} cols={9} />}
+          {!loading && rows.length === 0 && (
             <TableRow>
               <TableCell colSpan={9} className="h-20 text-center text-muted-foreground">
                 暂无发品记录。
@@ -67,10 +78,10 @@ export function PublishRecordsTable({ rows }: { rows: TemuPublishRecordRow[] }) 
                 <span className="line-clamp-2 text-xs">{rec.title || rec.templateName}</span>
               </TableCell>
               <TableCell>
-                <TruncTip text={rec.templateName} width="max-w-40 font-medium" />
+                <TruncTip text={rec.templateName} className="max-w-40 font-medium" />
               </TableCell>
               <TableCell>
-                <TruncTip text={rec.storeName} width="max-w-36 text-muted-foreground" />
+                <TruncTip text={rec.storeName} className="max-w-36 text-muted-foreground" />
               </TableCell>
               <TableCell>
                 <Badge
@@ -107,12 +118,12 @@ export function PublishRecordsTable({ rows }: { rows: TemuPublishRecordRow[] }) 
                 )}
               </TableCell>
               <TableCell>
-                <TruncTip text={rec.creatorName ?? ""} width="max-w-28" />
+                <TruncTip text={rec.creatorName ?? ""} className="max-w-28" />
               </TableCell>
               <TableCell className="whitespace-nowrap text-muted-foreground">
                 {formatDateTime(rec.createdAt)}
               </TableCell>
-              <TableCell className="text-right">
+              <TableCell>
                 <Button
                   variant="ghost"
                   size="sm"
@@ -159,23 +170,6 @@ export function PublishRecordsTable({ rows }: { rows: TemuPublishRecordRow[] }) 
         </Dialog>
       )}
     </>
-  )
-}
-
-/** 限长列共用：单行截断 + Tooltip 悬浮看全文；空值显示感叹号占位 */
-function TruncTip({ text, width }: { text: string; width?: string }) {
-  if (!text) return <EmptyHint />
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <span className={cn("block max-w-32 truncate text-xs", width)}>
-            {text}
-          </span>
-        }
-      />
-      <TooltipContent className="max-w-sm">{text}</TooltipContent>
-    </Tooltip>
   )
 }
 

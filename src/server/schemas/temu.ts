@@ -52,10 +52,17 @@ export const temuShipListQuerySchema = z.object({
   skcExtCode: z.string().max(64).optional(),
   subPurchaseOrderSn: z.string().max(64).optional(),
   deliveryOrderSn: z.string().max(64).optional(),
+  /** 发货仓库（卖家发货地址 id，精确） */
+  warehouseId: z.number().int().optional(),
   /** 实时核对：按当前页单号回查官方 shiporderv2 并落库；官方已移除的单本地置为已取消 */
   fresh: z.boolean().optional(),
 })
 export type TemuShipListQuery = z.infer<typeof temuShipListQuerySchema>
+
+/** 发货单列表「发货仓库」筛选选项（本店出现过的卖家发货地址，去重） */
+export const temuShipWarehouseOptionsSchema = z.object({
+  store: z.string().uuid(),
+})
 
 // ---------- 发货五步向导（批次二写侧） ----------
 
@@ -81,23 +88,49 @@ export type TemuShipStagingAddInput = z.infer<typeof temuShipStagingAddSchema>
 /** 打包标签（箱唛）打印直出：boxmarkinfo.get + return_data_key → 官方打印页（链接 10min 单次有效） */
 export const temuShipBoxMarkPrintSchema = z.object({
   store: z.string().uuid(),
-  deliveryOrderSns: z.array(z.string().min(1).max(64)).min(1).max(50),
+  deliveryOrderSns: z.array(z.string().min(1).max(64)).min(1).max(50, "单次最多 50 个发货单号"),
 })
 export type TemuShipBoxMarkPrintQuery = z.infer<typeof temuShipBoxMarkPrintSchema>
 
-/** 商品条码打印直出（labelv2.get + return_data_key → 官方打印页，同 10min 单次有效口径）；
- *  按 SKC 维度取条码（发货台/发货单列表行均持有 productSkcId） */
-export const temuShipBarcodePrintSchema = z.object({
-  store: z.string().uuid(),
-  productSkcIds: z.array(z.number().int().positive()).min(1).max(50),
-})
+/** 商品条码打印直出（labelv2.get + return_data_key → 官方打印页，同 10min 单次有效口径）。
+ *  以发货单 SKU 维度提交（raw.packageDetailList / staging orderDetailVOList 的 productSkuId）：
+ *  货号不可作为打印键——labelv2 按 token 的供应商主体隔离，同货号跨主体会打出别家条码
+ *  （2026-11-04 真实店实证：B102 货号查询打出 2 张其他主体条码）；SKU id 为主体内精确键。
+ *  兼容旧载荷 productSkcIds: number[]（旧前端包防裸报参数错误，走 SKC 直查旧路径）。 */
+export const temuShipBarcodePrintSchema = z.union([
+  z.object({
+    store: z.string().uuid(),
+    productSkuIds: z.array(z.number().int().positive()).min(1).max(200, "单次最多 200 个 SKU"),
+  }),
+  z.object({
+    store: z.string().uuid(),
+    productSkcIds: z.array(z.number().int().positive()).min(1).max(50),
+  }),
+])
 export type TemuShipBarcodePrintQuery = z.infer<typeof temuShipBarcodePrintSchema>
+
+/** 运单标签获取（express.note.get：按快递单号查子单标签 URL，无 dataKey 机制；
+ *  URL 须带 app-key/access-token/sign/timestamp 四请求头 GET——服务端签名代理回传内容。
+ *  按快递单号级去重由客户端完成，≤10/批） */
+export const temuShipExpressNoteQuerySchema = z.object({
+  store: z.string().uuid(),
+  notes: z
+    .array(
+      z.object({
+        expressCompanyId: z.coerce.number().int().positive(),
+        expressDeliverySn: z.string().trim().min(1).max(64),
+      }),
+    )
+    .min(1)
+    .max(10),
+})
+export type TemuShipExpressNoteQuery = z.infer<typeof temuShipExpressNoteQuerySchema>
 
 /** 发货总体积官方预估（predict.volume.get，出参 predictVolume 字符串，单位立方米）；
  *  供 logisticsmatch 的 predictVolume 与 packing.send 的 predictPackageVolume 自动回填 */
 export const temuShipPredictVolumeQuerySchema = z.object({
   store: z.string().uuid(),
-  deliveryOrderSns: z.array(z.string().min(1).max(64)).min(1).max(50),
+  deliveryOrderSns: z.array(z.string().min(1).max(64)).min(1).max(50, "单次最多 50 个发货单号"),
 })
 export type TemuShipPredictVolumeQuery = z.infer<typeof temuShipPredictVolumeQuerySchema>
 
@@ -183,14 +216,14 @@ export type TemuShipCreateOrderInput = z.infer<typeof temuShipCreateOrderSchema>
 
 export const temuShipPackingMatchSchema = z.object({
   store: z.string().uuid(),
-  deliveryOrderSns: z.array(z.string().min(1).max(64)).min(1).max(50),
+  deliveryOrderSns: z.array(z.string().min(1).max(64)).min(1).max(50, "单次最多 50 个发货单号"),
 })
 export type TemuShipPackingMatchInput = z.infer<typeof temuShipPackingMatchSchema>
 
 /** 平台推荐物流（logisticsmatch 官方六必填） */
 export const temuShipLogisticsMatchSchema = z.object({
   store: z.string().uuid(),
-  deliveryOrderSns: z.array(z.string().min(1).max(64)).min(1).max(50),
+  deliveryOrderSns: z.array(z.string().min(1).max(64)).min(1).max(50, "单次最多 50 个发货单号"),
   receiveAddressInfo: z.object({
     receiverName: z.string().max(120),
     phone: z.string().max(32),
@@ -222,6 +255,11 @@ const shipSkuThirdPartyDelivery = z
   .object({
     deliverMethod: z.literal(2),
     expressCompanyId: z.number().int(),
+    /** 快递公司名称：官方服务端校验必填——缺失报 2000000「使用平台推荐服务商时，快递公司名称不能为空」 */
+    expressCompanyName: z
+      .string()
+      .min(1, "快递公司名称必填（平台推荐物流；请刷新页面后重新比价选择）")
+      .max(120),
     predictTotalPackageWeight: z
       .number()
       .int()
@@ -268,9 +306,11 @@ export type TemuShipPackingSendInput = z.infer<typeof temuShipPackingSendSchema>
 
 export const temuShipSendActionSchema = z.object({
   store: z.string().uuid(),
-  deliveryOrderSns: z.array(z.string().min(1).max(64)).min(1).max(50),
+  deliveryOrderSns: z.array(z.string().min(1).max(64)).min(1).max(50, "单次最多 50 个发货单号"),
   deliveryAddressId: z.number().int(),
   predictPackageVolume: z.string().max(32).optional(),
+  /** 工厂直发单：跳过库存硬阻断且不扣库存（货从工厂直发 TEMU）；常规单单仓制固定主仓联动 */
+  factoryDirect: z.boolean().optional(),
   payload: temuShipPackingSendSchema,
 })
 export type TemuShipSendActionInput = z.infer<typeof temuShipSendActionSchema>

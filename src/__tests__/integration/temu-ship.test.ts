@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { eq, inArray, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import { enterprises, permissionGroups, users } from "@/db/schema"
@@ -11,6 +11,7 @@ import {
   getShipStagingAction,
   addShipStagingAction,
   createShipOrderAction,
+  getShipExpressNoteAction,
   packingMatchAction,
   getLogisticsMatchAction,
   sendPackingAction,
@@ -22,6 +23,7 @@ import {
   getShipPredictVolumeAction,
   getShipBarcodePrintUrlAction,
   getTemuShipStatsAction,
+  getShipWarehouseOptionsAction,
 } from "@/server/actions/temu-ship"
 import { syncStore, upsertShipOrderRows } from "@/server/services/temu-sync"
 import { temuDayStr, temuStartOfToday, temuStartOfWeek } from "@/server/services/temu-time"
@@ -107,6 +109,7 @@ const SHIP_ROW = (over: Partial<Record<string, unknown>> = {}) => ({
   plateNumber: "",
   packageList: [{ packageSn: "PC2610233880027", skcNum: 41 }],
   packageReceiveInfoVOList: [{ packageSn: "PC2610233880027", receiveTime: null }],
+  packageDetailList: [{ productSkuId: 94907922203, productOriginalSkuId: null, personalText: null, skuNum: 41 }],
   ...over,
 })
 
@@ -370,6 +373,84 @@ describe("发货单列表 action", () => {
   )
 
   it(
+    "发货仓库筛选：warehouseId 精确过滤；选项 action 同仓去重 + 官方标签 + 缺失降级",
+    { timeout: 30_000 },
+    async () => {
+      mockSession.userId = ownerId
+      // 三条确定性数据：888001 两单（验去重）、888002 一单；其余种子单地址不同/为空不干扰
+      await db.insert(temuShipOrders).values([
+        {
+          storeId,
+          deliveryOrderSn: "FH-WH-A",
+          skcExtCode: "B901",
+          status: 0,
+          deliveryAddressId: 888001,
+          deliveryOrderCreateTime: new Date(1792950000000),
+          contentHash: "wh-a",
+          capturedAt: new Date(),
+        },
+        {
+          storeId,
+          deliveryOrderSn: "FH-WH-B",
+          skcExtCode: "B902",
+          status: 0,
+          deliveryAddressId: 888002,
+          deliveryOrderCreateTime: new Date(1792950000001),
+          contentHash: "wh-b",
+          capturedAt: new Date(),
+        },
+        {
+          storeId,
+          deliveryOrderSn: "FH-WH-C",
+          skcExtCode: "B903",
+          status: 0,
+          deliveryAddressId: 888001,
+          deliveryOrderCreateTime: new Date(1792950000002),
+          contentHash: "wh-c",
+          capturedAt: new Date(),
+        },
+      ])
+      vi.stubGlobal("fetch", mockWizardFetch())
+
+      const only888001 = await getTemuShipOrdersAction({
+        store: storeId,
+        statusPreset: "pending",
+        warehouseId: 888001,
+      })
+      expect(only888001.ok).toBe(true)
+      if (!only888001.ok) return
+      expect([...only888001.rows.map((r) => r.deliveryOrderSn)].sort()).toEqual(["FH-WH-A", "FH-WH-C"])
+
+      const none = await getTemuShipOrdersAction({
+        store: storeId,
+        statusPreset: "pending",
+        warehouseId: 777777,
+      })
+      expect(none.ok).toBe(true)
+      if (!none.ok) return
+      expect(none.total).toBe(0)
+
+      // 选项：888002 有官方标签，888001 无 → 降级「地址 {id}」；zh-CN 按标签排序
+      // （52971147310 来自前面用例落库的 SHIP_ROW 种子单，同样降级）
+      vi.stubGlobal(
+        "fetch",
+        mockWizardFetch({
+          "bg.mall.address.get": [{ id: 888002, addressLabel: "义乌新仓" }],
+        }),
+      )
+      const opts = await getShipWarehouseOptionsAction({ store: storeId })
+      expect(opts.ok).toBe(true)
+      if (!opts.ok) return
+      expect(opts.rows).toEqual([
+        { id: 52971147310, label: "地址 52971147310" },
+        { id: 888001, label: "地址 888001" },
+        { id: 888002, label: "义乌新仓" },
+      ])
+      vi.unstubAllGlobals()
+    },
+  )
+
+  it(
     "fresh 实时核对：官方回查落库新状态；官方已移除的单置为已取消；官方失败降级返回本地",
     { timeout: 30_000 },
     async () => {
@@ -408,9 +489,13 @@ describe("发货单列表 action", () => {
       const r = await getTemuShipOrdersAction({ store: storeId, statusPreset: "pending", pageSize: 2, fresh: true })
       expect(r.ok).toBe(true)
       if (!r.ok) return
-      expect(r.freshStats).toEqual({ fetched: 1, missing: 1 })
-      // 官方请求按当前页单号回查
-      const body = bodiesOfType(fn, "bg.shiporderv2.get")[0]!
+      // fetched = 裸查最新一页(1) + 按单号回查(1)
+      expect(r.freshStats).toEqual({ fetched: 2, missing: 1 })
+      const shipBodies = bodiesOfType(fn, "bg.shiporderv2.get")
+      // 首次调用=裸查最新一页（sortType:0，无单号列表），其后按当前页单号回查
+      expect(shipBodies[0]?.sortType).toBe(0)
+      expect(shipBodies[0]?.deliveryOrderSnList).toBeUndefined()
+      const body = shipBodies.find((b) => b.deliveryOrderSnList)!
       expect(body.deliveryOrderSnList).toEqual(["FH-FRESH-1", "FH-FRESH-2"])
       // 回查后两张单都不再是待装箱：FH-FRESH-1 官方 status=5 落库、FH-FRESH-2 缺席被置 5
       // （分页内只剩更早已有的待装箱单，新插入的两张已移出）
@@ -440,7 +525,7 @@ describe("发货单列表 action", () => {
       expect(degraded.ok).toBe(true)
       if (!degraded.ok) return
       expect(degraded.rows[0]?.deliveryOrderSn).toBe("FH-FRESH-3")
-      expect(degraded.freshWarning).toContain("实时核对")
+      expect(degraded.freshWarning).toContain("实时拉取")
       vi.unstubAllGlobals()
     },
   )
@@ -471,6 +556,43 @@ describe("发货单列表 action", () => {
       const after = await db.select().from(temuShipOrders).where(inArray(temuShipOrders.deliveryOrderSn, ["FH-FRESH-K1", "FH-FRESH-K2"]))
       expect(after.find((o) => o.deliveryOrderSn === "FH-FRESH-K1")?.status).toBe(5)
       expect(after.find((o) => o.deliveryOrderSn === "FH-FRESH-K2")?.status).toBe(2)
+      vi.unstubAllGlobals()
+    },
+  )
+
+  it(
+    "fresh 空表也拉最新一页：本地无匹配行时裸查落库新单（不等 15 分钟同步）",
+    { timeout: 30_000 },
+    async () => {
+      mockSession.userId = ownerId
+      // 货号过滤到不存在的码 → 本地无行；官方最新一页返回一张新建待装箱单
+      const fn = mockWizardFetch({
+        "bg.shiporderv2.get": {
+          total: 1,
+          list: [SHIP_ROW({ deliveryOrderSn: "FH-LATEST-PAGE-1", status: 0 })],
+        },
+      })
+      vi.stubGlobal("fetch", fn)
+      const r = await getTemuShipOrdersAction({
+        store: storeId,
+        statusPreset: "pending",
+        skcExtCode: "B-NOTEXIST-XX",
+        pageSize: 20,
+        fresh: true,
+      })
+      expect(r.ok).toBe(true)
+      if (!r.ok) return
+      // 空表分支：仅 1 次官方调用（裸查最新一页），无单号回查，无误杀
+      expect(r.freshStats).toEqual({ fetched: 1, missing: 0 })
+      const shipBodies = bodiesOfType(fn, "bg.shiporderv2.get")
+      expect(shipBodies).toHaveLength(1)
+      expect(shipBodies[0]?.deliveryOrderSnList).toBeUndefined()
+      // 新单已落库（待装箱），可被后续无过滤查询看到
+      const [row] = await db
+        .select()
+        .from(temuShipOrders)
+        .where(eq(temuShipOrders.deliveryOrderSn, "FH-LATEST-PAGE-1"))
+      expect(row?.status).toBe(0)
       vi.unstubAllGlobals()
     },
   )
@@ -578,7 +700,13 @@ function mockWizardFetch(
       "bg.shiporder.logistics.change": { expressBatchSn: "EB-CHANGED" },
       "bg.shiporder.logisticsorder.match": { checkResultMsg: "" },
     }
-    const result = body.type in overrides ? overrides[body.type] : (defaults[body.type] ?? {})
+    const result =
+      body.type in overrides && typeof overrides[body.type] === "function"
+        ? // 函数覆写：按请求体动态出参（同 type 多次调用需区分入参时用，如 labelv2 解析/取码两段）
+          (overrides[body.type] as (b: Record<string, unknown>) => unknown)(body as unknown as Record<string, unknown>)
+        : body.type in overrides
+          ? overrides[body.type]
+          : (defaults[body.type] ?? {})
     return {
       ok: true,
       status: 200,
@@ -759,7 +887,22 @@ describe("发货五步向导写操作", () => {
       expect(bad.ok).toBe(false)
       expect(bodiesOfType(fnGuard, "bg.shiporder.packing.send")).toHaveLength(0)
 
-      // 方式 2：送网点（pickupMethod=1）+ 网点四件套 + 预约时段/predictId 透传
+      // 方式 2 缺快递公司名称 → zod 拒（官方 2000000 必填名称），未发请求
+      const badName = await sendPackingAction({
+        store: storeId,
+        deliveryOrderSns: ["FH-NEW-CREATE-1"],
+        deliveryAddressId: 52971147310,
+        payload: {
+          deliverMethod: 2,
+          expressCompanyId: 115,
+          predictTotalPackageWeight: 4000,
+          expressPackageNum: 1,
+        },
+      })
+      expect(badName.ok).toBe(false)
+      expect(bodiesOfType(fnGuard, "bg.shiporder.packing.send")).toHaveLength(0)
+
+      // 方式 2：送网点（pickupMethod=1）+ 网点四件套 + 预约时段/predictId/名称透传
       const fn = mockWizardFetch()
       vi.stubGlobal("fetch", fn)
       const r = await sendPackingAction({
@@ -770,6 +913,7 @@ describe("发货五步向导写操作", () => {
         payload: {
           deliverMethod: 2,
           expressCompanyId: 115,
+          expressCompanyName: "中通速递",
           predictTotalPackageWeight: 4000,
           expectPickUpGoodsTime: 1792749600000,
           pickupMethod: 1,
@@ -791,6 +935,7 @@ describe("发货五步向导写操作", () => {
       expect(body.predictPackageVolume).toBe("1.2")
       const info = body.thirdPartyDeliveryInfo as Record<string, unknown>
       expect(info.expressCompanyId).toBe(115)
+      expect(info.expressCompanyName).toBe("中通速递")
       expect(info.predictTotalPackageWeight).toBe(4000)
       expect(info.expectPickUpGoodsTime).toBe(1792749600000)
       expect(info.pickupMethod).toBe(1)
@@ -1080,6 +1225,8 @@ describe("发货五步向导写操作", () => {
       expect(row.isCustomProduct).toBe(false)
       expect(row.packageSns).toEqual(["PC-OFF-A", "PC-OFF-B"])
       expect(row.deliveryAddressLabel).toBe("默认发货仓")
+      // SKU 明细自 raw.packageDetailList 提取（商品条码按 SKU 维度打印）
+      expect(row.productSkuIds).toEqual([94907922203])
       // cancelDeadline = 落库时刻 + 官方剩余毫秒（容差 ±60s 吸收测试耗时）
       const deadline = row.cancelDeadline ? new Date(row.cancelDeadline).getTime() : null
       expect(deadline).not.toBeNull()
@@ -1101,23 +1248,123 @@ describe("发货五步向导写操作", () => {
     },
   )
 
-  it("商品条码打印直出：labelv2 productSkcIdList + return_data_key → dataKey 拼 URL；非字符串判失败", { timeout: 30_000 }, async () => {
+  it("商品条码打印直出：SKU 维度提交 + 同企业 token 自动路由跨主体；查无整批失败；兼容旧载荷", { timeout: 30_000 }, async () => {
     mockSession.userId = ownerId
-    const fn = mockWizardFetch({ "bg.glo.goods.labelv2.get": "DK-BARCODE-XYZ" })
+
+    // SKU 全命中（当前店 token）：裸查核对 + 一次取码；重复 SKU 去重后下发
+    const fn = mockWizardFetch({
+      "bg.glo.goods.labelv2.get": (b: Record<string, unknown>) => {
+        if (b.return_data_key === "true") return "DK-BARCODE-SKU"
+        const ids = (b.productSkuIdList as number[]) ?? []
+        return {
+          labelCodePageResult: {
+            data: ids
+              .filter((id) => id !== 30595268542)
+              .map((id) => ({ productSkuDTO: { productSkuId: id } })),
+          },
+        }
+      },
+    })
     vi.stubGlobal("fetch", fn)
-    const r = await getShipBarcodePrintUrlAction({ store: storeId, productSkcIds: [51458492005, 51458492005] })
+    const r = await getShipBarcodePrintUrlAction({
+      store: storeId,
+      productSkuIds: [94907922203, 94907922203, 448776174226],
+    })
     expect(r.ok).toBe(true)
     // 条码打印页走 PA 域名（官方《条码打印说明》；CN 域名会报「异常访问」），箱唛才是 CN 域名
-    if (r.ok) expect(r.url).toBe("https://openapi-b-partner.temu.com/tool/print?dataKey=DK-BARCODE-XYZ")
-    const body = bodiesOfType(fn, "bg.glo.goods.labelv2.get")[0]!
-    // 官方只认列表参数，且重复 SKC 去重后下发
-    expect(body.productSkcIdList).toEqual([51458492005])
-    expect(body.return_data_key).toBe("true")
+    if (r.ok) expect(r.urls[0]).toBe("https://openapi-b-partner.temu.com/tool/print?dataKey=DK-BARCODE-SKU")
+    const bodies = bodiesOfType(fn, "bg.glo.goods.labelv2.get")
+    expect(bodies).toHaveLength(2)
+    // 裸查不带 return_data_key（核对可打印性）
+    expect(bodies[0]!.return_data_key).toBeUndefined()
+    expect(bodies[0]!.productSkuIdList).toEqual([94907922203, 448776174226])
+    // 取码调用去重提交
+    expect(bodies[1]!.return_data_key).toBe("true")
+    expect(bodies[1]!.productSkuIdList).toEqual([94907922203, 448776174226])
     vi.unstubAllGlobals()
 
-    const fnBad = mockWizardFetch({ "bg.glo.goods.labelv2.get": { data: [] } })
+    // 任一 SKU 全部已授权 token 均查无（他主体未授权/已下架）→ 整批失败并透出 SKU，不发起取码
+    const fn2 = mockWizardFetch({
+      "bg.glo.goods.labelv2.get": (b: Record<string, unknown>) => {
+        if (b.return_data_key === "true") return "DK-NEVER"
+        return { labelCodePageResult: { data: [] } }
+      },
+    })
+    vi.stubGlobal("fetch", fn2)
+    const r2 = await getShipBarcodePrintUrlAction({
+      store: storeId,
+      productSkuIds: [94907922203, 30595268542],
+    })
+    expect(r2.ok).toBe(false)
+    if (!r2.ok) {
+      expect(r2.error).toContain("30595268542")
+      expect(r2.error).toContain("官方卖家后台")
+    }
+    // 未发起取码（防漏贴码不打半套）
+    expect(bodiesOfType(fn2, "bg.glo.goods.labelv2.get").filter((b) => b.return_data_key === "true")).toHaveLength(0)
+    vi.unstubAllGlobals()
+
+    // 跨主体路由：发货单 SKU 分属两个供应商主体 → 逐 token 认领，各取一页 dataKey（两个打印页）
+    const [sibling] = await db
+      .insert(temuStores)
+      .values({
+        enterpriseId: entId,
+        name: "发货测试兄弟店铺",
+        accessTokenEncrypted: encrypt("ship-sibling-token"),
+        tokenState: "active",
+        mallType: "full",
+      })
+      .returning()
+    const fn3 = mockWizardFetch({
+      "bg.glo.goods.labelv2.get": (b: Record<string, unknown>) => {
+        const siblingToken = b.access_token === "ship-sibling-token"
+        if (b.return_data_key === "true") return siblingToken ? "DK-BARCODE-SIB" : "DK-BARCODE-MAIN"
+        // 各 token 只认领自己主体的 SKU（labelv2 按 token 主体隔离）
+        const claim = siblingToken ? 30595268542 : 94907922203
+        const ids = ((b.productSkuIdList as number[]) ?? []).filter((id) => id === claim)
+        return { labelCodePageResult: { data: ids.map((id) => ({ productSkuDTO: { productSkuId: id } })) } }
+      },
+    })
+    vi.stubGlobal("fetch", fn3)
+    const r3 = await getShipBarcodePrintUrlAction({
+      store: storeId,
+      productSkuIds: [94907922203, 30595268542],
+    })
+    expect(r3.ok).toBe(true)
+    if (r3.ok) {
+      // 两页：当前主体一页 + 兄弟店铺主体一页
+      expect(r3.urls).toHaveLength(2)
+      expect(r3.urls[0]).toBe("https://openapi-b-partner.temu.com/tool/print?dataKey=DK-BARCODE-MAIN")
+      expect(r3.urls[1]).toBe("https://openapi-b-partner.temu.com/tool/print?dataKey=DK-BARCODE-SIB")
+    }
+    const bodies3 = bodiesOfType(fn3, "bg.glo.goods.labelv2.get")
+    // 两 token 各自：裸查 + 取码
+    expect(bodies3).toHaveLength(4)
+    const mainPrint = bodies3.find((b) => b.return_data_key === "true" && b.access_token === "ship-test-token")!
+    const sibPrint = bodies3.find((b) => b.return_data_key === "true" && b.access_token === "ship-sibling-token")!
+    expect(mainPrint.productSkuIdList).toEqual([94907922203])
+    expect(sibPrint.productSkuIdList).toEqual([30595268542])
+    await db.delete(temuStores).where(eq(temuStores.id, sibling!.id))
+    vi.unstubAllGlobals()
+
+    // 旧载荷 productSkcIds（旧前端包）→ SKC 直查旧路径，不硬报参数错误
+    const fn4 = mockWizardFetch({ "bg.glo.goods.labelv2.get": "DK-BARCODE-OLD" })
+    vi.stubGlobal("fetch", fn4)
+    const r4 = await getShipBarcodePrintUrlAction({ store: storeId, productSkcIds: [51458492005, 51458492005] })
+    expect(r4.ok).toBe(true)
+    if (r4.ok) expect(r4.urls[0]).toBe("https://openapi-b-partner.temu.com/tool/print?dataKey=DK-BARCODE-OLD")
+    const body4 = bodiesOfType(fn4, "bg.glo.goods.labelv2.get")[0]!
+    expect(body4.productSkcIdList).toEqual([51458492005])
+    expect(body4.return_data_key).toBe("true")
+    vi.unstubAllGlobals()
+
+    // dataKey 非字符串（return_data_key 模式回参对象）判失败
+    const fnBad = mockWizardFetch({
+      "bg.glo.goods.labelv2.get": (b: Record<string, unknown>) =>
+        b.return_data_key === "true" ? { data: [] } : { labelCodePageResult: { data: [{ productSkuDTO: { productSkuId: 94907922203 } }] } },
+    })
     vi.stubGlobal("fetch", fnBad)
-    const bad = await getShipBarcodePrintUrlAction({ store: storeId, productSkcIds: [51458492005] })
+    const bad = await getShipBarcodePrintUrlAction({ store: storeId, productSkuIds: [94907922203] })
     expect(bad.ok).toBe(false)
     if (!bad.ok) expect(bad.error).toContain("dataKey")
     vi.unstubAllGlobals()
@@ -1520,4 +1767,101 @@ describe("发货统计 action（概览三卡）", () => {
       vi.unstubAllGlobals()
     },
   )
+})
+
+/* ─── 运单标签（express.note.get + 服务端签名四头代理） ─── */
+
+describe("运单标签获取（getShipExpressNoteAction）", () => {
+  it("全链：按快递单号查询 → 签名四头代理内容 → base64 回传；sign 与官方算法一致", async () => {
+    mockSession.userId = ownerId
+    const captured: Array<{ url: string; headers: Record<string, string> }> = []
+    const base = mockWizardFetch({
+      "bg.shiporder.express.note.get": {
+        tmsChildWaybillSnNoteDetails: [
+          { childWaybillSn: "CHILD-1", childWaybillNote: "https://note.example.com/waybill/1" },
+        ],
+      },
+    })
+    const fn = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes("note.example.com")) {
+        captured.push({ url: String(url), headers: (init?.headers ?? {}) as Record<string, string> })
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (n: string) => (n.toLowerCase() === "content-type" ? "image/png" : null) },
+          arrayBuffer: async () => new TextEncoder().encode("PNGDATA").buffer,
+        } as unknown as Response
+      }
+      return base(url, init)
+    })
+    vi.stubGlobal("fetch", fn)
+    const r = await getShipExpressNoteAction({
+      store: storeId,
+      notes: [{ expressCompanyId: 710, expressDeliverySn: "710109313347" }],
+    })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.results[0]?.ok).toBe(true)
+    expect(r.results[0]?.items[0]?.childWaybillSn).toBe("CHILD-1")
+    expect(r.results[0]?.items[0]?.contentType).toBe("image/png")
+    expect(Buffer.from(r.results[0]?.items[0]?.dataBase64 ?? "", "base64").toString()).toBe("PNGDATA")
+    // 四头齐全；sign = md5(secret + access-token/token + app-key/key + timestamp/ts + secret) 大写 32 位
+    const h = captured[0]?.headers
+    expect(h?.["app-key"]).toBe("test-app-key")
+    expect(h?.["access-token"]).toBe("ship-test-token")
+    const ts = String(h?.timestamp ?? "")
+    expect(ts).toMatch(/^\d+$/)
+    const expected = createHash("md5")
+      .update(`test-app-secretaccess-tokenship-test-tokenapp-keytest-app-keytimestamp${ts}test-app-secret`)
+      .digest("hex")
+      .toUpperCase()
+    expect(h?.sign).toBe(expected)
+    expect(h?.sign).toMatch(/^[0-9A-F]{32}$/)
+    vi.unstubAllGlobals()
+  })
+
+  it("官方业务错逐单透出（500000003），items 为空标记失败", async () => {
+    mockSession.userId = ownerId
+    const base = mockWizardFetch(
+      {},
+      { "bg.shiporder.express.note.get": { errorCode: 500000003, errorMsg: "获取物流面单失败，请稍后重试" } },
+    )
+    const fn = vi.fn(async (url: string, init?: RequestInit) => base(url, init))
+    vi.stubGlobal("fetch", fn)
+    const r = await getShipExpressNoteAction({
+      store: storeId,
+      notes: [{ expressCompanyId: 710, expressDeliverySn: "SN-FAIL" }],
+    })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.results[0]?.ok).toBe(false)
+    expect(r.results[0]?.error).toContain("获取物流面单失败")
+    expect(r.results[0]?.items).toHaveLength(0)
+    vi.unstubAllGlobals()
+  })
+
+  it("标签内容拉取 HTTP 失败：该单标记失败并带原因", async () => {
+    mockSession.userId = ownerId
+    const base = mockWizardFetch({
+      "bg.shiporder.express.note.get": {
+        tmsChildWaybillSnNoteDetails: [{ childWaybillSn: "CHILD-9", childWaybillNote: "https://note.example.com/broken" }],
+      },
+    })
+    const fn = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes("note.example.com")) {
+        return { ok: false, status: 404, headers: { get: () => null } } as unknown as Response
+      }
+      return base(url, init)
+    })
+    vi.stubGlobal("fetch", fn)
+    const r = await getShipExpressNoteAction({
+      store: storeId,
+      notes: [{ expressCompanyId: 710, expressDeliverySn: "SN-404" }],
+    })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.results[0]?.ok).toBe(false)
+    expect(r.results[0]?.error).toContain("HTTP 404")
+    vi.unstubAllGlobals()
+  })
 })

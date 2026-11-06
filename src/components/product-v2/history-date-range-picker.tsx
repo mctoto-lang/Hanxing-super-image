@@ -20,11 +20,14 @@ export function HistoryDateRangePicker({
   value,
   onChange,
   size = "default",
+  className,
 }: {
   value: DateRange | undefined
   onChange: (range: DateRange | undefined) => void
   /** 触发按钮尺寸（工具栏场景用 sm） */
   size?: "default" | "sm"
+  /** 触发按钮追加类（如 h-8 与同行按钮对齐） */
+  className?: string
 }) {
   // 受控 + 关闭时整体卸载内容：避免退场动画结束后 Portal 残留悬浮日历
   const [open, setOpen] = useState(false)
@@ -45,7 +48,7 @@ export function HistoryDateRangePicker({
             type="button"
             variant="outline"
             size={size}
-            className={cn("gap-1.5 font-normal", value && "text-primary")}
+            className={cn("gap-1.5 font-normal", value && "text-primary", className)}
           />
         }
       >

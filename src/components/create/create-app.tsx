@@ -1,6 +1,5 @@
 "use client"
 
-import * as React from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { ConversationList } from "@/components/create/conversation-list"
 import { ConversationDetail } from "@/components/create/conversation-detail"
@@ -10,15 +9,6 @@ import { Sparkles } from "lucide-react"
 import { type ConversationListItem } from "@/components/create/conversation-list"
 import { type TaskDetail } from "@/components/create/task-detail-card"
 import type { CreateModel } from "@/components/create/types"
-
-/** 空态示例提示词：点击一键填入输入框（对标主流 AI 工具的空态行动化引导） */
-const EXAMPLE_PROMPTS = [
-  "白底电商主图：磨砂质感保温杯，45° 摆放，柔和影棚光",
-  "产品场景图：香薰蜡烛放在原木桌面，暖光氛围，浅景深",
-  "一只戴墨镜的柯基在沙滩奔跑，3D 皮克斯风格",
-  "极简婴儿连体衣平铺拍摄，浅粉色背景，俯视角",
-  "赛博朋克城市夜景，霓虹灯反射在湿漉漉的街道上",
-]
 
 /**
  * 自由创作页根组件（client，自由创作页 §6 v2）
@@ -48,12 +38,6 @@ export function CreateApp({
 
   const c = searchParams.get("c")
   const selectedConv = conversations.find((x) => x.id === c) ?? null
-
-  // 空态示例提示词一键填入（经 CreatePromptInput 的 prefill 通道）
-  const [prefill, setPrefill] = React.useState<{
-    text: string
-    nonce: number
-  } | null>(null)
 
   function navigateTo(id: string | null) {
     const params = new URLSearchParams(searchParams.toString())
@@ -98,28 +82,12 @@ export function CreateApp({
                 输入提示词，生成你想要的图片
               </p>
             </div>
-            {/* 示例提示词：点击直接填入并聚焦输入框 */}
-            <div className="flex flex-wrap justify-center gap-2">
-              {EXAMPLE_PROMPTS.map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  onClick={() => setPrefill({ text: p, nonce: Date.now() })}
-                  className="max-w-full truncate rounded-full border bg-card/60 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
-                >
-                  {p}
-                </button>
-              ))}
-            </div>
             {/* 生图输入框 */}
             <CreatePromptInput
               models={models}
               userCredits={userCredits}
               enterpriseCredits={enterpriseCredits}
               onConversationCreated={(id) => navigateTo(id)}
-              prefill={prefill}
-              onPrefillApplied={() => setPrefill(null)}
-              focusNonce={prefill?.nonce}
             />
           </div>
         </div>

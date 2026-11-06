@@ -21,6 +21,10 @@ const ROUTE_TITLES: { prefix: string; title: string }[] = [
   { prefix: "/workspace", title: "批量生图" },
   { prefix: "/product", title: "商品图片" },
   { prefix: "/mockup", title: "样机渲染" },
+  // 库存管理
+  { prefix: "/inventory/production", title: "生产规划" },
+  { prefix: "/inventory/stock", title: "库存数据" },
+  { prefix: "/inventory", title: "库存管理" },
   // 店铺管理
   { prefix: "/temu", title: "TEMU" },
   // 模板管理

@@ -160,6 +160,9 @@ export const temuSalesOverviews = pgTable(
     last7DaysSalesVolume: integer("last7_days_sales_volume"),
     last30DaysSalesVolume: integer("last30_days_sales_volume"),
     warehouseAvailableStock: integer("warehouse_available_stock"),
+    /** 待发货库存（各 SKU inventoryNumInfo.waitDeliveryInventoryNum 求和；TEMU 自动创建
+     *  备货单会推高该值，无参考价值——可售天数分子用 仓内−待发货 净库存，0089） */
+    waitDeliveryStock: integer("wait_delivery_stock"),
     shippedStock: integer("shipped_stock"),
     /** 可售天数（销售管理同名列，availableSaleDays 优先 / warehouseAvailableSaleDays 兜底） */
     availableSaleDays: doublePrecision("available_sale_days"),
@@ -763,6 +766,10 @@ export const temuShipOrders = pgTable(
     fragileTag: boolean("fragile_tag"),
     /** 自动取消截止（落库时 captured_at + 官方剩余毫秒换算的绝对时间；仅待装箱单有值） */
     cancelDeadline: timestamp("cancel_deadline", { withTimezone: true }),
+    /** 工厂直发单：装箱时勾选，跳过库存硬阻断且不扣库存（货从工厂直发 TEMU） */
+    factoryDirect: boolean("factory_direct"),
+    /** 发货仓（inventory_warehouse.id；装箱时选择，扣减与硬阻断按此仓；直发单空） */
+    sourceWarehouseId: uuid("source_warehouse_id"),
     raw: jsonb("raw").$type<Record<string, unknown>>(),
     contentHash: varchar("content_hash", { length: 40 }).notNull(),
     capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),

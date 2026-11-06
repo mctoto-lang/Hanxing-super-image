@@ -31,9 +31,9 @@ import { generateAgentCardImageForAction } from "@/server/services/workspace-age
 export async function batchGenerateImageAction(
   cardIds: string[],
   input: {
-    /** Agent 管线（task.source = "agent"）忽略 apiId/size（一律用冻结值），
-     *  Agent 任务视图无生成配置入口，两者允许缺省；纯 Agent 批次可在模型
-     *  缺省时直接提交 */
+    /** Agent 管线（task.source = "agent"）：apiId/size（生成配置弹窗所选）
+     *  优先于工作流冻结值，两者允许缺省（缺省回落冻结口径）；纯 Agent 批次
+     *  可在模型缺省时直接提交 */
     apiId?: string
     size?: string
     languagePreference?: BatchGenerationLanguage
@@ -80,10 +80,10 @@ export async function batchGenerateImageAction(
       ),
     )
 
-  // ── Agent 任务卡片（task.source = "agent"）：强制走冻结模型 + kind 尺寸的
-  //    Agent 管线（generation_task source = "agent" + round + 终态自动评审），
-  //    不进入下方普通批量管线；同一批次卡类（face/back/box/border）必须严格
-  //    相同，混类批次整组拒绝 ──
+  // ── Agent 任务卡片（task.source = "agent"）：走 Agent 管线（generation_task
+  //    source = "agent" + round + 终态自动评审），模型/尺寸取弹窗所选（缺省回
+  //    落冻结值），不进入下方普通批量管线；同一批次卡类（face/back/box/border）
+  //    必须严格相同，混类批次整组拒绝 ──
   const agentRows = ownedRows.filter((r) => r.taskSource === "agent")
   const normalRows = ownedRows.filter((r) => r.taskSource !== "agent")
   if (agentRows.length > 0) {
@@ -125,6 +125,11 @@ export async function batchGenerateImageAction(
           taskId: row.taskId,
           promptCardId: row.card.id,
           prompt,
+          // 生成配置弹窗所选模型/尺寸优先（缺省回落工作流冻结值）
+          override:
+            parsed.data.apiId || parsed.data.size
+              ? { modelId: parsed.data.apiId, size: parsed.data.size }
+              : undefined,
         })
         if (res.ok) {
           tasks.push({
@@ -143,10 +148,10 @@ export async function batchGenerateImageAction(
     .filter((id) => !ownedRows.some((r) => r.card.id === id))
     .map((cardId) => ({ cardId, error: "卡片不存在" }))
 
-  // ── 模型查询 + 权限校验（普通卡片整个批次只做一次；Agent 卡片走冻结模型
-  //    不受此处影响——模型不可用时仅普通卡片报错）。apiId 缺省（Agent 任务
-  //    视图无生成配置入口）不查库，直接按模型不可用处理；纯 Agent 批次在
-  //    下方提前返回，普通卡片逐卡收到明确报错 ──
+  // ── 模型查询 + 权限校验（普通卡片整个批次只做一次；Agent 卡片的 override
+  //    校验已在上方 Agent 分支完成——模型不可用时仅对应卡片报错）。apiId 缺省
+  //    不查库，直接按模型不可用处理；纯 Agent 批次在下方提前返回，普通卡片
+  //    逐卡收到明确报错 ──
   const [model] = input.apiId
     ? await db
         .select()

@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import { temuImageSrc } from "@/lib/temu/image"
+import { TruncTip } from "@/components/temu/trunc-tip"
 import { getTemuShipStatsAction, type TemuShipStats } from "@/server/actions/temu-ship"
 import type {
   TemuCategoryShare,
@@ -254,9 +255,7 @@ export function TemuCategoryShare({ data }: { data: TemuCategoryShare[] }) {
                       className="h-2 w-2 shrink-0 rounded-[2px]"
                       style={{ backgroundColor: s.color }}
                     />
-                    <span className="max-w-32 truncate" title={s.label}>
-                      {s.label}
-                    </span>
+                    <TruncTip text={s.label} className="max-w-32" />
                     <span className="tabular-nums">{pct}%</span>
                   </div>
                 )
@@ -291,9 +290,7 @@ function TopTooltip({ active, payload }: { active?: boolean; payload?: Array<{ p
     d.supplierPrice != null ? Math.round((d.value * d.supplierPrice) / 100 * 100) / 100 : null
   return (
     <div className="min-w-44 rounded-lg border bg-background px-3 py-2 text-xs shadow-xl">
-      <div className="max-w-56 truncate font-medium" title={d.name}>
-        {d.name}
-      </div>
+      <TruncTip text={d.name} className="max-w-56 font-medium" />
       <div className="mt-1 grid gap-0.5 text-muted-foreground">
         <span>货号：{d.productSn ?? "—"}</span>
         {d.category && <span>类目：{d.category}</span>}
@@ -459,8 +456,8 @@ function TemuTop20Card({
                       <Medal className="size-3.5" />
                     </div>
                   </div>
-                  <div className="w-full truncate text-center text-xs font-medium" title={p.row.sn}>
-                    {p.row.sn}
+                  <div className="w-full text-center text-xs font-medium">
+                    <TruncTip text={p.row.sn} className="max-w-full font-medium" />
                   </div>
                   <div className="text-xs tabular-nums text-muted-foreground">
                     {p.value.toLocaleString("zh-CN")} 件
@@ -480,9 +477,7 @@ function TemuTop20Card({
                       {i + 4}
                     </span>
                     <Top20Thumb row={x.row} metric={metric} className="size-7 shrink-0" />
-                    <span className="min-w-0 flex-1 truncate" title={x.row.sn}>
-                      {x.row.sn}
-                    </span>
+                    <TruncTip text={x.row.sn} className="min-w-0 flex-1" />
                     <span className="shrink-0 font-medium tabular-nums">
                       {x.value.toLocaleString("zh-CN")}
                     </span>
@@ -558,6 +553,9 @@ function shipWeekTile(
   }
 }
 
+/** 发货统计卡自动重查周期：对齐 worker api-ship-orders 15 分钟同步轮 */
+const SHIP_STATS_POLL_MS = 15 * 60_000
+
 /** 发货统计两卡（概览页底部）：今日发货占比环形图（货号口径，占两列）+
  *  右列「2 行 1 列」两张 KPI 卡（货物/包裹数量，本周一~周日 7 节点 sparkline，
  *  flex-1 均分与左卡等高）。时间轴=预约取货时间（无预约回落装箱时间）：
@@ -576,19 +574,58 @@ export function TemuShipStatsCards({
   // 竞态守卫：快速连续切换仓库时丢弃过期慢响应——统计查询带 30s 服务端缓存，
   // 命中/未命中的响应时序可倒置，只有最后一次选择的仓库结果可写回
   const statsReqRef = React.useRef(0)
+  // 轮询读最新仓库筛选（interval 回调闭包不随 state 重建）+ 上次拉取时刻
+  //（切回标签页时据此判断是否已过周期需补刷；0=未记时，挂载时置为当前时刻）
+  const warehouseRef = React.useRef(warehouse)
+  const lastFetchRef = React.useRef(0)
 
-  const onWarehouseChange = (v: string | null) => {
-    const next = v || ALL_WAREHOUSES
-    setWarehouse(next)
+  React.useEffect(() => {
+    warehouseRef.current = warehouse
+  }, [warehouse])
+
+  /** 按当前仓库筛选重查统计（30s 服务端缓存；失败静默保留现有数据） */
+  const refreshStats = React.useCallback(() => {
     const reqId = ++statsReqRef.current
+    lastFetchRef.current = Date.now()
+    const w = warehouseRef.current
     startTransition(async () => {
       try {
-        const res = await getTemuShipStatsAction(storeId ?? null, next === ALL_WAREHOUSES ? null : next)
+        const res = await getTemuShipStatsAction(storeId ?? null, w === ALL_WAREHOUSES ? null : w)
         if (reqId === statsReqRef.current && res && Array.isArray(res.today)) setStats(res)
       } catch {
         // 地址标签拉取等偶发失败不阻断，保留现有数据
       }
     })
+  }, [storeId])
+
+  // 15 分钟自动重查本地库（对齐后台 api-ship-orders 同步周期）：页面开着
+  // 数字随 worker 落库自动增量，不调官方 API；切回标签页且已过周期立即补一次，
+  // 隐藏期间跳过（计时器后台被浏览器节流，恢复可见时由补刷兜住）
+  React.useEffect(() => {
+    // 初始数据由服务端预取，挂载时刻即为「上次拉取」基准
+    lastFetchRef.current = Date.now()
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") refreshStats()
+    }, SHIP_STATS_POLL_MS)
+    const onVisible = () => {
+      if (
+        document.visibilityState === "visible" &&
+        Date.now() - lastFetchRef.current >= SHIP_STATS_POLL_MS
+      )
+        refreshStats()
+    }
+    document.addEventListener("visibilitychange", onVisible)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener("visibilitychange", onVisible)
+    }
+  }, [refreshStats])
+
+  const onWarehouseChange = (v: string | null) => {
+    const next = v || ALL_WAREHOUSES
+    warehouseRef.current = next
+    setWarehouse(next)
+    refreshStats()
   }
 
   const today = stats.today
@@ -596,7 +633,7 @@ export function TemuShipStatsCards({
   const slices = React.useMemo(() => {
     const kept: Array<{ label: string; value: number }> = []
     for (const d of today) {
-      if (kept.length >= 15) break
+      if (kept.length >= 20) break
       if (total > 0 && d.num / total < 0.01) break
       kept.push({ label: d.name, value: d.num })
     }
@@ -633,7 +670,7 @@ export function TemuShipStatsCards({
       <Card className="@container/card xl:col-span-2">
         <CardHeader>
           <CardTitle>今日发货占比</CardTitle>
-          <CardDescription>今日=预约取货日为今天（无预约回落装箱时间）；按货号汇总发货件数（展示占比 ≥1% 的货号，至多 15 条；无货号归「无货号」）</CardDescription>
+          <CardDescription>今日=预约取货日为今天（无预约回落装箱时间）；按货号汇总发货件数（展示占比 ≥1% 的货号，至多 20 条；无货号归「无货号」）</CardDescription>
           <CardAction>
             <Select
               items={[
@@ -694,9 +731,7 @@ export function TemuShipStatsCards({
                         className="h-2 w-2 shrink-0 rounded-[2px]"
                         style={{ backgroundColor: s.color }}
                       />
-                      <span className="max-w-32 truncate" title={s.label}>
-                        {s.label}
-                      </span>
+                      <TruncTip text={s.label} className="max-w-32" />
                       <span className="tabular-nums">{pct}%</span>
                     </div>
                   )

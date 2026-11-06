@@ -33,6 +33,7 @@ const current: StorageConfig = {
   configPrefix: "config/",
   generatePrefix: "gen/",
   temuPrefix: "temu/",
+  inventoryPrefix: "inventory/",
   cosForceInternalEndpoint: false,
   localImagePrefix: "image/",
   allowedDownloadHosts: [],

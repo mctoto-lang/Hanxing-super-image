@@ -116,6 +116,7 @@ describe("cos 适配器下载网络失败", () => {
     configPrefix: "config/",
     generatePrefix: "gen/",
     temuPrefix: "temu/",
+    inventoryPrefix: "inventory/",
     cosForceInternalEndpoint: false,
     localImagePrefix: "image/",
     allowedDownloadHosts: [],

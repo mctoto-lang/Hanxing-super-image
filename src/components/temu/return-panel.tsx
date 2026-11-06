@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react"
+import { Loader2, RefreshCw } from "lucide-react"
 import {
   TableBody,
   TableCell,
@@ -9,6 +9,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { TEMU_TABLE_HEADER_CLASS } from "@/components/temu/table-header-style"
+import { TablePagination } from "@/components/ui/table-pagination"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -37,6 +39,8 @@ import {
 } from "@/server/actions/temu-return"
 import { formatDateTime as fmtMs } from "@/lib/datetime"
 import { EmptyHint } from "@/components/temu/products-table"
+import { TruncTip } from "@/components/temu/trunc-tip"
+import { TableSkeletonRows } from "@/components/temu/table-skeleton"
 
 /** 出库时间窗预设按视图区分：退供包裹 30/90/365；SKU 明细上限 31 天（官方 100000004） */
 const PKG_WINDOWS = [
@@ -268,29 +272,30 @@ export function TemuReturnPanel({ store }: { store?: string }) {
         ) : (
           // overflow-clip 只按圆角裁剪（非滚动容器，sticky 表头仍锚定页侧 CardContent）
           <div className="w-max min-w-full overflow-clip rounded-md border">
-            <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
+            <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border">
               {view === "packages" ? (
                 <>
-                  <TableHeader className="sticky top-0 z-10 bg-card">
+                  <TableHeader className={TEMU_TABLE_HEADER_CLASS}>
                     <TableRow>
                       <TableHead>退供包裹号</TableHead>
                       <TableHead>采购子单号</TableHead>
                       <TableHead>运单号</TableHead>
-                      <TableHead className="text-right">退供数量</TableHead>
+                      <TableHead>退供数量</TableHead>
                       <TableHead>包裹状态</TableHead>
                       <TableHead>退供原因</TableHead>
                       <TableHead>物流方式</TableHead>
                       <TableHead>交接方式</TableHead>
                       <TableHead>付款方式</TableHead>
                       <TableHead>出库时间</TableHead>
-                      <TableHead className="text-right">操作</TableHead>
+                      <TableHead>操作</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {pkgRows.length === 0 && (
+                    {loading && pkgRows.length === 0 && <TableSkeletonRows cols={11} />}
+                    {!loading && pkgRows.length === 0 && (
                       <TableRow>
                         <TableCell colSpan={11} className="h-20 text-center text-muted-foreground">
-                          {loading ? "加载中…" : "该筛选下暂无退供包裹（发货至仓库被退时产生）"}
+                          该筛选下暂无退供包裹（发货至仓库被退时产生）
                         </TableCell>
                       </TableRow>
                     )}
@@ -299,14 +304,12 @@ export function TemuReturnPanel({ store }: { store?: string }) {
                         <TableCell className="font-mono">{r.returnSupplierPackageNo ?? <EmptyHint />}</TableCell>
                         <TableCell className="font-mono">{r.purchaseSubOrderSn ?? <EmptyHint />}</TableCell>
                         <TableCell className="font-mono">{r.expressDeliverySn ?? <EmptyHint />}</TableCell>
-                        <TableCell className="text-right tabular-nums">{r.returnSupplierQuantity ?? <EmptyHint />}</TableCell>
+                        <TableCell className="tabular-nums">{r.returnSupplierQuantity ?? <EmptyHint />}</TableCell>
                         <TableCell>
                           <StatusBadge desc={r.packageStatusDesc} />
                         </TableCell>
                         <TableCell className="max-w-44">
-                          <div className="truncate" title={r.returnSupplierReasonDesc ?? undefined}>
-                            {r.returnSupplierReasonDesc ?? <EmptyHint />}
-                          </div>
+                          <TruncTip text={r.returnSupplierReasonDesc ?? ""} className="max-w-44" />
                         </TableCell>
                         <TableCell>{r.logisticsTypeDesc ?? <EmptyHint />}</TableCell>
                         <TableCell>{r.returnHandOverTypeDesc ?? <EmptyHint />}</TableCell>
@@ -314,7 +317,7 @@ export function TemuReturnPanel({ store }: { store?: string }) {
                         <TableCell className="whitespace-nowrap text-muted-foreground">
                           {r.outboundTime != null ? fmtMs(r.outboundTime) : <EmptyHint />}
                         </TableCell>
-                        <TableCell className="text-right">
+                        <TableCell>
                           <Button
                             size="sm"
                             variant="ghost"
@@ -331,21 +334,22 @@ export function TemuReturnPanel({ store }: { store?: string }) {
                 </>
               ) : (
                 <>
-                  <TableHeader className="sticky top-0 z-10 bg-card">
+                  <TableHeader className={TEMU_TABLE_HEADER_CLASS}>
                     <TableRow>
                       <TableHead>退供包裹号</TableHead>
                       <TableHead>货号 / 商品名</TableHead>
                       <TableHead>SKU</TableHead>
                       <TableHead>主销售规格</TableHead>
-                      <TableHead className="text-right">件数</TableHead>
+                      <TableHead>件数</TableHead>
                       <TableHead>出库时间</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {skuRows.length === 0 && (
+                    {loading && skuRows.length === 0 && <TableSkeletonRows cols={6} />}
+                    {!loading && skuRows.length === 0 && (
                       <TableRow>
                         <TableCell colSpan={6} className="h-20 text-center text-muted-foreground">
-                          {loading ? "加载中…" : "该时间窗内暂无退供 SKU 明细"}
+                          该时间窗内暂无退供 SKU 明细
                         </TableCell>
                       </TableRow>
                     )}
@@ -354,13 +358,11 @@ export function TemuReturnPanel({ store }: { store?: string }) {
                         <TableCell className="font-mono">{r.packageSn ?? <EmptyHint />}</TableCell>
                         <TableCell className="max-w-56">
                           <div className="font-mono">{r.productSn ?? <EmptyHint />}</div>
-                          <div className="truncate text-muted-foreground" title={r.productName ?? undefined}>
-                            {r.productName ?? <EmptyHint />}
-                          </div>
+                          <TruncTip text={r.productName ?? ""} className="max-w-56 text-muted-foreground" />
                         </TableCell>
                         <TableCell className="font-mono">{r.productSkuId ?? <EmptyHint />}</TableCell>
                         <TableCell>{r.mainSaleSpec ?? <EmptyHint />}</TableCell>
-                        <TableCell className="text-right tabular-nums">{r.quantity ?? <EmptyHint />}</TableCell>
+                        <TableCell className="tabular-nums">{r.quantity ?? <EmptyHint />}</TableCell>
                         <TableCell className="whitespace-nowrap text-muted-foreground">
                           {r.outboundTime != null ? fmtMs(r.outboundTime) : <EmptyHint />}
                         </TableCell>
@@ -373,19 +375,14 @@ export function TemuReturnPanel({ store }: { store?: string }) {
           </div>
         )}
       </CardContent>
-      {totalPages > 1 && (
-        <div className="flex items-center justify-end gap-2 border-t px-4 py-2">
-          <Button variant="outline" size="sm" className="h-7 text-xs" disabled={pageNo <= 1 || loading} onClick={() => setPageNo((p) => p - 1)}>
-            <ChevronLeft className="size-3.5" /> 上一页
-          </Button>
-          <span className="text-xs text-muted-foreground">
-            {pageNo} / {totalPages}
-          </span>
-          <Button variant="outline" size="sm" className="h-7 text-xs" disabled={pageNo >= totalPages || loading} onClick={() => setPageNo((p) => p + 1)}>
-            下一页 <ChevronRight className="size-3.5" />
-          </Button>
-        </div>
-      )}
+      <TablePagination
+        className="justify-end border-t px-4 py-2"
+        pageIndex={pageNo - 1}
+        pageCount={totalPages}
+        total={total}
+        onPageChange={(i) => setPageNo(i + 1)}
+        disabled={loading}
+      />
       {detailPkg && (
         <ReturnDetailDialog store={store} pkg={detailPkg} onClose={() => setDetailPkg(null)} />
       )}
@@ -462,7 +459,7 @@ function ReturnDetailDialog({
                   <TableHead>货号 / 商品名</TableHead>
                   <TableHead>主销售规格</TableHead>
                   <TableHead>次销售规格</TableHead>
-                  <TableHead className="text-right">退供数量</TableHead>
+                  <TableHead>退供数量</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -478,13 +475,11 @@ function ReturnDetailDialog({
                     </TableCell>
                     <TableCell className="max-w-56">
                       <div className="font-mono">{r.productSn ?? <EmptyHint />}</div>
-                      <div className="truncate text-muted-foreground" title={r.productName ?? undefined}>
-                        {r.productName ?? <EmptyHint />}
-                      </div>
+                      <TruncTip text={r.productName ?? ""} className="max-w-56 text-muted-foreground" />
                     </TableCell>
                     <TableCell>{r.mainSaleSpec ?? <EmptyHint />}</TableCell>
                     <TableCell>{r.secondarySaleSpec ?? <EmptyHint />}</TableCell>
-                    <TableCell className="text-right tabular-nums">{r.returnSupplierQuantity ?? <EmptyHint />}</TableCell>
+                    <TableCell className="tabular-nums">{r.returnSupplierQuantity ?? <EmptyHint />}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Calendar } from "@/components/ui/calendar"
 import {
   Popover,
@@ -41,6 +42,7 @@ import {
   type TemuShipOrderRow,
   type TemuShipPackingMatchResult,
 } from "@/server/actions/temu-ship"
+import { TruncTip } from "@/components/temu/trunc-tip"
 
 /**
  * 装箱发货（官方右侧抽屉样式，对齐卖家后台）：
@@ -51,8 +53,27 @@ import {
  *   体积到位后自动比价（比价必填体积），根治「请填写发货总体积」报错。
  */
 
-/** 行内/补打「打印标签」：同步先开空白标签页再回填链接（await 之后再 window.open 会被弹窗拦截） */
-export async function openShipBoxMarkPrint(store: string, sns: string[]): Promise<void> {
+/** 「打印商品打包标签」（只请求不打开打印页）：请求 dataKey 即按官方口径标记该批已打印
+ *  （包裹数与件数锁定）。行内/批量入口统一先过列表的两步确认弹窗（图2 继续打印 /
+ *  图3 先发货后打印）再调本函数。 */
+export async function requestShipBoxMark(store: string, sns: string[]): Promise<boolean> {
+  if (sns.length === 0) return false
+  const r = await getShipBoxMarkPrintUrlAction({ store, deliveryOrderSns: sns }).catch(() => null)
+  if (!r || !r.ok) {
+    toast.error(r && !r.ok ? r.error : "打印请求失败", { duration: 8000 })
+    return false
+  }
+  toast.success(
+    "打印请求已发送：该批发货单已按官方口径标记打印（包裹数与件数锁定）",
+    { duration: 10_000 },
+  )
+  return true
+}
+
+/** 「打印商品打包标签」补打（开官方打印页直出）：待仓库收货场景——件数已锁定，
+ *  直接开打印页；deliveryOrderSnList 传多单时官方一个 dataKey 页含全部箱唧
+ *  （组级=同批次多单，行级=单单补打）。与首打的 requestShipBoxMark（仅请求锁定）区分。 */
+export async function openShipBoxMarkPage(store: string, sns: string[]): Promise<void> {
   if (sns.length === 0) return
   const w = window.open("", "_blank")
   try {
@@ -64,45 +85,42 @@ export async function openShipBoxMarkPrint(store: string, sns: string[]): Promis
     }
     if (w) w.location.href = r.url
     else window.open(r.url, "_blank", "noopener")
-    toast.success("已打开官方打印页（链接 10 分钟内单次有效）；打印后包裹与件数锁定", { duration: 8000 })
+    toast.success(
+      sns.length > 1
+        ? `已打开官方打印页（${sns.length} 单打包标签合并一页；链接 10 分钟内单次有效）`
+        : "已打开官方打印页（链接 10 分钟内单次有效）",
+      { duration: 8000 },
+    )
   } catch (e) {
     w?.close()
     toast.error(e instanceof Error ? e.message : "打印页获取失败", { duration: 8000 })
   }
 }
 
-/** 批量「打印商品打包标签」（只请求不打开打印页）：请求 dataKey 即按官方口径标记该批已打印 */
-export async function requestShipBoxMark(store: string, sns: string[]): Promise<boolean> {
-  if (sns.length === 0) return false
-  const r = await getShipBoxMarkPrintUrlAction({ store, deliveryOrderSns: sns }).catch(() => null)
-  if (!r || !r.ok) {
-    toast.error(r && !r.ok ? r.error : "打印请求失败", { duration: 8000 })
-    return false
-  }
-  toast.success(
-    "打印请求已发送：该批发货单已按官方口径标记打印（包裹数与件数锁定）；实际打印可稍后在列表点「打印标签」重取链接（10 分钟内单次有效）",
-    { duration: 10_000 },
-  )
-  return true
-}
-
-/** 「打印商品条码」（labelv2 按 SKC 取码）：与箱唛同款同步开窗模式，10min 单次有效 */
-export async function openShipBarcodePrint(store: string, productSkcIds: number[]): Promise<void> {
-  const ids = [...new Set(productSkcIds.filter((v) => v > 0))]
+/** 「打印商品条码」：按发货单 SKU 维度提交（labelv2 按供应商主体隔离，货号会打出别家
+ *  条码；SKU id 是主体内精确键，服务端自动路由同企业已授权店铺 token），与箱唛同款
+ *  同步开窗模式，10min 单次有效；跨主体批次会返回多个打印页（按主体分组各一页） */
+export async function openShipBarcodePrint(store: string, skuIds: Array<number | null | undefined>): Promise<void> {
+  const ids = [...new Set(skuIds.filter((v): v is number => v != null && v > 0))]
   if (ids.length === 0) {
-    toast.error("所选单据缺少 SKC，无法打印商品条码")
+    toast.error("所选单据缺少 SKU 明细，无法打印商品条码")
     return
   }
   const w = window.open("", "_blank")
   try {
-    const r = await getShipBarcodePrintUrlAction({ store, productSkcIds: ids })
+    const r = await getShipBarcodePrintUrlAction({ store, productSkuIds: ids })
     if (!r.ok) {
       w?.close()
       toast.error(r.error, { duration: 8000 })
       return
     }
-    if (w) w.location.href = r.url
-    else window.open(r.url, "_blank", "noopener")
+    const [first, ...rest] = r.urls
+    if (w) w.location.href = first
+    else window.open(first, "_blank", "noopener")
+    for (const u of rest) window.open(u, "_blank", "noopener")
+    if (r.urls.length > 1) {
+      toast.success(`已打开 ${r.urls.length} 个官方打印页（发货单跨供应商主体，按主体分组；链接 10 分钟内单次有效）`, { duration: 10_000 })
+    }
   } catch (e) {
     w?.close()
     toast.error(e instanceof Error ? e.message : "打印页获取失败", { duration: 8000 })
@@ -116,6 +134,8 @@ export type DeliverPayload =
   | {
       deliverMethod: 2
       expressCompanyId: number | null
+      /** 快递公司名称：官方方式2必填（2000000 实证），取自 logisticsmatch 推荐条目 */
+      expressCompanyName: string
       predictTotalPackageWeight: number
       expectPickUpGoodsTime?: number
       pickupMethod?: number
@@ -206,6 +226,7 @@ export function DeliverMethodTabs({
                 onChange({
                   deliverMethod: 2,
                   expressCompanyId: null,
+                  expressCompanyName: "",
                   predictTotalPackageWeight: Math.max(1, Math.round(Number(weightKg) || 1)) * 1000,
                   expressPackageNum: Math.max(1, Math.round(Number(pkgNum) || 1)),
                   pickupMethod: 0,
@@ -401,6 +422,13 @@ export function DeliverMethodTabs({
 
 /* ─── 装箱发货（右侧抽屉，官方样式） ─── */
 
+/** schema deliveryOrderSns 单次上限 50：装箱链路（预检/体积/比价/发货）按 ≤50 一组循环分批 */
+function chunkSns(sns: string[]): string[][] {
+  const out: string[][] = []
+  for (let i = 0; i < sns.length; i += 50) out.push(sns.slice(i, i + 50))
+  return out
+}
+
 /** 官方装箱发货抽屉：仅平台推荐物流（方式 2）；入口已硬拦截未打印箱唛的单，
  *  重量/体积打开时静默回填（可改），体积到达后自动比价，选公司→揽收/时段→确认发货。 */
 export function PackingDialog({
@@ -434,6 +462,8 @@ export function PackingDialog({
   const [pickHour, setPickHour] = React.useState("")
   const [pickMin, setPickMin] = React.useState("")
   const [calOpen, setCalOpen] = React.useState(false)
+  /** 库存联动（批次4）：单仓制固定主仓 + 工厂直发（跳过校验不扣库存） */
+  const [factoryDirect, setFactoryDirect] = React.useState(false)
 
   const sns = React.useMemo(() => rows.map((r) => r.deliveryOrderSn), [rows])
   /** 每单包裹数：官方行字段在待装箱阶段常为 0，以打印箱唛拆分出的包裹号为准 */
@@ -490,20 +520,27 @@ export function PackingDialog({
       return
     }
     startLoading(async () => {
-      const r = await getLogisticsMatchAction({
-        store,
-        deliveryOrderSns: sns,
-        receiveAddressInfo: first.receiveAddress,
-        deliveryAddressId: addrId ?? first.deliveryAddressId ?? 0,
-        predictTotalPackageWeight: Math.max(1, kg) * 1000,
-        subWarehouseId: first.subWarehouseId ?? 0,
-        // effect 内的自动比价读到的 pkgNum 是旧渲染闭包（setPkgNum 尚未生效）→
-        // 由调用方显式传本轮回填的包裹数；手动比价回落当前输入（空/非法按整批数）
-        totalPackageNum: pkgCount ?? Math.max(1, Math.round(Number(pkgNum)) || totalPackages),
-        predictVolume: vol.trim() || undefined,
-      })
-      if (r.ok) setLogistics(r)
-      else toast.error(r.error, { duration: 8000 })
+      // schema deliveryOrderSns 单次上限 50：分批比价（报价取决于总量——重量/体积/箱数，
+      // 各批结果一致，取首个成功批；单批失败 toast 该批错误并继续其余批）
+      for (const batch of chunkSns(sns)) {
+        const r = await getLogisticsMatchAction({
+          store,
+          deliveryOrderSns: batch,
+          receiveAddressInfo: first.receiveAddress,
+          deliveryAddressId: addrId ?? first.deliveryAddressId ?? 0,
+          predictTotalPackageWeight: Math.max(1, kg) * 1000,
+          subWarehouseId: first.subWarehouseId ?? 0,
+          // effect 内的自动比价读到的 pkgNum 是旧渲染闭包（setPkgNum 尚未生效）→
+          // 由调用方显式传本轮回填的包裹数；手动比价回落当前输入（空/非法按整批数）
+          totalPackageNum: pkgCount ?? Math.max(1, Math.round(Number(pkgNum)) || totalPackages),
+          predictVolume: vol.trim() || undefined,
+        })
+        if (r.ok) {
+          setLogistics(r)
+          return
+        }
+        toast.error(r.error, { duration: 8000 })
+      }
     })
   }
 
@@ -523,27 +560,73 @@ export function PackingDialog({
     setPkgNum(String(Math.max(1, totalPackages)))
     setAddressId(rows[0]?.deliveryAddressId ?? null)
     let cancelled = false
-    const snsNow = rows.map((r) => r.deliveryOrderSn)
+    const batches = chunkSns(rows.map((r) => r.deliveryOrderSn))
+    setFactoryDirect(false)
     getMallAddressesAction(store).then((r) => {
       if (!cancelled && r.ok) setMallAddrs(r.rows)
     })
+    // schema deliveryOrderSns 单次上限 50：预检/体积分批调用后合并（重量、体积求和，
+    // 建议合并发货拼接；单批失败 toast 该批错误并继续其余批，成功批结果照常回填）
     Promise.all([
-      packingMatchAction({ store, deliveryOrderSns: snsNow }).catch(() => null),
-      getShipPredictVolumeAction({ store, deliveryOrderSns: snsNow }).catch(() => null),
-    ]).then(([m, v]) => {
+      (async (): Promise<TemuShipPackingMatchResult | null> => {
+        let merged: TemuShipPackingMatchResult | null = null
+        for (const b of batches) {
+          const m = await packingMatchAction({ store, deliveryOrderSns: b }).catch(() => null)
+          if (!m || !m.ok) {
+            if (!cancelled) toast.error(m && !m.ok ? m.error : "装箱预检请求失败", { duration: 8000 })
+            continue
+          }
+          if (!merged) {
+            merged = { ...m }
+            continue
+          }
+          merged.shouldAdd = [...merged.shouldAdd, ...m.shouldAdd]
+          merged.deliveryOrderSnNotPrintBox = [
+            ...merged.deliveryOrderSnNotPrintBox,
+            ...m.deliveryOrderSnNotPrintBox,
+          ]
+          // 任一批官方未返回重量则整体视为未知（避免求和漏计导致预填低估）
+          merged.skuSumWeight =
+            merged.skuSumWeight == null || m.skuSumWeight == null
+              ? null
+              : merged.skuSumWeight + m.skuSumWeight
+          merged.ableUsePlatformExpress =
+            merged.ableUsePlatformExpress === false || m.ableUsePlatformExpress === false
+              ? false
+              : (merged.ableUsePlatformExpress ?? m.ableUsePlatformExpress)
+        }
+        return merged
+      })(),
+      (async (): Promise<string | null> => {
+        let sum: number | null = null
+        let missing = false
+        for (const b of batches) {
+          const v = await getShipPredictVolumeAction({ store, deliveryOrderSns: b }).catch(() => null)
+          if (!v || !v.ok) {
+            if (!cancelled) toast.error(v && !v.ok ? v.error : "体积预估请求失败", { duration: 8000 })
+            missing = true
+            continue
+          }
+          const n = v.predictVolume != null ? Number(v.predictVolume) : NaN
+          if (Number.isFinite(n)) sum = (sum ?? 0) + n
+          else missing = true
+        }
+        return missing || sum == null ? null : String(sum)
+      })(),
+    ]).then(([m, vol]) => {
       if (cancelled) return
       let kg = 1
-      if (m && m.ok) {
+      if (m) {
         setMatchInfo(m)
         if (m.skuSumWeight != null) {
           kg = Math.max(1, Math.ceil(m.skuSumWeight / 1000))
           setWeightKg(String(kg))
         }
       }
-      if (v && v.ok && v.predictVolume) {
-        setVolume(v.predictVolume)
+      if (vol) {
+        setVolume(vol)
         fetchLogistics(
-          v.predictVolume,
+          vol,
           kg,
           rows[0]?.deliveryAddressId ?? null,
           Math.max(1, totalPackages),
@@ -559,34 +642,51 @@ export function PackingDialog({
   }, [open, rows, store])
 
   const submitPacking = () => {
-    const kg = Math.max(1, Math.round(Number(weightKg) || 1))
-    if (selOption?.expressCompanyId == null) {
+    if (selOption?.expressCompanyId == null || !selOption?.expressCompanyName) {
       toast.error("请先比价并选择一个物流公司")
       return
     }
+    doSend()
+  }
+
+  const doSend = () => {
+    const opt = selOption
+    if (!opt || opt.expressCompanyId == null || !opt.expressCompanyName) return
+    const kg = Math.max(1, Math.round(Number(weightKg) || 1))
     startSending(async () => {
-      const r = await sendPackingAction({
-        store,
-        deliveryOrderSns: sns,
-        deliveryAddressId: addressId ?? rows[0]?.deliveryAddressId ?? 0,
-        predictPackageVolume: volume.trim() || undefined,
-        payload: {
-          deliverMethod: 2,
-          expressCompanyId: selOption.expressCompanyId,
-          predictTotalPackageWeight: kg * 1000,
-          expectPickUpGoodsTime: pickTimeMs ?? undefined,
-          pickupMethod,
-          predictId: selOption.predictId ?? undefined,
-          expressPackageNum: Math.max(1, Math.round(Number(pkgNum) || 1)),
-        } as never,
-      })
-      if (!r.ok) {
-        toast.error(r.error, { duration: 8000 })
-        return
+      // schema deliveryOrderSns 单次上限 50：分批装箱发货（每批一个官方发货批次；重量/体积/箱数
+      // 为整批口径的预估）；单批失败 toast 该批错误并继续其余批
+      let sent = 0
+      const batchSns: string[] = []
+      for (const batch of chunkSns(sns)) {
+        const r = await sendPackingAction({
+          store,
+          deliveryOrderSns: batch,
+          deliveryAddressId: addressId ?? rows[0]?.deliveryAddressId ?? 0,
+          predictPackageVolume: volume.trim() || undefined,
+          factoryDirect: factoryDirect || undefined,
+          payload: {
+            deliverMethod: 2,
+            expressCompanyId: opt.expressCompanyId,
+            expressCompanyName: opt.expressCompanyName,
+            predictTotalPackageWeight: kg * 1000,
+            expectPickUpGoodsTime: pickTimeMs ?? undefined,
+            pickupMethod,
+            predictId: opt.predictId ?? undefined,
+            expressPackageNum: Math.max(1, Math.round(Number(pkgNum) || 1)),
+          } as never,
+        })
+        if (!r.ok) {
+          toast.error(r.error, { duration: 8000 })
+          continue
+        }
+        sent++
+        if (r.warning) toast.warning(r.warning, { duration: 10_000 })
+        if (r.expressBatchSn) batchSns.push(r.expressBatchSn)
       }
-      if (r.warning) toast.warning(r.warning, { duration: 10_000 })
+      if (sent === 0) return
       toast.success(
-        `装箱发货成功${r.expressBatchSn ? `，发货批次 ${r.expressBatchSn}` : ""}；运单标签与商品条码可在列表补打`,
+        `装箱发货成功${batchSns.length > 0 ? `，发货批次 ${batchSns.join("、")}` : ""}；运单标签可在「待仓库收货」列表打印，商品条码可在列表补打`,
         { duration: 10_000 },
       )
       onDone()
@@ -606,6 +706,25 @@ export function PackingDialog({
         </SheetHeader>
 
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4 scrollbar-hide">
+          {/* 库存联动：工厂直发（硬阻断口径；单仓制固定主仓） */}
+          <section className="space-y-2 rounded-lg border border-violet-500/30 bg-violet-500/5 px-3 py-2.5 text-xs">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-sm font-medium">库存联动</span>
+              <label className="flex items-center gap-1.5">
+                <Checkbox
+                  checked={factoryDirect}
+                  onCheckedChange={(v) => setFactoryDirect(v === true)}
+                />
+                工厂直发（跳过库存校验与扣减）
+              </label>
+            </div>
+            <p className="text-muted-foreground">
+              {factoryDirect
+                ? "本批货物从工厂直发 TEMU：不校验库存、不扣减（生产单「工厂直发」登记数量）。"
+                : "发货前按库存硬校验，不足将阻断；成功后自动扣减并记「发货扣减」流水。未建档货号不参与校验。"}
+            </p>
+          </section>
+
           {/* 收货信息（官方蓝竖条样式） */}
           <section className="space-y-1 border-l-2 border-sky-500 pl-3 text-xs">
             <p className="text-sm font-medium">收货信息</p>
@@ -689,10 +808,10 @@ export function PackingDialog({
                   <SelectTrigger className="h-8 text-xs">
                     <SelectValue placeholder={mallAddrs.length === 0 ? "地址加载中…" : "选择发货仓库"} />
                   </SelectTrigger>
-                  {/* 弹层默认锁触发器宽（w-(--anchor-width)），地址长会被截断——放宽 + 悬浮全文 */}
+                  {/* 弹层默认锁触发器宽（w-(--anchor-width)），地址长会被截断——放宽，项内自显全文 */}
                   <SelectContent className="w-auto min-w-72 max-w-[26rem]">
                     {mallAddrs.map((a) => (
-                      <SelectItem key={a.id} value={String(a.id)} title={`${a.label}（${a.fullText}）`}>
+                      <SelectItem key={a.id} value={String(a.id)}>
                         {a.label}（{a.fullText}）
                       </SelectItem>
                     ))}
@@ -882,9 +1001,14 @@ export function PackingDialog({
                   )}
                   <div className="min-w-0 flex-1">
                     <p className="font-mono text-[11px]">{r.deliveryOrderSn}</p>
-                    <p className="truncate text-[11px] text-muted-foreground" title={r.productName ?? undefined}>
-                      {r.subPurchaseOrderSn ?? "—"} · {r.productName ?? "—"}
-                    </p>
+                    <TruncTip
+                      text={r.productName ?? "—"}
+                      className="mt-0.5 max-w-full text-[11px] text-muted-foreground"
+                    >
+                      <span>
+                        {r.subPurchaseOrderSn ?? "—"} · {r.productName ?? "—"}
+                      </span>
+                    </TruncTip>
                     <p className="text-[11px] text-muted-foreground">
                       SKC {r.productSkcId ?? "—"} · 货号 {r.skcExtCode ?? "—"}
                     </p>
@@ -903,7 +1027,12 @@ export function PackingDialog({
           <Button
             size="sm"
             className="h-8 text-xs"
-            disabled={sending || loading || selOption?.expressCompanyId == null}
+            disabled={
+              sending ||
+              loading ||
+              selOption?.expressCompanyId == null ||
+              !selOption?.expressCompanyName
+            }
             onClick={submitPacking}
           >
             {sending ? "提交中…" : "确认发货"}

@@ -7,6 +7,7 @@ import {
   Ship,
   Store as StoreIcon,
   Gauge,
+  TriangleAlert,
   Truck,
   Upload,
   ClipboardCheck,
@@ -218,7 +219,22 @@ export default async function TemuPage({
           <AdsTab storeId={query.store} range={query.range} workbenchStore={effectiveStore} />
         )}
         {activeTab === "price" && <TemuPriceReviewPanel store={effectiveStore} />}
-        {activeTab === "purchase" && <TemuPurchasePanel store={effectiveStore} />}
+        {activeTab === "purchase" && (
+          <div className="flex h-full min-h-0 flex-col gap-4">
+            {/* 海外备货警示（结构同广告 tab 平台限制横幅，红色系） */}
+            <div className="flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/5 px-3.5 py-2.5 text-sm text-red-600 dark:text-red-400">
+              <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+              <p>
+                注意事项：请勿对备货类型为<b>【海外备货】</b>的备货单进行创建与发货，海外仓库收货仓库名称后带有
+                <b>（前置发货）</b>，暂无海外备货计划！
+              </p>
+            </div>
+            <TemuPurchasePanel
+              store={effectiveStore}
+              stores={enabledStores.map((s) => ({ id: s.id, name: s.name }))}
+            />
+          </div>
+        )}
         {activeTab === "qc" && <TemuQualityPanel store={effectiveStore} />}
         {activeTab === "return" && <TemuReturnPanel store={effectiveStore} />}
         {activeTab === "ship" && (

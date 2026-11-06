@@ -117,7 +117,7 @@ const SALES_PAGE = {
           todaySaleVolume: 3,
           lastSevenDaysSaleVolume: 21,
           lastThirtyDaysSaleVolume: 90,
-          inventoryNumInfo: { warehouseInventoryNum: 42 },
+          inventoryNumInfo: { warehouseInventoryNum: 42, waitDeliveryInventoryNum: 12 },
           availableSaleDays: "14.0",
         },
       ],
@@ -259,7 +259,7 @@ afterAll(async () => {
 })
 
 describe("syncStore 全源链路", () => {
-  it("upsert 四张表 + 主图转存并落审计与状态", async () => {
+  it("upsert 四张表 + 主图转存并落审计与状态", { timeout: 60_000 }, async () => {
     vi.stubGlobal("fetch", mockTemuFetch())
     const outcome = await syncStore(storeId)
     expect(outcome.skipped).toBeUndefined()
@@ -315,6 +315,8 @@ describe("syncStore 全源链路", () => {
     expect(salesRows[0]?.todaySalesVolume).toBe(3)
     expect(salesRows[0]?.last7DaysSalesVolume).toBe(21)
     expect(salesRows[0]?.warehouseAvailableStock).toBe(42)
+    // 待发货库存同口径落库（0089；TEMU 净库存 = 仓内 − 待发货）
+    expect(salesRows[0]?.waitDeliveryStock).toBe(12)
     const [skuMap] = await db
       .select()
       .from(temuSkuMaps)

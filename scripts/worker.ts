@@ -199,6 +199,29 @@ void (async () => {
       }
     }
 
+    // 库存日快照：每小时落当日 货号×仓 存量（当日存在则更新为最新，次日自然冻结）；
+    // 趋势/收发存期初/缺货统计的底座（无库存数据的企业为 0 行空跑）
+    const { runDailyInventorySnapshots } = await import(
+      "@/server/services/inventory-snapshot"
+    )
+    const inventorySnapshotInterval = 60 * 60 * 1000
+    const inventorySnapshotLoop = async (): Promise<void> => {
+      while (running) {
+        try {
+          const count = await runDailyInventorySnapshots()
+          if (count > 0) {
+            console.log(`[worker:inventory-snapshot] 当日快照已更新 ${count} 行`)
+          }
+        } catch (err) {
+          console.error(
+            "[worker:inventory-snapshot] 快照循环异常:",
+            err instanceof Error ? err.message : err,
+          )
+        }
+        await sleep(inventorySnapshotInterval)
+      }
+    }
+
     await Promise.all([
       processQueueContinuous({ isRunning: () => running }),
       runLoop("chat", processChatQueueOnce),
@@ -211,6 +234,7 @@ void (async () => {
       statusLoop(),
       subscriptionLoop(),
       temuSyncLoop(),
+      inventorySnapshotLoop(),
     ])
 
     console.log("[worker] 已停止")

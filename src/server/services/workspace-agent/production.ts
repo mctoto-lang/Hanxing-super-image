@@ -3,8 +3,9 @@
  *
  * 链路（worker 与 action 共用同一套内核，避免行为漂移）：
  * 1. startAgentCardGeneration：单卡正式生图（action 主动触发 / 评审打回后
- *    自动重试共用）。使用 workflow 冻结的 imageModelId 与该卡 kind 对应的
- *    冻结尺寸；单事务内建 card_image + generation_task（source = "agent"）
+ *    自动重试共用）。默认使用 workflow 冻结的 imageModelId 与该卡 kind 对应
+ *    的冻结尺寸（action 侧可传 override 用生成配置弹窗所选模型/尺寸覆盖）；
+ *    单事务内建 card_image + generation_task（source = "agent"）
  *    + workspace_agent_round + 个人配额扣费（deductUserCredits，沿用工作台
  *    通用计费规则）+ workspace_agent_usage 记账，事务外入标准生图队列。
  * 2. 生图队列终态（processor.ts）→ maybeEnqueueWorkspaceAgentReview 入
@@ -42,6 +43,7 @@ import {
   type WorkspaceAgentWorkflowRow,
 } from "@/db/schema"
 import type { UserContext } from "@/lib/auth/session"
+import { checkModelAccess } from "@/lib/auth/permissions"
 import { enqueue } from "@/lib/queue/task-queue"
 import { deductUserCredits, refundUserCredits } from "@/server/services/credits-service"
 import { signUploadToken } from "@/lib/storage/upload-token"
@@ -72,6 +74,7 @@ import {
 } from "./llm"
 import { logWaEvent } from "./run"
 import { loadLatestWorkflowForTask } from "./progress"
+import { enabledSizeValues } from "./models"
 
 // ---------------------------------------------------------------------------
 // 卡类映射与文案
@@ -103,13 +106,16 @@ export interface StartAgentCardGenerationInput {
   /** 本轮完整提示词（含固定风格提示词段） */
   prompt: string
   promptSource: WorkspaceAgentPromptSource
+  /** 生成配置弹窗 override：优先于工作流冻结值（modelId/size 任一缺省则该项回落冻结口径） */
+  override?: { modelId?: string; size?: string }
 }
 
 /**
- * 单卡正式生图：冻结模型 + kind 尺寸，单事务建 card_image / generation_task
- * （source = "agent"）/ workspace_agent_round + 个人配额扣费 + usage 记账，
- * 事务外入标准生图队列（失败退款补偿，同 generateCardImageInternal 口径）。
- * 参考图不进入生图请求（发起输入的参考图仅用于风格提取，见 WorkspaceAgentInput 契约）。
+ * 单卡正式生图：默认冻结模型 + kind 尺寸（可被 override 覆盖），单事务建
+ * card_image / generation_task（source = "agent"）/ workspace_agent_round +
+ * 个人配额扣费 + usage 记账，事务外入标准生图队列（失败退款补偿，同
+ * generateCardImageInternal 口径）。参考图不进入生图请求（发起输入的参考图
+ * 仅用于风格提取，见 WorkspaceAgentInput 契约）。
  */
 export async function startAgentCardGeneration(
   input: StartAgentCardGenerationInput,
@@ -123,7 +129,8 @@ export async function startAgentCardGeneration(
   if (!card.promptCardId) return { ok: false, error: "卡片未回链工作台提示词卡，无法生图" }
 
   const ext = readWorkflowInput(workflow)
-  if (!ext.imageModelId) {
+  const override = input.override
+  if (!ext.imageModelId && !override?.modelId) {
     return {
       ok: false,
       error: "工作流未冻结生图模型（发起时未选择生图模型），无法进入生图阶段",
@@ -132,19 +139,25 @@ export async function startAgentCardGeneration(
   const templateKey = ext.frozenConfig?.templateKey ?? "tarot81"
   const sizeKind = cardKindToSizeKind(card.kind)
   const size =
-    ext.frozenConfig?.sizes?.[sizeKind] ?? templateSizeOf(templateKey, sizeKind)
+    override?.size ??
+    (ext.frozenConfig?.sizes?.[sizeKind] ?? templateSizeOf(templateKey, sizeKind))
+  const modelId = override?.modelId ?? ext.imageModelId!
 
-  // 冻结模型复验（停用/删除后明确报错，不静默换模型）
+  // 所选/冻结模型复验（停用/删除后明确报错，不静默换模型）
   const [model] = await db
     .select()
     .from(models)
-    .where(eq(models.id, ext.imageModelId))
+    .where(eq(models.id, modelId))
     .limit(1)
   if (!model || !model.isActive || !model.visibleInWorkspace) {
-    return { ok: false, error: "冻结的生图模型不存在或已停用，请重新发起工作流" }
+    return override?.modelId
+      ? { ok: false, error: "生成配置所选模型不存在或已停用，请重新选择" }
+      : { ok: false, error: "冻结的生图模型不存在或已停用，请重新发起工作流" }
   }
   if (model.enterpriseId !== null && model.enterpriseId !== enterpriseId) {
-    return { ok: false, error: "冻结的生图模型不在本企业可用范围内" }
+    return override?.modelId
+      ? { ok: false, error: "生成配置所选模型不在本企业可用范围内" }
+      : { ok: false, error: "冻结的生图模型不在本企业可用范围内" }
   }
   const cost = model.costPerImage
 
@@ -384,7 +397,9 @@ export async function hasInFlightGeneration(cardId: string): Promise<boolean> {
 
 /**
  * action 侧单卡生图入口：定位挂靠工作台的最新 workflow 与 Agent 卡后走
- * startAgentCardGeneration（忽略调用方传入的 apiId/size，一律用冻结值）。
+ * startAgentCardGeneration。override（生成配置弹窗所选模型/尺寸）优先于
+ * 工作流冻结值；缺省回落冻结口径。override 模型在此做用户级权限复验
+ * （预置白名单 + 模型级访问），基础校验（停用/企业范围）由内核兜底。
  */
 export async function generateAgentCardImageForAction(opts: {
   ctx: UserContext
@@ -392,10 +407,42 @@ export async function generateAgentCardImageForAction(opts: {
   taskId: string
   promptCardId: string
   prompt: string
+  override?: { modelId?: string; size?: string }
 }): Promise<
   | { ok: true; roundId: string; generationTaskId: string; cardImageId: string }
   | { ok: false; error: string }
 > {
+  const override = opts.override
+  if (override?.modelId) {
+    const [m] = await db
+      .select()
+      .from(models)
+      .where(eq(models.id, override.modelId))
+      .limit(1)
+    if (!m || !m.isActive || !m.visibleInWorkspace) {
+      return { ok: false, error: "生成配置所选模型不存在或已停用，请重新选择" }
+    }
+    if (m.enterpriseId !== null && m.enterpriseId !== opts.enterpriseId) {
+      return { ok: false, error: "生成配置所选模型不在本企业可用范围内" }
+    }
+    if (m.enterpriseId === null) {
+      // 平台预置模型按企业 visiblePresetModels 白名单校验（同普通生图口径）
+      const visiblePreset =
+        (opts.ctx.enterprise?.visiblePresetModels as string[] | null) ?? []
+      if (visiblePreset.length > 0 && !visiblePreset.includes(m.id)) {
+        return { ok: false, error: "该平台预置模型未对本企业开放" }
+      }
+    }
+    const accessErr = checkModelAccess(opts.ctx, override.modelId)
+    if (accessErr) return { ok: false, error: accessErr }
+    // override 尺寸需在所选模型的启用预设内（不绕开冻结口径的预设校验）
+    if (override?.size && override?.modelId) {
+      const okSizes = enabledSizeValues(m.sizePresets)
+      if (!okSizes.includes(override.size)) {
+        return { ok: false, error: "所选尺寸不在该模型的启用预设内，请重新选择" }
+      }
+    }
+  }
   const workflow = await loadLatestWorkflowForTask(
     opts.enterpriseId,
     opts.ctx.user.id,
@@ -439,6 +486,7 @@ export async function generateAgentCardImageForAction(opts: {
     card,
     prompt: opts.prompt,
     promptSource: roundRow ? "manual" : "initial",
+    override,
   })
 }
 
@@ -1189,6 +1237,8 @@ async function reviseAndRegenerate(input: {
   roundNumber: number | null
   /** 场景标签（打回续跑 / 重新 Agent 生成），仅用于事件日志 */
   scenario: "review_retry" | "manual_restart"
+  /** 触发轮生图任务 id：按其 modelId/imageSize 透传 override（同模型同尺寸重试） */
+  generationTaskId?: string | null
 }): Promise<{ outcome: string; roundId?: string }> {
   const { workflow, card, currentPrompt, feedback, roundNumber, scenario } = input
   const isRetry = scenario === "review_retry"
@@ -1224,6 +1274,19 @@ async function reviseAndRegenerate(input: {
     .where(eq(workspaceAgentCards.id, card.id))
     .limit(1)
   if (!freshCard) throw new Error("卡片不存在")
+  // 同模型同尺寸重试：按触发轮生图任务取 modelId/imageSize 作为 override
+  // （历史卡查不到任务时不传，回落冻结口径兜底）
+  let retryOverride: { modelId?: string; size?: string } | undefined
+  if (input.generationTaskId) {
+    const [task] = await db
+      .select({ modelId: generationTasks.modelId, imageSize: generationTasks.imageSize })
+      .from(generationTasks)
+      .where(eq(generationTasks.id, input.generationTaskId))
+      .limit(1)
+    retryOverride = task
+      ? { modelId: task.modelId ?? undefined, size: task.imageSize ?? undefined }
+      : undefined
+  }
   const res = await startAgentCardGeneration({
     enterpriseId: workflow.enterpriseId,
     userId: workflow.userId,
@@ -1231,6 +1294,7 @@ async function reviseAndRegenerate(input: {
     card: freshCard,
     prompt: nextPrompt,
     promptSource: "auto_revise",
+    override: retryOverride,
   })
   if (!res.ok) {
     await db
@@ -1312,6 +1376,13 @@ export async function runRevisePromptJob(
     .update(workspaceAgentCards)
     .set({ status: "drafting", errorMessage: null, updatedAt: new Date() })
     .where(eq(workspaceAgentCards.id, card.id))
+  // 重新 Agent 生成沿用触发前最新一轮的生图任务（同模型同尺寸重试）
+  const [lastRound] = await db
+    .select({ generationTaskId: workspaceAgentRounds.generationTaskId })
+    .from(workspaceAgentRounds)
+    .where(eq(workspaceAgentRounds.cardId, card.id))
+    .orderBy(desc(workspaceAgentRounds.roundNumber))
+    .limit(1)
   const r = await reviseAndRegenerate({
     workflow,
     card,
@@ -1319,6 +1390,7 @@ export async function runRevisePromptJob(
     feedback,
     roundNumber: null,
     scenario: "manual_restart",
+    generationTaskId: lastRound?.generationTaskId ?? null,
   })
   return { outcome: r.outcome, roundId: r.roundId ?? null }
 }
@@ -1341,6 +1413,7 @@ async function continueWithRetry(
     feedback,
     roundNumber: round.roundNumber,
     scenario: "review_retry",
+    generationTaskId: round.generationTaskId,
   })
 }
 

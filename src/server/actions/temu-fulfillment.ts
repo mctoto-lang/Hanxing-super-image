@@ -160,6 +160,8 @@ export interface TemuPurchaseOrderRow {
   category: string | null
   status: number
   statusLabel: string
+  /** 备货类型（2026-11-04 官方公告新增出参）：0=常规备货 1=海外备货；旧响应无此字段按常规 */
+  stockingType: number
   /** 定制品不可申报（官方 3002） */
   isCustomProduct: boolean
   /** 1=紧急单 */
@@ -287,6 +289,7 @@ async function loadPurchaseOrders(
           category: str(it.category, 120),
           status: statusNum,
           statusLabel: PURCHASE_ORDER_STATUS[statusNum] ?? `未知(${it.status})`,
+          stockingType: num(it.stockingType) === 1 ? 1 : 0,
           isCustomProduct: it.isCustomProduct === true,
           urgencyType: num(it.urgencyType),
           todayCanDeliver: it.todayCanDeliver === true,
@@ -835,7 +838,8 @@ function parseLimitsFromError(
   return skuIds.map(() => null)
 }
 
-/** 单链接自动备货：探测（大数值）→ 解析上限 → 达标 SKU 按最大量申报；客户端逐链接调用 */
+/** 单链接自动备货：探测（大数值）→ 解析上限 → 达标 SKU 按最大量申报；客户端逐链接调用。
+ *  非 dryRun 分支自 stock-view 删除后仅集成测试使用，保留供后续恢复 UI，勿直接在新 UI 接线 */
 export async function autoStockingLinkAction(
   input: unknown,
 ): Promise<{ ok: true; result: TemuAutoStockResult } | { ok: false; error: string }> {
@@ -916,6 +920,7 @@ export async function autoStockingLinkAction(
     skuId: id,
     maxQuantity: limits[i] ?? null,
   }))
+  // UI（auto-stock-dialogs 探测）只走 dryRun 分支；下方非 dryRun 申报分支仅集成测试可达（见函数头注释）
   if (q.dryRun) {
     return { ok: true, result: { dryRun: true, rawError, skuLimits, applied: [] } }
   }

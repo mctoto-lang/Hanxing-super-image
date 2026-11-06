@@ -92,8 +92,8 @@ export const extractNumberedPromptsSchema = z.object({
   input: z.string().min(1, "待提取内容不能为空").max(100_000, "内容过长"),
 })
 
-/** Agent 管线（task.source = "agent"）忽略 apiId/size（一律用冻结值），故两者
- * 可选；普通管线在 action 内显式要求非空 */
+/** Agent 管线（task.source = "agent"）中 apiId/size 为生成配置 override，优先于
+ * 冻结值，允许缺省（缺省回落冻结值）；普通管线在 action 内显式要求非空 */
 export const generateCardImageSchema = z.object({
   prompt: promptSchema,
   apiId: wsIdSchema.optional(),

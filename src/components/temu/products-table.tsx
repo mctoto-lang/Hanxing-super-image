@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import { Area, AreaChart, CartesianGrid, XAxis } from "recharts"
-import { ChevronDown, ChevronRight, CircleAlert, TrendingUp } from "lucide-react"
+import { ChevronDown, ChevronRight, TrendingUp } from "lucide-react"
 import { toast } from "sonner"
 import {
   ChartContainer,
@@ -18,6 +18,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { TEMU_TABLE_HEADER_CLASS } from "@/components/temu/table-header-style"
+import { EmptyHint } from "@/components/temu/empty-hint"
+import { TruncTip } from "@/components/temu/trunc-tip"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -296,17 +299,8 @@ export function TemuProductsSaleFilter({
 
 // ---------- 商品信息无限滚动表格 ----------
 
-/** 空值占位：圆形感叹号 + 悬浮提示（数值为空或无数据）——TEMU 各页空值统一口径 */
-export function EmptyHint() {
-  return (
-    <Tooltip>
-      <TooltipTrigger className="cursor-default text-muted-foreground" aria-label="数值为空或无数据">
-        <CircleAlert className="size-3.5" />
-      </TooltipTrigger>
-      <TooltipContent className="text-xs">数值为空或无数据</TooltipContent>
-    </Tooltip>
-  )
-}
+/** 空值占位（口径不变）——实现移至 ./empty-hint，此处再导出保持既有引用路径兼容 */
+export { EmptyHint } from "@/components/temu/empty-hint"
 
 /**
  * 货号分组归一化键：取首段数字去前导零——早期 2 位货号可能缺 0，
@@ -502,11 +496,12 @@ function ProductDetailPanel({
             {g.items.map((it) => (
               <div key={it.label} className="flex items-baseline justify-between gap-3 text-xs">
                 <dt className="whitespace-nowrap text-muted-foreground">{it.label}</dt>
-                <dd
-                  className="min-w-0 truncate text-right font-medium tabular-nums"
-                  title={typeof it.value === "string" ? it.value : undefined}
-                >
-                  {it.value}
+                <dd className="min-w-0 text-right font-medium tabular-nums">
+                  {typeof it.value === "string" && it.value.length > 14 ? (
+                    <TruncTip text={it.value} className="max-w-40 justify-end text-right font-medium tabular-nums" />
+                  ) : (
+                    it.value
+                  )}
                 </dd>
               </div>
             ))}
@@ -528,12 +523,12 @@ function SkuDetailSubtable({ skus }: { skus: TemuSkuDetailRow[] }) {
           <TableHead className="h-8 px-3">SKU 编号</TableHead>
           <TableHead>尺码</TableHead>
           <TableHead>货号</TableHead>
-          <TableHead className="text-right">申报价格</TableHead>
-          <TableHead className="text-right">今日销量</TableHead>
-          <TableHead className="text-right">近 7 日</TableHead>
-          <TableHead className="text-right">近 30 日</TableHead>
-          <TableHead className="text-right">总销量</TableHead>
-          <TableHead className="text-right">缺货数量</TableHead>
+          <TableHead>申报价格</TableHead>
+          <TableHead>今日销量</TableHead>
+          <TableHead>近 7 日</TableHead>
+          <TableHead>近 30 日</TableHead>
+          <TableHead>总销量</TableHead>
+          <TableHead>缺货数量</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -542,14 +537,14 @@ function SkuDetailSubtable({ skus }: { skus: TemuSkuDetailRow[] }) {
             <TableCell className="px-3 py-1.5 font-mono">{s.productSkuId ?? <EmptyHint />}</TableCell>
             <TableCell>{s.className ?? <EmptyHint />}</TableCell>
             <TableCell className="font-mono">{s.skuExtCode ?? <EmptyHint />}</TableCell>
-            <TableCell className="text-right tabular-nums">
+            <TableCell className="tabular-nums">
               {s.supplierPrice != null ? `¥${(s.supplierPrice / 100).toFixed(2)}` : <EmptyHint />}
             </TableCell>
-            <TableCell className="text-right tabular-nums">{num(s.todaySaleVolume)}</TableCell>
-            <TableCell className="text-right tabular-nums">{num(s.lastSevenDaysSaleVolume)}</TableCell>
-            <TableCell className="text-right tabular-nums">{num(s.lastThirtyDaysSaleVolume)}</TableCell>
-            <TableCell className="text-right tabular-nums">{num(s.totalSaleVolume)}</TableCell>
-            <TableCell className="text-right tabular-nums">{num(s.lackQuantity)}</TableCell>
+            <TableCell className="tabular-nums">{num(s.todaySaleVolume)}</TableCell>
+            <TableCell className="tabular-nums">{num(s.lastSevenDaysSaleVolume)}</TableCell>
+            <TableCell className="tabular-nums">{num(s.lastThirtyDaysSaleVolume)}</TableCell>
+            <TableCell className="tabular-nums">{num(s.totalSaleVolume)}</TableCell>
+            <TableCell className="tabular-nums">{num(s.lackQuantity)}</TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -671,20 +666,20 @@ export function ProductsInfiniteTable({
       {/* 无滚动容器（保 sticky 吸顶锚定页侧 CardContent）；overflow-clip 仅按圆角裁剪内容 */}
       <div className="w-max min-w-full overflow-clip rounded-md border">
       <table className="w-max min-w-full caption-bottom text-xs">
-        <TableHeader className="sticky top-0 z-10 bg-card">
-          <TableRow className="[&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
+        <TableHeader className={TEMU_TABLE_HEADER_CLASS}>
+          <TableRow className="">
             <TableHead className="w-8" />
             <TableHead>主图</TableHead>
             <TableHead>SKC</TableHead>
             <TableHead>商品名</TableHead>
             <TableHead>货号</TableHead>
-            <TableHead className="text-right">申报价格</TableHead>
+            <TableHead>申报价格</TableHead>
             <TableHead>状态</TableHead>
-            <TableHead className="text-right">今日销量</TableHead>
-            <TableHead className="text-right">七日销量</TableHead>
-            <TableHead className="text-right">三十日销量</TableHead>
-            <TableHead className="text-right">可售天数</TableHead>
-            <TableHead className="text-right">库存数据</TableHead>
+            <TableHead>今日销量</TableHead>
+            <TableHead>七日销量</TableHead>
+            <TableHead>三十日销量</TableHead>
+            <TableHead>可售天数</TableHead>
+            <TableHead>库存数据</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -763,7 +758,7 @@ export function ProductsInfiniteTable({
                   </span>
                 </TableCell>
                 <TableCell className="font-mono text-xs">{r.productSn ?? <EmptyHint />}</TableCell>
-                <TableCell className="text-right tabular-nums">
+                <TableCell className="tabular-nums">
                   {r.supplierPrice != null ? `¥${(r.supplierPrice / 100).toFixed(2)}` : <EmptyHint />}
                 </TableCell>
                 <TableCell>
@@ -780,17 +775,17 @@ export function ProductsInfiniteTable({
                     </TooltipContent>
                   </Tooltip>
                 </TableCell>
-                <TableCell className="text-right tabular-nums">{sales?.todaySalesVolume ?? <EmptyHint />}</TableCell>
-                <TableCell className="text-right tabular-nums">
+                <TableCell className="tabular-nums">{sales?.todaySalesVolume ?? <EmptyHint />}</TableCell>
+                <TableCell className="tabular-nums">
                   {sales?.extra.last7DaysSalesVolume ?? <EmptyHint />}
                 </TableCell>
-                <TableCell className="text-right tabular-nums">
+                <TableCell className="tabular-nums">
                   {sales?.extra.last30DaysSalesVolume ?? <EmptyHint />}
                 </TableCell>
-                <TableCell className="text-right tabular-nums">
+                <TableCell className="tabular-nums">
                   {sales?.availableSaleDays != null ? Math.round(sales.availableSaleDays) : <EmptyHint />}
                 </TableCell>
-                <TableCell className="text-right tabular-nums">
+                <TableCell className="tabular-nums">
                   <AvailableStockCell info={sales?.extra.inventoryInfo ?? null} />
                 </TableCell>
               </TableRow>

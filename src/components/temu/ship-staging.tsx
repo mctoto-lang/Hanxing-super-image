@@ -11,6 +11,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { TEMU_TABLE_HEADER_CLASS } from "@/components/temu/table-header-style"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -38,10 +39,18 @@ import {
   createShipOrderAction,
   getMallAddressesAction,
   getReceiveAddressesAction,
+  getShipInventoryRefAction,
   getShipStagingAction,
   type TemuShipStagingRow,
 } from "@/server/actions/temu-ship"
 import { EmptyHint } from "@/components/temu/products-table"
+import { TruncTip } from "@/components/temu/trunc-tip"
+import { TableSkeletonRows } from "@/components/temu/table-skeleton"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { formatDateTime as fmtMs } from "@/lib/datetime"
 import { openShipBarcodePrint } from "./ship-packing"
 
@@ -79,7 +88,7 @@ export function PackageSplitTable({
   return (
     <div className="rounded-md border">
       <Table>
-        <TableHeader>
+        <TableHeader className={TEMU_TABLE_HEADER_CLASS}>
           <TableRow>
             <TableHead className="w-16 text-xs">箱号</TableHead>
             {skuIds.map((id) => (
@@ -376,7 +385,10 @@ function AdjustPackagesSheet({
               <div className="size-12 shrink-0 rounded bg-muted" />
             )}
             <div className="min-w-0 flex-1">
-              <p className="font-mono text-xs font-medium" title={st?.productName ?? undefined}>{order.sn}</p>
+              <Tooltip>
+                <TooltipTrigger render={<p className="font-mono text-xs font-medium">{order.sn}</p>} />
+                <TooltipContent className="max-w-sm break-all">{st?.productName ?? order.sn}</TooltipContent>
+              </Tooltip>
               <p className="mt-0.5 text-[11px] text-muted-foreground">SKC {st?.productSkcId ?? "—"}</p>
               <p className="mt-0.5 text-[11px] text-muted-foreground">货号 {st?.skcExtCode ?? "—"}</p>
               <p className="mt-0.5 truncate text-[11px] text-muted-foreground">店铺名称 {storeName ?? <EmptyHint />}</p>
@@ -398,8 +410,8 @@ function AdjustPackagesSheet({
           </div>
 
           <div className="overflow-x-auto rounded-md border">
-            <Table className="text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
-              <TableHeader>
+            <Table className="text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border">
+              <TableHeader className={TEMU_TABLE_HEADER_CLASS}>
                 <TableRow>
                   <TableHead className="w-32 text-xs">SKU ID</TableHead>
                   <TableHead className="w-36 text-xs">实际发货数（件）</TableHead>
@@ -605,6 +617,8 @@ export function ShipStaging({
   const [filters, setFilters] = React.useState({ sn: "", skc: "", ext: "" })
   /** 发货台行内调整的实际发货数（sn → skuId → 数量）；未调整的单走默认 min(上限,备货数) */
   const [adjust, setAdjust] = React.useState<Record<string, Record<number, number>>>({})
+  /** 库存参考（批次4）：货号 → 库存合计 + 已创建未装箱（软提示，不占用） */
+  const [invRef, setInvRef] = React.useState<Record<string, { totalQty: number; pendingUnpacked: number }>>({})
 
   const [groups, setGroups] = React.useState<GroupDraft[]>([])
   const [mallAddrs, setMallAddrs] = React.useState<MallAddr[]>([])
@@ -664,6 +678,21 @@ export function ShipStaging({
     const t = setTimeout(loadStaging, 400)
     return () => clearTimeout(t)
   }, [loadStaging])
+
+  React.useEffect(() => {
+    const codes = [...new Set(stagingRows.map((r) => r.skcExtCode).filter((c): c is string => Boolean(c)))]
+    if (codes.length === 0) {
+      setInvRef({})
+      return
+    }
+    let cancelled = false
+    void getShipInventoryRefAction({ store, codes }).then((r) => {
+      if (!cancelled && r.ok) setInvRef(r.rows)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [stagingRows, store])
 
   const setFilter = (k: "sn" | "skc" | "ext", v: string) =>
     setFilters((f) => ({ ...f, [k]: v.trim() }))
@@ -989,10 +1018,17 @@ export function ShipStaging({
                               <div className="size-12 shrink-0 rounded bg-muted" />
                             )}
                             <div className="min-w-0">
-                              <p className="font-mono text-xs" title={st?.productName ?? undefined}>{o.sn}</p>
-                              <p className="mt-0.5 truncate text-[11px] text-muted-foreground" title={st?.productName ?? undefined}>
-                                货号 {st?.skcExtCode ?? <EmptyHint />}
-                              </p>
+                              <Tooltip>
+                                <TooltipTrigger render={<p className="font-mono text-xs">{o.sn}</p>} />
+                                <TooltipContent className="max-w-sm break-all">{st?.productName ?? o.sn}</TooltipContent>
+                              </Tooltip>
+                              {st?.skcExtCode ? (
+                                <TruncTip text={st.skcExtCode} className="mt-0.5 max-w-full text-[11px] text-muted-foreground">
+                                  <span>货号 {st.skcExtCode}</span>
+                                </TruncTip>
+                              ) : (
+                                <p className="mt-0.5 text-[11px] text-muted-foreground">货号 <EmptyHint /></p>
+                              )}
                               <p className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
                                 <span>SKC {st?.productSkcId ?? "—"}</span>
                                 {st?.urgencyType === 1 && <Badge className="rounded-[4px] bg-red-500/15 px-1 text-[10px] text-red-700 dark:text-red-400">急采</Badge>}
@@ -1006,34 +1042,40 @@ export function ShipStaging({
                           </div>
                           {/* 发货店铺（单店铺 tab，只读展示） */}
                           <div className="w-24 min-w-0">
-                            <p className="truncate text-xs" title={storeName ?? undefined}>
-                              {storeName ?? <EmptyHint />}
-                            </p>
+                            <TruncTip text={storeName ?? ""} className="max-w-24" />
                           </div>
                           {/* 发货仓库（组级地址下拉，任一卡片改动全组生效） */}
                           <div className="w-32">
-                            <Select
-                              items={mallAddrs.map((a) => ({ value: String(a.id), label: a.label }))}
-                              value={g.deliveryAddressId != null ? String(g.deliveryAddressId) : ""}
-                              onValueChange={(v) => {
-                                if (v) updateGroup(gi, (x) => ({ ...x, deliveryAddressId: Number(v) }))
-                              }}
-                            >
-                              <SelectTrigger
-                                className="h-8 w-full text-xs"
-                                title={mallAddrs.find((a) => a.id === g.deliveryAddressId)?.fullText}
-                                aria-label={`备货单 ${o.sn} 发货仓库`}
+                            <Tooltip>
+                              <Select
+                                items={mallAddrs.map((a) => ({ value: String(a.id), label: a.label }))}
+                                value={g.deliveryAddressId != null ? String(g.deliveryAddressId) : ""}
+                                onValueChange={(v) => {
+                                  if (v) updateGroup(gi, (x) => ({ ...x, deliveryAddressId: Number(v) }))
+                                }}
                               >
-                                <SelectValue placeholder={mallAddrs.length === 0 ? "无地址（去卖家中心创建）" : "选择发货仓库"} />
-                              </SelectTrigger>
-                              <SelectContent className="w-auto min-w-72 max-w-[26rem]">
-                                {mallAddrs.map((a) => (
-                                  <SelectItem key={a.id} value={String(a.id)} title={`${a.label}（${a.fullText}）`}>
-                                    {a.label}（{a.fullText}）
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                                <TooltipTrigger
+                                  render={
+                                    <SelectTrigger
+                                      className="h-8 w-full text-xs"
+                                      aria-label={`备货单 ${o.sn} 发货仓库`}
+                                    >
+                                      <SelectValue placeholder={mallAddrs.length === 0 ? "无地址（去卖家中心创建）" : "选择发货仓库"} />
+                                    </SelectTrigger>
+                                  }
+                                />
+                                <SelectContent className="w-auto min-w-72 max-w-[26rem]">
+                                  {mallAddrs.map((a) => (
+                                    <SelectItem key={a.id} value={String(a.id)}>
+                                      {a.label}（{a.fullText}）
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <TooltipContent className="max-w-sm break-all">
+                                {mallAddrs.find((a) => a.id === g.deliveryAddressId)?.fullText ?? "选择发货仓库"}
+                              </TooltipContent>
+                            </Tooltip>
                           </div>
                           {/* 数量统计（纯展示，编辑走调整包裹抽屉） */}
                           <div className="w-24 text-right text-xs tabular-nums">
@@ -1070,8 +1112,8 @@ export function ShipStaging({
                             <p className="text-xs font-medium">SKU 明细</p>
                           </div>
                           {/* 列竖线用显式类（rowSpan 合并后 :not(:first-child) 会漏画「包裹2」行的左侧线） */}
-                          <Table className="text-xs [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
-                            <TableHeader>
+                          <Table className="text-xs">
+                            <TableHeader className={TEMU_TABLE_HEADER_CLASS}>
                               <TableRow>
                                 <TableHead className="w-32 text-xs">SKU ID</TableHead>
                                 <TableHead className="w-40 text-xs">实际发货数（件）</TableHead>
@@ -1095,11 +1137,24 @@ export function ShipStaging({
                                       {first && (
                                         <TableCell
                                           rowSpan={o.packages.length}
-                                          className={`border-l border-border${unmodified ? "" : " text-right"}`}
+                                          className={`border-l border-border`}
                                         >
-                                          <span className="font-medium tabular-nums text-primary" title={max != null ? `可发上限 ${max}` : undefined}>
-                                            {o.deliverNums[id] ?? 0}
-                                          </span>
+                                          {max != null ? (
+                                            <Tooltip>
+                                              <TooltipTrigger
+                                                render={
+                                                  <span className="cursor-default font-medium tabular-nums text-primary">
+                                                    {o.deliverNums[id] ?? 0}
+                                                  </span>
+                                                }
+                                              />
+                                              <TooltipContent>可发上限 {max}</TooltipContent>
+                                            </Tooltip>
+                                          ) : (
+                                            <span className="font-medium tabular-nums text-primary">
+                                              {o.deliverNums[id] ?? 0}
+                                            </span>
+                                          )}
                                           <span className="ml-1 text-[11px] text-muted-foreground">/ {max ?? <EmptyHint />}</span>
                                           {unmodified && (
                                             <Badge className="ml-1 rounded-[4px] bg-blue-500/15 px-1 text-[10px] text-blue-700 dark:text-blue-400">
@@ -1151,7 +1206,7 @@ export function ShipStaging({
                         </SelectTrigger>
                         <SelectContent className="w-auto min-w-72 max-w-[26rem]">
                           {mallAddrs.map((a) => (
-                            <SelectItem key={a.id} value={String(a.id)} title={`${a.label}（${a.fullText}）`}>
+                            <SelectItem key={a.id} value={String(a.id)}>
                               {a.label}（{a.fullText}）
                             </SelectItem>
                           ))}
@@ -1266,7 +1321,9 @@ export function ShipStaging({
             size="sm"
             className="h-8 text-xs"
             disabled={stagingSel.size === 0}
-            onClick={() => void openShipBarcodePrint(store, selRows.map((r) => r.productSkcId ?? 0))}
+            onClick={() =>
+              void openShipBarcodePrint(store, selRows.flatMap((r) => r.skus.map((s) => s.productSkuId)))
+            }
           >
             批量打印商品条码
           </Button>
@@ -1281,9 +1338,9 @@ export function ShipStaging({
       <CardContent className="min-h-0 flex-1 space-y-3 overflow-y-auto scrollbar-hide">
         {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
 
-        <div className="overflow-x-auto rounded-md border">
-          <Table className="text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
-            <TableHeader>
+        <div className="w-max min-w-full overflow-clip rounded-md border">
+          <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border">
+            <TableHeader className={TEMU_TABLE_HEADER_CLASS}>
               <TableRow>
                 <TableHead className="w-8">
                   <Checkbox
@@ -1299,17 +1356,20 @@ export function ShipStaging({
                 <TableHead className="min-w-60">备货单信息</TableHead>
                 <TableHead className="w-24">货号</TableHead>
                 <TableHead className="w-32">收货仓库</TableHead>
-                <TableHead className="w-24 text-right">待发货数（件）</TableHead>
-                <TableHead className="w-44 text-right">实际发货数（件）</TableHead>
-                <TableHead className="w-28 text-right">剩余需发货数（件）</TableHead>
+                <TableHead className="w-24">待发货数（件）</TableHead>
+                <TableHead className="w-44">实际发货数（件）</TableHead>
+                <TableHead className="w-28">剩余需发货数（件）</TableHead>
+                <TableHead className="w-32">库存参考</TableHead>
                 <TableHead className="w-44">创建时间</TableHead>
                 <TableHead className="w-28">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {stagingRows.length === 0 && !loading ? (
+              {loading && stagingRows.length === 0 ? (
+                <TableSkeletonRows cols={10} />
+              ) : stagingRows.length === 0 && !loading ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="h-20 text-center text-muted-foreground">
+                  <TableCell colSpan={10} className="h-20 text-center text-muted-foreground">
                     发货台为空；在「备货」页列表对已接单的备货单点「创建」加入发货台。
                   </TableCell>
                 </TableRow>
@@ -1337,10 +1397,19 @@ export function ShipStaging({
                             <div className="size-10 shrink-0 rounded bg-muted" />
                           )}
                           <div className="min-w-0">
-                            <p className="font-mono text-xs font-medium" title={r.productName ?? undefined}>{r.subPurchaseOrderSn}</p>
-                            <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-                              货号 {r.skcExtCode ?? <EmptyHint />}
-                            </p>
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={<p className="font-mono text-xs font-medium">{r.subPurchaseOrderSn}</p>}
+                              />
+                              <TooltipContent className="max-w-sm break-all">{r.productName ?? r.subPurchaseOrderSn}</TooltipContent>
+                            </Tooltip>
+                            {r.skcExtCode ? (
+                              <TruncTip text={r.skcExtCode} className="mt-0.5 max-w-full text-[11px] text-muted-foreground">
+                                <span>货号 {r.skcExtCode}</span>
+                              </TruncTip>
+                            ) : (
+                              <p className="mt-0.5 text-[11px] text-muted-foreground">货号 <EmptyHint /></p>
+                            )}
                             <p className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
                               <span>SKC {r.productSkcId ?? <EmptyHint />}</span>
                               {r.urgencyType === 1 && <Badge className="rounded-[4px] bg-red-500/15 px-1 text-[10px] text-red-700 dark:text-red-400">急采</Badge>}
@@ -1352,11 +1421,11 @@ export function ShipStaging({
                       </TableCell>
                       <TableCell className="font-mono text-xs">{r.skcExtCode ?? <EmptyHint />}</TableCell>
                       <TableCell className="max-w-32">
-                        <span className="block truncate text-xs" title={r.receiveAddressText ?? r.subWarehouseName ?? undefined}>
+                        <TruncTip text={r.receiveAddressText ?? r.subWarehouseName ?? ""} className="max-w-32">
                           {r.subWarehouseName ?? <EmptyHint />}
-                        </span>
+                        </TruncTip>
                       </TableCell>
-                      <TableCell className="text-right text-xs tabular-nums">{r.purchaseQuantity ?? <EmptyHint />}</TableCell>
+                      <TableCell className="text-xs tabular-nums">{r.purchaseQuantity ?? <EmptyHint />}</TableCell>
                       <TableCell>
                         <DeliverNumCell
                           row={r}
@@ -1365,11 +1434,40 @@ export function ShipStaging({
                           onConfirm={(next) => setAdjust((m) => ({ ...m, [r.subPurchaseOrderSn]: next }))}
                         />
                       </TableCell>
-                      <TableCell
-                        className="text-right text-xs tabular-nums"
-                        title={r.expectLatestDeliverTime ? `最晚发货 ${fmtMs(r.expectLatestDeliverTime)}` : undefined}
-                      >
-                        {remain}
+                      <TableCell className="text-xs tabular-nums">
+                        {r.expectLatestDeliverTime != null ? (
+                          <Tooltip>
+                            <TooltipTrigger render={<span className="cursor-default">{remain}</span>} />
+                            <TooltipContent>最晚发货 {fmtMs(r.expectLatestDeliverTime)}</TooltipContent>
+                          </Tooltip>
+                        ) : (
+                          remain
+                        )}
+                      </TableCell>
+                      <TableCell className="text-xs tabular-nums">
+                        {(() => {
+                          const ref = r.skcExtCode ? invRef[r.skcExtCode] : undefined
+                          if (!ref) return <EmptyHint />
+                          return (
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <span className="cursor-default">
+                                    <span className={ref.totalQty < numSum ? "font-medium text-red-600" : ""}>
+                                      {ref.totalQty}
+                                    </span>
+                                    {ref.pendingUnpacked > 0 ? (
+                                      <span className="text-muted-foreground"> / 未装 {ref.pendingUnpacked}</span>
+                                    ) : null}
+                                  </span>
+                                }
+                              />
+                              <TooltipContent>
+                                库存合计 {ref.totalQty} · 已创建未装箱 {ref.pendingUnpacked}（不占用）
+                              </TooltipContent>
+                            </Tooltip>
+                          )
+                        })()}
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-xs">
                         {r.purchaseTime != null ? fmtMs(r.purchaseTime) : <EmptyHint />}
@@ -1379,8 +1477,10 @@ export function ShipStaging({
                           variant="ghost"
                           size="sm"
                           className="h-6 px-1 text-xs text-primary hover:underline"
-                          onClick={() => void openShipBarcodePrint(store, [r.productSkcId ?? 0])}
-                          disabled={!r.productSkcId}
+                          onClick={() =>
+                            void openShipBarcodePrint(store, r.skus.map((s) => s.productSkuId))
+                          }
+                          disabled={r.skus.every((s) => !(s.productSkuId > 0))}
                         >
                           打印商品条码
                         </Button>
@@ -1390,7 +1490,7 @@ export function ShipStaging({
                 })
               )}
             </TableBody>
-          </Table>
+          </table>
         </div>
       </CardContent>
     </Card>

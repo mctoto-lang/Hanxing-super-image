@@ -575,6 +575,76 @@
       "when": 1793404800000,
       "tag": "0081_temu_ship_order_official_fields",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1793491200000,
+      "tag": "0082_inventory_base",
+      "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1793577600000,
+      "tag": "0083_temu_ship_inventory_link",
+      "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1793664000000,
+      "tag": "0084_inventory_drop_safety_stock",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1793750400000,
+      "tag": "0085_inventory_ship_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1794019200000,
+      "tag": "0086_inventory_barcode",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1794105600000,
+      "tag": "0087_drop_stocktake",
+      "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1794192000000,
+      "tag": "0088_inventory_single_warehouse_barcode",
+      "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1794278400000,
+      "tag": "0089_temu_sales_wait_delivery",
+      "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1794364800000,
+      "tag": "0090_inventory_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1794451200000,
+      "tag": "0091_ship_state_auto_manual",
+      "breakpoints": true
     }
   ]
 }

@@ -19,6 +19,11 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { ImageLibraryDialog } from "@/components/mockup/image-library-dialog"
 import { listMockupDesignAssetsAction } from "@/server/actions/mockup"
 import type { MockupLibraryImage } from "@/lib/mockup/types"
@@ -281,22 +286,34 @@ function CarouselSlots({
               <img src={toImageSrc(src, { width: 160 })} alt={`轮播 ${i + 1}`} className="size-full object-cover" />
               <span className={`absolute bottom-0 left-0 px-1 text-[10px] ${badgeCls}`}>{badge}</span>
               <div className="absolute inset-0 hidden items-center justify-center gap-2 bg-black/50 group-hover:flex">
-                <button
-                  type="button"
-                  title="替换（图库选图）"
-                  className="rounded p-1 text-white hover:bg-white/20"
-                  onClick={() => openPicker({ mode: "replace", index: i })}
-                >
-                  <RefreshCw className="size-4" />
-                </button>
-                <button
-                  type="button"
-                  title="删除（后续图片前移）"
-                  className="rounded p-1 text-white hover:bg-white/20"
-                  onClick={() => onChange(images.filter((_, j) => j !== i))}
-                >
-                  <Trash2 className="size-4" />
-                </button>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        type="button"
+                        className="rounded p-1 text-white hover:bg-white/20"
+                        onClick={() => openPicker({ mode: "replace", index: i })}
+                      >
+                        <RefreshCw className="size-4" />
+                      </button>
+                    }
+                  />
+                  <TooltipContent>替换（图库选图）</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        type="button"
+                        className="rounded p-1 text-white hover:bg-white/20"
+                        onClick={() => onChange(images.filter((_, j) => j !== i))}
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
+                    }
+                  />
+                  <TooltipContent>删除（后续图片前移）</TooltipContent>
+                </Tooltip>
               </div>
             </div>
           )

@@ -722,8 +722,7 @@ export function ToolPanel({
 
   const handleGenerateImage = async () => {
     if (!card) return
-    // Agent 卡走冻结模型 + kind 尺寸管线（服务端忽略 apiId/size），Agent 任务
-    // 视图没有生成配置入口，不做所选模型/尺寸强校验
+    // Agent 卡：弹窗所选模型/尺寸优先（未选回落冻结值），不做强校验
     if (agentCardStatus == null) {
       if (!selectedImageModel) {
         toast.error("请先在生成配置中选择图片模型")

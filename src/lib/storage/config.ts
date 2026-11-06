@@ -27,7 +27,7 @@ export type StorageProvider = "local" | "cos"
  * - temu：TEMU 长存素材（temu/，不过期；商品主图转存 + 发品素材源
  *   ——压缩衍生图/说明书 PDF，模板长期引用，勿配过期规则）
  */
-export type ImageCategory = "reference" | "config" | "generate" | "thumb" | "temu"
+export type ImageCategory = "reference" | "config" | "generate" | "thumb" | "temu" | "inventory"
 
 export interface StorageConfig {
   provider: StorageProvider
@@ -44,6 +44,8 @@ export interface StorageConfig {
   generatePrefix: string
   /** TEMU 商品主图转存前缀（不过期，勿配置 COS 生命周期过期规则） */
   temuPrefix: string
+  /** 库存商品档案图前缀（不过期——档案长期引用，勿配过期规则） */
+  inventoryPrefix: string
   /**
    * 服务器与 COS 之间的流量走内网域名（<bucket>.cos.<region>.tencentcos.cn）：
    * 上传（saveFromBuffer）与服务端拉取（saveFromUrl 下载、图片代理）都会改写。
@@ -69,6 +71,7 @@ export const DEFAULT_STORAGE: StorageConfig = {
   configPrefix: "config/",
   generatePrefix: "gen/",
   temuPrefix: "temu/",
+  inventoryPrefix: "inventory/",
   cosForceInternalEndpoint: false,
   localImagePrefix: "image/",
   allowedDownloadHosts: [],
@@ -157,6 +160,7 @@ export function normalizeStorageSubmission(
       input.generatePrefix ?? DEFAULT_STORAGE.generatePrefix
     ).trim(),
     temuPrefix: (input.temuPrefix ?? DEFAULT_STORAGE.temuPrefix).trim(),
+    inventoryPrefix: (input.inventoryPrefix ?? DEFAULT_STORAGE.inventoryPrefix).trim(),
     localImagePrefix: (
       input.localImagePrefix ?? DEFAULT_STORAGE.localImagePrefix
     ).trim(),
@@ -250,6 +254,8 @@ export function resolveCosTarget(
       return { bucket, baseUrl, prefix: `${cfg.generatePrefix}thumb/` }
     case "temu":
       return { bucket, baseUrl, prefix: cfg.temuPrefix }
+    case "inventory":
+      return { bucket, baseUrl, prefix: cfg.inventoryPrefix }
   }
 }
 

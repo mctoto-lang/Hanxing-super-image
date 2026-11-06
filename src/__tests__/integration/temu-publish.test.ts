@@ -486,6 +486,15 @@ describe("发品", () => {
     expect(sku.productSkuSpecReqs).toEqual([
       { parentSpecId: 1001, parentSpecName: "颜色", specId: 380724727, specName: "PROBE Navy" },
     ])
+    // 规格一致性（官方 2026-11-04 起强校验 2000011）：商品级规格属性与 SKU 级规格同源同值
+    const specProp = (add.productSpecPropertyReqs as Array<Record<string, unknown>>)[0]!
+    expect(specProp.specId).toBe(380724727)
+    expect(specProp.parentSpecId).toBe(1001)
+    expect(specProp.specName).toBe("PROBE Navy")
+    // 共计内含（2026-11-05 起按类目必填 2000445）：无条件提交，单品缺省 1 件
+    const pack = sku.productSkuMultiPackReq as Record<string, unknown>
+    expect(pack.numberOfPiecesNew).toBe(1)
+    expect(pack.pieceNewUnitCode).toBe(1)
     expect(add.productWhExtAttrReq).toEqual({
       outerGoodsUrl: "",
       productOrigin: { countryShortName: "CN", region2Id: 43000000000006 },
@@ -511,7 +520,7 @@ describe("发品", () => {
         outerPackage: { packageShape: 2, packageType: 1 },
         guideFile: { fileName: "manual.pdf", pdfMaterialId: 2610202676393, languages: ["en"] },
         customized: { firstType: 10001, twiceType: [20001], technologyType: 1 },
-        skuPack: { skuClassification: 2, numberOfPieces: 3, pieceUnitCode: 1 },
+        skuPack: { skuClassification: 2, numberOfPieces: 3, pieceUnitCode: 2 },
       },
     })
     expect(created.ok).toBe(true)
@@ -537,8 +546,10 @@ describe("发品", () => {
     expect(skuEntry.productSkuMultiPackReq).toMatchObject({
       skuClassification: 2,
       numberOfPieces: 3,
-      pieceUnitCode: 1,
+      // 旧字段按模板透传（2=双）；共计内含取件数，新单位字段官方枚举仅 1=件
+      pieceUnitCode: 2,
       numberOfPiecesNew: 3,
+      pieceNewUnitCode: 1,
     })
     // 基础模板（无四块）：不提交包装/说明书/定制块
     const plain = await createPublishTemplateAction(TEMPLATE_PAYLOAD)

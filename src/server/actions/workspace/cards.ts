@@ -541,8 +541,8 @@ export async function translateCardPromptAction(
 
 
 
-/** 单卡生图（普通任务走用户所选模型；Agent 任务强制走冻结模型 + kind 尺寸的 Agent 管线，
- *  忽略 apiId/size——Agent 任务视图无生成配置入口，两者允许缺省） */
+/** 单卡生图（普通任务走用户所选模型；Agent 任务走 Agent 管线，apiId/size
+ *  （生成配置弹窗所选）优先于工作流冻结值，缺省回落冻结口径，两者允许缺省） */
 export async function generateCardImageAction(
   cardId: string,
   input: { prompt: string; apiId?: string; size?: string },
@@ -563,9 +563,9 @@ export async function generateCardImageAction(
   if (!owned) return { ok: false, error: "卡片不存在" }
   const lockedError = lockedWorkspaceAgentCardError(owned)
   if (lockedError) return { ok: false, error: lockedError }
-  // Agent 任务（task.source = "agent"）正式生图：忽略用户所选 apiId/size，
-  // 一律使用 workflow 冻结 imageModelId 与该卡 kind 对应冻结尺寸；产出
-  // generation_task（source = "agent"）+ card_image + workspace_agent_round，
+  // Agent 任务（task.source = "agent"）正式生图：apiId/size（生成配置弹窗
+  // 所选）优先，缺省回落 workflow 冻结 imageModelId 与该卡 kind 对应冻结尺寸；
+  // 产出 generation_task（source = "agent"）+ card_image + workspace_agent_round，
   // 终态由队列自动触发评审。普通任务（manual）不受影响。
   if (owned.task.source === "agent") {
     const res = await generateAgentCardImageForAction({
@@ -574,6 +574,10 @@ export async function generateCardImageAction(
       taskId: owned.task.id,
       promptCardId: owned.card.id,
       prompt: input.prompt,
+      override:
+        input.apiId || input.size
+          ? { modelId: input.apiId, size: input.size }
+          : undefined,
     })
     if (!res.ok) return { ok: false, error: res.error }
     revalidatePath("/workspace")

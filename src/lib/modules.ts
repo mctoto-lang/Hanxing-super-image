@@ -17,6 +17,7 @@ export const MODULE_LABELS: Record<ModuleName, string> = {
   product: "商品图片",
   weartry: "穿戴图片",
   mockup: "样机渲染",
+  inventory: "库存管理",
   temu: "TEMU",
   temu_overview: "TEMU-销售概览",
   temu_products: "TEMU-商品信息",
@@ -41,6 +42,7 @@ export const BASE_MODULE_OPTIONS: ModuleOption[] = [
   { value: "product", label: MODULE_LABELS.product },
   { value: "weartry", label: MODULE_LABELS.weartry },
   { value: "mockup", label: MODULE_LABELS.mockup },
+  { value: "inventory", label: MODULE_LABELS.inventory },
 ]
 
 /** TEMU tab 子权限项（依赖 temu 总开关：总开关未勾时弹窗内禁用） */

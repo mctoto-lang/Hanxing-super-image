@@ -2017,8 +2017,8 @@ export function WorkspaceClient({
   const handleBatchGenerateImage = async (
     languagePreference?: BatchGenerationLanguage,
   ) => {
-    // Agent 任务批量生图走冻结模型 + kind 尺寸管线（服务端忽略 apiId/size），
-    // 且 Agent 任务视图无生成配置入口，不做所选模型/尺寸强校验
+    // Agent 任务批量生图：弹窗所选模型/尺寸优先（未选回落工作流冻结值），
+    // 故不做所选模型/尺寸强校验
     if (!isAgentTask && (!selectedImageModel || !selectedSize)) {
       toast.error("请先选择图片模型和尺寸")
       return
@@ -2397,7 +2397,8 @@ export function WorkspaceClient({
                 任务
               </Button>
               {isAgentTask ? (
-                /* Agent 任务：独立 Agent 总览 + 执行进度入口（不显示生成配置） */
+                /* Agent 任务：Agent 总览 + 生成配置（弹窗所选模型/尺寸优先，
+                   未选回落工作流冻结值）+ 执行进度入口 */
                 <>
                   <Button
                     size="sm"
@@ -2406,6 +2407,17 @@ export function WorkspaceClient({
                   >
                     <Bot className="h-3.5 w-3.5" />
                     Agent
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="h-7 text-xs gap-1 rounded-md bg-blue-600 text-white hover:bg-blue-700"
+                    onClick={() => setShowGenerationConfigDialog(true)}
+                  >
+                    生成配置
+                    <span className="max-w-[180px] truncate text-white/80">
+                      {configSummary}
+                    </span>
+                    <ChevronDown className="h-3 w-3" />
                   </Button>
                   <Button
                     variant="outline"
@@ -2633,8 +2645,8 @@ export function WorkspaceClient({
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={() => {
-                              // Agent 任务批量生图走冻结模型 + kind 尺寸管线
-                              // （服务端忽略 apiId/size），无生成配置入口不强校验
+                              // Agent 任务批量生图：弹窗所选模型/尺寸优先
+                              // （未选回落工作流冻结值），不强校验
                               if (
                                 !isAgentTask &&
                                 (!selectedImageModel || !selectedSize)

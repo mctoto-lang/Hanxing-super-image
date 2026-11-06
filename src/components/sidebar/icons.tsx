@@ -15,6 +15,7 @@ import {
   Shirt,
   Store,
   Building2,
+  Warehouse,
   type LucideIcon,
 } from "lucide-react"
 
@@ -34,6 +35,7 @@ export const lucideIconMap: Record<string, LucideIcon> = {
   mockup: Box,
   temu: Store,
   store: Store,
+  inventory: Warehouse,
   bot: Bot,
   settings: Settings,
   shield: ShieldCheck,

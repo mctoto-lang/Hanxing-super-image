@@ -1192,8 +1192,11 @@ function buildGoodsAddBody(
               pieceUnitCode: d.skuPack?.pieceUnitCode ?? 1,
               productSkuNetContentReq: {},
               totalNetContent: {},
+              // 共计内含：2026-11-05 起官方按叶子类目必填（2000445，存在性校验）——
+              // 我们无条件提交即可合规；pieceNewUnitCode 官方枚举仅 1=件，
+              // 双/包等旧单位（pieceUnitCode 2/3）不外溢到新字段
               numberOfPiecesNew: d.skuPack?.numberOfPieces ?? 1,
-              pieceNewUnitCode: d.skuPack?.pieceUnitCode ?? 1,
+              pieceNewUnitCode: 1,
             },
             productSkuSuggestedPriceReq: { specialSuggestedPrice: "NA" },
             productSkuWhExtAttrReq: {

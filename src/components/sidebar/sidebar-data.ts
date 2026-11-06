@@ -25,6 +25,7 @@ const MODULE_NAV: Record<ModuleName, { title: string; url: string; icon: string 
   product: { title: "商品图片", url: "/product", icon: "product" },
   weartry: { title: "穿戴图片", url: "/weartry", icon: "shirt" },
   mockup: { title: "样机渲染", url: "/mockup", icon: "mockup" },
+  inventory: { title: "库存管理", url: "/inventory", icon: "inventory" },
   temu: { title: "TEMU", url: "/temu", icon: "temu" },
   temu_overview: { title: "TEMU-销售概览", url: "/temu?tab=overview", icon: "temu" },
   temu_products: { title: "TEMU-商品信息", url: "/temu?tab=products", icon: "temu" },
@@ -112,6 +113,20 @@ export function buildNavMain(ctx: UserContext): NavItem[] {
       url: MODULE_NAV.temu.url,
       icon: "store",
       items: [{ title: MODULE_NAV.temu.title, url: MODULE_NAV.temu.url }],
+    })
+  }
+
+  // 库存管理：折叠分组（生产规划/库存数据两页；全渠道一套库存，非店铺域）。
+  // 父组 url 用 /inventory（重定向到生产规划），前缀命中任一子页时父组保持高亮
+  if (accessible.has("inventory")) {
+    groups.push({
+      title: MODULE_NAV.inventory.title,
+      url: MODULE_NAV.inventory.url,
+      icon: MODULE_NAV.inventory.icon,
+      items: [
+        { title: "生产规划", url: "/inventory/production" },
+        { title: "库存数据", url: "/inventory/stock" },
+      ],
     })
   }
 

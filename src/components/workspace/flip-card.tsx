@@ -409,8 +409,7 @@ export const FlipCard = memo(function FlipCard({
       toast.info("自动评审已耗尽，请点击「重新 Agent 生成」开启新周期")
       return
     }
-    // Agent 卡走冻结模型 + kind 尺寸管线（服务端忽略 apiId/size），而 Agent
-    // 任务视图没有生成配置入口，不做所选模型/尺寸强校验
+    // Agent 卡：弹窗所选模型/尺寸优先（未选回落冻结值），不做强校验
     if (!isAgentCard) {
       if (!selectedImageModel) {
         toast.error("请先在操作栏选择图片模型")

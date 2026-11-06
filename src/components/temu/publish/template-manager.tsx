@@ -111,7 +111,7 @@ export function TemuTemplateManager({ canManage }: { canManage: boolean }) {
                   <TableHead>规格</TableHead>
                   <TableHead>默认申报价</TableHead>
                   <TableHead>更新时间</TableHead>
-                  {canManage && <TableHead className="text-right">操作</TableHead>}
+                  {canManage && <TableHead>操作</TableHead>}
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -136,7 +136,7 @@ export function TemuTemplateManager({ canManage }: { canManage: boolean }) {
                       {formatDateTime(tpl.updatedAt)}
                     </TableCell>
                     {canManage && (
-                      <TableCell className="text-right">
+                      <TableCell>
                         <div className="flex justify-end gap-1">
                           <Button
                             variant="ghost"

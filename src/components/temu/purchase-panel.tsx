@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { Clock3, Flame, Loader2, PackageX, RefreshCw, Truck } from "lucide-react"
+import { Clock3, Flame, Loader2, PackageX, RefreshCw, Send, Truck, Zap } from "lucide-react"
 import {
   TableBody,
   TableCell,
@@ -10,6 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { TEMU_TABLE_HEADER_CLASS } from "@/components/temu/table-header-style"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -29,20 +30,33 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
   getTemuPurchaseOrdersAction,
   cancelTemuPurchaseOrdersAction,
   type TemuPurchaseOrderRow,
 } from "@/server/actions/temu-fulfillment"
-import { addShipStagingAction } from "@/server/actions/temu-ship"
-import { StockView } from "./stock-view"
+import { addShipStagingAction, getShipInventoryRefAction } from "@/server/actions/temu-ship"
+import { AutoApplyDialog, AutoJoinDialog, type AutoStockStore } from "./auto-stock-dialogs"
 import { ProductNameCell, EmptyHint } from "@/components/temu/products-table"
+import { TruncTip } from "@/components/temu/trunc-tip"
+import { TableSkeletonRows } from "@/components/temu/table-skeleton"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import { formatDateTime as fmtTs } from "@/lib/datetime"
 
 /**
  * 备货工作台（官方 bg.purchaseorderv2.get / purchaseorder.cancel 实时拉取）：
  * - 列表：状态预设筛选（默认待办=待接单+已接单待发货）、货号、SKU 建议量/下单量、时效与标记
- * - 取消（仅早期状态，二次确认）；申报备货（VMI 批量/自动）在子视图 StockView
+ * - 取消（仅早期状态，二次确认）；「自动操作」双弹窗（VMI 申报探测 / 一键创建发货单，均库存联动）
  * 写操作限企业管理员（action 内强制），取消走二次确认。
  */
 
@@ -53,15 +67,23 @@ const STATUS_OPTIONS = [
   { value: "all", label: "全部状态" },
 ]
 
+/** 备货类型筛选（客户端过滤已拉取行；stockingType 为出参，官方无入参过滤）：
+ *  仅常规/海外两档切换，默认常规备货 */
+const STOCKING_TYPE_OPTIONS = [
+  { value: "0", label: "常规备货" },
+  { value: "1", label: "海外备货" },
+]
+
 /** 可取消状态：待接单/已接单待发货（官方业务门槛，实测送货后报 100000002） */
 function cancellable(row: TemuPurchaseOrderRow): boolean {
   return row.status === 0 || row.status === 1
 }
 
-/** 可加入发货台（创建发货单第一步）：官方标记 + 已接单状态（staging.add 门槛；
- *  待接单(0) 无 API 可推进，需在卖家中心接单后才会出现按钮） */
+/** 可加入发货台（创建发货单第一步）：官方标记 + 已接单状态 + 常规备货（staging.add 门槛；
+ *  待接单(0) 无 API 可推进，需在卖家中心接单后才会出现按钮；海外备货(stockingType=1)
+ *  勿创建发货单，与 AutoJoinDialog 过滤口径一致） */
 function canJoinStage(row: TemuPurchaseOrderRow): boolean {
-  return row.status === 1 && row.isCanJoinDeliverPlatform
+  return row.status === 1 && row.isCanJoinDeliverPlatform && row.stockingType !== 1
 }
 
 /** 取消按钮：同核价调价「拒绝」的红色描边口径（仅图标与文字着色） */
@@ -80,20 +102,45 @@ function StatusBadge({ status, label }: { status: number; label: string }) {
   return <Badge className={`rounded-[4px] ${cls}`}>{label}</Badge>
 }
 
-export function TemuPurchasePanel({ store }: { store?: string }) {
-  /** 视图：备货单（平台下的采购单）/ 申报备货（对商品主动申请新备货，VMI）。
-   *  store 缺省=全部店铺（扇出合并视图，行级带店铺列；申报备货需具体店，此时不可进） */
-  const [view, setView] = React.useState<"orders" | "stock">("orders")
+export function TemuPurchasePanel({
+  store,
+  stores,
+}: {
+  store?: string
+  /** 企业内启用店铺（全部店铺视图下自动申报弹窗逐店扇出用，page 侧透传） */
+  stores?: AutoStockStore[]
+}) {
+  /** 自动备货弹窗：apply=自动申报备货（在售链接探测上限批量申报）/
+   *  create=自动创建备货（待接单单按量创建）；单店直查，全部店铺扇出（行级店铺归属） */
+  const [autoDlg, setAutoDlg] = React.useState<"apply" | "create" | null>(null)
   const [status, setStatus] = React.useState("todo")
+  const [stockType, setStockType] = React.useState("0")
   const [rows, setRows] = React.useState<TemuPurchaseOrderRow[]>([])
   const [total, setTotal] = React.useState(0)
   const [error, setError] = React.useState<string | null>(null)
   /** 全部店铺视图下个别店铺失败（未录 token 等）不阻断，展示为部分失败提示 */
   const [partialErrors, setPartialErrors] = React.useState<Array<{ store: string; error: string }>>([])
+  /** 库存参考（批次4）：货号 → 库存合计 + 已创建未装箱（充足/不足徽章参考） */
+  const [invRef, setInvRef] = React.useState<Record<string, { totalQty: number; pendingUnpacked: number }>>({})
   const [loading, startLoading] = React.useTransition()
   const [canceling, setCanceling] = React.useState<Array<{ sn: string; storeId: string }> | null>(null)
   const [joining, setJoining] = React.useState<{ sn: string; storeId: string } | null>(null)
   const [joiningPending, setJoiningPending] = React.useState(false)
+
+  React.useEffect(() => {
+    const codes = [...new Set(rows.map((r) => r.productSn).filter((c): c is string => Boolean(c)))]
+    if (codes.length === 0) {
+      setInvRef({})
+      return
+    }
+    let cancelled = false
+    void getShipInventoryRefAction({ store, codes }).then((r) => {
+      if (!cancelled && r.ok) setInvRef(r.rows)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [rows, store])
 
   const load = React.useCallback(() => {
     startLoading(async () => {
@@ -113,14 +160,8 @@ export function TemuPurchasePanel({ store }: { store?: string }) {
 
   React.useEffect(load, [load])
 
-  if (!store && view === "stock") {
-    // 全部店铺下不可进申报备货（候选池按店查询）——防御性回落
-    setView("orders")
-  }
-
-  if (store && view === "stock") {
-    return <StockView store={store} onBack={() => setView("orders")} />
-  }
+  /** 备货类型筛选只作用于展示（拉取仍按状态预设整页取） */
+  const visibleRows = rows.filter((r) => String(r.stockingType) === stockType)
 
   const doJoinStage = async (storeId: string, sn: string) => {
     setJoiningPending(true)
@@ -187,30 +228,44 @@ export function TemuPurchasePanel({ store }: { store?: string }) {
       <Card className="flex min-h-0 flex-1 flex-col">
         <CardHeader className="flex flex-wrap items-center justify-between gap-3 space-y-0">
           <CardTitle className="text-base">
-            备货单（{rows.length}
-            {total > rows.length ? ` / 共 ${total}` : ""}）
+            备货单（{visibleRows.length}）
+            {total > rows.length && (
+              <span className="ml-1 text-xs font-normal text-muted-foreground">
+                已加载 {rows.length} / 官方共 {total}（含全部备货类型）
+              </span>
+            )}
           </CardTitle>
           <div className="flex flex-wrap items-center gap-2">
-            <Select
-              items={
-                store
-                  ? [
-                      { value: "orders", label: "备货单" },
-                      { value: "stock", label: "申报备货" },
-                    ]
-                  : [{ value: "orders", label: "备货单" }]
-              }
-              value="orders"
-              onValueChange={(v) => {
-                if (v === "stock" && store) setView("stock")
-              }}
-            >
-              <SelectTrigger className="h-8 w-28 text-xs" aria-label="切换视图">
-                <SelectValue>备货单</SelectValue>
+            {/* 自动操作双弹窗：申报备货（单店直查，全部店铺扇出）+ 批量加入发货台（成功后跳发货页） */}
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button size="sm" className="h-8 text-xs" aria-label="自动操作">
+                    <Zap className="size-4" /> 自动操作
+                  </Button>
+                }
+              />
+              <DropdownMenuContent align="end" className="min-w-40">
+                <DropdownMenuItem onClick={() => setAutoDlg("apply")}>
+                  <Send className="size-3.5" /> 自动申报备货
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setAutoDlg("create")}>
+                  <Truck className="size-3.5" /> 批量加入发货
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Select value={stockType} onValueChange={(v) => v && setStockType(v)}>
+              <SelectTrigger className="h-8 w-28 text-xs" aria-label="备货类型筛选">
+                <SelectValue>
+                  {STOCKING_TYPE_OPTIONS.find((o) => o.value === stockType)?.label ?? stockType}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="orders">备货单</SelectItem>
-                {store && <SelectItem value="stock">申报备货</SelectItem>}
+                {STOCKING_TYPE_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>
+                    {o.label}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
             <Select value={status} onValueChange={(v) => v && setStatus(v)}>
@@ -242,33 +297,36 @@ export function TemuPurchasePanel({ store }: { store?: string }) {
           ) : (
             // overflow-clip 只按圆角裁剪（非滚动容器，sticky 表头仍锚定页侧 CardContent）
             <div className="w-max min-w-full overflow-clip rounded-md border">
-            <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
-              <TableHeader className="sticky top-0 z-10 bg-card">
+            <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border">
+              <TableHeader className={TEMU_TABLE_HEADER_CLASS}>
                 <TableRow>
-                  <TableHead>主图</TableHead>
-                  <TableHead>商品名</TableHead>
-                  <TableHead>货号</TableHead>
-                  <TableHead>子单号</TableHead>
-                  <TableHead>SKU 明细</TableHead>
-                  <TableHead className="text-right">建议量</TableHead>
-                  <TableHead className="text-right">已下单</TableHead>
-                  <TableHead className="text-right">已发货</TableHead>
-                  <TableHead>状态</TableHead>
-                  <TableHead>标记</TableHead>
-                  <TableHead>店铺</TableHead>
-                  <TableHead>最晚发货</TableHead>
-                  <TableHead className="text-right">操作</TableHead>
+                  {/* 全列显式定宽（压缩口径：商品名/货号截断+Tooltip，目标主流屏免横向滚动）：
+                      列宽由表头决定，不随筛选行集漂移（口径同 ship-panel/ship-staging） */}
+                  <TableHead className="w-14">主图</TableHead>
+                  <TableHead className="w-44">商品名</TableHead>
+                  <TableHead className="w-24">货号</TableHead>
+                  <TableHead className="w-28">子单号</TableHead>
+                  <TableHead className="w-36">建议 / 下单 / 发货</TableHead>
+                  <TableHead className="w-32">库存参考</TableHead>
+                  <TableHead className="w-24">备货类型</TableHead>
+                  <TableHead className="w-28">状态</TableHead>
+                  <TableHead className="w-24">标记</TableHead>
+                  {/* 单店筛选下店铺列冗余，隐藏让表格更紧凑 */}
+                  {!store && <TableHead className="w-24">店铺</TableHead>}
+                  <TableHead className="w-40">最晚发货</TableHead>
+                  <TableHead className="w-36">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {rows.length === 0 && (
+                {loading && rows.length === 0 && <TableSkeletonRows cols={store ? 11 : 12} />}
+                {!loading && rows.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={13} className="h-20 text-center text-muted-foreground">
-                      {loading ? "加载中…" : "该状态下暂无备货单"}
+                    <TableCell colSpan={store ? 11 : 12} className="h-20 text-center text-muted-foreground">
+                      当前筛选下暂无备货单
                     </TableCell>
                   </TableRow>
                 )}
-                {rows.map((r) => {
+                {visibleRows.map((r) => {
                   return (
                     <TableRow key={r.subPurchaseOrderSn}>
                       <TableCell>
@@ -279,29 +337,70 @@ export function TemuPurchasePanel({ store }: { store?: string }) {
                           <div className="size-10 rounded bg-muted" />
                         )}
                       </TableCell>
-                      <TableCell className="max-w-56">
+                      <TableCell className="max-w-40">
                         <ProductNameCell name={r.productName} />
                         {r.category && (
-                          <p className="text-xs text-muted-foreground">{r.category}</p>
+                          <TruncTip text={r.category} className="max-w-40 text-muted-foreground" />
                         )}
                       </TableCell>
-                      <TableCell className="font-mono text-xs">{r.productSn ?? <EmptyHint />}</TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {r.subPurchaseOrderSn}
-                        {r.originalPurchaseOrderSn && (
-                          <p className="text-muted-foreground">{r.originalPurchaseOrderSn}</p>
+                      <TableCell className="max-w-24 font-mono text-xs">
+                        <TruncTip text={r.productSn ?? ""} className="max-w-24 font-mono" />
+                      </TableCell>
+                      <TableCell className="max-w-28 font-mono text-xs">
+                        <TruncTip text={r.subPurchaseOrderSn} className="max-w-28 font-mono">
+                          {r.subPurchaseOrderSn}
+                          {r.originalPurchaseOrderSn && (
+                            <span className="block truncate text-muted-foreground">{r.originalPurchaseOrderSn}</span>
+                          )}
+                        </TruncTip>
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-xs">
+                        <span className="tabular-nums">
+                          <span className="text-muted-foreground">建议 </span>{r.adviceTotal ?? <EmptyHint />}
+                          <span className="text-muted-foreground"> · 下单 </span>{r.purchaseTotal ?? <EmptyHint />}
+                          <span className="text-muted-foreground"> · 发货 </span>{r.deliverTotal ?? <EmptyHint />}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {(() => {
+                          const ref = r.productSn ? invRef[r.productSn] : undefined
+                          if (!ref) return <EmptyHint />
+                          const toDeliver = Math.max(0, (r.purchaseTotal ?? 0) - (r.deliverTotal ?? 0))
+                          const okStock = ref.totalQty >= toDeliver && toDeliver > 0
+                          const lack = toDeliver > 0 && ref.totalQty < toDeliver
+                          return (
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <span className="inline-flex cursor-default items-center gap-1 tabular-nums">
+                                    {ref.totalQty}
+                                    {lack ? (
+                                      <Badge className="rounded-[4px] bg-red-500/15 px-1 text-[10px] text-red-700 dark:text-red-400">
+                                        库存不足
+                                      </Badge>
+                                    ) : okStock ? (
+                                      <Badge className="rounded-[4px] bg-emerald-500/15 px-1 text-[10px] text-emerald-700 dark:text-emerald-400">
+                                        库存充足
+                                      </Badge>
+                                    ) : null}
+                                  </span>
+                                }
+                              />
+                              <TooltipContent className="max-w-72">
+                                库存 {ref.totalQty} · 待发货 {toDeliver}
+                                {lack ? ` · 缺 ${toDeliver - ref.totalQty}` : ""} · 已创建未装箱 {ref.pendingUnpacked}
+                              </TooltipContent>
+                            </Tooltip>
+                          )
+                        })()}
+                      </TableCell>
+                      <TableCell>
+                        {r.stockingType === 1 ? (
+                          <Badge className="rounded-[4px] bg-violet-500/15 text-violet-700 dark:text-violet-400">海外备货</Badge>
+                        ) : (
+                          <Badge className="rounded-[4px] bg-blue-500/15 text-blue-700 dark:text-blue-400">常规备货</Badge>
                         )}
                       </TableCell>
-                      <TableCell className="max-w-56 text-xs">
-                        {r.skuRows.length === 0
-                          ? <EmptyHint />
-                          : r.skuRows.length === 1
-                            ? (r.skuRows[0]?.className ?? r.skuRows[0]?.productSkuId ?? <EmptyHint />)
-                            : `${r.skuRows[0]?.className ?? r.skuRows[0]?.productSkuId ?? "—"} 等 ${r.skuRows.length} 个规格`}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">{r.adviceTotal ?? <EmptyHint />}</TableCell>
-                      <TableCell className="text-right tabular-nums">{r.purchaseTotal ?? <EmptyHint />}</TableCell>
-                      <TableCell className="text-right tabular-nums">{r.deliverTotal ?? <EmptyHint />}</TableCell>
                       <TableCell>
                         <StatusBadge status={r.status} label={r.statusLabel} />
                       </TableCell>
@@ -323,25 +422,33 @@ export function TemuPurchasePanel({ store }: { store?: string }) {
                           )}
                         </div>
                       </TableCell>
-                      <TableCell className="whitespace-nowrap text-xs">{r.storeName}</TableCell>
+                      {!store && (
+                        <TableCell className="max-w-24 truncate whitespace-nowrap text-xs">{r.storeName}</TableCell>
+                      )}
                       <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                         <span className="inline-flex items-center gap-1">
                           <Clock3 className="size-3" />
                           {r.expectLatestDeliverTime != null ? fmtTs(r.expectLatestDeliverTime) : <EmptyHint />}
                         </span>
                       </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-1.5">
+                      <TableCell>
+                        <div className="flex flex-wrap justify-end gap-1">
                           {canJoinStage(r) && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-7 text-xs"
-                              title="加入发货台（创建发货单第一步）"
-                              onClick={() => setJoining({ sn: r.subPurchaseOrderSn, storeId: r.storeId })}
-                            >
-                              <Truck className="size-3.5" /> 创建
-                            </Button>
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 text-xs"
+                                    onClick={() => setJoining({ sn: r.subPurchaseOrderSn, storeId: r.storeId })}
+                                  >
+                                    <Truck className="size-3.5" /> 创建
+                                  </Button>
+                                }
+                              />
+                              <TooltipContent>加入发货台（创建发货单第一步）</TooltipContent>
+                            </Tooltip>
                           )}
                           {cancellable(r) && (
                             <Button
@@ -372,6 +479,19 @@ export function TemuPurchasePanel({ store }: { store?: string }) {
           onConfirm={() => void doCancel(canceling)}
           onOpenChange={(v) => !v && setCanceling(null)}
         />
+      )}
+
+      {/* 自动备货双弹窗（单店直查/全部店铺扇出；申报/创建成功后刷新备货单列表） */}
+      {autoDlg === "apply" && (
+        <AutoApplyDialog
+          store={store}
+          stores={stores ?? []}
+          onClose={() => setAutoDlg(null)}
+          onApplied={load}
+        />
+      )}
+      {autoDlg === "create" && (
+        <AutoJoinDialog store={store} onClose={() => setAutoDlg(null)} onCreated={load} />
       )}
 
       {/* 加入发货台二次确认（官方无移出发货台接口，需确认） */}

@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react"
+import { Loader2, RefreshCw } from "lucide-react"
 import {
   TableBody,
   TableCell,
@@ -9,6 +9,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { TEMU_TABLE_HEADER_CLASS } from "@/components/temu/table-header-style"
+import { TablePagination } from "@/components/ui/table-pagination"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
@@ -33,6 +35,7 @@ import {
 } from "@/server/actions/temu-fulfillment"
 import { formatDateTime as fmtMs } from "@/lib/datetime"
 import { EmptyHint } from "@/components/temu/products-table"
+import { TableSkeletonRows } from "@/components/temu/table-skeleton"
 
 /**
  * 质检工作台（bg.goods.qualityinspection.get/detail，实时 + 30s 缓存）：
@@ -129,22 +132,23 @@ export function TemuQualityPanel({ store }: { store?: string }) {
         ) : (
           // overflow-clip 只按圆角裁剪（非滚动容器，sticky 表头仍锚定页侧 CardContent）
           <div className="w-max min-w-full overflow-clip rounded-md border">
-          <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
-            <TableHeader className="sticky top-0 z-10 bg-card">
+          <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border">
+            <TableHeader className={TEMU_TABLE_HEADER_CLASS}>
               <TableRow>
                 <TableHead>缩略图</TableHead>
                 <TableHead>SKU</TableHead>
                 <TableHead>商品名 / 类目</TableHead>
                 <TableHead>采购单号</TableHead>
                 <TableHead>结果更新时间</TableHead>
-                <TableHead className="text-right">操作</TableHead>
+                <TableHead>操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rows.length === 0 && (
+              {loading && rows.length === 0 && <TableSkeletonRows cols={6} />}
+              {!loading && rows.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={6} className="h-20 text-center text-muted-foreground">
-                    {loading ? "加载中…" : "该筛选下暂无质检记录（仅平台送检后产生）"}
+                    该筛选下暂无质检记录（仅平台送检后产生）
                   </TableCell>
                 </TableRow>
               )}
@@ -170,7 +174,7 @@ export function TemuQualityPanel({ store }: { store?: string }) {
                   <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                     {r.qcResultUpdateTime ?? <EmptyHint />}
                   </TableCell>
-                  <TableCell className="text-right">
+                  <TableCell>
                     <Button
                       size="sm"
                       variant="ghost"
@@ -188,19 +192,14 @@ export function TemuQualityPanel({ store }: { store?: string }) {
           </div>
         )}
       </CardContent>
-      {totalPages > 1 && (
-        <div className="flex items-center justify-end gap-2 border-t px-4 py-2">
-          <Button variant="outline" size="sm" className="h-7 text-xs" disabled={pageNo <= 1 || loading} onClick={() => setPageNo((p) => p - 1)}>
-            <ChevronLeft className="size-3.5" /> 上一页
-          </Button>
-          <span className="text-xs text-muted-foreground">
-            {pageNo} / {totalPages}
-          </span>
-          <Button variant="outline" size="sm" className="h-7 text-xs" disabled={pageNo >= totalPages || loading} onClick={() => setPageNo((p) => p + 1)}>
-            下一页 <ChevronRight className="size-3.5" />
-          </Button>
-        </div>
-      )}
+      <TablePagination
+        className="justify-end border-t px-4 py-2"
+        pageIndex={pageNo - 1}
+        pageCount={totalPages}
+        total={total}
+        onPageChange={(i) => setPageNo(i + 1)}
+        disabled={loading}
+      />
       {detailBillId != null && (
         <QcDetailDialog store={store} qcBillId={detailBillId} onClose={() => setDetailBillId(null)} />
       )}
@@ -292,9 +291,9 @@ function QcDetailDialog({
                       <TableRow className="hover:bg-transparent">
                         <TableHead className="h-8 px-2">SKU</TableHead>
                         <TableHead>尺码</TableHead>
-                        <TableHead className="text-right">应检</TableHead>
-                        <TableHead className="text-right">次品</TableHead>
-                        <TableHead className="text-right">总量</TableHead>
+                        <TableHead>应检</TableHead>
+                        <TableHead>次品</TableHead>
+                        <TableHead>总量</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -302,9 +301,9 @@ function QcDetailDialog({
                         <TableRow key={j} className="hover:bg-transparent">
                           <TableCell className="px-2 py-1.5 font-mono">{s.productSkuId ?? <EmptyHint />}</TableCell>
                           <TableCell>{s.sizeName ?? <EmptyHint />}</TableCell>
-                          <TableCell className="text-right tabular-nums">{s.expectQcQuantity ?? <EmptyHint />}</TableCell>
-                          <TableCell className="text-right tabular-nums">{s.defectiveQcQuantity ?? <EmptyHint />}</TableCell>
-                          <TableCell className="text-right tabular-nums">{s.totalQuantity ?? <EmptyHint />}</TableCell>
+                          <TableCell className="tabular-nums">{s.expectQcQuantity ?? <EmptyHint />}</TableCell>
+                          <TableCell className="tabular-nums">{s.defectiveQcQuantity ?? <EmptyHint />}</TableCell>
+                          <TableCell className="tabular-nums">{s.totalQuantity ?? <EmptyHint />}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>

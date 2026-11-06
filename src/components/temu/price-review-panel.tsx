@@ -10,6 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { TEMU_TABLE_HEADER_CLASS } from "@/components/temu/table-header-style"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -36,6 +37,8 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { TruncTip } from "@/components/temu/trunc-tip"
+import { TableSkeletonRows } from "@/components/temu/table-skeleton"
 import {
   ConfirmDialog,
 } from "@/components/shared/confirm-dialog"
@@ -297,25 +300,26 @@ function ReviewSection({
         ) : (
           // overflow-clip 只按圆角裁剪（非滚动容器，sticky 表头仍锚定页侧 CardContent）
           <div className="w-max min-w-full overflow-clip rounded-md border">
-          <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
-            <TableHeader className="sticky top-0 z-10 bg-card">
+          <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border">
+            <TableHeader className={TEMU_TABLE_HEADER_CLASS}>
               <TableRow>
                 <TableHead>主图</TableHead>
                 <TableHead>商品名</TableHead>
                 <TableHead>货号</TableHead>
                 <TableHead>SKU</TableHead>
-                <TableHead className="text-right">申报价</TableHead>
-                <TableHead className="text-right">建议价</TableHead>
-                <TableHead className="text-right">价差</TableHead>
+                <TableHead>申报价</TableHead>
+                <TableHead>建议价</TableHead>
+                <TableHead>价差</TableHead>
                 <TableHead>状态</TableHead>
-                <TableHead className="text-right">操作</TableHead>
+                <TableHead>操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rows.length === 0 && (
+              {loading && rows.length === 0 && <TableSkeletonRows cols={9} />}
+              {!loading && rows.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={9} className="h-20 text-center text-muted-foreground">
-                    {loading ? "加载中…" : "该状态下暂无核价单"}
+                    该状态下暂无核价单
                   </TableCell>
                 </TableRow>
               )}
@@ -355,19 +359,19 @@ function ReviewSection({
                       </Tooltip>
                     )}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">
+                  <TableCell className="tabular-nums">
                     {r.supplyPrice != null ? yuan(r.supplyPrice) : <EmptyHint />}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">
+                  <TableCell className="tabular-nums">
                     {r.suggestSupplyPrice != null ? yuan(r.suggestSupplyPrice) : <EmptyHint />}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">
+                  <TableCell className="tabular-nums">
                     <DeltaPctCell deltaPct={r.deltaPct} />
                   </TableCell>
                   <TableCell>
                     <StatusBadge label={r.statusLabel} tone={reviewTone(r.status)} />
                   </TableCell>
-                  <TableCell className="text-right">
+                  <TableCell>
                     {/* 0 待核价 / 1 待供应商确认：均为可操作态（1 是供应商
                         确认建议价的主态；对齐调价单 0/1 可操作的口径）。
                         canBargain=false：官方锁议价（极端压价单），拒绝置灰 */}
@@ -699,27 +703,28 @@ function AdjustSection({
         ) : (
           // overflow-clip 只按圆角裁剪（非滚动容器，sticky 表头仍锚定页侧 CardContent）
           <div className="w-max min-w-full overflow-clip rounded-md border">
-          <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
-            <TableHeader className="sticky top-0 z-10 bg-card">
+          <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border">
+            <TableHeader className={TEMU_TABLE_HEADER_CLASS}>
               <TableRow>
                 <TableHead>主图</TableHead>
                 <TableHead>商品名</TableHead>
                 <TableHead>SKC/货号</TableHead>
                 <TableHead>SKU/货号</TableHead>
-                <TableHead className="text-right">申报价</TableHead>
-                <TableHead className="text-right">调价后申报价</TableHead>
-                <TableHead className="text-right">价差</TableHead>
+                <TableHead>申报价</TableHead>
+                <TableHead>调价后申报价</TableHead>
+                <TableHead>价差</TableHead>
                 <TableHead>价格类型</TableHead>
                 <TableHead>原因</TableHead>
                 <TableHead>创建时间</TableHead>
-                {actionable && <TableHead className="text-right">操作</TableHead>}
+                {actionable && <TableHead>操作</TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rows.length === 0 && (
+              {loading && rows.length === 0 && <TableSkeletonRows cols={11} />}
+              {!loading && rows.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={11} className="h-20 text-center text-muted-foreground">
-                    {loading ? "加载中…" : "该状态下暂无调价单"}
+                    该状态下暂无调价单
                   </TableCell>
                 </TableRow>
               )}
@@ -745,24 +750,24 @@ function AdjustSection({
                       `${r.skuItems[0]?.skuExtCode ?? r.skuItems[0]?.spec ?? r.skuItems[0]?.skuId ?? "—"}${r.skuItems.length > 1 ? ` 等 ${r.skuItems.length} 个` : ""}`
                     )}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">
+                  <TableCell className="tabular-nums">
                     {r.currentSupplyPrice != null ? yuan(r.currentSupplyPrice) : <EmptyHint />}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">
+                  <TableCell className="tabular-nums">
                     {r.newSupplyPrice != null ? yuan(r.newSupplyPrice) : <EmptyHint />}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">
+                  <TableCell className="tabular-nums">
                     <DeltaPctCell deltaPct={deltaPctOf(r.currentSupplyPrice, r.newSupplyPrice)} />
                   </TableCell>
                   <TableCell className="text-xs">{r.priceType === 1 ? "活动价" : "日常价"}</TableCell>
-                  <TableCell className="max-w-40 truncate text-xs text-muted-foreground" title={r.adjustReason ?? ""}>
-                    {r.adjustReason ?? <EmptyHint />}
+                  <TableCell className="max-w-40 text-xs text-muted-foreground">
+                    <TruncTip text={r.adjustReason ?? ""} className="max-w-40 text-muted-foreground" />
                   </TableCell>
                   <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                     {r.orderCreateTime != null ? fmtTs(r.orderCreateTime) : <EmptyHint />}
                   </TableCell>
                   {actionable && (
-                    <TableCell className="text-right">
+                    <TableCell>
                       {doneOps.has(r.priceOrderSn) ? (
                         <Tooltip>
                           <TooltipTrigger render={<span className="inline-flex cursor-not-allowed" />}>

@@ -11,6 +11,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { TEMU_TABLE_HEADER_CLASS } from "@/components/temu/table-header-style"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -42,6 +43,8 @@ import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import type { TemuAdsRow } from "@/server/actions/temu"
 import { temuImageSrc } from "@/lib/temu/image"
 import { EmptyHint } from "@/components/temu/products-table"
+import { TruncTip } from "@/components/temu/trunc-tip"
+import { TableSkeletonRows } from "@/components/temu/table-skeleton"
 import {
   getTemuAdPlansAction,
   listTemuAdProductsAction,
@@ -249,28 +252,29 @@ export function TemuAdsWorkbench({
           ) : (
             // overflow-clip 只按圆角裁剪（非滚动容器，sticky 表头仍锚定页侧 CardContent）
             <div className="w-max min-w-full overflow-clip rounded-md border">
-            <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border [&_th:not(:first-child)]:border-l [&_th:not(:first-child)]:border-border">
-              <TableHeader className="sticky top-0 z-10 bg-card">
+            <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border">
+              <TableHeader className={TEMU_TABLE_HEADER_CLASS}>
                 <TableRow>
                   <TableHead>主图</TableHead>
                   <TableHead>商品</TableHead>
                   <TableHead>状态</TableHead>
-                  <TableHead className="text-right">日预算</TableHead>
-                  <TableHead className="text-right">目标 ROAS</TableHead>
-                  <TableHead className="text-right">花费</TableHead>
-                  <TableHead className="text-right">申报价销售额</TableHead>
-                  <TableHead className="text-right">ROAS</TableHead>
-                  <TableHead className="text-right">每笔成交花费</TableHead>
-                  <TableHead className="text-right">件数</TableHead>
-                  <TableHead className="text-right">曝光 / 点击</TableHead>
-                  <TableHead className="text-right">操作</TableHead>
+                  <TableHead>日预算</TableHead>
+                  <TableHead>目标 ROAS</TableHead>
+                  <TableHead>花费</TableHead>
+                  <TableHead>申报价销售额</TableHead>
+                  <TableHead>ROAS</TableHead>
+                  <TableHead>每笔成交花费</TableHead>
+                  <TableHead>件数</TableHead>
+                  <TableHead>曝光 / 点击</TableHead>
+                  <TableHead>操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {merged.length === 0 && (
+                {loading && merged.length === 0 && <TableSkeletonRows cols={12} />}
+                {!loading && merged.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={12} className="h-20 text-center text-muted-foreground">
-                      {loading ? "加载中…" : "暂无广告数据——通过「创建广告」经官方 API 创建后，投放数据将在此展示"}
+                      暂无广告数据——通过「创建广告」经官方 API 创建后，投放数据将在此展示
                     </TableCell>
                   </TableRow>
                 )}
@@ -285,9 +289,7 @@ export function TemuAdsWorkbench({
                       )}
                     </TableCell>
                     <TableCell className="max-w-56">
-                      <p className="truncate text-xs font-medium" title={row.productName ?? ""}>
-                        {row.productName ?? <EmptyHint />}
-                      </p>
+                      <TruncTip text={row.productName ?? ""} className="max-w-56 font-medium" />
                       <p className="truncate font-mono text-xs text-muted-foreground">
                         {row.productSn ?? row.productId}
                       </p>
@@ -299,38 +301,38 @@ export function TemuAdsWorkbench({
                         <EmptyHint />
                       )}
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">
+                    <TableCell className="tabular-nums">
                       {row.plan ? yuan(row.plan.budget) : <EmptyHint />}
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">
+                    <TableCell className="tabular-nums">
                       {row.plan?.roas ?? <EmptyHint />}
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">
+                    <TableCell className="tabular-nums">
                       {(row.report?.adSpend ?? row.plan?.spendFen) != null
                         ? yuan(row.report?.adSpend ?? row.plan?.spendFen)
                         : <EmptyHint />}
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">
+                    <TableCell className="tabular-nums">
                       {(row.report?.orderPayAmt ?? row.plan?.orderPayAmtFen) != null
                         ? yuan(row.report?.orderPayAmt ?? row.plan?.orderPayAmtFen)
                         : <EmptyHint />}
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">
+                    <TableCell className="tabular-nums">
                       {row.report?.roas != null ? row.report.roas.toFixed(2) : (row.plan?.roasSummary ?? <EmptyHint />)}
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">
+                    <TableCell className="tabular-nums">
                       {row.report?.transactionCost != null
                         ? yuan(row.report.transactionCost)
                         : <EmptyHint />}
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">
+                    <TableCell className="tabular-nums">
                       {row.report?.goodsNum != null ? num(row.report.goodsNum) : <EmptyHint />}
                     </TableCell>
-                    <TableCell className="text-right tabular-nums text-muted-foreground">
+                    <TableCell className="tabular-nums text-muted-foreground">
                       {row.report?.imprCnt != null ? num(row.report.imprCnt) : <EmptyHint />} /{" "}
                       {row.report?.clkCnt != null ? num(row.report.clkCnt) : <EmptyHint />}
                     </TableCell>
-                    <TableCell className="text-right">
+                    <TableCell>
                       {row.plan ? (
                         <div className="flex justify-end gap-1.5">
                           <Button
@@ -561,9 +563,7 @@ function CreateAdsDialog({
                         <div className="size-8 rounded bg-muted" />
                       )}
                       <span className="min-w-0 flex-1">
-                        <span className="block max-w-80 truncate text-xs font-medium" title={p.productName ?? ""}>
-                          {p.productName ?? <EmptyHint />}
-                        </span>
+                        <TruncTip text={p.productName ?? ""} className="max-w-80 font-medium" />
                         <span className="block max-w-80 truncate font-mono text-[11px] text-muted-foreground">
                           {p.productSn ?? p.productId}
                         </span>

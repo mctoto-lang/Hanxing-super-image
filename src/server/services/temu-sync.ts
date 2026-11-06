@@ -351,12 +351,21 @@ async function upsertSalesBatch(
     // temu-fulfillment sumSkuWarehouseStock：任一 SKU 有值即计，全无则 null）
     let whSum = 0
     let whAny = false
+    // 待发货库存（0089）：同口径求和，可售天数净库存 = 仓内 − 待发货
+    // （TEMU 自动创建备货单会推高待发货，本身无参考价值）
+    let wdSum = 0
+    let wdAny = false
     for (const s of skus) {
       const inv = isRecord(s.inventoryNumInfo) ? s.inventoryNumInfo : {}
       const v = num(inv.warehouseInventoryNum)
       if (v != null) {
         whSum += v
         whAny = true
+      }
+      const w = num(inv.waitDeliveryInventoryNum)
+      if (w != null) {
+        wdSum += w
+        wdAny = true
       }
     }
     return {
@@ -373,6 +382,7 @@ async function upsertSalesBatch(
       last7DaysSalesVolume: sum((s) => s.lastSevenDaysSaleVolume),
       last30DaysSalesVolume: sum((s) => s.lastThirtyDaysSaleVolume),
       warehouseAvailableStock: whAny ? whSum : null,
+      waitDeliveryStock: wdAny ? wdSum : null,
       shippedStock: null,
       availableSaleDays:
         ratio(skus[0]?.availableSaleDays) ??
@@ -406,6 +416,7 @@ async function upsertSalesBatch(
         last7DaysSalesVolume: sql`excluded.last7_days_sales_volume`,
         last30DaysSalesVolume: sql`excluded.last30_days_sales_volume`,
         warehouseAvailableStock: sql`excluded.warehouse_available_stock`,
+        waitDeliveryStock: sql`excluded.wait_delivery_stock`,
         availableSaleDays: sql`excluded.available_sale_days`,
         priceDetail: sql`excluded.price_detail`,
         overview: sql`excluded.overview`,

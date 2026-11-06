@@ -120,7 +120,7 @@ export async function createEnterpriseAction(input: {
     .values({
       name: d.name,
       slug: d.slug,
-      enabledModules: d.enabledModules ?? ["create", "assets", "mockup", "settings"],
+      enabledModules: d.enabledModules ?? ["create", "assets", "mockup", "settings", "inventory"],
       maxConcurrent: d.maxConcurrent ?? 5,
       chatMaxConcurrent: d.chatMaxConcurrent ?? 5,
       creditsBalance: d.initialCredits ?? 0,

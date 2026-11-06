@@ -84,6 +84,13 @@ export const EXPRESS_WEIGHT_FEEDBACK_STATUS: Record<number, string> = {
   7: "超期自动确认",
 }
 
+/** 物流单拒收状态（shiporderv2 expressRejectStatus，官方枚举） */
+export const EXPRESS_REJECT_STATUS: Record<number, string> = {
+  0: "无拒收信息",
+  1: "存在拒收，待物流商处理",
+  2: "存在拒收，物流商已处理",
+}
+
 /** 广告展示状态（ad.detail.query adShowStatus）与阶段（adPhase）——
  *  官方文档未提供枚举含义，以下映射为占位，拿到真实广告后按实测补全；
  *  未命中码值时前端回退展示「状态码 n」。 */

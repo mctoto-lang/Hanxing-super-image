@@ -526,7 +526,8 @@ export function TaskDetailCard({
                   <Info className="size-3" />
                   详细信息
                 </TooltipTrigger>
-                <TooltipContent side="top" className="text-xs">
+                {/* max-w-none 覆盖基类 max-w-xs，配合 whitespace-nowrap 强制单行弹出 */}
+                <TooltipContent side="top" className="max-w-none whitespace-nowrap text-xs">
                   <span className="inline-flex items-center gap-1.5">
                     <span>生成时间 {formatRequestTime(new Date(task.createdAt))}</span>
                     {durationMs != null ? (

@@ -52,6 +52,7 @@ const PURCHASE_PAGE = {
       productSkcPicture: "https://img.example.com/cage.jpg",
       category: "宠物用品",
       status: 1,
+      stockingType: 1,
       isCustomProduct: false,
       urgencyType: 1,
       todayCanDeliver: true,
@@ -238,6 +239,9 @@ describe("备货单查询", () => {
     expect(first.lackTag).toBe(true)
     expect(first.urgencyType).toBe(1)
     expect(first.expectLatestDeliverTime).toBe(1792802072958)
+    // 备货类型（2026-11-04 新增出参）：1=海外备货；旧行无字段回落常规(0)
+    expect(first.stockingType).toBe(1)
+    expect(r.rows[1]?.stockingType).toBe(0)
     expect(r.rows[1]?.statusLabel).toBe("待接单")
     // 状态预设 → statusList（todo=[0,1]）
     const body = JSON.parse(String(fn.mock.calls[0]![1]!.body)) as Record<string, unknown>

@@ -17,7 +17,7 @@ interface PresignResponse {
 }
 
 /** 上传目标前缀（与 /api/upload、/api/upload/presign 的 category 参数一致） */
-export type UploadCategory = "reference" | "temu"
+export type UploadCategory = "reference" | "temu" | "inventory"
 
 /** 读取失败响应的明文原因（路由返回纯文本，如"单张图片最大 20MB"），无则回退状态码 */
 async function errText(res: Response, fallback: string): Promise<Error> {
@@ -142,4 +142,17 @@ export async function uploadTemuAsset(
   },
 ): Promise<string> {
   return uploadFile(file, "temu", opts)
+}
+
+/**
+ * 上传库存商品档案图到不过期的 inventory/ 前缀（档案长期引用，勿落 ref/）。
+ * @throws 上传失败时抛错（携带服务端具体原因），调用方负责 toast 提示。
+ */
+export async function uploadInventoryAsset(
+  file: File,
+  opts?: {
+    onProgress?: (percent: number) => void
+  },
+): Promise<string> {
+  return uploadFile(file, "inventory", opts)
 }
