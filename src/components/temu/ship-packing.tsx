@@ -2,19 +2,13 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { CalendarIcon, Loader2, RefreshCw } from "lucide-react"
-import { zhCN } from "react-day-picker/locale"
+import { Loader2, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Calendar } from "@/components/ui/calendar"
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover"
+import { PickupTimePicker, parsePickupSlots } from "@/components/temu/pickup-time-picker"
 import {
   Sheet,
   SheetContent,
@@ -422,8 +416,9 @@ export function DeliverMethodTabs({
 
 /* ─── 装箱发货（右侧抽屉，官方样式） ─── */
 
-/** schema deliveryOrderSns 单次上限 50：装箱链路（预检/体积/比价/发货）按 ≤50 一组循环分批 */
-function chunkSns(sns: string[]): string[][] {
+/** schema deliveryOrderSns 单次上限 50：装箱链路（预检/体积/比价/发货）按 ≤50 一组循环分批
+ *  （装箱抽屉与自动预约发货弹窗共用） */
+export function chunkSns(sns: string[]): string[][] {
   const out: string[][] = []
   for (let i = 0; i < sns.length; i += 50) out.push(sns.slice(i, i + 50))
   return out
@@ -457,11 +452,8 @@ export function PackingDialog({
   const [logistics, setLogistics] = React.useState<Awaited<ReturnType<typeof getLogisticsMatchAction>> | null>(null)
   const [selOption, setSelOption] = React.useState<Extract<Awaited<ReturnType<typeof getLogisticsMatchAction>>, { ok: true }>["list"][number] | null>(null)
   const [pickupMethod] = React.useState(0) // 官方口径仅上门揽收（pickupMethod=0）
-  /** 预约取货时间：日期用日历（仅物流返回的可约日期），时/分下拉约束在可约窗口内 */
-  const [pickDate, setPickDate] = React.useState<Date | null>(null)
-  const [pickHour, setPickHour] = React.useState("")
-  const [pickMin, setPickMin] = React.useState("")
-  const [calOpen, setCalOpen] = React.useState(false)
+  /** 预约取货时间（epoch 毫秒；null=不预约）——选择器内部状态，换公司 key 重置 */
+  const [pickTimeMs, setPickTimeMs] = React.useState<number | null>(null)
   /** 库存联动（批次4）：单仓制固定主仓 + 工厂直发（跳过校验不扣库存） */
   const [factoryDirect, setFactoryDirect] = React.useState(false)
 
@@ -473,45 +465,8 @@ export function PackingDialog({
   const totalSkus = rows.reduce((acc, r) => acc + (r.deliverSkcNum ?? 0), 0)
   const receive = rows[0]?.receiveAddress ?? null
   const selAddr = mallAddrs.find((a) => a.id === (addressId ?? rows[0]?.deliveryAddressId))
-
-  /** 所选公司可约时段（官方对象 {bjDate,bjStartTime,bjEndTime}）→ 可选日期与窗口 */
-  const ymd = (d: Date) =>
-    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
-  const cnDate = (d: Date) =>
-    `${d.getMonth() + 1}月${d.getDate()}日 周${["日", "一", "二", "三", "四", "五", "六"][d.getDay()]}`
-  const slots = React.useMemo(
-    () =>
-      selOption && Array.isArray(selOption.channelScheduleTimeList)
-        ? selOption.channelScheduleTimeList.flatMap((t) => {
-            if (t && typeof t === "object" && typeof (t as { bjDate?: unknown }).bjDate === "string") {
-              const s = t as { bjDate: string; bjStartTime?: unknown; bjEndTime?: unknown }
-              const start = typeof s.bjStartTime === "string" ? s.bjStartTime : "00:00"
-              const end = typeof s.bjEndTime === "string" ? s.bjEndTime : "23:59"
-              const d = new Date(`${s.bjDate}T00:00`)
-              if (!Number.isNaN(d.getTime())) return [{ date: d, bjDate: s.bjDate, start, end }]
-            }
-            return []
-          })
-        : [],
-    [selOption],
-  )
-  const slotDates = React.useMemo(() => new Set(slots.map((s) => s.bjDate)), [slots])
-  const pickSlot = pickDate ? slots.find((s) => s.bjDate === ymd(pickDate)) : null
-  /** 小时约束在所选日期的可约窗口内（无窗口信息则全天） */
-  const hourOptions = React.useMemo(() => {
-    const all = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, "0"))
-    if (!pickSlot) return all
-    const from = Number(pickSlot.start.slice(0, 2))
-    const to = Number(pickSlot.end.slice(0, 2))
-    return all.filter((h) => Number(h) >= from && Number(h) <= to)
-  }, [pickSlot])
-  const minuteOptions = Array.from({ length: 60 }, (_, m) => String(m).padStart(2, "0"))
-  const pickTimeMs =
-    pickDate && pickHour && pickMin
-      ? new Date(
-          `${ymd(pickDate)}T${pickHour}:${pickMin}`,
-        ).getTime()
-      : null
+  /** 所选公司可约时段（官方对象数组 → 槽位；选择器共用组件解析） */
+  const slots = React.useMemo(() => parsePickupSlots(selOption?.channelScheduleTimeList), [selOption])
 
   const fetchLogistics = (vol: string, kg: number, addrId: number | null, pkgCount?: number) => {
     const first = rows[0]
@@ -553,10 +508,7 @@ export function PackingDialog({
     setMatchInfo(null)
     setLogistics(null)
     setSelOption(null)
-    setPickDate(null)
-    setPickHour("")
-    setPickMin("")
-    setCalOpen(false)
+    setPickTimeMs(null)
     setPkgNum(String(Math.max(1, totalPackages)))
     setAddressId(rows[0]?.deliveryAddressId ?? null)
     let cancelled = false
@@ -623,16 +575,17 @@ export function PackingDialog({
           setWeightKg(String(kg))
         }
       }
-      if (vol) {
-        setVolume(vol)
-        fetchLogistics(
-          vol,
-          kg,
-          rows[0]?.deliveryAddressId ?? null,
-          Math.max(1, totalPackages),
-        )
-      } else {
-        toast.info("官方体积接口对部分单不返回预估值（官方文档：部分场景为空），可手填后点「重新比价」", { duration: 8000 })
+      // 官方未返回体积（官方文档：部分场景为空）→ 按 0.01 m³ 兜底预填（可手改）并继续自动比价
+      const volFinal = vol ?? "0.01"
+      setVolume(volFinal)
+      fetchLogistics(
+        volFinal,
+        kg,
+        rows[0]?.deliveryAddressId ?? null,
+        Math.max(1, totalPackages),
+      )
+      if (!vol) {
+        toast.info("官方未返回体积预估，已按 0.01 m³ 兜底，可手动修改后「重新比价」", { duration: 8000 })
       }
     })
     return () => {
@@ -869,10 +822,7 @@ export function PackingDialog({
                       type="button"
                       onClick={() => {
                         setSelOption(opt)
-                        // 换公司后可约日期/窗口变化，清掉已选时间
-                        setPickDate(null)
-                        setPickHour("")
-                        setPickMin("")
+                        // 换公司后可约日期/窗口变化——PickupTimePicker 以公司 id 为 key 自行重置
                       }}
                       className={`flex w-full flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-left transition-colors ${
                         selOption?.expressCompanyId === opt.expressCompanyId ? "border-primary bg-primary/5" : "hover:bg-muted/60"
@@ -903,75 +853,12 @@ export function PackingDialog({
 
             <div className="space-y-1.5">
               <Label className="text-xs">预约取货时间</Label>
-              <Popover open={calOpen} onOpenChange={setCalOpen}>
-                <PopoverTrigger
-                  render={
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-8 w-full justify-start text-xs font-normal"
-                      disabled={!selOption}
-                    />
-                  }
-                >
-                  <CalendarIcon className="size-3.5" />
-                  {pickDate ? cnDate(pickDate) : selOption ? "选择日期" : "先选物流公司"}
-                </PopoverTrigger>
-                <PopoverContent className="w-auto p-0">
-                  <Calendar
-                    locale={zhCN}
-                    mode="single"
-                    selected={pickDate ?? undefined}
-                    onSelect={(d) => {
-                      setPickDate(d ?? null)
-                      setPickHour("")
-                      setPickMin("")
-                      setCalOpen(false)
-                    }}
-                    disabled={(d) => !slotDates.has(ymd(d))}
-                  />
-                </PopoverContent>
-              </Popover>
-              <div className="grid grid-cols-2 gap-2">
-                <Select
-                  items={hourOptions.map((h) => ({ value: h, label: `${h} 时` }))}
-                  value={pickHour}
-                  onValueChange={(v) => {
-                    if (v) setPickHour(v)
-                  }}
-                  disabled={!pickDate}
-                >
-                  <SelectTrigger className="h-8 w-full text-xs">
-                    <SelectValue placeholder="时" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {hourOptions.map((h) => (
-                      <SelectItem key={h} value={h}>
-                        {h} 时
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Select
-                  items={minuteOptions.map((m) => ({ value: m, label: `${m} 分` }))}
-                  value={pickMin}
-                  onValueChange={(v) => {
-                    if (v) setPickMin(v)
-                  }}
-                  disabled={!pickDate}
-                >
-                  <SelectTrigger className="h-8 w-full text-xs">
-                    <SelectValue placeholder="分" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {minuteOptions.map((m) => (
-                      <SelectItem key={m} value={m}>
-                        {m} 分
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              <PickupTimePicker
+                key={selOption?.expressCompanyId ?? "none"}
+                slots={slots}
+                disabled={!selOption}
+                onChange={setPickTimeMs}
+              />
             </div>
 
             <p className="rounded-md bg-emerald-500/10 px-2.5 py-1.5 text-[11px] text-emerald-700 dark:text-emerald-400">

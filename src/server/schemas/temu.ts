@@ -311,6 +311,8 @@ export const temuShipSendActionSchema = z.object({
   predictPackageVolume: z.string().max(32).optional(),
   /** 工厂直发单：跳过库存硬阻断且不扣库存（货从工厂直发 TEMU）；常规单单仓制固定主仓联动 */
   factoryDirect: z.boolean().optional(),
+  /** 关闭库存联动（自动预约发货开关）：跳过校验与扣减且不标工厂直发（账实差异人工处理） */
+  skipInventory: z.boolean().optional(),
   payload: temuShipPackingSendSchema,
 })
 export type TemuShipSendActionInput = z.infer<typeof temuShipSendActionSchema>

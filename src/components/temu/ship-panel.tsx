@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { Loader2, Printer, RefreshCw, TriangleAlert } from "lucide-react"
+import { Loader2, Printer, RefreshCw, TriangleAlert, Zap } from "lucide-react"
 import {
   TableBody,
   TableCell,
@@ -66,6 +66,7 @@ import {
   requestShipBoxMark,
   type DeliverPayload,
 } from "./ship-packing"
+import { AutoReserveDialog } from "./ship-auto-reserve-dialog"
 import {
   Tooltip,
   TooltipContent,
@@ -305,6 +306,8 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
   // 待装箱/待仓库收货勾选批量操作
   const [selSns, setSelSns] = React.useState<Set<string>>(new Set())
   const [packingRows, setPackingRows] = React.useState<TemuShipOrderRow[] | null>(null)
+  /** 自动预约发货弹窗行（复用装箱三道拦截；与 PackingDialog 平行的自动版） */
+  const [reserveRows, setReserveRows] = React.useState<TemuShipOrderRow[] | null>(null)
 
   // 行内操作
   const [cancelingSn, setCancelingSn] = React.useState<string | null>(null)
@@ -474,6 +477,41 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
     }
     return groups
   })()
+
+  /** 待装箱：按「发货仓+收货仓」分组（同仓合并快捷勾选 chips；组内必同收货仓——
+   *  勾选整组不会触发跨仓拦截，直接联动「自动预约发货/批量装箱发货」按钮）。
+   *  staging 早退 return 之后禁 Hook——用 IIFE 普通计算。 */
+  const sameWarehouseGroups: Array<{ key: string; from: string; to: string; sns: string[] }> = (() => {
+    if (!isPendingView) return []
+    const groups: Array<{ key: string; from: string; to: string; sns: string[] }> = []
+    const byKey = new Map<string, { from: string; to: string; sns: string[] }>()
+    for (const r of rows) {
+      const key = `${r.deliveryAddressId ?? 0}-${r.subWarehouseId ?? 0}`
+      let g = byKey.get(key)
+      if (!g) {
+        g = {
+          from: r.deliveryAddressLabel ?? (r.deliveryAddressId != null ? `地址${r.deliveryAddressId}` : "未设发货仓"),
+          to: r.subWarehouseName ?? `收货仓${r.subWarehouseId ?? "?"}`,
+          sns: [],
+        }
+        byKey.set(key, g)
+        groups.push({ key, ...g })
+      }
+      g.sns.push(r.deliveryOrderSn)
+    }
+    return groups
+  })()
+
+  /** 同仓分组 chip：全组勾选/取消（再点取消组内勾选） */
+  const toggleSameWarehouseGroup = (sns: string[]) => {
+    setSelSns((s) => {
+      const allIn = sns.every((sn) => s.has(sn))
+      const n = new Set(s)
+      if (allIn) sns.forEach((sn) => n.delete(sn))
+      else sns.forEach((sn) => n.add(sn))
+      return n
+    })
+  }
 
   const doCancel = async (sn: string) => {
     setCancelPending(true)
@@ -720,6 +758,29 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
     setPackingRows(sel)
   }
 
+  /** 自动预约发货入口：拦截口径与 openPacking 完全一致（同收货仓/仅待装箱/已打印箱唧） */
+  const openAutoReserve = () => {
+    if (mixedWarehouse) {
+      toast.error("勾选了多个收货仓的单据；官方按同收货地址合并发货，请分批装箱", { duration: 8000 })
+      return
+    }
+    const sel = rows.filter((r) => selSns.has(r.deliveryOrderSn))
+    if (sel.length === 0) return
+    if (sel.some((r) => r.status !== 0)) {
+      toast.error("仅「待装箱发货」状态的单据可装箱发货")
+      return
+    }
+    const unprinted = sel.filter((r) => r.isPrintBoxMark !== true)
+    if (unprinted.length > 0) {
+      toast.error(
+        `${unprinted.length} 单未打印商品打包标签：请先点「批量打印商品打包标签」（打印后包裹数与件数锁定）再装箱发货`,
+        { duration: 8000 },
+      )
+      return
+    }
+    setReserveRows(sel)
+  }
+
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
   return (
@@ -813,6 +874,30 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
           <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
         ) : (
           <>
+            {/* 同仓合并快捷勾选（仅待装箱视图，常驻）：按 发货仓+收货仓 分组，一键勾选整组
+                与「自动预约发货/批量装箱发货」联动（组内必同收货仓，不会触发跨仓拦截） */}
+            {isPendingView && sameWarehouseGroups.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                <span className="text-muted-foreground">同仓合并：</span>
+                {sameWarehouseGroups.map((g) => {
+                  const allIn = g.sns.every((sn) => selSns.has(sn))
+                  return (
+                    <button
+                      key={g.key}
+                      type="button"
+                      onClick={() => toggleSameWarehouseGroup(g.sns)}
+                      className={`rounded-full border px-2.5 py-0.5 text-[11px] transition-colors ${
+                        allIn
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "text-muted-foreground hover:bg-muted/60"
+                      }`}
+                    >
+                      {g.from} → {g.to} · {g.sns.length} 单
+                    </button>
+                  )
+                })}
+              </div>
+            )}
             {selectable && selSns.size > 0 && (
               <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 p-2.5 text-xs">
                 <span>
@@ -866,9 +951,19 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                     </Button>
                   )}
                   {isPendingView && (
-                    <Button size="sm" className="h-8 text-xs" onClick={openPacking} disabled={loading || mixedWarehouse}>
-                      批量装箱发货
-                    </Button>
+                    <>
+                      <Button
+                        size="sm"
+                        className="h-8 text-xs"
+                        onClick={openAutoReserve}
+                        disabled={loading || mixedWarehouse || selectedRows.length === 0}
+                      >
+                        <Zap className="size-3.5" /> 自动预约发货
+                      </Button>
+                      <Button size="sm" className="h-8 text-xs" onClick={openPacking} disabled={loading || mixedWarehouse}>
+                        批量装箱发货
+                      </Button>
+                    </>
                   )}
                 </div>
               </div>
@@ -1151,6 +1246,19 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
           setReloadTick((t) => t + 1)
         }}
       />
+
+      {/* 自动预约发货（拦截口径同装箱；优先顺序/黑名单自动选公司 + 时段手选 + 库存联动开关） */}
+      {reserveRows && (
+        <AutoReserveDialog
+          store={store}
+          rows={reserveRows}
+          onClose={() => setReserveRows(null)}
+          onDone={() => {
+            setSelSns(new Set())
+            setReloadTick((t) => t + 1)
+          }}
+        />
+      )}
 
       {/* 取消确认 */}
       <ConfirmDialog

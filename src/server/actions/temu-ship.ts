@@ -9,6 +9,7 @@ import {
   temuShipPackages,
   temuProducts,
   temuSalesOverviews,
+  temuLogisticsConfig,
   inventoryProducts,
   inventoryStocks,
   type TemuShipReceiveAddress,
@@ -197,7 +198,8 @@ async function upsertLatestPage(
 
 /** 装箱发货成功后的库存扣减（批次4 实装）：
  *  工厂直发单跳过扣减（仅回写标记）；常规单按发货仓逐单扣减+「发货扣减」流水。
- *  扣减失败降级 warning（官方已发货不可回滚，流水缺记人工冲正兜底）。 */
+ *  skipInventory（自动预约发货「库存联动」开关关闭）：跳过校验与扣减但不标工厂直发
+ *  （账实差异人工处理）。扣减失败降级 warning（官方已发货不可回滚，流水缺记人工冲正兜底）。 */
 async function shipmentShippedHook(input: {
   storeId: string
   enterpriseId: string
@@ -205,6 +207,7 @@ async function shipmentShippedHook(input: {
   deliveryOrderSns: string[]
   warehouseId: string | null
   factoryDirect: boolean
+  skipInventory?: boolean
 }): Promise<void> {
   const { storeId, enterpriseId, userId, deliveryOrderSns, warehouseId, factoryDirect } = input
   await db
@@ -216,7 +219,7 @@ async function shipmentShippedHook(input: {
     .where(
       and(eq(temuShipOrders.storeId, storeId), inArray(temuShipOrders.deliveryOrderSn, deliveryOrderSns)),
     )
-  if (factoryDirect || !warehouseId) return
+  if (factoryDirect || input.skipInventory || !warehouseId) return
   const r = await deductShipmentInventory(enterpriseId, storeId, deliveryOrderSns, warehouseId, userId)
   if (r.error) throw new Error(r.error)
 }
@@ -1758,12 +1761,13 @@ export async function sendPackingAction(input: unknown) {
   if (!guard.ok) return { ok: false as const, error: guard.error }
   const store = guard.store
   const factoryDirect = q.factoryDirect === true
+  const skipInventory = q.skipInventory === true
   const userCtx = await requireUserContext()
   const userCtxId = userCtx.user.id
 
-  // 库存硬阻断（工厂直发单跳过）：单仓制固定主仓；未初始化库存的企业不联动
+  // 库存硬阻断（工厂直发/关闭库存联动时跳过）：单仓制固定主仓；未初始化库存的企业不联动
   const warehouseId: string | null = await getMainWarehouseId(store.enterpriseId)
-  if (!factoryDirect && warehouseId) {
+  if (!factoryDirect && !skipInventory && warehouseId) {
     const check = await db.transaction((tx) =>
       assertShipmentStock(tx, store.enterpriseId, store.id, q.deliveryOrderSns, warehouseId!),
     )
@@ -1827,7 +1831,7 @@ export async function sendPackingAction(input: unknown) {
       str((r.result as { expressBatchSn?: unknown } | null)?.expressBatchSn, 64) ?? null
     let followUpWarning: string | undefined
     try {
-      // 库存扣减（直发单跳过扣减仅回写标记；常规单按发货仓扣减+流水）
+      // 库存扣减（直发单跳过扣减仅回写标记；skipInventory 跳过扣减不标直发；常规单扣减+流水）
       await shipmentShippedHook({
         storeId: store.id,
         enterpriseId: store.enterpriseId,
@@ -1835,6 +1839,7 @@ export async function sendPackingAction(input: unknown) {
         deliveryOrderSns: q.deliveryOrderSns,
         warehouseId,
         factoryDirect,
+        skipInventory,
       })
       await upsertFromOfficial(store.id, built, q.deliveryOrderSns)
       invalidateTemuCache(store.enterpriseId)
@@ -2012,7 +2017,13 @@ export async function getShipInventoryRefAction(input: {
       ok: true as const,
       rows: {} as Record<
         string,
-        { totalQty: number; pendingUnpacked: number; shipState: "auto" | "manual" | null }
+        {
+          totalQty: number
+          pendingUnpacked: number
+          shipState: "auto" | "manual" | null
+          /** 档案装箱数（每箱件数；自动创建发货拆包裹默认值，无档案=null） */
+          cartonQty: number | null
+        }
       >,
     }
   let enterpriseId: string
@@ -2033,6 +2044,7 @@ export async function getShipInventoryRefAction(input: {
         id: inventoryProducts.id,
         code: inventoryProducts.productCode,
         shipState: inventoryProducts.shipState,
+        cartonQty: inventoryProducts.cartonQty,
       })
       .from(inventoryProducts)
       .where(eq(inventoryProducts.enterpriseId, enterpriseId))
@@ -2046,7 +2058,10 @@ export async function getShipInventoryRefAction(input: {
       .where(eq(inventoryStocks.enterpriseId, enterpriseId))
       .groupBy(inventoryStocks.productId),
   ])
-  const productByKey = new Map<string, { id: string; code: string; shipState: "auto" | "manual" }>()
+  const productByKey = new Map<
+    string,
+    { id: string; code: string; shipState: "auto" | "manual"; cartonQty: number | null }
+  >()
   for (const p of products) {
     const key = normalizeSn(p.code)
     if (!productByKey.has(key)) productByKey.set(key, p)
@@ -2091,7 +2106,12 @@ export async function getShipInventoryRefAction(input: {
 
   const rows: Record<
     string,
-    { totalQty: number; pendingUnpacked: number; shipState: "auto" | "manual" | null }
+    {
+      totalQty: number
+      pendingUnpacked: number
+      shipState: "auto" | "manual" | null
+      cartonQty: number | null
+    }
   > = {}
   for (const c of codes) {
     const key = normalizeSn(c)
@@ -2100,6 +2120,7 @@ export async function getShipInventoryRefAction(input: {
       totalQty: product ? (stockByProduct.get(product.id) ?? 0) : 0,
       pendingUnpacked: pendingByKey.get(key) ?? 0,
       shipState: product?.shipState ?? null,
+      cartonQty: product?.cartonQty ?? null,
     }
   }
   return { ok: true as const, rows }
@@ -2160,4 +2181,97 @@ export async function getShipOrdersNeedingBarcodeAction(input: { sns: string[] }
     if (r.extCode && needKeys.has(normalizeSn(r.extCode))) result.add(r.sn)
   }
   return { ok: true as const, sns: [...result] }
+}
+
+/* ─── 物流公司偏好配置（自动预约发货；企业级，迁移 0093） ─── */
+
+export type TemuLogisticsPrefItem = { expressCompanyId: number; expressCompanyName: string }
+
+/** 校验并规范化偏好数组（≤50 项、id 整数、名称 1-120、按 id 去重保序） */
+function parsePrefList(raw: unknown, label: string): TemuLogisticsPrefItem[] {
+  if (!Array.isArray(raw)) throw new Error(`${label}须为数组`)
+  const out: TemuLogisticsPrefItem[] = []
+  const seen = new Set<number>()
+  for (const it of raw.slice(0, 50)) {
+    const id = Number((it as { expressCompanyId?: unknown })?.expressCompanyId)
+    const name = (it as { expressCompanyName?: unknown })?.expressCompanyName
+    if (!Number.isInteger(id) || typeof name !== "string" || !name.trim() || name.length > 120) {
+      throw new Error(`${label}项须含物流公司 id 与名称`)
+    }
+    if (seen.has(id)) continue
+    seen.add(id)
+    out.push({ expressCompanyId: id, expressCompanyName: name.trim() })
+  }
+  return out
+}
+
+/** 读物流公司偏好（优先顺序+黑名单；无行回落空数组） */
+export async function getLogisticsConfigAction() {
+  let enterpriseId: string
+  try {
+    const ctx = await requireEnterpriseContext()
+    if (!ctx.canAccess("temu")) {
+      return { ok: false as const, error: "当前账号没有 TEMU 模块权限" }
+    }
+    enterpriseId = ctx.user.enterpriseId!
+  } catch (err) {
+    return { ok: false as const, error: err instanceof Error ? err.message : "登录状态失效" }
+  }
+  const [row] = await db
+    .select({ priority: temuLogisticsConfig.priority, blacklist: temuLogisticsConfig.blacklist })
+    .from(temuLogisticsConfig)
+    .where(eq(temuLogisticsConfig.enterpriseId, enterpriseId))
+    .limit(1)
+  return {
+    ok: true as const,
+    priority: (row?.priority ?? []) as TemuLogisticsPrefItem[],
+    blacklist: (row?.blacklist ?? []) as TemuLogisticsPrefItem[],
+  }
+}
+
+/** 保存物流公司偏好（upsert 每企业一行；两数组可只传其一=保持现值，
+ *  同时出现在黑名单的优先项自动从优先顺序剔除） */
+export async function updateLogisticsConfigAction(input: {
+  priority?: unknown
+  blacklist?: unknown
+}) {
+  let enterpriseId: string
+  let userId: string
+  try {
+    const ctx = await requireEnterpriseContext()
+    if (!ctx.canAccess("temu_ship")) {
+      return { ok: false as const, error: "当前账号没有 TEMU 发货模块权限" }
+    }
+    enterpriseId = ctx.user.enterpriseId!
+    userId = ctx.user.id
+  } catch (err) {
+    return { ok: false as const, error: err instanceof Error ? err.message : "登录状态失效" }
+  }
+  try {
+    const [current] = await db
+      .select({ priority: temuLogisticsConfig.priority, blacklist: temuLogisticsConfig.blacklist })
+      .from(temuLogisticsConfig)
+      .where(eq(temuLogisticsConfig.enterpriseId, enterpriseId))
+      .limit(1)
+    const priority =
+      input.priority === undefined
+        ? ((current?.priority ?? []) as TemuLogisticsPrefItem[])
+        : parsePrefList(input.priority, "优先顺序")
+    const blacklist =
+      input.blacklist === undefined
+        ? ((current?.blacklist ?? []) as TemuLogisticsPrefItem[])
+        : parsePrefList(input.blacklist, "黑名单")
+    const blackIds = new Set(blacklist.map((b) => b.expressCompanyId))
+    const finalPriority = priority.filter((p) => !blackIds.has(p.expressCompanyId))
+    await db
+      .insert(temuLogisticsConfig)
+      .values({ enterpriseId, priority: finalPriority, blacklist, updatedBy: userId, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: temuLogisticsConfig.enterpriseId,
+        set: { priority: finalPriority, blacklist, updatedBy: userId, updatedAt: new Date() },
+      })
+    return { ok: true as const, priority: finalPriority, blacklist }
+  } catch (err) {
+    return { ok: false as const, error: err instanceof Error ? err.message : "保存失败" }
+  }
 }

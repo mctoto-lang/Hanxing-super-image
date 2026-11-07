@@ -802,3 +802,24 @@ export const temuShipPackages = pgTable(
     uniqueIndex("gt_temu_ship_pkg_sn").on(t.storeId, t.deliveryOrderSn, t.packageSn),
   ],
 )
+
+/** 物流公司偏好配置（企业级一行；自动预约发货用）：
+ *  priority = 优先顺序（有序数组，比价结果按序取第一个可用的），
+ *  blacklist = 黑名单（比价结果中剔除）。 */
+export const temuLogisticsConfig = pgTable("temu_logistics_config", {
+  enterpriseId: uuid("enterprise_id")
+    .primaryKey()
+    .references(() => enterprises.id, { onDelete: "cascade" }),
+  /** 优先顺序（[{expressCompanyId, expressCompanyName}] 有序） */
+  priority: jsonb("priority")
+    .$type<Array<{ expressCompanyId: number; expressCompanyName: string }>>()
+    .notNull()
+    .default([]),
+  /** 黑名单（同结构数组） */
+  blacklist: jsonb("blacklist")
+    .$type<Array<{ expressCompanyId: number; expressCompanyName: string }>>()
+    .notNull()
+    .default([]),
+  updatedBy: uuid("updated_by"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+})

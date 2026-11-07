@@ -85,6 +85,8 @@ export function ProductionPanel() {
   const [q, setQ] = React.useState("")
   const [statusFilters, setStatusFilters] = React.useState<string[]>([])
   const [loading, startLoad] = React.useTransition()
+  // SSR 首帧无数据：首次加载完成前恒显骨架，避免水合前闪空态文案
+  const [loadedOnce, setLoadedOnce] = React.useState(false)
 
   // ---- 多选（仅进行中组）→ 生成入库核对单图片 ----
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set())
@@ -114,6 +116,7 @@ export function ProductionPanel() {
       else toast.error(list.error)
       if (st.ok) setStats(st.stats)
       if (fs.ok) setFactories(fs.rows)
+      setLoadedOnce(true)
     })
   }, [group])
 
@@ -520,6 +523,7 @@ export function ProductionPanel() {
           data={data}
           containerClassName="min-h-0 flex-1"
           initialSorting={[{ id: "days", desc: true }]}
+          loading={loading || !loadedOnce}
           onRowClick={(r) => setDetailId(r.id)}
           isRowSelected={group === "open" ? (r) => selectedIds.has(r.id) : undefined}
           empty={group === "open" ? "暂无进行中生产单，点「新建生产单」开始" : "暂无归档生产单"}

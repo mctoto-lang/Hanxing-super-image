@@ -43,6 +43,8 @@ export function MovementPanel() {
     return { from: t, to: t }
   })
   const [loading, startLoad] = React.useTransition()
+  // SSR 首帧无数据：首次加载完成前恒显骨架，避免水合前闪空态文案
+  const [loadedOnce, setLoadedOnce] = React.useState(false)
   const [movementTarget, setMovementTarget] = React.useState<MovementDialogTarget | null>(null)
   const [detailId, setDetailId] = React.useState<string | null>(null)
 
@@ -62,6 +64,7 @@ export function MovementPanel() {
       } else {
         toast.error(res.error)
       }
+      setLoadedOnce(true)
     })
   }, [])
 
@@ -190,6 +193,7 @@ export function MovementPanel() {
         initialSorting={[{ id: "productCode", desc: false }]}
         columnDividers
         infinite
+        loading={loading || !loadedOnce}
         onRowClick={(r) => setDetailId(r.productId)}
         empty={
           <div className="space-y-2 py-6 text-center text-muted-foreground">

@@ -14,12 +14,12 @@ import {
 import {
   blendedDailySales,
   deriveStockStatus,
-  getRestockThresholdDays,
-  hasSalesDataOf,
+  getInventoryStatusConfig,
   loadDailySalesBySn,
   loadTemuNetStockBySn,
   normalizeSn,
   requireInventory,
+  stagnantWindowQtyOf,
   type MovementType,
   type StockStatus,
 } from "@/server/services/inventory-core"
@@ -88,7 +88,7 @@ export type ReplenishAdviceRow = {
   /** 目标覆盖量（销速轨） */
   targetQty: number | null
   suggestQty: number
-  /** 滞销（加权日销=0 且有库存；含停止生产货号，清仓视角） */
+  /** 滞销（判定窗销量 ≤ 上限且有库存；与六态同口径 deriveStockStatus） */
   stagnant: boolean
   /** 预计到货（今天+生产周期） */
   expectedDate: string | null
@@ -108,6 +108,7 @@ export async function getReplenishmentAdviceAction(input: unknown = {}) {
   if (products.length === 0) return { ok: true as const, rows: [] as ReplenishAdviceRow[] }
   const ids = products.map((p) => p.id)
 
+  const cfg = await getInventoryStatusConfig(g.enterpriseId)
   const [stockRows, producing, sales, temuNet] = await Promise.all([
     db
       .select({
@@ -120,7 +121,7 @@ export async function getReplenishmentAdviceAction(input: unknown = {}) {
       )
       .groupBy(inventoryStocks.productId),
     loadProducingBySn(g.enterpriseId),
-    loadDailySalesBySn(g.enterpriseId),
+    loadDailySalesBySn(g.enterpriseId, cfg.stagnantDays),
     loadTemuNetStockBySn(g.enterpriseId),
   ])
   const stockMap = new Map(stockRows.map((r) => [r.productId, r.qty]))
@@ -132,7 +133,19 @@ export async function getReplenishmentAdviceAction(input: unknown = {}) {
     const producingQty = producing.get(p.productCode)?.remain ?? 0
     const temuStock = temuNet.get(normalizeSn(p.productCode)) ?? 0
     const dailySales = blendedDailySales(sales, p.productCode)
-    const stagnant = hasSalesDataOf(sales, p.productCode) && dailySales === 0 && totalQty > 0
+    // 滞销标记（清仓视角）：与预警处同口径 deriveStockStatus（窗口销量 ≤ 上限即滞销）
+    const stagnantQty = stagnantWindowQtyOf(sales, p.productCode)
+    const stagnant =
+      deriveStockStatus({
+        productionState: p.productionState,
+        totalQty,
+        temuNetStock: temuStock,
+        producingQty,
+        dailySales,
+        stagnantWindowQty: stagnantQty,
+        stagnantMaxQty: cfg.stagnantMaxQty,
+        thresholdDays: cfg.thresholdDays,
+      }).status === "stagnant"
 
     // 仅「持续生产」货号生成建议（停止生产=售罄即停产不补货）；
     // 销速单轨——无销速数据不出建议（滞销行除外）
@@ -232,7 +245,7 @@ export async function createProductionOrdersFromAdviceAction(input: {
 }
 
 /** 每日预警汇总（总览顶部 Alert 条）：六态口径，与总览状态完全一致
- *  （补货=可售天数<企业阈值；滞销=加权日销0且有库存；停产/清仓不入预警） */
+ *  （补货=可售天数<企业阈值；滞销=窗口销量≤上限且有库存；停产/清仓不入预警） */
 export async function getInventoryAlertSummaryAction() {
   const g = await requireInventory()
   if (!g.ok) return { ok: false as const, error: g.error }
@@ -246,16 +259,16 @@ export async function getInventoryAlertSummaryAction() {
     .where(eq(inventoryProducts.enterpriseId, g.enterpriseId))
   if (products.length === 0) return { ok: true as const, outOfStock: [], restock: [], stagnant: [] }
   const ids = products.map((p) => p.id)
-  const [stockRows, producing, sales, temuNet, thresholdDays] = await Promise.all([
+  const cfg = await getInventoryStatusConfig(g.enterpriseId)
+  const [stockRows, producing, sales, temuNet] = await Promise.all([
     db
       .select({ productId: inventoryStocks.productId, qty: sql<number>`coalesce(sum(${inventoryStocks.qty}), 0)::int` })
       .from(inventoryStocks)
       .where(and(eq(inventoryStocks.enterpriseId, g.enterpriseId), inArray(inventoryStocks.productId, ids)))
       .groupBy(inventoryStocks.productId),
     loadProducingBySn(g.enterpriseId),
-    loadDailySalesBySn(g.enterpriseId),
+    loadDailySalesBySn(g.enterpriseId, cfg.stagnantDays),
     loadTemuNetStockBySn(g.enterpriseId),
-    getRestockThresholdDays(g.enterpriseId),
   ])
   const stockMap = new Map(stockRows.map((r) => [r.productId, r.qty]))
   const outOfStock: string[] = []
@@ -268,8 +281,9 @@ export async function getInventoryAlertSummaryAction() {
       temuNetStock: temuNet.get(normalizeSn(p.code)) ?? 0,
       producingQty: producing.get(p.code)?.remain ?? 0,
       dailySales: blendedDailySales(sales, p.code),
-      hasSalesData: hasSalesDataOf(sales, p.code),
-      thresholdDays,
+      stagnantWindowQty: stagnantWindowQtyOf(sales, p.code),
+      stagnantMaxQty: cfg.stagnantMaxQty,
+      thresholdDays: cfg.thresholdDays,
     })
     if (status === "out_of_stock") outOfStock.push(p.code)
     else if (status === "restock") restock.push(p.code)
@@ -376,7 +390,7 @@ export async function getInventoryAnalysisAction(input: unknown = {}) {
     return {
       ok: true as const,
       window: win,
-      thresholdDays: await getRestockThresholdDays(g.enterpriseId),
+      thresholdDays: (await getInventoryStatusConfig(g.enterpriseId)).thresholdDays,
       cards: {
         totalQty: 0,
         productCount: 0,
@@ -398,8 +412,9 @@ export async function getInventoryAnalysisAction(input: unknown = {}) {
     }
   }
   const ids = products.map((p) => p.id)
+  const cfg = await getInventoryStatusConfig(g.enterpriseId)
 
-  const [stockRows, producing, sales, temuNet, thresholdDays, trendRows, flowRows, typeRows] = await Promise.all([
+  const [stockRows, producing, sales, temuNet, trendRows, flowRows, typeRows] = await Promise.all([
     db
       .select({
         productId: inventoryStocks.productId,
@@ -408,9 +423,8 @@ export async function getInventoryAnalysisAction(input: unknown = {}) {
       .from(inventoryStocks)
       .where(and(eq(inventoryStocks.enterpriseId, g.enterpriseId), inArray(inventoryStocks.productId, ids))),
     loadProducingBySn(g.enterpriseId),
-    loadDailySalesBySn(g.enterpriseId),
+    loadDailySalesBySn(g.enterpriseId, cfg.stagnantDays),
     loadTemuNetStockBySn(g.enterpriseId),
-    getRestockThresholdDays(g.enterpriseId),
     db
       .select({
         day: inventorySnapshots.day,
@@ -481,8 +495,9 @@ export async function getInventoryAnalysisAction(input: unknown = {}) {
       temuNetStock: temuStock,
       producingQty,
       dailySales,
-      hasSalesData: hasSalesDataOf(sales, p.productCode),
-      thresholdDays,
+      stagnantWindowQty: stagnantWindowQtyOf(sales, p.productCode),
+      stagnantMaxQty: cfg.stagnantMaxQty,
+      thresholdDays: cfg.thresholdDays,
     })
     statusCounts[status]++
     treemapRows.push({
@@ -531,7 +546,7 @@ export async function getInventoryAnalysisAction(input: unknown = {}) {
         availableDays,
         gapQty:
           status === "restock" && dailySales > 0
-            ? Math.max(0, Math.ceil(thresholdDays * dailySales - (total + temuStock + producingQty)))
+            ? Math.max(0, Math.ceil(cfg.thresholdDays * dailySales - (total + temuStock + producingQty)))
             : null,
         lastMovementAt: null as string | null,
       }
@@ -571,7 +586,7 @@ export async function getInventoryAnalysisAction(input: unknown = {}) {
   return {
     ok: true as const,
     window: win,
-    thresholdDays,
+    thresholdDays: cfg.thresholdDays,
     cards: {
       totalQty: totalQtyAll,
       productCount: products.length,

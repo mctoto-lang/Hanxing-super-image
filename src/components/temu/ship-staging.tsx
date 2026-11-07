@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { Loader2, Package, Plus, RefreshCw, Trash2, X } from "lucide-react"
+import { Loader2, Package, Plus, RefreshCw, Trash2, X, Zap } from "lucide-react"
 import {
   Table,
   TableBody,
@@ -53,6 +53,7 @@ import {
 } from "@/components/ui/tooltip"
 import { formatDateTime as fmtMs } from "@/lib/datetime"
 import { openShipBarcodePrint } from "./ship-packing"
+import { AutoCreateShipDialog } from "./ship-auto-create-dialog"
 
 /**
  * 发货台 + 创建发货单（对齐官方卖家后台两页）：
@@ -626,6 +627,8 @@ export function ShipStaging({
   const [createResults, setCreateResults] = React.useState<Array<{ sn: string; ok: boolean; msg?: string }>>([])
   /** 创建视图中正在「调整包裹」的单（组/单下标） */
   const [adjusting, setAdjusting] = React.useState<{ gi: number; oi: number } | null>(null)
+  /** 自动创建发货弹窗（勾选行快照传入） */
+  const [autoCreateOpen, setAutoCreateOpen] = React.useState(false)
 
   const stagingBySn = React.useMemo(
     () => new Map(stagingRows.map((r) => [r.subPurchaseOrderSn, r])),
@@ -1268,7 +1271,8 @@ export function ShipStaging({
   const allSelected = stagingRows.length > 0 && stagingRows.every((r) => stagingSel.has(r.subPurchaseOrderSn))
 
   return (
-    // h-full 高度链：筛选/按钮行/统计条固定，备货单表格为内部滚动区
+    <>
+    {/* h-full 高度链：筛选/按钮行/统计条固定，备货单表格为内部滚动区 */}
     <Card className="flex h-full min-h-0 flex-col">
       <CardHeader className="gap-3">
         <div className="flex flex-wrap items-center gap-2">
@@ -1308,6 +1312,14 @@ export function ShipStaging({
         </div>
         {/* 官方按钮行 + 统计条 */}
         <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            className="h-8 text-xs"
+            disabled={loading || stagingSel.size === 0}
+            onClick={() => setAutoCreateOpen(true)}
+          >
+            <Zap className="size-3.5" /> 自动创建发货
+          </Button>
           <Button
             size="sm"
             className="h-8 text-xs"
@@ -1494,6 +1506,20 @@ export function ShipStaging({
         </div>
       </CardContent>
     </Card>
+
+    {autoCreateOpen && (
+      <AutoCreateShipDialog
+        store={store}
+        rows={selRows}
+        initialNums={adjust}
+        onClose={() => setAutoCreateOpen(false)}
+        onCreated={() => {
+          setStagingSel(new Set())
+          loadStaging()
+        }}
+      />
+    )}
+    </>
   )
 }
 

@@ -51,14 +51,36 @@ export type InventoryTx = Parameters<Parameters<typeof db.transaction>[0]>[0]
 /** 补货阈值兜底值（inventory_settings 无行时使用；总览页可配置） */
 export const DEFAULT_RESTOCK_THRESHOLD_DAYS = 14
 
-/** 补货阈值（inventory_settings 按企业读；无行回落默认值。总览/预警/分析共用） */
-export async function getRestockThresholdDays(enterpriseId: string): Promise<number> {
+/** 滞销判定兜底值：近 30 天销量 ≤ 0 件（与旧口径「有数据且加权日销 0」等价） */
+export const DEFAULT_STAGNANT_DAYS = 30
+export const DEFAULT_STAGNANT_MAX_QTY = 0
+
+/** 状态判定配置（inventory_settings 按企业读；无行回落默认值。总览/预警/分析/补货共用） */
+export type InventoryStatusConfig = {
+  /** 补货阈值（天） */
+  thresholdDays: number
+  /** 滞销判定天数 N（近 N 天窗口） */
+  stagnantDays: number
+  /** 滞销判定销量上限（件）：窗口合计 ≤ 此值判滞销 */
+  stagnantMaxQty: number
+}
+
+/** 状态判定三件套（一次查询带回补货阈值 + 滞销判定天数/上限；无行回落默认值） */
+export async function getInventoryStatusConfig(enterpriseId: string): Promise<InventoryStatusConfig> {
   const [row] = await db
-    .select({ days: inventorySettings.restockThresholdDays })
+    .select({
+      days: inventorySettings.restockThresholdDays,
+      stagnantDays: inventorySettings.stagnantDays,
+      stagnantMaxQty: inventorySettings.stagnantMaxQty,
+    })
     .from(inventorySettings)
     .where(eq(inventorySettings.enterpriseId, enterpriseId))
     .limit(1)
-  return row?.days ?? DEFAULT_RESTOCK_THRESHOLD_DAYS
+  return {
+    thresholdDays: row?.days ?? DEFAULT_RESTOCK_THRESHOLD_DAYS,
+    stagnantDays: row?.stagnantDays ?? DEFAULT_STAGNANT_DAYS,
+    stagnantMaxQty: row?.stagnantMaxQty ?? DEFAULT_STAGNANT_MAX_QTY,
+  }
 }
 
 /**
@@ -79,6 +101,8 @@ export type DailySalesLoad = {
   /** 近 7/30 天内有数据的天集合（求均用，多店不虚增） */
   days7Set: Set<string>
   days30Set: Set<string>
+  /** 近 stagnantDays 天销量合计（滞销判定窗，天数企业级可配；含今日） */
+  sumStagnantMap: Map<string, number>
 }
 
 /** 北京日界日期串回退 n 天（YYYY-MM-DD 字符串日期直接构造） */
@@ -90,19 +114,32 @@ function bjDayMinus(dayStr: string, days: number): string {
 
 /**
  * 销速底座（数据源 = temu_sales_overview，productSn 按归一化 key 聚合）：
- * 近 7 天与近 30 天两窗合计 + 全局有数据天集。企业无店铺时返回空集合（=无销速）。
- * 窗口端点按北京日界精确构造（7/30 天窗含今日：bjToday−6 / bjToday−29），
+ * 近 7 天与近 30 天两窗合计 + 全局有数据天集 + 滞销判定窗（stagnantDays 天，
+ * 企业级可配）。企业无店铺时返回空集合（=无销速）。
+ * 窗口端点按北京日界精确构造（N 天窗含今日：bjToday−(N−1)），
  * 与 capturedDay（北京时间数据日）同口径，不随数据库会话时区漂移。
  */
-export async function loadDailySalesBySn(enterpriseId: string): Promise<DailySalesLoad> {
+export async function loadDailySalesBySn(
+  enterpriseId: string,
+  stagnantDays: number = DEFAULT_STAGNANT_DAYS,
+): Promise<DailySalesLoad> {
   const since7 = bjDayMinus(temuDayStr(), 6)
   const since30 = bjDayMinus(temuDayStr(), 29)
+  const sinceStagnant = bjDayMinus(temuDayStr(), Math.max(1, stagnantDays) - 1)
+  // 查询窗取三者最早，一次查询内存聚三窗（不随窗口配置增加查询次数）
+  const since = sinceStagnant < since30 ? sinceStagnant : since30
   const storeRows = await db
     .select({ id: temuStores.id })
     .from(temuStores)
     .where(eq(temuStores.enterpriseId, enterpriseId))
   if (storeRows.length === 0) {
-    return { sum7Map: new Map(), sum30Map: new Map(), days7Set: new Set(), days30Set: new Set() }
+    return {
+      sum7Map: new Map(),
+      sum30Map: new Map(),
+      days7Set: new Set(),
+      days30Set: new Set(),
+      sumStagnantMap: new Map(),
+    }
   }
   const rows = await db
     .select({
@@ -114,7 +151,7 @@ export async function loadDailySalesBySn(enterpriseId: string): Promise<DailySal
     .where(
       and(
         inArray(temuSalesOverviews.storeId, storeRows.map((s) => s.id)),
-        gte(temuSalesOverviews.capturedDay, since30),
+        gte(temuSalesOverviews.capturedDay, since),
         sql`${temuSalesOverviews.productSn} is not null`,
       ),
     )
@@ -124,6 +161,7 @@ export async function loadDailySalesBySn(enterpriseId: string): Promise<DailySal
   const sum30Map = new Map<string, number>()
   const days7Set = new Set<string>()
   const days30Set = new Set<string>()
+  const sumStagnantMap = new Map<string, number>()
   for (const r of rows) {
     const key = normalizeSn(r.productSn!)
     const day = String(r.capturedDay)
@@ -135,8 +173,11 @@ export async function loadDailySalesBySn(enterpriseId: string): Promise<DailySal
       sum30Map.set(key, (sum30Map.get(key) ?? 0) + r.qty)
       days30Set.add(day)
     }
+    if (day >= sinceStagnant) {
+      sumStagnantMap.set(key, (sumStagnantMap.get(key) ?? 0) + r.qty)
+    }
   }
-  return { sum7Map, sum30Map, days7Set, days30Set }
+  return { sum7Map, sum30Map, days7Set, days30Set, sumStagnantMap }
 }
 
 /**
@@ -154,10 +195,10 @@ export function blendedDailySales(load: DailySalesLoad, productCode: string): nu
   return Math.round(rate * 10) / 10
 }
 
-/** 有销速数据（30 天内存在销售行）。滞销口径=有数据但加权日销 0；
- *  无数据（未铺货/新品）不算滞销，保持正常态。 */
-export function hasSalesDataOf(load: DailySalesLoad, productCode: string): boolean {
-  return load.sum30Map.has(normalizeSn(productCode))
+/** 滞销判定窗销量（近 stagnantDays 天合计；null=窗口内无销售行=未铺货/新品，
+ *  不判滞销保持正常态）。窗口合计 ≤ 上限即滞销（上限 0=零销量，默认口径）。 */
+export function stagnantWindowQtyOf(load: DailySalesLoad, productCode: string): number | null {
+  return load.sumStagnantMap.get(normalizeSn(productCode)) ?? null
 }
 
 /**
@@ -221,9 +262,9 @@ export type StockStatus =
 /**
  * 六态推导（可售天数 = (仓库库存+TEMU净库存+在产余量) ÷ 加权日销）：
  * - 停止生产分支优先：库存0=停产（discontinued）、有库存=清仓（clearance）
- * - 持续生产：库存0=缺货；日销>0 且 可售天数<阈值=补货（restock）；
- *   有销量数据但日销=0（近30天零销量）且有库存=滞销（stagnant）；
- *   无销速数据（未铺货/新品）=正常
+ * - 持续生产：库存0=缺货；滞销判定窗（企业级可配 N 天）有销售行且合计 ≤ 上限
+ *   =滞销（stagnant，先于补货/正常判定——滞销货不需要补货警示）；
+ *   日销>0 且 可售天数<阈值=补货（restock）；其余（含无销速数据未铺货/新品）=正常
  */
 export function deriveStockStatus(args: {
   productionState: "active" | "stopped"
@@ -232,8 +273,10 @@ export function deriveStockStatus(args: {
   temuNetStock: number
   producingQty: number
   dailySales: number
-  /** 30 天内是否有销售行（滞销判定=有数据但零销量；无数据不算滞销） */
-  hasSalesData: boolean
+  /** 滞销判定窗销量合计（近 N 天；null=窗口内无销售行，不判滞销） */
+  stagnantWindowQty: number | null
+  /** 滞销判定销量上限（件）：窗口合计 ≤ 此值判滞销 */
+  stagnantMaxQty: number
   thresholdDays: number
 }): { status: StockStatus; availableDays: number | null } {
   const availableDays =
@@ -246,10 +289,14 @@ export function deriveStockStatus(args: {
     return { status: args.totalQty <= 0 ? "discontinued" : "clearance", availableDays }
   }
   if (args.totalQty <= 0) return { status: "out_of_stock", availableDays }
+  // 滞销窗口径优先于补货/正常：窗口销量 ≤ 上限即滞销（滞销货不需要补货警示）
+  if (args.stagnantWindowQty != null && args.stagnantWindowQty <= args.stagnantMaxQty) {
+    return { status: "stagnant", availableDays }
+  }
   if (args.dailySales > 0) {
     return { status: availableDays! < args.thresholdDays ? "restock" : "normal", availableDays }
   }
-  return { status: args.hasSalesData ? "stagnant" : "normal", availableDays }
+  return { status: "normal", availableDays }
 }
 
 export type MovementType = (typeof inventoryMovementTypeEnum.enumValues)[number]

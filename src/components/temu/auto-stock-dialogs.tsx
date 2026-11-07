@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { Filter, Loader2, Send, Truck, Zap } from "lucide-react"
+import { CircleAlert, CircleCheck, Filter, Loader2, Send, Truck, Zap } from "lucide-react"
 import {
   TableBody,
   TableCell,
@@ -58,10 +58,10 @@ import { temuImageSrc } from "@/lib/temu/image"
  * 自动操作双弹窗（备货 Tab 工具栏「自动操作」入口）：
  * - AutoApplyDialog 自动申报备货：在售链接按近7日销量降序（仅本地库存>0 入列）→
  *   大数值探测官方上限（错误文案解析）回填申报量并自动勾选 → 手改（≤上限，0 锁定）→
- *   筛选（上限<X 取消勾选）→ 批量申报（仅勾选行，状态列逐行结果）
+ *   筛选（上限<X 取消勾选）→ 批量申报（仅勾选行，逐块进度+可中止，状态列圆形图标逐行结果）
  * - AutoJoinDialog 批量加入发货：可加入发货台的备货单（已接单+官方可加入标记+常规备货+
- *   本地库存>0，默认全选）→ 一键加入发货台（2026-11-05 口径：不再自动创建发货单——
- *   发货数/包裹/发货仓库在发货台创建视图里可控）→ 成功后跳转「发货」页·发货台
+ *   本地库存>0，默认全选）→ 一键加入发货台（逐块进度+可中止；2026-11-05 口径：不再
+ *   自动创建发货单——发货数/包裹/发货仓库在发货台创建视图里可控）→ 全部完成后跳转「发货」页·发货台
  * 两者均支持全部店铺视图：行级携带店铺归属，写操作按 storeId 分组逐店调用。
  */
 
@@ -122,23 +122,27 @@ function SelectAllCheckbox({
   )
 }
 
-/** 行级状态徽章：成功（悬停发货单号/无）/ 失败（悬停官方错误原文，标识用 SKC ID 不用商品名） */
-function StatusBadgeCell({
+/** 行级状态图标（圆形图标口径，同 EmptyHint 一族）：处理中（旋转加载）/
+ *  成功（CircleCheck，悬停发货单号）/ 失败（CircleAlert，悬停官方错误原文，
+ *  标识用 SKC ID / 子单号不用商品名） */
+function StatusIconCell({
   status,
   rowKey,
+  processing,
 }: {
   status: { ok: boolean; deliveryOrderSn?: string; error?: string } | undefined
   rowKey: string
+  /** 属于当前正在提交的块（旋转加载图标，逐块聚焦） */
+  processing?: boolean
 }) {
+  if (processing) return <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="处理中" />
   if (!status) return <span className="text-muted-foreground">—</span>
   if (status.ok)
     return (
       <TooltipProvider>
         <Tooltip>
           <TooltipTrigger className="cursor-default">
-            <Badge className="rounded-[4px] bg-emerald-500/15 px-1 text-[10px] text-emerald-700 dark:text-emerald-400">
-              成功
-            </Badge>
+            <CircleCheck className="size-3.5 text-emerald-600 dark:text-emerald-400" />
           </TooltipTrigger>
           {status.deliveryOrderSn && (
             <TooltipContent>发货单 {status.deliveryOrderSn}</TooltipContent>
@@ -150,9 +154,7 @@ function StatusBadgeCell({
     <TooltipProvider>
       <Tooltip>
         <TooltipTrigger className="cursor-default">
-          <Badge className="rounded-[4px] bg-red-500/15 px-1 text-[10px] text-red-700 dark:text-red-400">
-            失败
-          </Badge>
+          <CircleAlert className="size-3.5 text-red-600 dark:text-red-400" />
         </TooltipTrigger>
         <TooltipContent className="max-w-72 break-all">
           {rowKey}：{status.error ?? "未知原因"}
@@ -210,8 +212,11 @@ export function AutoApplyDialog({
   const [filterValue, setFilterValue] = React.useState("")
   const [applying, startApplying] = React.useTransition()
   const [confirming, setConfirming] = React.useState(false)
-  /** 中止标记：关闭弹窗/点「中止」后不再继续逐链接探测 */
+  /** 中止标记：关闭弹窗/点「中止」后不再继续逐链接探测或后续申报块 */
   const abortedRef = React.useRef(false)
+  /** 批量申报进度（按行计）与当前正在提交块内的行键（行高亮 + 状态列旋转图标） */
+  const [applyProgress, setApplyProgress] = React.useState<{ done: number; total: number } | null>(null)
+  const [processingSkcs, setProcessingSkcs] = React.useState<Set<string>>(new Set())
 
   React.useEffect(() => {
     abortedRef.current = false
@@ -394,7 +399,8 @@ export function AutoApplyDialog({
   const applicable = visibleRows.filter((r) => selected.has(r.productSkcId) && qtyState(r)?.valid)
 
   const runApply = () => {
-    // 按店铺分组（全部店铺视图跨店合并）→ 每店 ≤20/块串行；逐行结果写状态列
+    // 按店铺分组（全部店铺视图跨店合并）→ 每店 ≤5/块串行（块小让逐块聚焦可见；服务端
+    // 仍逐项串行调官方 apply，官方调用总次数不变）；逐块结果写状态列，进度/中止同探测口径
     const groups = new Map<string, Array<{ productSkcId: number; skuIds: string[]; quantity: number }>>()
     for (const row of applicable) {
       const item = {
@@ -406,31 +412,46 @@ export function AutoApplyDialog({
       list.push(item)
       groups.set(row.storeId, list)
     }
+    const total = applicable.length
+    abortedRef.current = false
+    setApplyProgress({ done: 0, total })
     startApplying(async () => {
+      let done = 0
+      let okCount = 0
+      let badCount = 0
+      const merge = (items: TemuStockApplyBatchResult[]) => {
+        setStatusBySkc((prev) => {
+          const n = { ...prev }
+          for (const it of items)
+            n[String(it.productSkcId)] = { ok: it.ok, ...(it.error ? { error: it.error } : {}) }
+          return n
+        })
+        okCount += items.filter((x) => x.ok).length
+        badCount += items.filter((x) => !x.ok).length
+      }
       try {
-        let okCount = 0
-        let badCount = 0
-        const merge = (items: TemuStockApplyBatchResult[]) => {
-          setStatusBySkc((prev) => {
-            const n = { ...prev }
-            for (const it of items)
-              n[String(it.productSkcId)] = { ok: it.ok, ...(it.error ? { error: it.error } : {}) }
-            return n
-          })
-          okCount += items.filter((x) => x.ok).length
-          badCount += items.filter((x) => !x.ok).length
-        }
+        let stopped = false
         for (const [storeId, items] of groups) {
-          for (let i = 0; i < items.length; i += 20) {
-            const r = await batchApplyTemuStockingAction({ store: storeId, items: items.slice(i, i + 20) })
-            if (!r.ok) {
-              toast.error(r.error, { duration: 8000 })
-              continue
+          if (stopped) break
+          for (let i = 0; i < items.length; i += 5) {
+            if (abortedRef.current) {
+              stopped = true
+              break
             }
-            merge(r.results)
+            const chunk = items.slice(i, i + 5)
+            setProcessingSkcs(new Set(chunk.map((c) => String(c.productSkcId))))
+            const r = await batchApplyTemuStockingAction({ store: storeId, items: chunk })
+            if (r.ok) merge(r.results)
+            else toast.error(r.error, { duration: 8000 })
+            done += chunk.length
+            setApplyProgress({ done, total })
           }
         }
-        if (okCount + badCount > 0) {
+        if (stopped) {
+          // 中止：已提交块不回滚，剩余行停留未处理，留在弹窗看结果
+          if (okCount > 0) onApplied()
+          toast.warning(`已中止申报：完成 ${done} / 共 ${total}，剩余 ${total - done} 行未提交`, { duration: 6000 })
+        } else if (okCount + badCount > 0) {
           if (badCount === 0) toast.success(`已申报 ${okCount} 个链接的备货`)
           else toast.warning(`申报完成：${okCount} 成功 / ${badCount} 失败`, { duration: 8000 })
           if (okCount > 0) onApplied()
@@ -438,6 +459,9 @@ export function AutoApplyDialog({
       } catch {
         // 传输层失败（网络错/请求超限）兜底：流程走完让 applying 复位，不再卡死/未捕获
         toast.error("网络异常，操作未完成，请稍后重试", { duration: 6000 })
+      } finally {
+        setProcessingSkcs(new Set())
+        setApplyProgress(null)
       }
     })
   }
@@ -454,7 +478,7 @@ export function AutoApplyDialog({
         if (!v && busy) {
           // 探测中（可能触发官方创建+回滚）/申报中拦截关闭，避免后台继续调用
           details.cancel()
-          toast.warning(probing ? "探测执行中，请先「中止」或等待完成" : "批量申报执行中，请等待完成")
+          toast.warning(probing ? "探测执行中，请先「中止」或等待完成" : "批量申报执行中，请先「中止」或等待完成")
           return
         }
         if (!v) onClose()
@@ -493,7 +517,7 @@ export function AutoApplyDialog({
             </>
           ) : (
             <>
-              <Button size="sm" className="h-8 text-xs" disabled={loading || visibleRows.length === 0} onClick={probeAll}>
+              <Button size="sm" className="h-8 text-xs" disabled={busy || loading || visibleRows.length === 0} onClick={probeAll}>
                 <Zap className="size-4" />
                 获取可申报量（{visibleRows.length}）
               </Button>
@@ -551,7 +575,12 @@ export function AutoApplyDialog({
                 const over = qs != null && !qs.valid
                 const locked = !lim || lim.max == null || lim.max <= 0
                 return (
-                  <TableRow key={r.productSkcId} className={i === cursor ? "bg-primary/5" : undefined}>
+                  <TableRow
+                    key={r.productSkcId}
+                    className={
+                      i === cursor || processingSkcs.has(r.productSkcId) ? "bg-primary/5" : undefined
+                    }
+                  >
                     <TableCell>
                       <Checkbox
                         checked={selected.has(r.productSkcId)}
@@ -615,7 +644,22 @@ export function AutoApplyDialog({
                               </Tooltip>
                             </TooltipProvider>
                           )
-                        if (lim.max == null) return <span className="text-amber-600 dark:text-amber-400">?</span>
+                        if (lim.max == null)
+                          return (
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger
+                                  className="cursor-default text-amber-600 dark:text-amber-400"
+                                  aria-label="未能解析上限"
+                                >
+                                  <CircleAlert className="size-3.5" />
+                                </TooltipTrigger>
+                                <TooltipContent className="text-xs">
+                                  官方错误文案未能解析出该 SKU 的可申报上限，可重新探测
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          )
                         return (
                           <TooltipProvider>
                             <Tooltip>
@@ -645,7 +689,11 @@ export function AutoApplyDialog({
                       />
                     </TableCell>
                     <TableCell>
-                      <StatusBadgeCell status={statusBySkc[r.productSkcId]} rowKey={`SKC ${r.productSkcId}`} />
+                      <StatusIconCell
+                        status={statusBySkc[r.productSkcId]}
+                        rowKey={`SKC ${r.productSkcId}`}
+                        processing={processingSkcs.has(r.productSkcId)}
+                      />
                     </TableCell>
                     {!store && (
                       <TableCell className="max-w-24 truncate text-xs">{r.storeName || <EmptyHint />}</TableCell>
@@ -668,14 +716,31 @@ export function AutoApplyDialog({
           <Button variant="outline" size="sm" onClick={onClose} disabled={busy}>
             关闭
           </Button>
-          <Button
-            size="sm"
-            disabled={busy || applicable.length === 0}
-            onClick={() => setConfirming(true)}
-          >
-            {applying ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-            批量申报（{applicable.length}）
-          </Button>
+          {applying ? (
+            // 批量申报执行中：同「获取可申报量」探测口径——进度条 + done/total + 中止
+            <>
+              <Progress
+                value={applyProgress && applyProgress.total > 0 ? Math.round((applyProgress.done / applyProgress.total) * 100) : 0}
+                aria-label="申报进度"
+                className="min-w-24 max-w-40"
+              />
+              <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                {applyProgress ? `${applyProgress.done}/${applyProgress.total}` : ""}
+              </span>
+              <Button variant="outline" size="sm" onClick={() => (abortedRef.current = true)}>
+                中止
+              </Button>
+            </>
+          ) : (
+            <Button
+              size="sm"
+              disabled={busy || applicable.length === 0}
+              onClick={() => setConfirming(true)}
+            >
+              <Send className="size-4" />
+              批量申报（{applicable.length}）
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -753,6 +818,11 @@ export function AutoJoinDialog({
   const [statusBySn, setStatusBySn] = React.useState<Record<string, { ok: boolean; deliveryOrderSn?: string; error?: string }>>({})
   const [applying, startApplying] = React.useTransition()
   const [confirming, setConfirming] = React.useState(false)
+  /** 批量加入进度（按单计）与当前正在提交块内的子单号（行高亮 + 状态列旋转图标） */
+  const [applyProgress, setApplyProgress] = React.useState<{ done: number; total: number } | null>(null)
+  const [processingSns, setProcessingSns] = React.useState<Set<string>>(new Set())
+  /** 中止标记：点「中止」后不再继续后续块（块间生效，已提交块不回滚） */
+  const abortedRef = React.useRef(false)
 
   React.useEffect(() => {
     let cancelled = false
@@ -793,6 +863,7 @@ export function AutoJoinDialog({
     })()
     return () => {
       cancelled = true
+      abortedRef.current = true
     }
   }, [store])
 
@@ -824,20 +895,32 @@ export function AutoJoinDialog({
   const joinable = rows.filter((r) => selected.has(r.subPurchaseOrderSn))
 
   const runJoin = () => {
-    // 按店铺分组 → 每店 ≤50/块串行加入发货台（官方 staging.add 上限 50）
+    // 按店铺分组 → 每店 ≤20/块串行加入发货台（官方 staging.add 单次上限 50，取 20
+    // 让逐块聚焦可见）；进度/中止同申报弹窗口径，逐块结果写状态列
     const groups = new Map<string, string[]>()
     for (const r of joinable) {
       const list = groups.get(r.storeId) ?? []
       list.push(r.subPurchaseOrderSn)
       groups.set(r.storeId, list)
     }
+    const total = joinable.length
+    abortedRef.current = false
+    setApplyProgress({ done: 0, total })
     startApplying(async () => {
+      let done = 0
+      let okCount = 0
+      let badCount = 0
       try {
-        let okCount = 0
-        let badCount = 0
+        let stopped = false
         for (const [storeId, sns] of groups) {
-          for (let i = 0; i < sns.length; i += 50) {
-            const chunk = sns.slice(i, i + 50)
+          if (stopped) break
+          for (let i = 0; i < sns.length; i += 20) {
+            if (abortedRef.current) {
+              stopped = true
+              break
+            }
+            const chunk = sns.slice(i, i + 20)
+            setProcessingSns(new Set(chunk))
             const r = await addShipStagingAction({ store: storeId, subPurchaseOrderSns: chunk })
             if (!r.ok) {
               toast.error(r.error, { duration: 8000 })
@@ -847,19 +930,25 @@ export function AutoJoinDialog({
                 return n
               })
               badCount += chunk.length
-              continue
+            } else {
+              setStatusBySn((prev) => {
+                const n = { ...prev }
+                for (const sn of chunk) n[sn] = { ok: r.joined.includes(sn) }
+                for (const e of r.errors) n[e.sn] = { ok: false, error: e.reason }
+                return n
+              })
+              okCount += r.joined.length
+              badCount += r.errors.length
             }
-            setStatusBySn((prev) => {
-              const n = { ...prev }
-              for (const sn of chunk) n[sn] = { ok: r.joined.includes(sn) }
-              for (const e of r.errors) n[e.sn] = { ok: false, error: e.reason }
-              return n
-            })
-            okCount += r.joined.length
-            badCount += r.errors.length
+            done += chunk.length
+            setApplyProgress({ done, total })
           }
         }
-        if (okCount + badCount > 0) {
+        if (stopped) {
+          // 中止：已提交块不回滚，剩余单停留未处理，留在弹窗看结果（不自动跳发货页）
+          if (okCount > 0) onCreated()
+          toast.warning(`已中止加入：完成 ${done} / 共 ${total}，剩余 ${total - done} 单未提交`, { duration: 6000 })
+        } else if (okCount + badCount > 0) {
           if (badCount === 0) toast.success(`已加入发货台 ${okCount} 单，请在发货台创建发货单`)
           else toast.warning(`加入完成：${okCount} 成功 / ${badCount} 失败（状态列悬停看原因）`, { duration: 8000 })
           if (okCount > 0) {
@@ -874,6 +963,9 @@ export function AutoJoinDialog({
       } catch {
         // 传输层失败（网络错/请求超限）兜底：流程走完让 applying 复位，不再卡死/未捕获
         toast.error("网络异常，操作未完成，请稍后重试", { duration: 6000 })
+      } finally {
+        setProcessingSns(new Set())
+        setApplyProgress(null)
       }
     })
   }
@@ -888,7 +980,7 @@ export function AutoJoinDialog({
       onOpenChange={(v, details) => {
         if (!v && applying) {
           details.cancel()
-          toast.warning("批量加入执行中，请等待完成")
+          toast.warning("批量加入执行中，请先「中止」或等待完成")
           return
         }
         if (!v) onClose()
@@ -957,7 +1049,10 @@ export function AutoJoinDialog({
                 const snOrders = rows.filter((x) => x.productSn === r.productSn).length
                 const snPending = invMap[r.productSn!]?.pendingUnpacked ?? 0
                 return (
-                  <TableRow key={r.subPurchaseOrderSn}>
+                  <TableRow
+                    key={r.subPurchaseOrderSn}
+                    className={processingSns.has(r.subPurchaseOrderSn) ? "bg-primary/5" : undefined}
+                  >
                     <TableCell>
                       <Checkbox
                         checked={selected.has(r.subPurchaseOrderSn)}
@@ -1017,7 +1112,11 @@ export function AutoJoinDialog({
                       )}
                     </TableCell>
                     <TableCell>
-                      <StatusBadgeCell status={statusBySn[r.subPurchaseOrderSn]} rowKey={r.subPurchaseOrderSn} />
+                      <StatusIconCell
+                        status={statusBySn[r.subPurchaseOrderSn]}
+                        rowKey={r.subPurchaseOrderSn}
+                        processing={processingSns.has(r.subPurchaseOrderSn)}
+                      />
                     </TableCell>
                     {!store && (
                       <TableCell className="max-w-24 truncate text-xs">{r.storeName || <EmptyHint />}</TableCell>
@@ -1042,10 +1141,27 @@ export function AutoJoinDialog({
           <Button variant="outline" size="sm" onClick={onClose} disabled={applying}>
             关闭
           </Button>
-          <Button size="sm" disabled={applying || joinable.length === 0} onClick={() => setConfirming(true)}>
-            {applying ? <Loader2 className="size-4 animate-spin" /> : <Truck className="size-4" />}
-            批量加入（{joinable.length}）
-          </Button>
+          {applying ? (
+            // 批量加入执行中：同申报弹窗/探测口径——进度条 + done/total + 中止
+            <>
+              <Progress
+                value={applyProgress && applyProgress.total > 0 ? Math.round((applyProgress.done / applyProgress.total) * 100) : 0}
+                aria-label="加入进度"
+                className="min-w-24 max-w-40"
+              />
+              <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                {applyProgress ? `${applyProgress.done}/${applyProgress.total}` : ""}
+              </span>
+              <Button variant="outline" size="sm" onClick={() => (abortedRef.current = true)}>
+                中止
+              </Button>
+            </>
+          ) : (
+            <Button size="sm" disabled={joinable.length === 0} onClick={() => setConfirming(true)}>
+              <Truck className="size-4" />
+              批量加入（{joinable.length}）
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

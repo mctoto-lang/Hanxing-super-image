@@ -24,14 +24,14 @@ import {
   applyMovements,
   blendedDailySales,
   getMainWarehouseId,
-  getRestockThresholdDays,
-  hasSalesDataOf,
+  getInventoryStatusConfig,
   InsufficientStockError,
   loadDailySalesBySn,
   loadTemuNetStockBySn,
   deriveStockStatus,
   normalizeSn,
   requireInventory,
+  stagnantWindowQtyOf,
   type MovementType,
   type StockStatus,
 } from "@/server/services/inventory-core"
@@ -256,16 +256,17 @@ export async function getInventoryOverviewAction(input: unknown = {}) {
     products.length = 0
     products.push(...filtered)
   }
+  const cfg = await getInventoryStatusConfig(g.enterpriseId)
   if (products.length === 0) {
     return {
       ok: true as const,
       rows: [] as InventoryOverviewRow[],
-      thresholdDays: await getRestockThresholdDays(g.enterpriseId),
+      thresholdDays: cfg.thresholdDays,
     }
   }
 
   const ids = products.map((p) => p.id)
-  const [stockRows, producingRows, sales, temuNet, thresholdDays] = await Promise.all([
+  const [stockRows, producingRows, sales, temuNet] = await Promise.all([
     db
       .select({
         productId: inventoryStocks.productId,
@@ -297,9 +298,8 @@ export async function getInventoryOverviewAction(input: unknown = {}) {
         ),
       )
       .groupBy(inventoryProductionOrders.productId),
-    loadDailySalesBySn(g.enterpriseId),
+    loadDailySalesBySn(g.enterpriseId, cfg.stagnantDays),
     loadTemuNetStockBySn(g.enterpriseId),
-    getRestockThresholdDays(g.enterpriseId),
   ])
 
   const stockMap = new Map(stockRows.map((r) => [r.productId, r.total]))
@@ -317,8 +317,9 @@ export async function getInventoryOverviewAction(input: unknown = {}) {
       temuNetStock: temuStock,
       producingQty,
       dailySales,
-      hasSalesData: hasSalesDataOf(sales, p.productCode),
-      thresholdDays,
+      stagnantWindowQty: stagnantWindowQtyOf(sales, p.productCode),
+      stagnantMaxQty: cfg.stagnantMaxQty,
+      thresholdDays: cfg.thresholdDays,
     })
     return {
       id: p.id,
@@ -343,32 +344,56 @@ export async function getInventoryOverviewAction(input: unknown = {}) {
   })
 
   const filtered = q.data.status ? rows.filter((r) => r.status === q.data.status) : rows
-  return { ok: true as const, rows: filtered, thresholdDays }
+  return { ok: true as const, rows: filtered, thresholdDays: cfg.thresholdDays }
 }
 
 // ---------- 库存设置（补货阈值统一配置） ----------
 
-/** 读库存设置（无行回落默认；thresholdDays 供状态徽章 Tooltip/分析页副文案） */
+/** 读库存设置（无行回落默认；thresholdDays 供状态徽章 Tooltip/分析页副文案，
+ *  stagnantDays/stagnantMaxQty 供总览阈值弹窗回显） */
 export async function getInventorySettingsAction() {
   const g = await requireInventory()
   if (!g.ok) return { ok: false as const, error: g.error }
-  const thresholdDays = await getRestockThresholdDays(g.enterpriseId)
-  return { ok: true as const, thresholdDays }
+  const cfg = await getInventoryStatusConfig(g.enterpriseId)
+  return { ok: true as const, ...cfg }
 }
 
-/** 更新补货阈值（总览页配置弹窗；upsert 每企业一行） */
+/** 更新库存设置（总览页阈值弹窗；upsert 每企业一行。滞销两项可缺省=保持现值） */
 export async function updateRestockThresholdAction(input: unknown) {
   const g = await requireInventory()
   if (!g.ok) return { ok: false as const, error: g.error }
-  const days = Number((input as { thresholdDays?: unknown })?.thresholdDays)
+  const raw = input as {
+    thresholdDays?: unknown
+    stagnantDays?: unknown
+    stagnantMaxQty?: unknown
+  }
+  const days = Number(raw?.thresholdDays)
   if (!Number.isInteger(days) || days < 1 || days > 365) {
     return { ok: false as const, error: "补货阈值须为 1-365 的整数（天）" }
+  }
+  // 滞销两项可缺省：读现值合并（未配置行回落默认 30/0）
+  const cfg = await getInventoryStatusConfig(g.enterpriseId)
+  let stagnantDays = cfg.stagnantDays
+  if (raw?.stagnantDays != null) {
+    stagnantDays = Number(raw.stagnantDays)
+    if (!Number.isInteger(stagnantDays) || stagnantDays < 1 || stagnantDays > 365) {
+      return { ok: false as const, error: "滞销判定天数须为 1-365 的整数（天）" }
+    }
+  }
+  let stagnantMaxQty = cfg.stagnantMaxQty
+  if (raw?.stagnantMaxQty != null) {
+    stagnantMaxQty = Number(raw.stagnantMaxQty)
+    if (!Number.isInteger(stagnantMaxQty) || stagnantMaxQty < 0 || stagnantMaxQty > 100000) {
+      return { ok: false as const, error: "滞销判定销量上限须为 0-100000 的整数（件）" }
+    }
   }
   await db
     .insert(inventorySettings)
     .values({
       enterpriseId: g.enterpriseId,
       restockThresholdDays: days,
+      stagnantDays,
+      stagnantMaxQty,
       updatedBy: g.ctx.user.id,
       updatedAt: new Date(),
     })
@@ -376,11 +401,13 @@ export async function updateRestockThresholdAction(input: unknown) {
       target: inventorySettings.enterpriseId,
       set: {
         restockThresholdDays: days,
+        stagnantDays,
+        stagnantMaxQty,
         updatedBy: g.ctx.user.id,
         updatedAt: new Date(),
       },
     })
-  return { ok: true as const, thresholdDays: days }
+  return { ok: true as const, thresholdDays: days, stagnantDays, stagnantMaxQty }
 }
 
 // ---------- 手动出入库（单仓制固定主仓） ----------

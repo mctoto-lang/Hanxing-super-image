@@ -645,6 +645,20 @@
       "when": 1794451200000,
       "tag": "0091_ship_state_auto_manual",
       "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1794537600000,
+      "tag": "0092_inventory_stagnant_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1794624000000,
+      "tag": "0093_temu_logistics_config",
+      "breakpoints": true
     }
   ]
 }

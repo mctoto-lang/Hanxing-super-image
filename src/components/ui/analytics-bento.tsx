@@ -149,10 +149,21 @@ function Tooltip({ mono, apiRef }: { mono: string; apiRef: TipRef }) {
   const [tip, setTip] = React.useState(null as (Tip & { x: number; y: number }) | null);
   const [pos, setPos] = React.useState({ l: 0, t: 0 });
   const box = React.useRef(null as HTMLDivElement | null);
+  const imgRef = React.useRef(null as HTMLImageElement | null);
+  const textRef = React.useRef(null as HTMLDivElement | null);
   React.useEffect(() => {
     apiRef.current = { show: (x, y, t) => setTip({ ...t, x, y }), hide: () => setTip(null) };
     return () => { apiRef.current = null; };
   }, [apiRef]);
+  // 缩略图与右侧文字块等高（正方形）：CSS 的 self-stretch+aspect-square 在 flex 替换元素上
+  // 不回填宽度（实测 2px），改渲染后量文字块高度直接定宽高
+  React.useLayoutEffect(() => {
+    const img = imgRef.current, text = textRef.current;
+    if (!img || !text) return;
+    const h = text.offsetHeight;
+    img.style.width = `${h}px`;
+    img.style.height = `${h}px`;
+  }, [tip]);
   React.useLayoutEffect(() => {
     if (!tip || !box.current) return;
     const r = box.current.getBoundingClientRect();
@@ -173,13 +184,15 @@ function Tooltip({ mono, apiRef }: { mono: string; apiRef: TipRef }) {
           {tip.image && (
             // eslint-disable-next-line @next/next/no-img-element
             <img
+              ref={imgRef}
               src={tip.image}
               alt=""
-              className="size-9 shrink-0 rounded-md border border-border object-cover"
+              // 宽高由上方 layout effect 按右侧文字块高度设定（正方形等高）
+              className="shrink-0 rounded-md border border-border object-cover"
               onError={(e) => { e.currentTarget.style.display = "none"; }}
             />
           )}
-          <div>
+          <div ref={textRef}>
             <div className="mb-1 text-muted-foreground">{tip.title}</div>
             {tip.rows.map((r) => (
               <div key={r.label} className="flex items-center justify-between gap-3">

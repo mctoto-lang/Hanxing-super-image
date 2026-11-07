@@ -90,6 +90,12 @@ function canJoinStage(row: TemuPurchaseOrderRow): boolean {
 const CANCEL_BTN_CLS =
   "h-7 border-red-600/40 text-xs text-red-700 hover:bg-red-600/10 hover:text-red-700 dark:border-red-500/40 dark:text-red-400"
 
+/** 最晚发货是否已超时（epoch 秒/毫秒同 formatDateTime 口径归一后与当前时刻比较；
+ *  未超时=默认前景色（深色主题下白色）/ 已超时=黄） */
+function latestOverdue(ts: number): boolean {
+  return ts > 0 && (ts < 1e12 ? ts * 1000 : ts) < Date.now()
+}
+
 function StatusBadge({ status, label }: { status: number; label: string }) {
   const cls =
     status === 0 || status === 1
@@ -425,11 +431,21 @@ export function TemuPurchasePanel({
                       {!store && (
                         <TableCell className="max-w-24 truncate whitespace-nowrap text-xs">{r.storeName}</TableCell>
                       )}
-                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                        <span className="inline-flex items-center gap-1">
-                          <Clock3 className="size-3" />
-                          {r.expectLatestDeliverTime != null ? fmtTs(r.expectLatestDeliverTime) : <EmptyHint />}
-                        </span>
+                      <TableCell className="whitespace-nowrap text-xs">
+                        {r.expectLatestDeliverTime != null ? (
+                          <span
+                            className={`inline-flex items-center gap-1 ${
+                              cancellable(r) && latestOverdue(r.expectLatestDeliverTime)
+                                ? "text-amber-600 dark:text-amber-400"
+                                : ""
+                            }`}
+                          >
+                            <Clock3 className="size-3" />
+                            {fmtTs(r.expectLatestDeliverTime)}
+                          </span>
+                        ) : (
+                          <EmptyHint />
+                        )}
                       </TableCell>
                       <TableCell>
                         <div className="flex flex-wrap justify-end gap-1">

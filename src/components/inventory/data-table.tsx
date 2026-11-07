@@ -23,6 +23,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { TablePagination } from "@/components/ui/table-pagination"
+import { TableSkeletonRows } from "@/components/temu/table-skeleton"
 
 /**
  * 库存域 Data Table 封装（TanStack Table v8 + shadcn dashboard-01 模板观感）
@@ -61,6 +62,8 @@ interface DataTableProps<TData> {
   initialSorting?: SortingState
   /** 空态内容 */
   empty?: React.ReactNode
+  /** 加载中且无行：显示骨架行（shadcn Skeleton，宽度错落；空态仅在非加载中显示） */
+  loading?: boolean
   /** 行点击 */
   onRowClick?: (row: TData) => void
   pageSize?: number
@@ -78,6 +81,7 @@ export function DataTable<TData>({
   containerClassName,
   initialSorting,
   empty,
+  loading,
   onRowClick,
   pageSize: initialPageSize = 20,
   isRowSelected,
@@ -224,6 +228,8 @@ export function DataTable<TData>({
                   </TableRow>
                 )
               })
+            ) : loading ? (
+              <TableSkeletonRows rows={5} cols={columns.length} />
             ) : (
               <TableRow>
                 <TableCell colSpan={columns.length} className="h-24 text-center">

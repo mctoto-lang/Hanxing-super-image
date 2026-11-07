@@ -78,7 +78,12 @@ const STATUS_OPTIONS: Array<{ value: string; label: string }> = [
 ]
 
 /** 六态徽章 Tooltip 口径文案（可售天数=(仓库+TEMU净+在产)÷加权日销） */
-function statusTip(row: InventoryOverviewRow, thresholdDays: number): string {
+function statusTip(
+  row: InventoryOverviewRow,
+  thresholdDays: number,
+  stagnantDays: number,
+  stagnantMaxQty: number,
+): string {
   const cover = `仓库 ${row.totalQty} + TEMU ${row.temuStock} + 在产 ${row.producingQty}`
   switch (row.status) {
     case "normal":
@@ -88,7 +93,7 @@ function statusTip(row: InventoryOverviewRow, thresholdDays: number): string {
     case "out_of_stock":
       return "仓库库存为 0（持续生产中，等待补货/入库）"
     case "stagnant":
-      return "加权日销为 0（近 30 天零销量），库存滞销待处理"
+      return `近 ${stagnantDays} 天销量 ≤ ${stagnantMaxQty} 件，库存滞销待处理`
     case "discontinued":
       return "停止生产且仓库库存为 0"
     case "clearance":
@@ -122,30 +127,54 @@ export function StockOverviewPanel({
   const [deletePending, startDelete] = React.useTransition()
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set())
   const [batchOpen, setBatchOpen] = React.useState(false)
-  /** 补货阈值（企业级；状态 Tooltip 与补货判定口径共用） */
+  /** 补货阈值 + 滞销判定（企业级；状态 Tooltip 与判定口径共用） */
   const [thresholdDays, setThresholdDays] = React.useState(initialThresholdDays ?? 14)
+  const [stagnantDays, setStagnantDays] = React.useState(30)
+  const [stagnantMaxQty, setStagnantMaxQty] = React.useState(0)
   const [thresholdOpen, setThresholdOpen] = React.useState(false)
   const [thresholdDraft, setThresholdDraft] = React.useState("14")
+  const [stagnantDaysDraft, setStagnantDaysDraft] = React.useState("30")
+  const [stagnantQtyDraft, setStagnantQtyDraft] = React.useState("0")
   const [thresholdPending, startThreshold] = React.useTransition()
 
   React.useEffect(() => {
     void getInventorySettingsAction().then((r) => {
-      if (r.ok) setThresholdDays(r.thresholdDays)
+      if (r.ok) {
+        setThresholdDays(r.thresholdDays)
+        setStagnantDays(r.stagnantDays)
+        setStagnantMaxQty(r.stagnantMaxQty)
+      }
     })
   }, [])
 
   const saveThreshold = () => {
     const days = Number(thresholdDraft)
     if (!Number.isInteger(days) || days < 1 || days > 365) {
-      toast.error("阈值须为 1-365 的整数（天）")
+      toast.error("补货阈值须为 1-365 的整数（天）")
+      return
+    }
+    const sDays = Number(stagnantDaysDraft)
+    if (!Number.isInteger(sDays) || sDays < 1 || sDays > 365) {
+      toast.error("滞销判定天数须为 1-365 的整数（天）")
+      return
+    }
+    const sQty = Number(stagnantQtyDraft)
+    if (!Number.isInteger(sQty) || sQty < 0 || sQty > 100000) {
+      toast.error("滞销判定销量上限须为 0-100000 的整数（件）")
       return
     }
     startThreshold(async () => {
-      const r = await updateRestockThresholdAction({ thresholdDays: days })
+      const r = await updateRestockThresholdAction({
+        thresholdDays: days,
+        stagnantDays: sDays,
+        stagnantMaxQty: sQty,
+      })
       if (r.ok) {
         setThresholdDays(r.thresholdDays)
+        setStagnantDays(r.stagnantDays)
+        setStagnantMaxQty(r.stagnantMaxQty)
         setThresholdOpen(false)
-        toast.success(`补货阈值已更新为 ${r.thresholdDays} 天`)
+        toast.success(`阈值已更新：补货 ${r.thresholdDays} 天 / 滞销近 ${r.stagnantDays} 天 ≤ ${r.stagnantMaxQty} 件`)
         load()
       } else {
         toast.error(r.error)
@@ -314,7 +343,7 @@ export function StockOverviewPanel({
               }
             />
             <TooltipContent side="top" className="max-w-64">
-              {statusTip(row.original, thresholdDays)}
+              {statusTip(row.original, thresholdDays, stagnantDays, stagnantMaxQty)}
             </TooltipContent>
           </Tooltip>
         ),
@@ -462,7 +491,7 @@ export function StockOverviewPanel({
         },
       },
     ],
-    [selectedIds, data, thresholdDays],
+    [selectedIds, data, thresholdDays, stagnantDays, stagnantMaxQty],
   )
 
   return (
@@ -491,6 +520,8 @@ export function StockOverviewPanel({
                   className="h-8"
                   onClick={() => {
                     setThresholdDraft(String(thresholdDays))
+                    setStagnantDaysDraft(String(stagnantDays))
+                    setStagnantQtyDraft(String(stagnantMaxQty))
                     setThresholdOpen(true)
                   }}
                 />
@@ -499,7 +530,9 @@ export function StockOverviewPanel({
               <SlidersHorizontal className="size-3.5" />
               阈值 {thresholdDays} 天
             </TooltipTrigger>
-            <TooltipContent side="top">补货阈值：可售天数低于该值判定为「补货」（点击配置）</TooltipContent>
+            <TooltipContent side="top">
+              补货阈值：可售天数低于该值判定为「补货」；滞销：近 {stagnantDays} 天销量 ≤ {stagnantMaxQty} 件（点击配置）
+            </TooltipContent>
           </Tooltip>
           <FacetedFilter
             title="状态"
@@ -537,6 +570,7 @@ export function StockOverviewPanel({
         initialSorting={[{ id: "productCode", desc: false }]}
         columnDividers
         infinite
+        loading={loading}
         onRowClick={(r) => setDetailId(r.id)}
         isRowSelected={(r) => selectedIds.has(r.id)}
         empty={
@@ -599,25 +633,55 @@ export function StockOverviewPanel({
         open={thresholdOpen}
         onOpenChange={(open) => {
           setThresholdOpen(open)
-          if (open) setThresholdDraft(String(thresholdDays))
+          if (open) {
+            setThresholdDraft(String(thresholdDays))
+            setStagnantDaysDraft(String(stagnantDays))
+            setStagnantQtyDraft(String(stagnantMaxQty))
+          }
         }}
       >
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>补货阈值</DialogTitle>
+            <DialogTitle>阈值配置</DialogTitle>
             <DialogDescription>
-              可售天数 =（仓库库存 + TEMU 净库存 + 在产）÷ 加权日销；低于阈值判定为「补货」状态。企业级统一配置，对所有货号生效。
+              企业级统一配置，对所有货号生效。可售天数 =（仓库库存 + TEMU 净库存 + 在产）÷
+              加权日销，低于补货阈值判定为「补货」；滞销按销量口径：近判定天数内销量 ≤
+              上限（有销量数据但基本不动销），无销量数据（未铺货/新品）不判滞销。
             </DialogDescription>
           </DialogHeader>
-          <div className="flex items-center gap-2">
-            <Input
-              value={thresholdDraft}
-              onChange={(e) => setThresholdDraft(e.target.value)}
-              inputMode="numeric"
-              className="h-8 w-24"
-              aria-label="补货阈值（天）"
-            />
-            <span className="text-sm text-muted-foreground">天</span>
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Input
+                value={thresholdDraft}
+                onChange={(e) => setThresholdDraft(e.target.value)}
+                inputMode="numeric"
+                className="h-8 w-24"
+                aria-label="补货阈值（天）"
+              />
+              <span className="text-sm text-muted-foreground">天 —— 补货阈值（可售天数低于该值判「补货」）</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Input
+                value={stagnantDaysDraft}
+                onChange={(e) => setStagnantDaysDraft(e.target.value)}
+                inputMode="numeric"
+                className="h-8 w-24"
+                aria-label="滞销判定天数（天）"
+              />
+              <span className="text-sm text-muted-foreground">天 —— 滞销判定窗口</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Input
+                value={stagnantQtyDraft}
+                onChange={(e) => setStagnantQtyDraft(e.target.value)}
+                inputMode="numeric"
+                className="h-8 w-24"
+                aria-label="滞销判定销量上限（件）"
+              />
+              <span className="text-sm text-muted-foreground">
+                件 —— 窗口内销量 ≤ 此值判「滞销」（0=零销量）
+              </span>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" size="sm" onClick={() => setThresholdOpen(false)} disabled={thresholdPending}>

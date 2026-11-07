@@ -4,6 +4,7 @@ import * as React from "react"
 import {
   ChevronsUpDown,
   LogOut,
+  Monitor,
   Moon,
   Settings,
   Smile,
@@ -52,7 +53,9 @@ import type { SidebarUser } from "./types"
  * 下拉菜单（自上而下）：
  *   - 表情圆球开关（localStorage 偏好 + 事件总线，右侧显示已开启/已关闭）
  *   - 积分额度（企业用户；右侧闪电 + 个人积分余额，点击直达账户弹窗订阅方案页）
- *   - 深色/浅色模式切换（当前模式名 + 对应日/月图标，点击切换）
+ *   - 外观单项循环：一个菜单项显示当前模式（浅色/深色/跟随系统），点击依次
+ *     浅色→深色→跟随系统循环；跟随系统为默认（右侧标「默认」不打勾，system
+ *     模式自动跟随浏览器 prefers-color-scheme）
  *   - 账户管理（打开账户弹窗：个人主页 / 企业订阅 / 积分额度）、退出登录（调 logoutAction）
  *
  * 企业管理/平台管理入口已迁入主导航分组（sidebar-data.ts）；
@@ -70,7 +73,7 @@ export function NavUser({
   userCredits?: number | null
 }) {
   const { isMobile } = useSidebar()
-  const { resolvedTheme, setTheme } = useTheme()
+  const { theme, setTheme } = useTheme()
   const router = useRouter()
   const [pending, setPending] = React.useState(false)
   const [accountOpen, setAccountOpen] = React.useState(false)
@@ -96,8 +99,11 @@ export function NavUser({
   const showCredits = creditsBalance != null
   const userLow = userCredits != null && userCredits < 50
 
-  function handleToggleTheme() {
-    setTheme(resolvedTheme === "dark" ? "light" : "dark")
+  /** 外观单项循环：浅色 → 深色 → 跟随系统 → 浅色（跟随系统为默认，无存储偏好时生效） */
+  function handleCycleTheme() {
+    const order = ["light", "dark", "system"] as const
+    const current = (theme ?? "system") as (typeof order)[number]
+    setTheme(order[(order.indexOf(current) + 1) % order.length])
   }
 
   async function handleLogout() {
@@ -221,13 +227,12 @@ export function NavUser({
                   </span>
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem onClick={handleToggleTheme}>
-                <span className="relative inline-flex size-4 shrink-0 items-center justify-center [&_svg]:absolute">
-                  <Sun className="size-4 rotate-0 scale-100 transition-transform duration-500 ease-in-out dark:-rotate-90 dark:scale-0" />
-                  <Moon className="size-4 rotate-90 scale-0 transition-transform duration-500 ease-in-out dark:rotate-0 dark:scale-100" />
-                </span>
-                <span className="dark:hidden">浅色模式</span>
-                <span className="hidden dark:inline">深色模式</span>
+              <DropdownMenuItem onClick={handleCycleTheme}>
+                {theme === "light" ? <Sun /> : theme === "system" ? <Monitor /> : <Moon />}
+                {theme === "light" ? "浅色模式" : theme === "system" ? "跟随系统" : "深色模式"}
+                {theme === "system" && (
+                  <span className="ml-auto text-xs text-muted-foreground">默认</span>
+                )}
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => {

@@ -23,6 +23,11 @@ import {
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import { EmptyHint } from "@/components/temu/products-table"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { DataTable, type ColumnDef } from "./data-table"
 import { InvBadge } from "./inv-badge"
 import type { ReplenishAdviceRow } from "@/server/actions/inventory-analysis"
@@ -34,14 +39,17 @@ import { listFactoriesAction } from "@/server/actions/inventory-production"
 
 /**
  * 补货建议子视图（销速单轨，仅「持续生产」货号）：
- * 建议 = max(目标覆盖−现有−在途−TEMU净, 0) → max(MOQ) → 装箱数取整 → 卡上限；
+ * 建议 = max(目标覆盖−现有−生产−TEMU净, 0) → max(MOQ) → 装箱数取整 → 卡上限；
  * 日销为固定加权口径（0.7×近7天均+0.3×近30天均），缓冲天数可调；勾选批量生成生产单。
+ * 「生产」=未完结生产单剩余量（旧文案「在途」）；四个关键列头带悬浮口径说明。
  */
 
 export function ReplenishPanel() {
   const [rows, setRows] = React.useState<ReplenishAdviceRow[]>([])
   const [buffer, setBuffer] = React.useState(7)
   const [loading, startLoad] = React.useTransition()
+  // SSR 首帧无数据：首次加载完成前恒显骨架，避免水合前闪空态文案
+  const [loadedOnce, setLoadedOnce] = React.useState(false)
   const [selected, setSelected] = React.useState<Set<string>>(new Set())
   const [batchOpen, setBatchOpen] = React.useState(false)
   const [factories, setFactories] = React.useState<Array<{ id: string; code: string; name: string }>>([])
@@ -53,6 +61,7 @@ export function ReplenishPanel() {
       const r = await getReplenishmentAdviceAction({ bufferDays: buffer })
       if (r.ok) setRows(r.rows)
       else toast.error(r.error)
+      setLoadedOnce(true)
     })
   }, [buffer])
 
@@ -132,7 +141,14 @@ export function ReplenishPanel() {
       },
       {
         accessorKey: "dailySales",
-        header: "日均销",
+        header: () => (
+          <Tooltip>
+            <TooltipTrigger className="cursor-default">日均销</TooltipTrigger>
+            <TooltipContent className="max-w-64 text-xs">
+              加权日销 = 0.7×近7天日均 + 0.3×近30天日均（TEMU 销量，按货号聚合）
+            </TooltipContent>
+          </Tooltip>
+        ),
         cell: ({ row }) => (
           <span className="tabular-nums">
             {row.original.dailySales > 0 ? row.original.dailySales : <EmptyHint />}
@@ -141,7 +157,15 @@ export function ReplenishPanel() {
       },
       {
         accessorKey: "totalQty",
-        header: "现有/在途",
+        header: () => (
+          <Tooltip>
+            <TooltipTrigger className="cursor-default">现有/生产</TooltipTrigger>
+            <TooltipContent className="max-w-72 text-xs">
+              现有 = 本地仓库库存合计；生产 = 未完结生产单剩余量（数量−已入库−已直发，
+              含待出材料/生产中/工厂已发）
+            </TooltipContent>
+          </Tooltip>
+        ),
         cell: ({ row }) => (
           <span className="tabular-nums">
             {row.original.totalQty}
@@ -151,7 +175,14 @@ export function ReplenishPanel() {
       },
       {
         accessorKey: "targetQty",
-        header: "目标覆盖",
+        header: () => (
+          <Tooltip>
+            <TooltipTrigger className="cursor-default">目标覆盖</TooltipTrigger>
+            <TooltipContent className="max-w-72 text-xs">
+              目标覆盖件数 = ⌈日均销 ×（生产周期 + 缓冲天数）⌉，即从补货到入库期间预计要卖的件数
+            </TooltipContent>
+          </Tooltip>
+        ),
         cell: ({ row }) => (
           <span className="tabular-nums text-muted-foreground">
             {row.original.targetQty ?? <EmptyHint />}
@@ -160,7 +191,14 @@ export function ReplenishPanel() {
       },
       {
         accessorKey: "suggestQty",
-        header: "建议生产",
+        header: () => (
+          <Tooltip>
+            <TooltipTrigger className="cursor-default">建议生产</TooltipTrigger>
+            <TooltipContent className="max-w-72 text-xs">
+              = max(目标覆盖 − 现有 − 生产 − TEMU净库存, MOQ)，按装箱数向上取整并封顶库存上限
+            </TooltipContent>
+          </Tooltip>
+        ),
         cell: ({ row }) => {
           const v = row.original.suggestQty
           return (
@@ -239,6 +277,7 @@ export function ReplenishPanel() {
         containerClassName="min-h-0 flex-1"
         initialSorting={[{ id: "suggestQty", desc: true }]}
         pageSize={50}
+        loading={loading || !loadedOnce}
         empty="暂无补货建议（库存充足或均为停止生产货号）"
       />
 

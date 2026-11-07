@@ -305,13 +305,17 @@ export const inventorySnapshots = pgTable(
   ],
 )
 
-/** 库存企业级设置（每企业一行；补货阈值等统一配置，总览页按钮维护） */
+/** 库存企业级设置（每企业一行；补货阈值/滞销判定等统一配置，总览页按钮维护） */
 export const inventorySettings = pgTable("inventory_settings", {
   enterpriseId: uuid("enterprise_id")
     .primaryKey()
     .references(() => enterprises.id, { onDelete: "cascade" }),
   /** 补货阈值（天）：可售天数 < 此值判定为「补货」状态 */
   restockThresholdDays: integer("restock_threshold_days").default(14).notNull(),
+  /** 滞销判定天数（近 N 天销量 ≤ 上限判滞销） */
+  stagnantDays: integer("stagnant_days").default(30).notNull(),
+  /** 滞销判定销量上限（件） */
+  stagnantMaxQty: integer("stagnant_max_qty").default(0).notNull(),
   updatedBy: uuid("updated_by"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 })
