@@ -7,7 +7,9 @@ import { toImageSrc } from "@/lib/utils"
  * - 转存 URL 走 toImageSrc：COS（*.myqcloud.com）浏览器直连，可按需加数据
  *   万象 imageMogr2 缩放参数（本处调用均为裸 <img>、无 SmartImage 降级，
  *   暂不传 width——桶未开通 CI 时带参会直接裂图；本地 /uploads 原样返回）
- * - kwcdn 外链**不走** /api/image/proxy（不在代理白名单），维持直连现状
+ * - kwcdn 外链返回裸 URL 直连（本函数不进代理）；点击放大走 ImageViewer
+ *   （toImageSrc 转 /api/image/proxy），代理已静态放行 kwcdn.com/*.kwcdn.com
+ *   见 image/proxy/route.ts isAllowedHost
  */
 export function temuImageSrc(
   cosUrl: string | null | undefined,

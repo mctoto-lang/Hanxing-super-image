@@ -37,6 +37,7 @@ import {
   type InventoryOverviewRow,
 } from "@/server/actions/inventory"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { ZoomableImage } from "@/components/ui/zoomable-image"
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import { DataTable, type ColumnDef } from "./data-table"
 import { EmptyHint } from "@/components/temu/products-table"
@@ -126,6 +127,8 @@ export function StockOverviewPanel({
   const [deleteReason, setDeleteReason] = React.useState("")
   const [deletePending, startDelete] = React.useTransition()
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set())
+  /** 编辑/出入库等 load 刷新时保持表格滚动位置（DataTable 消费后自动复位） */
+  const preserveScrollRef = React.useRef(false)
   const [batchOpen, setBatchOpen] = React.useState(false)
   /** 补货阈值 + 滞销判定（企业级；状态 Tooltip 与判定口径共用） */
   const [thresholdDays, setThresholdDays] = React.useState(initialThresholdDays ?? 14)
@@ -185,8 +188,15 @@ export function StockOverviewPanel({
   const load = React.useCallback(() => {
     startLoad(async () => {
       const r = await getInventoryOverviewAction({})
-      if (r.ok) setRows(r.rows)
-      else toast.error(r.error)
+      if (r.ok) {
+        // 置位须紧贴 setRows 而非请求发起时：在途筛选/搜索先行回顶不受污染、
+        // 失败/异常不置位无残留、重叠 load 每次响应各自携带一次置位（DataTable
+        // 消费即复位，最后一次响应同样保持位置）
+        preserveScrollRef.current = true
+        setRows(r.rows)
+      } else {
+        toast.error(r.error)
+      }
     })
   }, [])
 
@@ -248,19 +258,23 @@ export function StockOverviewPanel({
     () => [
       {
         id: "sel",
-        header: () => (
-          <Checkbox
-            checked={data.length > 0 && data.every((r) => selectedIds.has(r.id))}
-            onCheckedChange={() =>
-              setSelectedIds(
-                data.every((r) => selectedIds.has(r.id))
-                  ? new Set()
-                  : new Set(data.map((r) => r.id)),
-              )
-            }
-            aria-label="全选"
-          />
-        ),
+        meta: { align: "center" },
+        header: () => {
+          const all = data.length > 0 && data.every((r) => selectedIds.has(r.id))
+          const some = data.some((r) => selectedIds.has(r.id))
+          return (
+            <Checkbox
+              checked={all}
+              indeterminate={!all && some}
+              // 部分勾选（半选「-」态）或全选时点击 = 取消全部，
+              // aria-label 随状态切换，SR 语义与实际行为一致
+              onCheckedChange={() =>
+                setSelectedIds(all || some ? new Set() : new Set(data.map((r) => r.id)))
+              }
+              aria-label={all || some ? "取消全选" : "全选"}
+            />
+          )
+        },
         enableSorting: false,
         cell: ({ row }) => (
           <span onClick={(e) => e.stopPropagation()}>
@@ -284,10 +298,9 @@ export function StockOverviewPanel({
         enableSorting: false,
         cell: ({ row }) =>
           row.original.imageUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
+            <ZoomableImage
               src={row.original.imageUrl}
-              alt=""
+              alt={`${row.original.productCode} ${row.original.name}`}
               className="size-10 shrink-0 rounded object-cover"
             />
           ) : (
@@ -328,6 +341,7 @@ export function StockOverviewPanel({
         id: "status",
         header: "状态",
         accessorFn: (row) => row.status,
+        meta: { align: "center" },
         cell: ({ row }) => (
           <Tooltip>
             <TooltipTrigger
@@ -356,12 +370,13 @@ export function StockOverviewPanel({
           row.original.availableDays != null ? (
             <span className="tabular-nums">{row.original.availableDays}</span>
           ) : (
-            <EmptyHint />
+            <EmptyHint center />
           ),
       },
       {
         accessorKey: "shipState",
         header: "发货状态",
+        meta: { align: "center" },
         cell: ({ row }) => (
           <InvBadge
             className={SHIP_STATE_BADGE[row.original.shipState]}
@@ -374,6 +389,7 @@ export function StockOverviewPanel({
       {
         accessorKey: "productionState",
         header: "生产状态",
+        meta: { align: "center" },
         cell: ({ row }) => (
           <InvBadge
             className={PRODUCTION_STATE_BADGE[row.original.productionState]}
@@ -390,7 +406,7 @@ export function StockOverviewPanel({
           row.original.cartonQty != null ? (
             <span className="tabular-nums">{row.original.cartonQty}</span>
           ) : (
-            <EmptyHint />
+            <EmptyHint center />
           ),
       },
       {
@@ -400,7 +416,7 @@ export function StockOverviewPanel({
           row.original.moq != null ? (
             <span className="tabular-nums">{row.original.moq}</span>
           ) : (
-            <EmptyHint />
+            <EmptyHint center />
           ),
       },
       {
@@ -410,7 +426,7 @@ export function StockOverviewPanel({
           row.original.leadTimeDays != null ? (
             <span className="tabular-nums">{row.original.leadTimeDays}</span>
           ) : (
-            <EmptyHint />
+            <EmptyHint center />
           ),
       },
       {
@@ -570,6 +586,8 @@ export function StockOverviewPanel({
         initialSorting={[{ id: "productCode", desc: false }]}
         columnDividers
         infinite
+        preserveScrollRef={preserveScrollRef}
+        scrollJump
         loading={loading}
         onRowClick={(r) => setDetailId(r.id)}
         isRowSelected={(r) => selectedIds.has(r.id)}

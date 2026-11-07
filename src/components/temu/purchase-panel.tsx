@@ -13,6 +13,7 @@ import {
 import { TEMU_TABLE_HEADER_CLASS } from "@/components/temu/table-header-style"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { ZoomableImage } from "@/components/ui/zoomable-image"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Dialog,
@@ -140,9 +141,15 @@ export function TemuPurchasePanel({
       return
     }
     let cancelled = false
-    void getShipInventoryRefAction({ store, codes }).then((r) => {
-      if (!cancelled && r.ok) setInvRef(r.rows)
-    })
+    // 失败（ok:false 或传输层 reject）同样清空：刷新/换状态后同货号行不残留
+    // 上一批的库存徽章；reject 静默吞掉，避免 unhandled rejection
+    void getShipInventoryRefAction({ store, codes })
+      .then((r) => {
+        if (!cancelled) setInvRef(r.ok ? r.rows : {})
+      })
+      .catch(() => {
+        if (!cancelled) setInvRef({})
+      })
     return () => {
       cancelled = true
     }
@@ -314,9 +321,9 @@ export function TemuPurchasePanel({
                   <TableHead className="w-28">子单号</TableHead>
                   <TableHead className="w-36">建议 / 下单 / 发货</TableHead>
                   <TableHead className="w-32">库存参考</TableHead>
-                  <TableHead className="w-24">备货类型</TableHead>
-                  <TableHead className="w-28">状态</TableHead>
-                  <TableHead className="w-24">标记</TableHead>
+                  <TableHead className="w-24 text-center">备货类型</TableHead>
+                  <TableHead className="w-28 text-center">状态</TableHead>
+                  <TableHead className="w-24 text-center">标记</TableHead>
                   {/* 单店筛选下店铺列冗余，隐藏让表格更紧凑 */}
                   {!store && <TableHead className="w-24">店铺</TableHead>}
                   <TableHead className="w-40">最晚发货</TableHead>
@@ -325,10 +332,14 @@ export function TemuPurchasePanel({
               </TableHeader>
               <TableBody>
                 {loading && rows.length === 0 && <TableSkeletonRows cols={store ? 11 : 12} />}
-                {!loading && rows.length === 0 && (
+                {/* 空态按 visibleRows 判（备货类型为客户端过滤）：rows 非空但全被
+                    类型筛掉时提示切换，避免表体整块空白无提示 */}
+                {!loading && visibleRows.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={store ? 11 : 12} className="h-20 text-center text-muted-foreground">
-                      当前筛选下暂无备货单
+                      {rows.length === 0
+                        ? "当前筛选下暂无备货单"
+                        : `当前筛选下暂无备货单（已加载 ${rows.length} 单均为${stockType === "1" ? "常规" : "海外"}备货，可切换备货类型）`}
                     </TableCell>
                   </TableRow>
                 )}
@@ -337,8 +348,7 @@ export function TemuPurchasePanel({
                     <TableRow key={r.subPurchaseOrderSn}>
                       <TableCell>
                         {r.productPicture ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={r.productPicture} alt="" className="size-10 rounded object-cover" loading="lazy" />
+                          <ZoomableImage src={r.productPicture} className="size-10 rounded object-cover" />
                         ) : (
                           <div className="size-10 rounded bg-muted" />
                         )}
@@ -370,7 +380,7 @@ export function TemuPurchasePanel({
                       <TableCell className="text-xs">
                         {(() => {
                           const ref = r.productSn ? invRef[r.productSn] : undefined
-                          if (!ref) return <EmptyHint />
+                          if (!ref) return <EmptyHint center />
                           const toDeliver = Math.max(0, (r.purchaseTotal ?? 0) - (r.deliverTotal ?? 0))
                           const okStock = ref.totalQty >= toDeliver && toDeliver > 0
                           const lack = toDeliver > 0 && ref.totalQty < toDeliver
@@ -400,18 +410,18 @@ export function TemuPurchasePanel({
                           )
                         })()}
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="text-center">
                         {r.stockingType === 1 ? (
                           <Badge className="rounded-[4px] bg-violet-500/15 text-violet-700 dark:text-violet-400">海外备货</Badge>
                         ) : (
                           <Badge className="rounded-[4px] bg-blue-500/15 text-blue-700 dark:text-blue-400">常规备货</Badge>
                         )}
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="text-center">
                         <StatusBadge status={r.status} label={r.statusLabel} />
                       </TableCell>
-                      <TableCell>
-                        <div className="flex flex-wrap gap-1">
+                      <TableCell className="text-center">
+                        <div className="flex flex-wrap justify-center gap-1">
                           {r.urgencyType === 1 && (
                             <Badge className="gap-0.5 rounded-[4px] bg-red-500/15 text-red-700 dark:text-red-400">
                               <Flame className="size-3" /> 紧急
@@ -444,7 +454,7 @@ export function TemuPurchasePanel({
                             {fmtTs(r.expectLatestDeliverTime)}
                           </span>
                         ) : (
-                          <EmptyHint />
+                          <EmptyHint center />
                         )}
                       </TableCell>
                       <TableCell>

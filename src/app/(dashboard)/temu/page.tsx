@@ -57,6 +57,7 @@ import {
   TemuProductsSaleFilter,
 } from "@/components/temu"
 import { TemuPublishPanel } from "@/components/temu/publish/publish-panel"
+import { ScrollJumpButtons } from "@/components/ui/scroll-jump-buttons"
 
 export const dynamic = "force-dynamic"
 
@@ -364,17 +365,25 @@ async function ProductsTab({
         />
       </CardHeader>
       <CardContent className="min-h-0 flex-1 overflow-x-auto overflow-y-auto scrollbar-hide [&_td]:px-4 [&_th]:px-4">
-        {/* key 随筛选变：组件内部 useState(initialRows) 不随 props 重置，
-            筛选/搜索/排序/切店后必须重建才载入新数据（否则停留旧列表直到手动刷新） */}
-        <ProductsInfiniteTable
-          key={`${query.store ?? "all"}|${query.q ?? ""}|${query.sale ?? ""}|${query.sort ?? "listed"}`}
-          store={query.store}
-          q={query.q}
-          sale={query.sale}
-          sort={query.sort}
-          initialRows={rows}
-          initialSalesInfo={salesInfo}
-        />
+        {/* w-max 与表同宽：ScrollJumpButtons 的 sticky right-5 依赖按钮包含块比
+            可视区宽才有右移余量（与表头 sticky 吸附同理）——直接挂 CardContent 下
+            包含块=可视宽，横滚时按钮会随内容漂出可视区 */}
+        <div className="w-max min-w-full">
+          {/* key 随筛选变：组件内部 useState(initialRows) 不随 props 重置，
+              筛选/搜索/排序/切店后必须重建才载入新数据（否则停留旧列表直到手动刷新） */}
+          <ProductsInfiniteTable
+            key={`${query.store ?? "all"}|${query.q ?? ""}|${query.sale ?? ""}|${query.sort ?? "listed"}`}
+            store={query.store}
+            q={query.q}
+            sale={query.sale}
+            sort={query.sort}
+            initialRows={rows}
+            initialSalesInfo={salesInfo}
+          />
+          {/* 跳转顶部/底部：贴本滚动区右下角（放表体 overflow-clip 之外免被裁；
+              点按跳转 + 长按慢滚，公共组件） */}
+          <ScrollJumpButtons />
+        </div>
       </CardContent>
     </Card>
   )

@@ -150,6 +150,8 @@ export interface TemuPriceReviewProduct {
   productSkcId: string
   productName: string | null
   mainImageUrl: string | null
+  /** COS 转存主图（展示优先于 kwcdn 外链，见 lib/temu/image.ts） */
+  mainImageCosUrl: string | null
   productSn: string | null
 }
 
@@ -253,6 +255,7 @@ async function loadPriceReviews(
         productSkcId: temuProducts.productSkcId,
         productName: temuProducts.productName,
         mainImageUrl: temuProducts.mainImageUrl,
+        mainImageCosUrl: temuProducts.mainImageCosUrl,
         productSn: temuProducts.productSn,
       })
       .from(temuSkuMaps)
@@ -271,6 +274,7 @@ async function loadPriceReviews(
           productSkcId: m.productSkcId,
           productName: m.productName,
           mainImageUrl: m.mainImageUrl,
+          mainImageCosUrl: m.mainImageCosUrl,
           productSn: m.productSn,
         })
       }

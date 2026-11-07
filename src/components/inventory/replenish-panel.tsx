@@ -28,6 +28,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { ZoomableImage } from "@/components/ui/zoomable-image"
 import { DataTable, type ColumnDef } from "./data-table"
 import { InvBadge } from "./inv-badge"
 import type { ReplenishAdviceRow } from "@/server/actions/inventory-analysis"
@@ -56,11 +57,24 @@ export function ReplenishPanel() {
   const [factoryId, setFactoryId] = React.useState("")
   const [creating, startCreate] = React.useTransition()
 
+  // 竞态守卫：缓冲天数连续切换时，后到的旧请求不得覆盖新请求结果（quality/return-panel 同款）
+  const loadReqRef = React.useRef(0)
+
   const load = React.useCallback(() => {
     startLoad(async () => {
+      const reqId = ++loadReqRef.current
       const r = await getReplenishmentAdviceAction({ bufferDays: buffer })
-      if (r.ok) setRows(r.rows)
-      else toast.error(r.error)
+      if (reqId !== loadReqRef.current) return
+      if (r.ok) {
+        setRows(r.rows)
+        // 刷新后剔除失效勾选（行已不在或建议量≤0），避免行勾选残留与表头半选态/对话框计数不一致
+        setSelected((s) => {
+          if (s.size === 0) return s
+          const alive = new Set(r.rows.filter((row) => row.suggestQty > 0).map((row) => row.productId))
+          const next = new Set([...s].filter((id) => alive.has(id)))
+          return next.size === s.size ? s : next
+        })
+      } else toast.error(r.error)
       setLoadedOnce(true)
     })
   }, [buffer])
@@ -94,15 +108,25 @@ export function ReplenishPanel() {
     () => [
       {
         id: "sel",
-        header: () => (
-          <Checkbox
-            checked={allSelected}
-            onCheckedChange={() =>
-              setSelected(allSelected ? new Set() : new Set(selectable.map((r) => r.productId)))
-            }
-            aria-label="全选可生成行"
-          />
-        ),
+        meta: { align: "center" },
+        header: () => {
+          const someSelected = selectable.some((r) => selected.has(r.productId))
+          return (
+            <Checkbox
+              checked={allSelected}
+              indeterminate={!allSelected && someSelected}
+              // 部分勾选（半选「-」态）或全选时点击 = 取消全部
+              onCheckedChange={() =>
+                setSelected(
+                  allSelected || someSelected
+                    ? new Set()
+                    : new Set(selectable.map((r) => r.productId)),
+                )
+              }
+              aria-label="全选可生成行"
+            />
+          )
+        },
         enableSorting: false,
         cell: ({ row }) => (
           <Checkbox
@@ -122,8 +146,7 @@ export function ReplenishPanel() {
           return (
             <div className="flex items-center gap-2">
               {r.imageUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={r.imageUrl} alt="" className="size-10 shrink-0 rounded object-cover" />
+                <ZoomableImage src={r.imageUrl} className="size-10 shrink-0 rounded object-cover" />
               ) : (
                 <span className="flex size-10 shrink-0 items-center justify-center rounded bg-muted text-[10px] text-muted-foreground">
                   无图
@@ -149,11 +172,12 @@ export function ReplenishPanel() {
             </TooltipContent>
           </Tooltip>
         ),
-        cell: ({ row }) => (
-          <span className="tabular-nums">
-            {row.original.dailySales > 0 ? row.original.dailySales : <EmptyHint />}
-          </span>
-        ),
+        cell: ({ row }) =>
+          row.original.dailySales > 0 ? (
+            <span className="tabular-nums">{row.original.dailySales}</span>
+          ) : (
+            <EmptyHint center />
+          ),
       },
       {
         accessorKey: "totalQty",
@@ -183,11 +207,12 @@ export function ReplenishPanel() {
             </TooltipContent>
           </Tooltip>
         ),
-        cell: ({ row }) => (
-          <span className="tabular-nums text-muted-foreground">
-            {row.original.targetQty ?? <EmptyHint />}
-          </span>
-        ),
+        cell: ({ row }) =>
+          row.original.targetQty != null ? (
+            <span className="tabular-nums text-muted-foreground">{row.original.targetQty}</span>
+          ) : (
+            <EmptyHint center />
+          ),
       },
       {
         accessorKey: "suggestQty",
@@ -212,6 +237,7 @@ export function ReplenishPanel() {
         id: "flags",
         header: "标记",
         enableSorting: false,
+        meta: { align: "center" },
         cell: ({ row }) =>
           row.original.stagnant ? (
             <InvBadge className="border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-400">
@@ -222,11 +248,14 @@ export function ReplenishPanel() {
       {
         accessorKey: "expectedDate",
         header: "预计到货",
-        cell: ({ row }) => (
-          <span className="whitespace-nowrap text-muted-foreground">
-            {row.original.expectedDate ?? <EmptyHint />}
-          </span>
-        ),
+        cell: ({ row }) =>
+          row.original.expectedDate ? (
+            <span className="whitespace-nowrap text-muted-foreground">
+              {row.original.expectedDate}
+            </span>
+          ) : (
+            <EmptyHint center />
+          ),
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps

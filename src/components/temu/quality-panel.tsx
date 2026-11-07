@@ -12,6 +12,7 @@ import {
 import { TEMU_TABLE_HEADER_CLASS } from "@/components/temu/table-header-style"
 import { TablePagination } from "@/components/ui/table-pagination"
 import { Button } from "@/components/ui/button"
+import { ZoomableImage } from "@/components/ui/zoomable-image"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Dialog,
@@ -156,8 +157,11 @@ export function TemuQualityPanel({ store }: { store?: string }) {
                 <TableRow key={`${r.qcBillId ?? ""}-${r.productSkuId ?? ""}`}>
                   <TableCell>
                     {r.thumbUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={r.thumbUrl} alt="" className="size-10 rounded object-cover" loading="lazy" />
+                      <ZoomableImage
+                        src={r.thumbUrl}
+                        alt={r.skuName ?? undefined}
+                        className="size-10 rounded object-cover"
+                      />
                     ) : (
                       <div className="size-10 rounded bg-muted" />
                     )}
@@ -170,9 +174,9 @@ export function TemuQualityPanel({ store }: { store?: string }) {
                     <div className="truncate text-xs">{r.skuName ?? <EmptyHint />}</div>
                     <div className="text-xs text-muted-foreground">{r.catName ?? <EmptyHint />}</div>
                   </TableCell>
-                  <TableCell className="font-mono text-xs">{r.purchaseNo ?? <EmptyHint />}</TableCell>
+                  <TableCell className="font-mono text-xs">{r.purchaseNo ?? <EmptyHint center />}</TableCell>
                   <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                    {r.qcResultUpdateTime ?? <EmptyHint />}
+                    {r.qcResultUpdateTime ?? <EmptyHint center />}
                   </TableCell>
                   <TableCell>
                     <Button

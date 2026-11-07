@@ -280,10 +280,11 @@ export function AutoApplyDialog({
   const allChecked = checkableRows.length > 0 && checkableRows.every((r) => selected.has(r.productSkcId))
   const someChecked = checkableRows.some((r) => selected.has(r.productSkcId))
 
+  // 部分勾选（半选「-」态）或全选时点击 = 取消全部（同 TEMU 主表/库存面板口径）
   const toggleAll = () => {
     setSelected((s) => {
       const n = new Set(s)
-      if (allChecked) checkableRows.forEach((r) => n.delete(r.productSkcId))
+      if (allChecked || someChecked) checkableRows.forEach((r) => n.delete(r.productSkcId))
       else checkableRows.forEach((r) => n.add(r.productSkcId))
       return n
     })
@@ -547,7 +548,7 @@ export function AutoApplyDialog({
           <table className="w-full caption-bottom text-xs">
             <TableHeader className={DIALOG_HEADER_CLS}>
               <TableRow>
-                <TableHead className="w-8">
+                <TableHead className="w-8 text-center [&:has([role=checkbox])]:pl-0">
                   <SelectAllCheckbox allChecked={allChecked} someChecked={someChecked} onToggle={toggleAll} />
                 </TableHead>
                 <TableHead className="w-14">主图</TableHead>
@@ -556,7 +557,7 @@ export function AutoApplyDialog({
                 <TableHead className="w-20">本地库存</TableHead>
                 <TableHead className="w-24">可申报上限</TableHead>
                 <TableHead className="w-28">申报数量</TableHead>
-                <TableHead className="w-20">状态</TableHead>
+                <TableHead className="w-20 text-center">状态</TableHead>
                 {!store && <TableHead className="w-24">店铺</TableHead>}
               </TableRow>
             </TableHeader>
@@ -581,7 +582,7 @@ export function AutoApplyDialog({
                       i === cursor || processingSkcs.has(r.productSkcId) ? "bg-primary/5" : undefined
                     }
                   >
-                    <TableCell>
+                    <TableCell className="text-center [&:has([role=checkbox])]:pl-0">
                       <Checkbox
                         checked={selected.has(r.productSkcId)}
                         disabled={busy || lim?.max === 0}
@@ -609,56 +610,65 @@ export function AutoApplyDialog({
                         <div className="size-9 rounded bg-muted" />
                       )}
                     </TableCell>
-                    <TableCell className="max-w-24 truncate font-mono">{r.productSn ?? <EmptyHint />}</TableCell>
-                    <TableCell className="tabular-nums">{r.last7DaysSalesVolume ?? <EmptyHint />}</TableCell>
-                    <TableCell className="tabular-nums">{invMap[r.productSn ?? ""]?.totalQty ?? <EmptyHint />}</TableCell>
+                    <TableCell className="max-w-24 truncate font-mono">{r.productSn ?? <EmptyHint center />}</TableCell>
+                    <TableCell className="tabular-nums">{r.last7DaysSalesVolume ?? <EmptyHint center />}</TableCell>
+                    <TableCell className="tabular-nums">{invMap[r.productSn ?? ""]?.totalQty ?? <EmptyHint center />}</TableCell>
                     <TableCell>
                       {(() => {
+                        /* 徽章/感叹号居中、数值保持左对齐（两域空值图标同口径） */
                         if (!lim)
                           return (
-                            <Badge className="rounded-[4px] bg-muted px-1 text-[10px] text-muted-foreground">未探测</Badge>
+                            <span className="flex w-full justify-center">
+                              <Badge className="rounded-[4px] bg-muted px-1 text-[10px] text-muted-foreground">未探测</Badge>
+                            </span>
                           )
                         if (lim.error)
                           return (
-                            <TooltipProvider>
-                              <Tooltip>
-                                <TooltipTrigger className="cursor-default">
-                                  <Badge className="rounded-[4px] bg-red-500/15 px-1 text-[10px] text-red-700 dark:text-red-400">
-                                    探测失败
-                                  </Badge>
-                                </TooltipTrigger>
-                                <TooltipContent className="max-w-64 break-all">{lim.error}</TooltipContent>
-                              </Tooltip>
-                            </TooltipProvider>
+                            <span className="flex w-full justify-center">
+                              <TooltipProvider>
+                                <Tooltip>
+                                  <TooltipTrigger className="cursor-default">
+                                    <Badge className="rounded-[4px] bg-red-500/15 px-1 text-[10px] text-red-700 dark:text-red-400">
+                                      探测失败
+                                    </Badge>
+                                  </TooltipTrigger>
+                                  <TooltipContent className="max-w-64 break-all">{lim.error}</TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            </span>
                           )
                         if (lim.max === 0)
                           return (
-                            <TooltipProvider>
-                              <Tooltip>
-                                <TooltipTrigger className="cursor-default">
-                                  <Badge className="rounded-[4px] bg-red-500/15 px-1 text-[10px] text-red-700 dark:text-red-400">
-                                    不可申报
-                                  </Badge>
-                                </TooltipTrigger>
-                                <TooltipContent>官方返回可申报上限为 0，当前不可申报</TooltipContent>
-                              </Tooltip>
-                            </TooltipProvider>
+                            <span className="flex w-full justify-center">
+                              <TooltipProvider>
+                                <Tooltip>
+                                  <TooltipTrigger className="cursor-default">
+                                    <Badge className="rounded-[4px] bg-red-500/15 px-1 text-[10px] text-red-700 dark:text-red-400">
+                                      不可申报
+                                    </Badge>
+                                  </TooltipTrigger>
+                                  <TooltipContent>官方返回可申报上限为 0，当前不可申报</TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            </span>
                           )
                         if (lim.max == null)
                           return (
-                            <TooltipProvider>
-                              <Tooltip>
-                                <TooltipTrigger
-                                  className="cursor-default text-amber-600 dark:text-amber-400"
-                                  aria-label="未能解析上限"
-                                >
-                                  <CircleAlert className="size-3.5" />
-                                </TooltipTrigger>
-                                <TooltipContent className="text-xs">
-                                  官方错误文案未能解析出该 SKU 的可申报上限，可重新探测
-                                </TooltipContent>
-                              </Tooltip>
-                            </TooltipProvider>
+                            <span className="flex w-full justify-center">
+                              <TooltipProvider>
+                                <Tooltip>
+                                  <TooltipTrigger
+                                    className="cursor-default text-amber-600 dark:text-amber-400"
+                                    aria-label="未能解析上限"
+                                  >
+                                    <CircleAlert className="size-3.5" />
+                                  </TooltipTrigger>
+                                  <TooltipContent className="text-xs">
+                                    官方错误文案未能解析出该 SKU 的可申报上限，可重新探测
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            </span>
                           )
                         return (
                           <TooltipProvider>
@@ -688,7 +698,7 @@ export function AutoApplyDialog({
                         aria-label="申报数量"
                       />
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="text-center">
                       <StatusIconCell
                         status={statusBySkc[r.productSkcId]}
                         rowKey={`SKC ${r.productSkcId}`}
@@ -696,7 +706,7 @@ export function AutoApplyDialog({
                       />
                     </TableCell>
                     {!store && (
-                      <TableCell className="max-w-24 truncate text-xs">{r.storeName || <EmptyHint />}</TableCell>
+                      <TableCell className="max-w-24 truncate text-xs">{r.storeName || <EmptyHint center />}</TableCell>
                     )}
                   </TableRow>
                 )
@@ -889,8 +899,9 @@ export function AutoJoinDialog({
 
   const allChecked = rows.length > 0 && rows.every((r) => selected.has(r.subPurchaseOrderSn))
   const someChecked = rows.some((r) => selected.has(r.subPurchaseOrderSn))
+  // 部分勾选（半选「-」态）或全选时点击 = 取消全部（同 TEMU 主表/库存面板口径）
   const toggleAll = () =>
-    setSelected(() => (allChecked ? new Set() : new Set(rows.map((r) => r.subPurchaseOrderSn))))
+    setSelected(() => (allChecked || someChecked ? new Set() : new Set(rows.map((r) => r.subPurchaseOrderSn))))
 
   const joinable = rows.filter((r) => selected.has(r.subPurchaseOrderSn))
 
@@ -1021,7 +1032,7 @@ export function AutoJoinDialog({
           <table className="w-full caption-bottom text-xs">
             <TableHeader className={DIALOG_HEADER_CLS}>
               <TableRow>
-                <TableHead className="w-8">
+                <TableHead className="w-8 text-center [&:has([role=checkbox])]:pl-0">
                   <SelectAllCheckbox allChecked={allChecked} someChecked={someChecked} onToggle={toggleAll} />
                 </TableHead>
                 <TableHead className="w-14">主图</TableHead>
@@ -1029,8 +1040,8 @@ export function AutoJoinDialog({
                 <TableHead className="w-40">子单号</TableHead>
                 <TableHead className="w-28">建议 / 下单</TableHead>
                 <TableHead className="w-20">本地库存</TableHead>
-                <TableHead className="w-24">库存核对</TableHead>
-                <TableHead className="w-20">状态</TableHead>
+                <TableHead className="w-24 text-center">库存核对</TableHead>
+                <TableHead className="w-20 text-center">状态</TableHead>
                 {!store && <TableHead className="w-24">店铺</TableHead>}
               </TableRow>
             </TableHeader>
@@ -1053,7 +1064,7 @@ export function AutoJoinDialog({
                     key={r.subPurchaseOrderSn}
                     className={processingSns.has(r.subPurchaseOrderSn) ? "bg-primary/5" : undefined}
                   >
-                    <TableCell>
+                    <TableCell className="text-center [&:has([role=checkbox])]:pl-0">
                       <Checkbox
                         checked={selected.has(r.subPurchaseOrderSn)}
                         disabled={applying}
@@ -1085,12 +1096,12 @@ export function AutoJoinDialog({
                     </TableCell>
                     <TableCell className="whitespace-nowrap tabular-nums">
                       <span className="text-muted-foreground">建议 </span>
-                      {r.adviceTotal ?? <EmptyHint />}
+                      {r.adviceTotal ?? <EmptyHint center />}
                       <span className="text-muted-foreground"> · 下单 </span>
-                      {r.purchaseTotal ?? <EmptyHint />}
+                      {r.purchaseTotal ?? <EmptyHint center />}
                     </TableCell>
-                    <TableCell className="tabular-nums">{invMap[r.productSn!]?.totalQty ?? <EmptyHint />}</TableCell>
-                    <TableCell>
+                    <TableCell className="tabular-nums">{invMap[r.productSn!]?.totalQty ?? <EmptyHint center />}</TableCell>
+                    <TableCell className="text-center">
                       {shortage > 0 ? (
                         <TooltipProvider>
                           <Tooltip>
@@ -1111,7 +1122,7 @@ export function AutoJoinDialog({
                         </Badge>
                       )}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="text-center">
                       <StatusIconCell
                         status={statusBySn[r.subPurchaseOrderSn]}
                         rowKey={r.subPurchaseOrderSn}
@@ -1119,7 +1130,7 @@ export function AutoJoinDialog({
                       />
                     </TableCell>
                     {!store && (
-                      <TableCell className="max-w-24 truncate text-xs">{r.storeName || <EmptyHint />}</TableCell>
+                      <TableCell className="max-w-24 truncate text-xs">{r.storeName || <EmptyHint center />}</TableCell>
                     )}
                   </TableRow>
                 )

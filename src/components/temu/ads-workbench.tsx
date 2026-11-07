@@ -14,6 +14,7 @@ import {
 import { TEMU_TABLE_HEADER_CLASS } from "@/components/temu/table-header-style"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { ZoomableImage } from "@/components/ui/zoomable-image"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -257,7 +258,7 @@ export function TemuAdsWorkbench({
                 <TableRow>
                   <TableHead>主图</TableHead>
                   <TableHead>商品</TableHead>
-                  <TableHead>状态</TableHead>
+                  <TableHead className="text-center">状态</TableHead>
                   <TableHead>日预算</TableHead>
                   <TableHead>目标 ROAS</TableHead>
                   <TableHead>花费</TableHead>
@@ -282,8 +283,7 @@ export function TemuAdsWorkbench({
                   <TableRow key={row.productId}>
                     <TableCell>
                       {row.mainImageUrl ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={temuImageSrc(row.mainImageCosUrl, row.mainImageUrl)} alt="" className="size-10 rounded object-cover" loading="lazy" />
+                        <ZoomableImage src={temuImageSrc(row.mainImageCosUrl, row.mainImageUrl)} className="size-10 rounded object-cover" />
                       ) : (
                         <div className="size-10 rounded bg-muted" />
                       )}
@@ -294,39 +294,39 @@ export function TemuAdsWorkbench({
                         {row.productSn ?? row.productId}
                       </p>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="text-center">
                       {row.plan ? (
                         <Badge variant="secondary" className="rounded-[4px]">{row.plan.adShowStatusLabel}</Badge>
                       ) : (
-                        <EmptyHint />
+                        <EmptyHint center />
                       )}
                     </TableCell>
                     <TableCell className="tabular-nums">
-                      {row.plan ? yuan(row.plan.budget) : <EmptyHint />}
+                      {row.plan ? yuan(row.plan.budget) : <EmptyHint center />}
                     </TableCell>
                     <TableCell className="tabular-nums">
-                      {row.plan?.roas ?? <EmptyHint />}
+                      {row.plan?.roas ?? <EmptyHint center />}
                     </TableCell>
                     <TableCell className="tabular-nums">
                       {(row.report?.adSpend ?? row.plan?.spendFen) != null
                         ? yuan(row.report?.adSpend ?? row.plan?.spendFen)
-                        : <EmptyHint />}
+                        : <EmptyHint center />}
                     </TableCell>
                     <TableCell className="tabular-nums">
                       {(row.report?.orderPayAmt ?? row.plan?.orderPayAmtFen) != null
                         ? yuan(row.report?.orderPayAmt ?? row.plan?.orderPayAmtFen)
-                        : <EmptyHint />}
+                        : <EmptyHint center />}
                     </TableCell>
                     <TableCell className="tabular-nums">
-                      {row.report?.roas != null ? row.report.roas.toFixed(2) : (row.plan?.roasSummary ?? <EmptyHint />)}
+                      {row.report?.roas != null ? row.report.roas.toFixed(2) : (row.plan?.roasSummary ?? <EmptyHint center />)}
                     </TableCell>
                     <TableCell className="tabular-nums">
                       {row.report?.transactionCost != null
                         ? yuan(row.report.transactionCost)
-                        : <EmptyHint />}
+                        : <EmptyHint center />}
                     </TableCell>
                     <TableCell className="tabular-nums">
-                      {row.report?.goodsNum != null ? num(row.report.goodsNum) : <EmptyHint />}
+                      {row.report?.goodsNum != null ? num(row.report.goodsNum) : <EmptyHint center />}
                     </TableCell>
                     <TableCell className="tabular-nums text-muted-foreground">
                       {row.report?.imprCnt != null ? num(row.report.imprCnt) : <EmptyHint />} /{" "}

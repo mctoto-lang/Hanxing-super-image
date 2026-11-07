@@ -23,6 +23,7 @@ import { EmptyHint } from "@/components/temu/empty-hint"
 import { TruncTip } from "@/components/temu/trunc-tip"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { ZoomableImage } from "@/components/ui/zoomable-image"
 import { Input } from "@/components/ui/input"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import {
@@ -337,7 +338,7 @@ const PRODUCTS_PAGE_SIZE = 20
 /** 库存数据单元格：主值 = 仓内库存（warehouseInventoryNum，卖家口径「可用库存」，
  *  与申报备货视图同口径）；悬停按官方参数表顺序逐项展示九项官方 desc 文案 */
 function AvailableStockCell({ info }: { info: TemuInventoryInfo | null }) {
-  if (!info) return <EmptyHint />
+  if (!info) return <EmptyHint center />
   return (
     <TooltipProvider>
       <Tooltip>
@@ -514,8 +515,9 @@ function ProductDetailPanel({
 
 /** SKU 明细展开子表：尺码/货号/申报价/今日·7日·30日·总销量（salesv2 priceDetail） */
 function SkuDetailSubtable({ skus }: { skus: TemuSkuDetailRow[] }) {
+  // 空值图标居中与主表同口径（数值列数字保持左对齐、仅空值图标居中）
   const num = (v: unknown) =>
-    typeof v === "number" ? v.toLocaleString("zh-CN") : v == null ? <EmptyHint /> : String(v)
+    typeof v === "number" ? v.toLocaleString("zh-CN") : v == null ? <EmptyHint center /> : String(v)
   return (
     <table className="w-full caption-bottom text-xs">
       <TableHeader>
@@ -534,11 +536,11 @@ function SkuDetailSubtable({ skus }: { skus: TemuSkuDetailRow[] }) {
       <TableBody>
         {skus.map((s, i) => (
           <TableRow key={String(s.productSkuId ?? i)} className="hover:bg-transparent">
-            <TableCell className="px-3 py-1.5 font-mono">{s.productSkuId ?? <EmptyHint />}</TableCell>
-            <TableCell>{s.className ?? <EmptyHint />}</TableCell>
-            <TableCell className="font-mono">{s.skuExtCode ?? <EmptyHint />}</TableCell>
+            <TableCell className="px-3 py-1.5 font-mono">{s.productSkuId ?? <EmptyHint center />}</TableCell>
+            <TableCell>{s.className ?? <EmptyHint center />}</TableCell>
+            <TableCell className="font-mono">{s.skuExtCode ?? <EmptyHint center />}</TableCell>
             <TableCell className="tabular-nums">
-              {s.supplierPrice != null ? `¥${(s.supplierPrice / 100).toFixed(2)}` : <EmptyHint />}
+              {s.supplierPrice != null ? `¥${(s.supplierPrice / 100).toFixed(2)}` : <EmptyHint center />}
             </TableCell>
             <TableCell className="tabular-nums">{num(s.todaySaleVolume)}</TableCell>
             <TableCell className="tabular-nums">{num(s.lastSevenDaysSaleVolume)}</TableCell>
@@ -674,7 +676,7 @@ export function ProductsInfiniteTable({
             <TableHead>商品名</TableHead>
             <TableHead>货号</TableHead>
             <TableHead>申报价格</TableHead>
-            <TableHead>状态</TableHead>
+            <TableHead className="text-center">状态</TableHead>
             <TableHead>今日销量</TableHead>
             <TableHead>七日销量</TableHead>
             <TableHead>三十日销量</TableHead>
@@ -722,12 +724,9 @@ export function ProductsInfiniteTable({
                 </TableCell>
                 <TableCell>
                   {r.mainImageUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
+                    <ZoomableImage
                       src={temuImageSrc(r.mainImageCosUrl, r.mainImageUrl)}
-                      alt=""
                       className="size-10 rounded object-cover"
-                      loading="lazy"
                     />
                   ) : (
                     <div className="size-10 rounded bg-muted" />
@@ -757,11 +756,11 @@ export function ProductsInfiniteTable({
                     )}
                   </span>
                 </TableCell>
-                <TableCell className="font-mono text-xs">{r.productSn ?? <EmptyHint />}</TableCell>
+                <TableCell className="font-mono text-xs">{r.productSn ?? <EmptyHint center />}</TableCell>
                 <TableCell className="tabular-nums">
-                  {r.supplierPrice != null ? `¥${(r.supplierPrice / 100).toFixed(2)}` : <EmptyHint />}
+                  {r.supplierPrice != null ? `¥${(r.supplierPrice / 100).toFixed(2)}` : <EmptyHint center />}
                 </TableCell>
-                <TableCell>
+                <TableCell className="text-center">
                   <Tooltip>
                     <TooltipTrigger className="cursor-default">
                       <Badge className={`rounded-[4px] ${status.className}`}>{status.label}</Badge>
@@ -775,15 +774,15 @@ export function ProductsInfiniteTable({
                     </TooltipContent>
                   </Tooltip>
                 </TableCell>
-                <TableCell className="tabular-nums">{sales?.todaySalesVolume ?? <EmptyHint />}</TableCell>
+                <TableCell className="tabular-nums">{sales?.todaySalesVolume ?? <EmptyHint center />}</TableCell>
                 <TableCell className="tabular-nums">
-                  {sales?.extra.last7DaysSalesVolume ?? <EmptyHint />}
+                  {sales?.extra.last7DaysSalesVolume ?? <EmptyHint center />}
                 </TableCell>
                 <TableCell className="tabular-nums">
-                  {sales?.extra.last30DaysSalesVolume ?? <EmptyHint />}
+                  {sales?.extra.last30DaysSalesVolume ?? <EmptyHint center />}
                 </TableCell>
                 <TableCell className="tabular-nums">
-                  {sales?.availableSaleDays != null ? Math.round(sales.availableSaleDays) : <EmptyHint />}
+                  {sales?.availableSaleDays != null ? Math.round(sales.availableSaleDays) : <EmptyHint center />}
                 </TableCell>
                 <TableCell className="tabular-nums">
                   <AvailableStockCell info={sales?.extra.inventoryInfo ?? null} />

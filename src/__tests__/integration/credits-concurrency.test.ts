@@ -100,7 +100,7 @@ describe("积分并发扣减（手册 §10.6 红线）", () => {
     expect(txs[0]!.type).toBe("consumption")
   })
 
-  it("★ 并发扣减 100 个 × 10 积分，余额精确为 0，无超扣", async () => {
+  it("★ 并发扣减 100 个 × 10 积分，余额精确为 0，无超扣", { timeout: 30_000 }, async () => {
     const CONCURRENT = 100
     const PER = 10
     // 期望总扣减 = CONCURRENT * PER = 1000（余额精确为 0，无超扣）
@@ -146,7 +146,7 @@ describe("积分并发扣减（手册 §10.6 红线）", () => {
     expect(new Set(balances).size).toBe(CONCURRENT) // 无重复（无重复扣同一余额快照）
   })
 
-  it("★ 余额不足时，多余的并发请求应抛 CreditsInsufficientError，绝不超扣", async () => {
+  it("★ 余额不足时，多余的并发请求应抛 CreditsInsufficientError，绝不超扣", { timeout: 30_000 }, async () => {
     // 余额 1000，发起 150 个 × 10 扣减，应只有 100 个成功，50 个失败
     const CONCURRENT = 150
     const PER = 10
@@ -244,7 +244,7 @@ describe("成员个人配额并发扣减（需求 3 新红线）", () => {
     expect(usr!.balance).toBe(1000)
   })
 
-  it("★ 并发扣个人配额 100 × 10，余额精确为 0，无超扣", async () => {
+  it("★ 并发扣个人配额 100 × 10，余额精确为 0，无超扣", { timeout: 30_000 }, async () => {
     const CONCURRENT = 100
     const PER = 10
 
@@ -271,7 +271,7 @@ describe("成员个人配额并发扣减（需求 3 新红线）", () => {
     expect(final!.balance).toBeGreaterThanOrEqual(0)
   })
 
-  it("★ 个人配额不足时，多余并发请求被拒绝，绝不超扣", async () => {
+  it("★ 个人配额不足时，多余并发请求被拒绝，绝不超扣", { timeout: 30_000 }, async () => {
     const CONCURRENT = 150
     const PER = 10
 

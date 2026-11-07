@@ -14,6 +14,7 @@ import { TEMU_TABLE_HEADER_CLASS } from "@/components/temu/table-header-style"
 import { TablePagination } from "@/components/ui/table-pagination"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { ZoomableImage } from "@/components/ui/zoomable-image"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -129,8 +130,7 @@ function ProductInfoCell({ row, needBarcode }: { row: TemuShipOrderRow; needBarc
   return (
     <div className="flex items-center gap-2.5">
       {row.productImageUrl ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={row.productImageUrl} alt="" className="size-10 shrink-0 rounded object-cover" loading="lazy" />
+        <ZoomableImage src={row.productImageUrl} className="size-10 shrink-0 rounded object-cover" />
       ) : (
         <div className="size-10 shrink-0 rounded bg-muted" />
       )}
@@ -457,6 +457,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
   /** 勾选列与批量条只在待装箱/待仓库收货出现（官方两视图才有批量操作） */
   const selectable = isPendingView || isShippingView
   const allPageSelected = rows.length > 0 && rows.every((r) => selSns.has(r.deliveryOrderSn))
+  const somePageSelected = rows.some((r) => selSns.has(r.deliveryOrderSn))
 
   /** 待仓库收货：按物流批次聚簇（保持首现顺序、组内原顺序；无批次号行各自成组）。
    *  同批次多行时「发货批次/物流信息/物流操作」三列合并居中（官方两级结构），
@@ -930,7 +931,14 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                   >
                     {loading ? <Loader2 className="size-3.5 animate-spin" /> : <Printer className="size-3.5" />} 批量打印商品打包标签
                   </Button>
-                  <Button variant="outline" size="sm" className="h-8 text-xs" onClick={batchPrintBarcode} disabled={loading}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={batchPrintBarcode}
+                    // 批量条码只打当前页选中行（selectedRows）；仅他页有勾选时置灰，避免点击无响应
+                    disabled={loading || selectedRows.length === 0}
+                  >
                     批量打印商品条码
                   </Button>
                   {isShippingView && (
@@ -960,7 +968,13 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                       >
                         <Zap className="size-3.5" /> 自动预约发货
                       </Button>
-                      <Button size="sm" className="h-8 text-xs" onClick={openPacking} disabled={loading || mixedWarehouse}>
+                      <Button
+                        size="sm"
+                        className="h-8 text-xs"
+                        onClick={openPacking}
+                        // 与「自动预约发货」同口径：仅他页有勾选时当前页无可装箱行，置灰而非点击静默返回
+                        disabled={loading || mixedWarehouse || selectedRows.length === 0}
+                      >
                         批量装箱发货
                       </Button>
                     </>
@@ -973,15 +987,20 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                 <TableHeader className={TEMU_TABLE_HEADER_CLASS}>
                   <TableRow>
                     {selectable && (
-                      <TableHead className="w-8">
+                      <TableHead className="w-8 text-center [&:has([role=checkbox])]:pl-0">
                         <Checkbox
+                          className="mx-auto"
                           checked={allPageSelected}
+                          indeterminate={!allPageSelected && somePageSelected}
+                          // 部分勾选（半选「-」态）或全选时点击 = 取消全部；
+                          // 全选本页 = 在既有勾选之上并入本页（跨页勾选不丢，与行级/组级增量语义一致）
                           onCheckedChange={() =>
-                            setSelSns(() =>
-                              allPageSelected
-                                ? new Set()
-                                : new Set(rows.map((r) => r.deliveryOrderSn)),
-                            )
+                            setSelSns((s) => {
+                              if (allPageSelected || somePageSelected) return new Set()
+                              const n = new Set(s)
+                              rows.forEach((r) => n.add(r.deliveryOrderSn))
+                              return n
+                            })
                           }
                           aria-label="全选本页"
                         />
@@ -993,7 +1012,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                     <TableHead className="min-w-64">商品信息</TableHead>
                     <TableHead className="w-44">发货信息</TableHead>
                     {!isShippingView && <TableHead className="w-40">包裹号</TableHead>}
-                    <TableHead className="w-32">发货单状态</TableHead>
+                    <TableHead className="w-32 text-center">发货单状态</TableHead>
                     <TableHead className="w-52">操作</TableHead>
                     {isShippingView && <TableHead className="w-40">物流操作</TableHead>}
                   </TableRow>
@@ -1019,13 +1038,17 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                             {selectable &&
                               (isFirst ? (
                                 /* 勾选按钮随批次合并居中：组级三态（全选/半选/清空）= 选中该批次全部发货单 */
-                                <TableCell rowSpan={group.length} className="align-middle">
+                                <TableCell
+                                  rowSpan={group.length}
+                                  className="align-middle text-center [&:has([role=checkbox])]:pl-0"
+                                >
                                   {(() => {
                                     const groupSns = group.map((g) => g.deliveryOrderSn)
                                     const allIn = groupSns.every((sn) => selSns.has(sn))
                                     const someIn = groupSns.some((sn) => selSns.has(sn))
                                     return (
                                       <Checkbox
+                                        className="mx-auto"
                                         checked={allIn}
                                         indeterminate={!allIn && someIn}
                                         onCheckedChange={() =>
@@ -1104,7 +1127,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                             <TableCell>
                               <DeliverInfoCell row={r} />
                             </TableCell>
-                            <TableCell>
+                            <TableCell className="text-center">
                               <StatusBadge status={r.status} />
                             </TableCell>
                             <TableCell>
@@ -1162,8 +1185,9 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                     rows.map((r) => (
                       <TableRow key={r.deliveryOrderSn}>
                         {selectable && (
-                          <TableCell>
+                          <TableCell className="text-center [&:has([role=checkbox])]:pl-0">
                             <Checkbox
+                              className="mx-auto"
                               checked={selSns.has(r.deliveryOrderSn)}
                               onCheckedChange={() => toggleSelRow(r.deliveryOrderSn)}
                               aria-label={`选择 ${r.deliveryOrderSn}`}
@@ -1185,7 +1209,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                         <TableCell>
                           <PackageCell row={r} />
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="text-center">
                           <StatusBadge status={r.status} />
                         </TableCell>
                         <TableCell>

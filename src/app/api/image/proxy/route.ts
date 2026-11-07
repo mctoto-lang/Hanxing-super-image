@@ -58,6 +58,11 @@ function isAllowedHost(url: URL, cfg: StorageConfig): boolean {
   if (matchesAllowedHost(url.hostname, cfg.allowedDownloadHosts ?? [])) {
     return true
   }
+  // TEMU 官方 CDN（img.kwcdn.com，商品主图回落外链）：表格 <img> 本就直连渲染，
+  // ImageViewer 放大/下载经本代理回源须放行——固定公共 CDN 域名，无 SSRF 面
+  if (url.hostname === "kwcdn.com" || url.hostname.endsWith(".kwcdn.com")) {
+    return true
+  }
   return false
 }
 

@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Badge } from "@/components/ui/badge"
+import { ZoomableImage } from "@/components/ui/zoomable-image"
 import {
   Select,
   SelectContent,
@@ -1269,6 +1270,7 @@ export function ShipStaging({
     }, 0),
   }
   const allSelected = stagingRows.length > 0 && stagingRows.every((r) => stagingSel.has(r.subPurchaseOrderSn))
+  const someSelected = stagingRows.some((r) => stagingSel.has(r.subPurchaseOrderSn))
 
   return (
     <>
@@ -1354,16 +1356,23 @@ export function ShipStaging({
           <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border">
             <TableHeader className={TEMU_TABLE_HEADER_CLASS}>
               <TableRow>
-                <TableHead className="w-8">
-                  <Checkbox
-                    checked={allSelected}
-                    onCheckedChange={() =>
-                      setStagingSel(() =>
-                        allSelected ? new Set() : new Set(stagingRows.map((r) => r.subPurchaseOrderSn)),
-                      )
-                    }
-                    aria-label="全选本页"
-                  />
+                <TableHead className="w-8 text-center [&:has([role=checkbox])]:pl-0">
+                  {/* base-ui Checkbox 渲染为块级 flex <span>，text-align 对它无效——flex 包装才真居中 */}
+                  <span className="flex justify-center">
+                    <Checkbox
+                      checked={allSelected}
+                      indeterminate={!allSelected && someSelected}
+                      // 部分勾选（半选「-」态）或全选时点击 = 取消全部
+                      onCheckedChange={() =>
+                        setStagingSel(() =>
+                          allSelected || someSelected
+                            ? new Set()
+                            : new Set(stagingRows.map((r) => r.subPurchaseOrderSn)),
+                        )
+                      }
+                      aria-label="全选本页"
+                    />
+                  </span>
                 </TableHead>
                 <TableHead className="min-w-60">备货单信息</TableHead>
                 <TableHead className="w-24">货号</TableHead>
@@ -1393,18 +1402,20 @@ export function ShipStaging({
                   const remain = Math.max(0, (r.purchaseQuantity ?? 0) - numSum)
                   return (
                     <TableRow key={r.subPurchaseOrderSn}>
-                      <TableCell>
-                        <Checkbox
-                          checked={stagingSel.has(r.subPurchaseOrderSn)}
-                          onCheckedChange={() => toggleSel(r.subPurchaseOrderSn)}
-                          aria-label={`选择 ${r.subPurchaseOrderSn}`}
-                        />
+                      <TableCell className="text-center [&:has([role=checkbox])]:pl-0">
+                        {/* base-ui Checkbox 渲染为块级 flex <span>，text-align 对它无效——flex 包装才真居中 */}
+                        <span className="flex justify-center">
+                          <Checkbox
+                            checked={stagingSel.has(r.subPurchaseOrderSn)}
+                            onCheckedChange={() => toggleSel(r.subPurchaseOrderSn)}
+                            aria-label={`选择 ${r.subPurchaseOrderSn}`}
+                          />
+                        </span>
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2.5">
                           {r.productSkcPicture ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={r.productSkcPicture} alt="" className="size-10 shrink-0 rounded object-cover" loading="lazy" />
+                            <ZoomableImage src={r.productSkcPicture} className="size-10 shrink-0 rounded object-cover" />
                           ) : (
                             <div className="size-10 shrink-0 rounded bg-muted" />
                           )}
@@ -1431,13 +1442,13 @@ export function ShipStaging({
                           </div>
                         </div>
                       </TableCell>
-                      <TableCell className="font-mono text-xs">{r.skcExtCode ?? <EmptyHint />}</TableCell>
+                      <TableCell className="font-mono text-xs">{r.skcExtCode ?? <EmptyHint center />}</TableCell>
                       <TableCell className="max-w-32">
                         <TruncTip text={r.receiveAddressText ?? r.subWarehouseName ?? ""} className="max-w-32">
                           {r.subWarehouseName ?? <EmptyHint />}
                         </TruncTip>
                       </TableCell>
-                      <TableCell className="text-xs tabular-nums">{r.purchaseQuantity ?? <EmptyHint />}</TableCell>
+                      <TableCell className="text-xs tabular-nums">{r.purchaseQuantity ?? <EmptyHint center />}</TableCell>
                       <TableCell>
                         <DeliverNumCell
                           row={r}
@@ -1459,7 +1470,7 @@ export function ShipStaging({
                       <TableCell className="text-xs tabular-nums">
                         {(() => {
                           const ref = r.skcExtCode ? invRef[r.skcExtCode] : undefined
-                          if (!ref) return <EmptyHint />
+                          if (!ref) return <EmptyHint center />
                           return (
                             <Tooltip>
                               <TooltipTrigger

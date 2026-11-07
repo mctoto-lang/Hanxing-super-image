@@ -11,6 +11,7 @@ import {
   type InventoryMovementProductRow,
 } from "@/server/actions/inventory"
 import { cn } from "@/lib/utils"
+import { ZoomableImage } from "@/components/ui/zoomable-image"
 import { DataTable, type ColumnDef } from "./data-table"
 import { MovementDialog, type MovementDialogTarget } from "./movement-dialogs"
 import { ProductDetailSheet } from "./product-detail-sheet"
@@ -47,8 +48,12 @@ export function MovementPanel() {
   const [loadedOnce, setLoadedOnce] = React.useState(false)
   const [movementTarget, setMovementTarget] = React.useState<MovementDialogTarget | null>(null)
   const [detailId, setDetailId] = React.useState<string | null>(null)
+  // 并发请求序号：快速连续切换日期范围时，旧响应后到不再覆盖新范围的数据
+  const loadSeqRef = React.useRef(0)
+  /** 库存变动成功后 load 刷新时保持表格滚动位置（DataTable 消费后自动复位） */
+  const preserveScrollRef = React.useRef(false)
 
-  const load = React.useCallback((r: DateRange | undefined) => {
+  const load = React.useCallback((r: DateRange | undefined, opts?: { preserveScroll?: boolean }) => {
     if (!r?.from) {
       toast.error("请选择日期范围")
       return
@@ -56,9 +61,16 @@ export function MovementPanel() {
     const from = toBjDay(r.from)
     // to 空选（只点了起始日）按单日处理
     const to = r.to ? toBjDay(r.to) : from
+    // 日期范围切换=换数据集回顶；仅库存变动后刷新保持滚动位置（口径同总览面板）
+    const seq = ++loadSeqRef.current
     startLoad(async () => {
       const res = await getInventoryMovementProductsAction({ from, to })
+      // 旧响应后到（期间已再切范围）：丢弃，loadedOnce/报错留给最新请求
+      if (seq !== loadSeqRef.current) return
       if (res.ok) {
+        // 置位须紧贴 setRows 而非请求发起时：在途切日期的先行 setRows 不偷走
+        // 置位、失败/丢弃分支不置位无残留（口径同总览面板 load）
+        if (opts?.preserveScroll) preserveScrollRef.current = true
         setRows(res.rows)
         setSummary(res.summary)
       } else {
@@ -80,10 +92,8 @@ export function MovementPanel() {
         enableSorting: false,
         cell: ({ row }) =>
           row.original.imageUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
+            <ZoomableImage
               src={row.original.imageUrl}
-              alt=""
               className="size-10 shrink-0 rounded object-cover"
             />
           ) : (
@@ -193,6 +203,8 @@ export function MovementPanel() {
         initialSorting={[{ id: "productCode", desc: false }]}
         columnDividers
         infinite
+        preserveScrollRef={preserveScrollRef}
+        scrollJump
         loading={loading || !loadedOnce}
         onRowClick={(r) => setDetailId(r.productId)}
         empty={
@@ -207,7 +219,7 @@ export function MovementPanel() {
         onOpenChange={(open) => {
           if (!open) setMovementTarget(null)
         }}
-        onDone={() => load(range)}
+        onDone={() => load(range, { preserveScroll: true })}
       />
       <ProductDetailSheet
         productId={detailId}

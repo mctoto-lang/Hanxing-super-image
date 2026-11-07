@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { ZoomableImage } from "@/components/ui/zoomable-image"
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import { ExcelExportButton } from "./excel-export-button"
 import { cn } from "@/lib/utils"
@@ -85,6 +86,8 @@ export function ProductionPanel() {
   const [q, setQ] = React.useState("")
   const [statusFilters, setStatusFilters] = React.useState<string[]>([])
   const [loading, startLoad] = React.useTransition()
+  // 竞态守卫：进行中/归档组快速切换时，后到的旧组请求不得覆盖新组数据（quality/return-panel 同款）
+  const loadReqRef = React.useRef(0)
   // SSR 首帧无数据：首次加载完成前恒显骨架，避免水合前闪空态文案
   const [loadedOnce, setLoadedOnce] = React.useState(false)
 
@@ -107,11 +110,13 @@ export function ProductionPanel() {
 
   const load = React.useCallback(() => {
     startLoad(async () => {
+      const reqId = ++loadReqRef.current
       const [list, st, fs] = await Promise.all([
         listProductionOrdersAction({ group }),
         getProductionStatsAction(),
         listFactoriesAction(),
       ])
+      if (reqId !== loadReqRef.current) return
       if (list.ok) setRows(list.rows)
       else toast.error(list.error)
       if (st.ok) setStats(st.stats)
@@ -149,14 +154,20 @@ export function ProductionPanel() {
         ? ([
             {
               id: "sel",
+              meta: { align: "center" },
               header: () => {
                 const selectable = data.filter((r) => r.remainQty > 0)
                 const all = selectable.length > 0 && selectable.every((r) => selectedIds.has(r.id))
+                const some = selectable.some((r) => selectedIds.has(r.id))
                 return (
                   <Checkbox
                     checked={all}
+                    indeterminate={!all && some}
+                    // 部分勾选（半选「-」态）或全选时点击 = 取消全部
                     onCheckedChange={() =>
-                      setSelectedIds(all ? new Set() : new Set(selectable.map((r) => r.id)))
+                      setSelectedIds(
+                        all || some ? new Set() : new Set(selectable.map((r) => r.id)),
+                      )
                     }
                     aria-label="全选（仅含剩余待入的单）"
                   />
@@ -201,8 +212,7 @@ export function ProductionPanel() {
           return (
             <div className="flex items-center gap-2">
               {r.imageUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={r.imageUrl} alt="" className="size-10 shrink-0 rounded object-cover" />
+                <ZoomableImage src={r.imageUrl} className="size-10 shrink-0 rounded object-cover" />
               ) : (
                 <span className="flex size-10 shrink-0 items-center justify-center rounded bg-muted text-[10px] text-muted-foreground">
                   无图
@@ -255,6 +265,7 @@ export function ProductionPanel() {
       {
         accessorKey: "status",
         header: "状态",
+        meta: { align: "center" },
         cell: ({ row }) => (
           <InvBadge
             className={PRODUCTION_STATUS_BADGE[row.original.status]}

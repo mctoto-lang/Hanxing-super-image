@@ -13,6 +13,7 @@ import {
 import { TEMU_TABLE_HEADER_CLASS } from "@/components/temu/table-header-style"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { ZoomableImage } from "@/components/ui/zoomable-image"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Dialog,
@@ -52,6 +53,7 @@ import {
   type TemuAdjustOrderRow,
 } from "@/server/actions/temu-workbench"
 import { BARGAIN_REASON_TYPES } from "@/lib/temu-api/workbench-labels"
+import { temuImageSrc } from "@/lib/temu/image"
 import { ProductNameCell, EmptyHint } from "@/components/temu/products-table"
 import { formatDateTime as fmtTs } from "@/lib/datetime"
 
@@ -80,7 +82,7 @@ const yuan = (fen: number | null | undefined) =>
 /** 价差百分比（正=建议/调价降价 → 红色下降趋势线；负=涨价 → 绿色；0 无图标）。
  *  核价单与调价单同款展示 */
 function DeltaPctCell({ deltaPct }: { deltaPct: number | null }) {
-  if (deltaPct == null) return <EmptyHint />
+  if (deltaPct == null) return <EmptyHint center />
   const tone =
     deltaPct > 0
       ? "text-red-600 dark:text-red-400"
@@ -310,7 +312,7 @@ function ReviewSection({
                 <TableHead>申报价</TableHead>
                 <TableHead>建议价</TableHead>
                 <TableHead>价差</TableHead>
-                <TableHead>状态</TableHead>
+                <TableHead className="text-center">状态</TableHead>
                 <TableHead>操作</TableHead>
               </TableRow>
             </TableHeader>
@@ -329,8 +331,10 @@ function ReviewSection({
                 <TableRow key={r.orderId}>
                   <TableCell>
                     {r.products[0]?.mainImageUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={r.products[0].mainImageUrl} alt="" className="size-10 rounded object-cover" loading="lazy" />
+                      <ZoomableImage
+                        src={temuImageSrc(r.products[0].mainImageCosUrl, r.products[0].mainImageUrl)}
+                        className="size-10 rounded object-cover"
+                      />
                     ) : (
                       <div className="size-10 rounded bg-muted" />
                     )}
@@ -338,10 +342,10 @@ function ReviewSection({
                   <TableCell className="max-w-56">
                     <ProductNameCell name={r.products[0]?.productName ?? null} />
                   </TableCell>
-                  <TableCell className="font-mono text-xs">{r.products[0]?.productSn ?? <EmptyHint />}</TableCell>
+                  <TableCell className="font-mono text-xs">{r.products[0]?.productSn ?? <EmptyHint center />}</TableCell>
                   <TableCell>
                     {r.skuIds.length === 0 ? (
-                      <EmptyHint />
+                      <EmptyHint center />
                     ) : r.skuIds.length === 1 ? (
                       <span className="font-mono text-xs">{r.skuIds[0]}</span>
                     ) : (
@@ -360,15 +364,15 @@ function ReviewSection({
                     )}
                   </TableCell>
                   <TableCell className="tabular-nums">
-                    {r.supplyPrice != null ? yuan(r.supplyPrice) : <EmptyHint />}
+                    {r.supplyPrice != null ? yuan(r.supplyPrice) : <EmptyHint center />}
                   </TableCell>
                   <TableCell className="tabular-nums">
-                    {r.suggestSupplyPrice != null ? yuan(r.suggestSupplyPrice) : <EmptyHint />}
+                    {r.suggestSupplyPrice != null ? yuan(r.suggestSupplyPrice) : <EmptyHint center />}
                   </TableCell>
                   <TableCell className="tabular-nums">
                     <DeltaPctCell deltaPct={r.deltaPct} />
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="text-center">
                     <StatusBadge label={r.statusLabel} tone={reviewTone(r.status)} />
                   </TableCell>
                   <TableCell>
@@ -720,10 +724,13 @@ function AdjustSection({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {loading && rows.length === 0 && <TableSkeletonRows cols={11} />}
+              {loading && rows.length === 0 && <TableSkeletonRows cols={actionable ? 11 : 10} />}
               {!loading && rows.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={11} className="h-20 text-center text-muted-foreground">
+                  <TableCell
+                    colSpan={actionable ? 11 : 10}
+                    className="h-20 text-center text-muted-foreground"
+                  >
                     该状态下暂无调价单
                   </TableCell>
                 </TableRow>
@@ -732,8 +739,7 @@ function AdjustSection({
                 <TableRow key={r.priceOrderSn}>
                   <TableCell>
                     {r.image ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={r.image} alt="" className="size-10 rounded object-cover" loading="lazy" />
+                      <ZoomableImage src={r.image} className="size-10 rounded object-cover" />
                     ) : (
                       <div className="size-10 rounded bg-muted" />
                     )}
@@ -741,20 +747,20 @@ function AdjustSection({
                   <TableCell className="max-w-56">
                     <ProductNameCell name={r.productName} />
                   </TableCell>
-                  <TableCell className="font-mono text-xs">{r.skcExtCode ?? r.skcId ?? <EmptyHint />}</TableCell>
+                  <TableCell className="font-mono text-xs">{r.skcExtCode ?? r.skcId ?? <EmptyHint center />}</TableCell>
                   <TableCell className="text-xs">
                     {/* 货号 → 规格 → SKU ID 优先显示（官方部分行不返回 skuExtCode） */}
                     {r.skuItems.length === 0 ? (
-                      <EmptyHint />
+                      <EmptyHint center />
                     ) : (
                       `${r.skuItems[0]?.skuExtCode ?? r.skuItems[0]?.spec ?? r.skuItems[0]?.skuId ?? "—"}${r.skuItems.length > 1 ? ` 等 ${r.skuItems.length} 个` : ""}`
                     )}
                   </TableCell>
                   <TableCell className="tabular-nums">
-                    {r.currentSupplyPrice != null ? yuan(r.currentSupplyPrice) : <EmptyHint />}
+                    {r.currentSupplyPrice != null ? yuan(r.currentSupplyPrice) : <EmptyHint center />}
                   </TableCell>
                   <TableCell className="tabular-nums">
-                    {r.newSupplyPrice != null ? yuan(r.newSupplyPrice) : <EmptyHint />}
+                    {r.newSupplyPrice != null ? yuan(r.newSupplyPrice) : <EmptyHint center />}
                   </TableCell>
                   <TableCell className="tabular-nums">
                     <DeltaPctCell deltaPct={deltaPctOf(r.currentSupplyPrice, r.newSupplyPrice)} />
@@ -764,7 +770,7 @@ function AdjustSection({
                     <TruncTip text={r.adjustReason ?? ""} className="max-w-40 text-muted-foreground" />
                   </TableCell>
                   <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                    {r.orderCreateTime != null ? fmtTs(r.orderCreateTime) : <EmptyHint />}
+                    {r.orderCreateTime != null ? fmtTs(r.orderCreateTime) : <EmptyHint center />}
                   </TableCell>
                   {actionable && (
                     <TableCell>

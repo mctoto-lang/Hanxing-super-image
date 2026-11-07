@@ -25,8 +25,6 @@ import {
   Compass,
   Lightbulb,
   PenLine,
-  ArrowUp,
-  ArrowDown,
   Replace,
   Languages,
   LibraryBig,
@@ -35,6 +33,7 @@ import {
   Bot,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { ScrollJumpButtons } from "@/components/ui/scroll-jump-buttons"
 import { MorphingInfinity } from "@/components/ui/morphing-infinity"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -810,8 +809,6 @@ export function WorkspaceClient({
   >(new Set())
 
   // ─── UI 状态 ───
-  const [showScrollToTop, setShowScrollToTop] = useState(false)
-  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
 
   // ─── Refs（轮询定时器 + 防竞态） ───
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -1356,23 +1353,7 @@ export function WorkspaceClient({
     void fetchTasks(1)
   }, [fetchTasks])
 
-  // ─── 滚动检测 ───
-  useEffect(() => {
-    const container = cardScrollContainerRef.current
-    if (!container) return
-
-    const handleScroll = () => {
-      setShowScrollToTop(container.scrollTop > 240)
-      // 距底部超过 240 才显示「到底部」（与回顶阈值对称：贴底隐藏、在顶部即显示）
-      setShowScrollToBottom(
-        container.scrollHeight - container.scrollTop - container.clientHeight > 240,
-      )
-    }
-
-    handleScroll()
-    container.addEventListener("scroll", handleScroll)
-    return () => container.removeEventListener("scroll", handleScroll)
-  }, [activeTaskId, cards.length, loadingCards])
+  // ─── 回顶 / 到底：已抽公共组件 ScrollJumpButtons（点按跳转 + 长按慢滚） ───
 
   // ─── 切换任务：清理旧数据 + 获取新数据 + 启动/停止轮询 ───
   useEffect(() => {
@@ -1470,17 +1451,6 @@ export function WorkspaceClient({
         taskRefreshTimeoutRef.current = null
       }
     }
-  }, [])
-
-  // ─── 滚动到顶部 / 底部 ───
-  const handleScrollToTop = useCallback(() => {
-    cardScrollContainerRef.current?.scrollTo({ top: 0, behavior: "smooth" })
-  }, [])
-
-  const handleScrollToBottom = useCallback(() => {
-    const container = cardScrollContainerRef.current
-    if (!container) return
-    container.scrollTo({ top: container.scrollHeight, behavior: "smooth" })
   }, [])
 
   // ─── 任务操作 ───
@@ -2816,37 +2786,8 @@ export function WorkspaceClient({
                 />
               )}
 
-              {/* 回顶 / 到底：右下角纵向叠加，显隐过渡样式一致 */}
-              <div className="sticky bottom-5 ml-auto mr-5 mb-5 flex w-fit flex-col gap-2">
-                <button
-                  type="button"
-                  onClick={handleScrollToTop}
-                  className={cn(
-                    "flex h-12 w-12 items-center justify-center rounded-full border border-border/70 bg-background/95 text-foreground shadow-lg backdrop-blur transition-all duration-300 ease-out hover:-translate-y-0.5 hover:bg-accent",
-                    showScrollToTop
-                      ? "translate-y-0 opacity-100 pointer-events-auto"
-                      : "translate-y-3 opacity-0 pointer-events-none",
-                  )}
-                  aria-label="回到顶部"
-                  title="回到顶部"
-                >
-                  <ArrowUp className="h-5 w-5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={handleScrollToBottom}
-                  className={cn(
-                    "flex h-12 w-12 items-center justify-center rounded-full border border-border/70 bg-background/95 text-foreground shadow-lg backdrop-blur transition-all duration-300 ease-out hover:-translate-y-0.5 hover:bg-accent",
-                    showScrollToBottom
-                      ? "translate-y-0 opacity-100 pointer-events-auto"
-                      : "translate-y-3 opacity-0 pointer-events-none",
-                  )}
-                  aria-label="跳转到底部"
-                  title="跳转到底部"
-                >
-                  <ArrowDown className="h-5 w-5" />
-                </button>
-              </div>
+              {/* 回顶 / 到底：右下角纵向叠加，显隐过渡样式一致（公共组件） */}
+              <ScrollJumpButtons containerRef={cardScrollContainerRef} />
             </div>
           </>
         )}
