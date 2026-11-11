@@ -1,5 +1,7 @@
 "use server"
 
+import { z } from "zod"
+
 import { and, desc, eq, inArray, isNotNull } from "drizzle-orm"
 import { db } from "@/db/client"
 import {
@@ -40,6 +42,7 @@ import {
   temuPublishTemplateUpdateSchema,
   temuImageCompressSchema,
   temuDimensionCheckSchema,
+  temuProductCarouselSchema,
 } from "@/server/schemas/temu"
 
 /**
@@ -1346,5 +1349,94 @@ export async function listPublishRecordsAction(
       requestSnapshot: rec.requestSnapshot ?? null,
       responseSnapshot: rec.responseSnapshot ?? null,
     })),
+  }
+}
+
+/* ─── 换图片（商品信息页设置菜单；edit.pictures.submit 轮播整组提交，2026-11-09 探针定稿） ─── */
+
+/**
+ * 换图片：轮播图集整组提交（bg.glo.goods.edit.pictures.submit {productId, carouselImageUrls}）。
+ * 探针口径（docs §8.12，2026-11-09）：仅提交 carouselImageUrls 即生效；提交与现值相同
+ * 报 996000024「请修改图片后提交」；skcList[].colorImageUrl 不可独立提交（会被同码拒绝）。
+ * 图源逐张转官方图床（kwcdn 官方域 URL 直接透传）；素材图口径校验 1:1 ≥800×800 ≤2M。
+ */
+export async function submitProductCarouselAction(
+  input: unknown,
+): Promise<{ ok: true; carousel: string[] } | { ok: false; error: string }> {
+  let q: z.infer<typeof temuProductCarouselSchema>
+  try {
+    q = temuProductCarouselSchema.parse(input)
+  } catch (err) {
+    const issue = err instanceof z.ZodError ? err.issues[0]?.message : undefined
+    return { ok: false, error: issue ?? "参数错误" }
+  }
+  try {
+    // 商品信息页（temu tab）可看即可用（同工作台写操作口径）
+    const ctx0 = await requireEnterpriseContext()
+    if (!ctx0.canAccess("temu")) {
+      return { ok: false, error: `当前账号没有「${MODULE_LABELS.temu}」页面权限，无法执行该操作` }
+    }
+    const { enterpriseId } = getCurrentEnterpriseScope(ctx0)
+    const [store] = await db
+      .select()
+      .from(temuStores)
+      .where(and(eq(temuStores.id, q.storeId), eq(temuStores.enterpriseId, enterpriseId)))
+      .limit(1)
+    if (!store) return { ok: false, error: "店铺不存在或无权访问" }
+    if (!store.enabled) return { ok: false, error: "店铺已停用" }
+    const ctx = await getTemuCallContext(store)
+    if ("error" in ctx) return { ok: false, error: ctx.error }
+
+    // 图源逐张处理：kwcdn 官方域直接透传；其余（本站 uploads/外链/dataUrl）转官方图床
+    const finalUrls: string[] = []
+    for (const src of q.imageUrls) {
+      if (/^https:\/\/[^/]*\.kwcdn\.com\//.test(src) || /^https:\/\/[^/]*\.temu\.com\//.test(src)) {
+        finalUrls.push(src)
+        continue
+      }
+      try {
+        const up = await uploadImageToStore(src, ctx, "material")
+        finalUrls.push(up.url)
+      } catch (err) {
+        if (isTemuTokenExpired(err)) {
+          await db
+            .update(temuStores)
+            .set({ tokenState: "invalid", updatedAt: new Date() })
+            .where(eq(temuStores.id, q.storeId))
+          return { ok: false, error: "店铺 access_token 已过期，请重新授权录入" }
+        }
+        return {
+          ok: false,
+          error: `第 ${finalUrls.length + 1} 张图处理失败：${err instanceof Error ? err.message : String(err)}`,
+        }
+      }
+    }
+
+    try {
+      await callTemuApi(
+        "bg.glo.goods.edit.pictures.submit",
+        { productId: q.productId, carouselImageUrls: finalUrls },
+        ctx,
+      )
+    } catch (err) {
+      if (isTemuPermissionError(err)) {
+        return { ok: false, error: "店铺 token 未授权该编辑接口（7000019），请在卖家中心核对接口授权" }
+      }
+      if (isTemuTokenExpired(err)) {
+        await db
+          .update(temuStores)
+          .set({ tokenState: "invalid", updatedAt: new Date() })
+          .where(eq(temuStores.id, q.storeId))
+        return { ok: false, error: "店铺 access_token 已过期，请重新授权录入" }
+      }
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes("996000024")) {
+        return { ok: false, error: "官方判定图片未发生变化（996000024），请确认至少修改了一张图后重试" }
+      }
+      return { ok: false, error: msg }
+    }
+    return { ok: true, carousel: finalUrls }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
 }

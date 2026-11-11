@@ -371,14 +371,14 @@ export function TemuSalesTop10({ data }: { data: TemuSalesTopRow[] }) {
   )
 }
 
-// ---------- 售出 TOP20（按货号，概览页底部三卡） ----------
+// ---------- 售出 TOP30（按货号，概览页底部三卡） ----------
 
 /** 领奖台名次勋章底色：金 / 银 / 铜（实底圆内嵌 Medal 白图标，名次由领奖台位置表达） */
 const RANK_MEDAL = ["bg-amber-500", "bg-slate-400", "bg-orange-700"]
 
-/** TOP20 主图缩略：取「该口径销量最高 SKC」的图（转存 URL 优先，temuImageSrc 回落
+/** TOP30 主图缩略：取「该口径销量最高 SKC」的图（转存 URL 优先，temuImageSrc 回落
  *  kwcdn 外链），无图占位 */
-function Top20Thumb({
+function Top30Thumb({
   row,
   metric,
   className,
@@ -415,9 +415,9 @@ function Top20Thumb({
   )
 }
 
-/** 售出 TOP20 单卡：前 3 名主图领奖台（2-1-3 排列，第一名居中更大）+
- *  第 4-20 名行内列表（序号+主图+货号+销量，固定高度内部滚动、隐藏滚动条） */
-function TemuTop20Card({
+/** 售出 TOP30 单卡：前 3 名主图领奖台（2-1-3 排列，第一名居中更大）+
+ *  第 4-30 名行内列表（序号+主图+货号+销量，固定高度内部滚动、隐藏滚动条） */
+function TemuTop30Card({
   title,
   metric,
   rows,
@@ -446,7 +446,7 @@ function TemuTop20Card({
               {podiumOrder.map((p) => (
                 <div key={p.row.sn} className="flex w-24 min-w-0 flex-col items-center gap-1">
                   <div className={cn("relative", p.rank === 1 ? "size-20" : "size-14")}>
-                    <Top20Thumb row={p.row} metric={metric} className="size-full" />
+                    <Top30Thumb row={p.row} metric={metric} className="size-full" />
                     <div
                       className={cn(
                         "absolute -left-2 -top-2 flex size-6 items-center justify-center rounded-full text-white shadow-md",
@@ -476,7 +476,7 @@ function TemuTop20Card({
                     <span className="w-5 shrink-0 text-center tabular-nums text-muted-foreground">
                       {i + 4}
                     </span>
-                    <Top20Thumb row={x.row} metric={metric} className="size-7 shrink-0" />
+                    <Top30Thumb row={x.row} metric={metric} className="size-7 shrink-0" />
                     <TruncTip text={x.row.sn} className="min-w-0 flex-1" />
                     <span className="shrink-0 font-medium tabular-nums">
                       {x.value.toLocaleString("zh-CN")}
@@ -492,12 +492,12 @@ function TemuTop20Card({
   )
 }
 
-/** 售出 TOP20 三卡（今日/七日/三十日，按货号汇总；口径固定无切换） */
-export function TemuSalesTop20Cards({ data }: { data: TemuSalesTopBySnRow[] }) {
+/** 售出 TOP30 三卡（今日/七日/三十日，按货号汇总；口径固定无切换） */
+export function TemuSalesTop30Cards({ data }: { data: TemuSalesTopBySnRow[] }) {
   const cards = [
-    { key: "today", title: "今日销量 TOP 20" },
-    { key: "7d", title: "七日销量 TOP 20" },
-    { key: "30d", title: "三十日销量 TOP 20" },
+    { key: "today", title: "今日销量 TOP 30" },
+    { key: "7d", title: "七日销量 TOP 30" },
+    { key: "30d", title: "三十日销量 TOP 30" },
   ] as const
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
@@ -514,8 +514,8 @@ export function TemuSalesTop20Cards({ data }: { data: TemuSalesTopBySnRow[] }) {
           }))
           .filter((x) => x.value > 0)
           .sort((a, b) => b.value - a.value)
-          .slice(0, 20)
-        return <TemuTop20Card key={c.key} title={c.title} metric={c.key} rows={rows} />
+          .slice(0, 30)
+        return <TemuTop30Card key={c.key} title={c.title} metric={c.key} rows={rows} />
       })}
     </div>
   )

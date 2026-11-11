@@ -38,7 +38,7 @@ export function LanguagesConfigTable({
             <TableHead>输出语言名</TableHead>
             <TableHead className="hidden md:table-cell">图内文字指令</TableHead>
             <TableHead>状态</TableHead>
-            <TableHead className="text-right">操作</TableHead>
+            <TableHead>操作</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -68,8 +68,8 @@ export function LanguagesConfigTable({
                     {l.isActive ? "启用" : "停用"}
                   </Badge>
                 </TableCell>
-                <TableCell className="text-right">
-                  <div className="flex items-center justify-end gap-1">
+                <TableCell>
+                  <div className="flex items-center gap-1">
                     <LanguageEditButton row={l} />
                     <LanguageToggleActiveButton id={l.id} isActive={l.isActive} />
                   </div>

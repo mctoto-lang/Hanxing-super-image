@@ -1,21 +1,20 @@
 "use client"
 
 import * as React from "react"
-import { useActionState } from "react"
 import { Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog"
+import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import { toast } from "sonner"
 import { useRouter } from "next/navigation"
 import { removeMemberAction } from "@/server/actions/admin-users"
 
+/**
+ * 删除成员（复用 ConfirmDialog，与 member-status 同一套确认口径）。
+ *
+ * 删除为硬删除：该成员的历史生图任务等数据随账号一并级联删除
+ * （仅积分流水、登录日志置空保留），账号无法登录；
+ * 文案引导「仅需暂停时先禁用」。
+ */
 export function RemoveMemberDialog({
   userId,
   username,
@@ -24,49 +23,43 @@ export function RemoveMemberDialog({
   username: string
 }) {
   const [open, setOpen] = React.useState(false)
+  const [pending, startTransition] = React.useTransition()
   const router = useRouter()
 
-  const [, formAction, pending] = useActionState(
-    async (_prev: unknown) => {
+  function handleConfirm() {
+    startTransition(async () => {
       const res = await removeMemberAction(userId)
-      if (res.ok) {
-        toast.success(`已删除成员 ${username}`)
-        setOpen(false)
-        router.refresh()
-        return null
+      if (!res.ok) {
+        toast.error(res.error ?? "删除失败")
+        return
       }
-      toast.error(res.error ?? "删除失败")
-      return { error: res.error }
-    },
-    null,
-  )
+      toast.success(`已删除成员 ${username}`)
+      setOpen(false)
+      router.refresh()
+    })
+  }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={<Button variant="ghost" size="sm" className="text-destructive" aria-label={`删除成员 ${username}`}><Trash2 className="size-3.5" /></Button>} />
-      <DialogContent className="sm:max-w-[360px]">
-        <DialogHeader>
-          <DialogTitle>删除成员</DialogTitle>
-        </DialogHeader>
-        <p className="text-sm">
-          确认删除成员 <strong>{username}</strong>？该成员的历史任务数据会保留在
-          企业内（审计一致性），但账号将无法登录。此操作不可撤销。
-        </p>
-        <form action={formAction}>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setOpen(false)}
-            >
-              取消
-            </Button>
-            <Button type="submit" variant="destructive" disabled={pending}>
-              {pending ? "删除中..." : "确认删除"}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+    <>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="text-destructive"
+        aria-label={`删除成员 ${username}`}
+        onClick={() => setOpen(true)}
+      >
+        <Trash2 className="size-3.5" />
+      </Button>
+      <ConfirmDialog
+        open={open}
+        onOpenChange={setOpen}
+        title="删除成员"
+        description={`确认删除成员 ${username}？该成员的历史生图任务、收藏等数据将随账号一并永久删除（仅积分流水、登录日志保留），账号将无法登录。此操作不可撤销。如仅需暂停使用，建议先「禁用」保留账号。`}
+        confirmText="确认删除"
+        destructive
+        pending={pending}
+        onConfirm={handleConfirm}
+      />
+    </>
   )
 }

@@ -57,7 +57,7 @@ import { chunkSns } from "./ship-packing"
  * - 物流公司按企业级「优先顺序 + 黑名单」（temu_logistics_config，迁移 0093）自动选：
  *   比价结果剔除黑名单 → 取优先顺序中第一个本次可用的公司；全不可用回落平台常用；
  *   比价出现名单外公司（未配置）提示可一键补入优先/黑名单，配置可在弹窗内编辑保存；
- * - 预约取货时间：天/时/分手选（默认预选最早可约时段）；
+ * - 预约取货时间：天/时/分手选（默认按 18 点规则预选：<17 点→今日 18:00，≥17 点→次日 18:00）；
  * - 库存联动开关：开=发货前硬校验+成功后扣减（默认）；关=skipInventory（不校验不扣减，
  *   区别于工厂直发——不回写直发标记）。
  */
@@ -345,7 +345,7 @@ export function AutoReserveDialog({
         <DialogHeader>
           <DialogTitle>自动预约发货（{rows.length} 单）</DialogTitle>
           <DialogDescription>
-            重量/体积/箱数自动回填；物流公司按企业级优先顺序自动选择（黑名单剔除）；预约取货时间默认最早可约时段（可改）；库存联动可关。
+            重量/体积/箱数自动回填；物流公司按企业级优先顺序自动选择（黑名单剔除）；预约取货时间默认今日/次日 18:00（可改）；库存联动可关。
           </DialogDescription>
         </DialogHeader>
 
@@ -370,7 +370,7 @@ export function AutoReserveDialog({
                 <span className="text-red-600">*</span> 预估总重量（千克）
               </Label>
               <Input
-                className="h-8 text-xs tabular-nums"
+                className="h-8 rounded-md text-xs tabular-nums"
                 type="number"
                 inputMode="numeric"
                 min={1}
@@ -383,7 +383,7 @@ export function AutoReserveDialog({
             <div className="space-y-1">
               <Label className="text-xs">预估总体积（m³）</Label>
               <Input
-                className="h-8 text-xs tabular-nums"
+                className="h-8 rounded-md text-xs tabular-nums"
                 value={volume}
                 onChange={(e) => setVolume(e.target.value)}
                 placeholder="官方预估自动回填（空按 0.01 兜底）"
@@ -394,7 +394,7 @@ export function AutoReserveDialog({
                 <span className="text-red-600">*</span> 发货总箱/包数
               </Label>
               <Input
-                className="h-8 text-xs tabular-nums"
+                className="h-8 rounded-md text-xs tabular-nums"
                 type="number"
                 inputMode="numeric"
                 min={1}
@@ -628,7 +628,7 @@ export function AutoReserveDialog({
 
           {/* 预约取货时间 */}
           <section className="space-y-1.5">
-            <Label className="text-xs">预约取货时间（默认最早可约时段）</Label>
+            <Label className="text-xs">预约取货时间（默认今日/次日 18:00）</Label>
             <PickupTimePicker
               key={selOption?.expressCompanyId ?? "none"}
               slots={slots}

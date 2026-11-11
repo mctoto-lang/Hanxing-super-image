@@ -33,7 +33,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Combobox, type ComboboxOption } from "@/components/ui/combobox"
+import { TemuSearchBar, type SearchBarField } from "@/components/temu/search-bar"
+import { pickPrintLockedRows, shipListLoadOpts } from "@/components/temu/ship-panel-refresh"
 import {
   cancelShipOrderAction,
   changeShipLogisticsAction,
@@ -93,6 +94,13 @@ const STATUS_OPTIONS = [
 const VIEW_OPTIONS = [
   { value: "staging", label: "发货台" },
   { value: "orders", label: "发货单列表" },
+]
+
+/** 发货单列表共享搜索条字段（本地库精确过滤，temu-ship 查询条件已支持三入参） */
+const SHIP_SEARCH_FIELDS: SearchBarField[] = [
+  { value: "sn", label: "发货单号", placeholder: "输入完整单号…" },
+  { value: "subSn", label: "备货单号", placeholder: "输入完整单号…" },
+  { value: "ext", label: "货号", placeholder: "输入货号…" },
 ]
 
 /** 绝对截止时间 → 「X小时Y分后自动取消」；过期返回「已到期」 */
@@ -290,7 +298,13 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
   const [statusPreset, setStatusPreset] = React.useState("pending")
   const [page, setPage] = React.useState(1)
   const [pageSize, setPageSize] = React.useState(20)
-  const [extCode, setExtCode] = React.useState("")
+  /** 共享搜索条（按钮/回车触发提交；空关键词=清除筛选）——draft 两态防逐键重查 */
+  const [searchField, setSearchField] = React.useState(SHIP_SEARCH_FIELDS[0]!.value)
+  const [searchKeyword, setSearchKeyword] = React.useState("")
+  const [appliedSearch, setAppliedSearch] = React.useState<{ field: string; keyword: string }>({
+    field: SHIP_SEARCH_FIELDS[0]!.value,
+    keyword: "",
+  })
   /** 发货仓库筛选（null=全部；addrId=卖家发货地址 id）与选项（随店拉取） */
   const [warehouseId, setWarehouseId] = React.useState<number | null>(null)
   const [warehouseOptions, setWarehouseOptions] = React.useState<Array<{ id: number; label: string }>>([])
@@ -318,53 +332,67 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
   const [changeDeliver, setChangeDeliver] = React.useState<DeliverPayload>({ deliverMethod: 1, driverName: "", plateNumber: "", expressPackageNum: 1 })
   const [changeThirdParty, setChangeThirdParty] = React.useState<Array<{ expressCompanyId: number; expressCompanyName: string }>>([])
   const [changePending, startChangePending] = React.useTransition()
-  /** 打印商品打包标签两步确认（图2：继续打印/先发货后打印；图3：件数锁定二次确认） */
-  const [boxMarkConfirm, setBoxMarkConfirm] = React.useState<string[] | null>(null)
+  /** 打印商品打包标签两步确认（图2：继续打印/先发货后打印；图3：件数锁定二次确认）；
+   *  then=「批量装箱发货/自动预约发货」入口遇未打印单直弹图3（跳过图2），
+   *  确认锁定并刷新后自动继续打开原弹窗（kind 标记目标；续接用刷新后的最新行，不用勾选快照） */
+  const [boxMarkConfirm, setBoxMarkConfirm] = React.useState<{
+    sns: string[]
+    then?: { kind: "reserve" | "packing" }
+  } | null>(null)
   const [shipAfterPrint, setShipAfterPrint] = React.useState(false)
 
-  const load = React.useCallback((opts?: { fresh?: boolean }) => {
+  /** 查询发货单列表并 resolve 刷新后的行（打印锁定直弹路径据此取最新行开弹窗；
+   *  startTransition 不回传结果，外层 Promise 兜底 resolve——异常也 resolve 空行，
+   *  与「错误置空列表」口径一致，保证 await load(...) 不悬挂） */
+  const load = React.useCallback((opts?: { fresh?: boolean }): Promise<TemuShipOrderRow[]> => {
     void reloadTick // 创建发货单/装箱成功后靠 reloadTick 变化触发重查
-    if (!store) return
-    startLoading(async () => {
-      const r = await getTemuShipOrdersAction({
-        store,
-        page,
-        pageSize,
-        statusPreset,
-        skcExtCode: extCode.trim() || undefined,
-        warehouseId: warehouseId ?? undefined,
-        fresh: opts?.fresh ? true : undefined,
-      })
-      if (r.ok) {
-        setRows(r.rows)
-        setTotal(r.total)
-        setError(null)
-        if (r.freshStats && r.freshStats.missing > 0) {
-          toast.info(`实时核对：${r.freshStats.missing} 单官方侧已移除，本地已置为「已取消」`)
+    if (!store) return Promise.resolve([])
+    const kw = appliedSearch.keyword.trim()
+    return new Promise((resolve) => {
+      startLoading(async () => {
+        let out: TemuShipOrderRow[] = []
+        try {
+          const r = await getTemuShipOrdersAction({
+            store,
+            page,
+            pageSize,
+            statusPreset,
+            skcExtCode: appliedSearch.field === "ext" && kw ? kw : undefined,
+            subPurchaseOrderSn: appliedSearch.field === "subSn" && kw ? kw : undefined,
+            deliveryOrderSn: appliedSearch.field === "sn" && kw ? kw : undefined,
+            warehouseId: warehouseId ?? undefined,
+            fresh: opts?.fresh ? true : undefined,
+          })
+          if (r.ok) {
+            out = r.rows
+            setRows(r.rows)
+            setTotal(r.total)
+            setError(null)
+            if (r.freshStats && r.freshStats.missing > 0) {
+              toast.info(`实时核对：${r.freshStats.missing} 单官方侧已移除，本地已置为「已取消」`)
+            }
+            if (r.freshWarning) toast.warning(r.freshWarning, { duration: 8000 })
+          } else {
+            setRows([])
+            setTotal(0)
+            setError(r.error)
+          }
+        } finally {
+          resolve(out)
         }
-        if (r.freshWarning) toast.warning(r.freshWarning, { duration: 8000 })
-      } else {
-        setRows([])
-        setTotal(0)
-        setError(r.error)
-      }
+      })
     })
-  }, [store, page, pageSize, statusPreset, extCode, warehouseId, reloadTick])
-
-  // 货号输入即搜索：有关键字防抖 400ms，清空立即重查（筛选拍本地）
-  React.useEffect(() => {
-    const t = setTimeout(() => load(), extCode.trim() ? 400 : 0)
-    return () => clearTimeout(t)
-  }, [load, extCode])
+  }, [store, page, pageSize, statusPreset, appliedSearch, warehouseId, reloadTick])
 
   // 进入「发货单列表」即拉实时单（action 内：裸查最新一页落库 + 当前页单号核对；
-  // 待装箱等新单无须等 15 分钟同步；筛选/翻页/防抖不再打官方）
+  // 待装箱等新单无须等 15 分钟同步）；此后视图内翻页/状态筛选/仓库筛选/搜索提交、
+  // 装箱/预约/改包裹成功后的 reloadTick、以及切店，都靠 load 身份变化触发本地重查（不打官方）
+  const prevViewRef = React.useRef<"orders" | "staging" | null>(null)
   React.useEffect(() => {
-    if (view === "orders") {
-      load({ fresh: true })
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view])
+    const opts = shipListLoadOpts(prevViewRef.current, view)
+    prevViewRef.current = view
+    if (opts) void load(opts)
+  }, [load, view])
 
   // 切状态/店铺/视图清空勾选
   React.useEffect(() => {
@@ -527,7 +555,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
     } finally {
       setCancelPending(false)
       setCancelingSn(null)
-      load({ fresh: true })
+      void load({ fresh: true })
     }
   }
 
@@ -623,11 +651,12 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
     const sns = [...selSns]
     if (sns.length === 0) return
     // 两步确认（图2/图3）：两条路径统一「仅请求标记已打印」不打开官方打印页
-    setBoxMarkConfirm(sns)
+    setBoxMarkConfirm({ sns })
   }
 
-  /** 确认后执行打印请求（请求 dataKey 即官方标记已打印+锁定件数；viaShipAfter=先发货后打印路径文案） */
-  const runBoxMarkPrint = (sns: string[], viaShipAfter: boolean) => {
+  /** 确认后执行打印请求（请求 dataKey 即官方标记已打印+锁定件数；viaShipAfter=先发货后打印路径文案；
+   *  after=直弹路径锁定并刷新成功后自动继续（拿刷新后的最新行打开原弹窗），此时不再提示「请再勾选装箱」） */
+  const runBoxMarkPrint = (sns: string[], viaShipAfter: boolean, after?: (freshRows: TemuShipOrderRow[]) => void) => {
     startLoading(async () => {
       // schema deliveryOrderSns 单次上限 50：按 ≤50 一组循环分批请求；
       // 单批失败已在 requestShipBoxMark 内 toast 该批错误并继续其余批
@@ -636,14 +665,18 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
         const ok = await requestShipBoxMark(store, sns.slice(i, i + 50))
         if (ok) anyOk = true
       }
-      // 官方标记已打印后实时核对刷新（isPrintBoxMark 回填，解锁装箱发货与包裹号显示）
+      // 官方标记已打印后实时核对刷新（isPrintBoxMark 回填，解锁装箱发货与包裹号显示）；
+      // load 会等查询完成再 resolve 刷新后的行（快照行 packageSns 为空，不能直接拿来开弹窗）
       if (anyOk) {
-        await load({ fresh: true })
-        if (viaShipAfter)
+        const freshRows = await load({ fresh: true })
+        if (after) {
+          after(freshRows)
+        } else if (viaShipAfter) {
           toast.info(
             "件数已锁定（视为已打印）；请在列表勾选后「批量装箱发货」；发货后可在【待仓库收货】列表打印运单标签",
             { duration: 10_000 },
           )
+        }
       }
     })
   }
@@ -747,19 +780,17 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
       toast.error("仅「待装箱发货」状态的单据可装箱发货")
       return
     }
-    // 硬拦截：官方规定须先打印商品打包标签（打印后包裹数与件数锁定）才可装箱发货
-    const unprinted = sel.filter((r) => r.isPrintBoxMark !== true)
-    if (unprinted.length > 0) {
-      toast.error(
-        `${unprinted.length} 单未打印商品打包标签：请先点「批量打印商品打包标签」（打印后包裹数与件数锁定）再装箱发货`,
-        { duration: 8000 },
-      )
+    // 官方规定须先打印商品打包标签（打印后包裹数与件数锁定）才可装箱发货；
+    // 有未打印单时直弹「先发货后打印」件数锁定确认（跳过第一步），确认锁定后自动继续打开装箱弹窗
+    if (sel.some((r) => r.isPrintBoxMark !== true)) {
+      setBoxMarkConfirm({ sns: sel.map((r) => r.deliveryOrderSn), then: { kind: "packing" } })
+      setShipAfterPrint(true)
       return
     }
     setPackingRows(sel)
   }
 
-  /** 自动预约发货入口：拦截口径与 openPacking 完全一致（同收货仓/仅待装箱/已打印箱唧） */
+  /** 自动预约发货入口：拦截口径与 openPacking 完全一致（同收货仓/仅待装箱；未打印箱唧同样直弹锁定确认后自动继续） */
   const openAutoReserve = () => {
     if (mixedWarehouse) {
       toast.error("勾选了多个收货仓的单据；官方按同收货地址合并发货，请分批装箱", { duration: 8000 })
@@ -771,12 +802,10 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
       toast.error("仅「待装箱发货」状态的单据可装箱发货")
       return
     }
-    const unprinted = sel.filter((r) => r.isPrintBoxMark !== true)
-    if (unprinted.length > 0) {
-      toast.error(
-        `${unprinted.length} 单未打印商品打包标签：请先点「批量打印商品打包标签」（打印后包裹数与件数锁定）再装箱发货`,
-        { duration: 8000 },
-      )
+    // 未打印箱唧：与 openPacking 同口径——直弹「先发货后打印」件数锁定确认，确认后自动继续
+    if (sel.some((r) => r.isPrintBoxMark !== true)) {
+      setBoxMarkConfirm({ sns: sel.map((r) => r.deliveryOrderSn), then: { kind: "reserve" } })
+      setShipAfterPrint(true)
       return
     }
     setReserveRows(sel)
@@ -833,29 +862,23 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
               ))}
             </SelectContent>
           </Select>
-          <Combobox
-            value={extCode || null}
-            onChange={(v) => {
-              setExtCode(v)
+          <TemuSearchBar
+            fields={SHIP_SEARCH_FIELDS}
+            field={searchField}
+            onFieldChange={setSearchField}
+            keyword={searchKeyword}
+            onKeywordChange={setSearchKeyword}
+            onSearch={(f, kw) => {
+              setSearchField(f)
+              setAppliedSearch({ field: f, keyword: kw })
               setPage(1)
             }}
-            onSearchChange={(v) => {
-              setExtCode(v)
-              setPage(1)
-            }}
-            options={rows.reduce<ComboboxOption[]>((acc, r) => {
-              if (r.skcExtCode && !acc.some((o) => o.value === r.skcExtCode)) {
-                acc.push({ value: r.skcExtCode, label: r.skcExtCode, description: r.productName ?? r.subWarehouseName ?? null })
-              }
-              return acc
-            }, [])}
-            placeholder="货号"
-            searchPlaceholder="输入货号搜索…"
-            className="h-8 w-40 text-xs"
+            searching={loading}
+            className="w-72"
           />
           <div className="ml-auto flex items-center gap-2">
             {viewSwitch}
-            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => load({ fresh: true })} disabled={loading}>
+            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => void load({ fresh: true })} disabled={loading}>
               {loading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />} 刷新
             </Button>
           </div>
@@ -887,7 +910,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                       key={g.key}
                       type="button"
                       onClick={() => toggleSameWarehouseGroup(g.sns)}
-                      className={`rounded-full border px-2.5 py-0.5 text-[11px] transition-colors ${
+                      className={`rounded-[4px] border px-2.5 py-0.5 text-[11px] transition-colors ${
                         allIn
                           ? "border-primary bg-primary/10 text-primary"
                           : "text-muted-foreground hover:bg-muted/60"
@@ -899,7 +922,8 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                 })}
               </div>
             )}
-            {selectable && selSns.size > 0 && (
+            {/* 批量操作条常驻（对齐发货台按钮行）：未勾选时按钮置灰，不再整条隐藏 */}
+            {selectable && (
               <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 p-2.5 text-xs">
                 <span>
                   已选 {selSns.size} 单
@@ -914,7 +938,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                     variant="outline"
                     size="sm"
                     className="h-8 text-xs"
-                    disabled={loading}
+                    disabled={loading || selSns.size === 0}
                     onClick={() => {
                       if (isShippingView) {
                         // 待仓库收货：件数已锁定（首打完成），无需确认弹窗，直接开官方打印页补打（多单一页）；
@@ -987,9 +1011,8 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                 <TableHeader className={TEMU_TABLE_HEADER_CLASS}>
                   <TableRow>
                     {selectable && (
-                      <TableHead className="w-8 text-center [&:has([role=checkbox])]:pl-0">
+                      <TableHead className="w-8">
                         <Checkbox
-                          className="mx-auto"
                           checked={allPageSelected}
                           indeterminate={!allPageSelected && somePageSelected}
                           // 部分勾选（半选「-」态）或全选时点击 = 取消全部；
@@ -1012,7 +1035,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                     <TableHead className="min-w-64">商品信息</TableHead>
                     <TableHead className="w-44">发货信息</TableHead>
                     {!isShippingView && <TableHead className="w-40">包裹号</TableHead>}
-                    <TableHead className="w-32 text-center">发货单状态</TableHead>
+                    <TableHead className="w-32">发货单状态</TableHead>
                     <TableHead className="w-52">操作</TableHead>
                     {isShippingView && <TableHead className="w-40">物流操作</TableHead>}
                   </TableRow>
@@ -1038,17 +1061,13 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                             {selectable &&
                               (isFirst ? (
                                 /* 勾选按钮随批次合并居中：组级三态（全选/半选/清空）= 选中该批次全部发货单 */
-                                <TableCell
-                                  rowSpan={group.length}
-                                  className="align-middle text-center [&:has([role=checkbox])]:pl-0"
-                                >
+                                <TableCell rowSpan={group.length} className="align-middle">
                                   {(() => {
                                     const groupSns = group.map((g) => g.deliveryOrderSn)
                                     const allIn = groupSns.every((sn) => selSns.has(sn))
                                     const someIn = groupSns.some((sn) => selSns.has(sn))
                                     return (
                                       <Checkbox
-                                        className="mx-auto"
                                         checked={allIn}
                                         indeterminate={!allIn && someIn}
                                         onCheckedChange={() =>
@@ -1127,7 +1146,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                             <TableCell>
                               <DeliverInfoCell row={r} />
                             </TableCell>
-                            <TableCell className="text-center">
+                            <TableCell>
                               <StatusBadge status={r.status} />
                             </TableCell>
                             <TableCell>
@@ -1185,9 +1204,8 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                     rows.map((r) => (
                       <TableRow key={r.deliveryOrderSn}>
                         {selectable && (
-                          <TableCell className="text-center [&:has([role=checkbox])]:pl-0">
+                          <TableCell>
                             <Checkbox
-                              className="mx-auto"
                               checked={selSns.has(r.deliveryOrderSn)}
                               onCheckedChange={() => toggleSelRow(r.deliveryOrderSn)}
                               aria-label={`选择 ${r.deliveryOrderSn}`}
@@ -1209,13 +1227,13 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                         <TableCell>
                           <PackageCell row={r} />
                         </TableCell>
-                        <TableCell className="text-center">
+                        <TableCell>
                           <StatusBadge status={r.status} />
                         </TableCell>
                         <TableCell>
                           <div className="flex flex-col items-start gap-0.5">
                             {r.status !== 4 && r.status !== 5 && (
-                              <LinkButton onClick={() => setBoxMarkConfirm([r.deliveryOrderSn])}>
+                              <LinkButton onClick={() => setBoxMarkConfirm({ sns: [r.deliveryOrderSn] })}>
                                 打印商品打包标签
                               </LinkButton>
                             )}
@@ -1298,8 +1316,12 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
         }}
       />
 
-      {/* 打印商品打包标签两步确认（官方同款图2/图3；两条路径统一仅请求不打开网页） */}
-      <Dialog open={boxMarkConfirm != null} onOpenChange={(v) => !v && !shipAfterPrint && setBoxMarkConfirm(null)}>
+      {/* 打印商品打包标签两步确认（官方同款图2/图3；两条路径统一仅请求不打开网页）；
+          then 直弹路径只出图3（不渲染图2，取消也不回退到图2） */}
+      <Dialog
+        open={boxMarkConfirm != null && !boxMarkConfirm.then}
+        onOpenChange={(v) => !v && !shipAfterPrint && setBoxMarkConfirm(null)}
+      >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -1331,7 +1353,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
               size="sm"
               disabled={loading}
               onClick={() => {
-                const sns = boxMarkConfirm ?? []
+                const sns = boxMarkConfirm?.sns ?? []
                 setBoxMarkConfirm(null)
                 runBoxMarkPrint(sns, false)
               }}
@@ -1363,10 +1385,33 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
               size="sm"
               disabled={loading}
               onClick={() => {
-                const sns = boxMarkConfirm ?? []
+                const sns = boxMarkConfirm?.sns ?? []
+                const then = boxMarkConfirm?.then
                 setShipAfterPrint(false)
                 setBoxMarkConfirm(null)
-                runBoxMarkPrint(sns, true)
+                // 直弹路径：锁定并刷新成功后，用刷新返回的最新行按单号继续打开原弹窗
+                // （快照行 packageSns 为空、deliverPackageNum 常为 0，会让箱数预填与比价低估）
+                runBoxMarkPrint(
+                  sns,
+                  true,
+                  then
+                    ? (freshRows) => {
+                        const picked = pickPrintLockedRows(freshRows, sns)
+                        if (picked.rows.length === 0) {
+                          toast.error("打印锁定后未找到可继续的发货单（可能已被取消或移出当前页），请刷新后重试", { duration: 8000 })
+                          return
+                        }
+                        if (picked.missingSns.length > 0) {
+                          toast.warning(
+                            `${picked.missingSns.length} 单未锁定成功或已不在当前列表（如 ${picked.missingSns[0]}），已用其余 ${picked.rows.length} 单继续`,
+                            { duration: 8000 },
+                          )
+                        }
+                        if (then.kind === "reserve") setReserveRows(picked.rows)
+                        else setPackingRows(picked.rows)
+                      }
+                    : undefined,
+                )
               }}
             >
               确认

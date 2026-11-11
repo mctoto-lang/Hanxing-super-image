@@ -11,6 +11,8 @@ import {
   TablePagination,
   parsePageParam,
 } from "@/components/shared/table-pagination"
+import { PageHeader } from "@/components/shared/page-header"
+import { StatCard } from "@/components/shared/stat-card"
 import { PresetModelFormDialog } from "@/components/superadmin/preset-model-form-dialog"
 import { PresetModelsTable } from "@/components/superadmin/preset-models-table"
 
@@ -31,48 +33,23 @@ export default async function PlatformModelsPage({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">平台预置模型</h1>
-          <p className="text-sm text-muted-foreground">
-            超管管理全企业共享的预置模型（enterpriseId 为空）；定义每张积分扣减；
-            可在企业详情「模型配置」中按企业勾选可见模型
-          </p>
-        </div>
+      <PageHeader
+        title="平台预置模型"
+        description="超管管理全企业共享的预置模型（enterpriseId 为空）；定义每张积分扣减；可在企业详情「模型配置」中按企业勾选可见模型"
+      >
         <PresetModelFormDialog />
-      </div>
+      </PageHeader>
 
       <div className="grid gap-4 sm:grid-cols-3">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              预置模型总数
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="text-2xl font-bold tabular-nums">
-            {total}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              启用中
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="text-2xl font-bold tabular-nums">
-            {activeCount}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              启用模型积分/张（合计）
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="text-2xl font-bold tabular-nums">
-            {totalCostCredits}
-          </CardContent>
-        </Card>
+        <StatCard label="预置模型总数">
+          {total.toLocaleString("zh-CN")}
+        </StatCard>
+        <StatCard label="启用中">
+          {activeCount.toLocaleString("zh-CN")}
+        </StatCard>
+        <StatCard label="启用模型积分/张（合计）">
+          {totalCostCredits.toLocaleString("zh-CN")}
+        </StatCard>
       </div>
 
       <Card>

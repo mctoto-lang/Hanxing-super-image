@@ -37,6 +37,16 @@ import {
 import { formatDateTime as fmtMs } from "@/lib/datetime"
 import { EmptyHint } from "@/components/temu/products-table"
 import { TableSkeletonRows } from "@/components/temu/table-skeleton"
+import { TruncTip } from "@/components/temu/trunc-tip"
+import { qcBadgeResult } from "@/components/temu/qc-badge-result"
+import { TemuSearchBar, type SearchBarField } from "@/components/temu/search-bar"
+
+/** 质检共享搜索条字段（官方入参，逗号分隔多值） */
+const QC_SEARCH_FIELDS: SearchBarField[] = [
+  { value: "purchaseNo", label: "采购单号", placeholder: "逗号分隔可多值…" },
+  { value: "skuId", label: "SKU ID", placeholder: "逗号分隔可多值…" },
+  { value: "skcId", label: "SKC ID", placeholder: "逗号分隔可多值…" },
+]
 
 /**
  * 质检工作台（bg.goods.qualityinspection.get/detail，实时 + 30s 缓存）：
@@ -45,8 +55,18 @@ import { TableSkeletonRows } from "@/components/temu/table-skeleton"
  */
 export function TemuQualityPanel({ store }: { store?: string }) {
   const [filter, setFilter] = React.useState<"1" | "2" | "all">("2")
+  /** 共享搜索条（按钮/回车触发提交；空关键词=清除筛选）——draft 两态防逐键重查 */
+  const [searchField, setSearchField] = React.useState(QC_SEARCH_FIELDS[0]!.value)
+  const [searchKeyword, setSearchKeyword] = React.useState("")
+  const [appliedSearch, setAppliedSearch] = React.useState<{ field: string; keyword: string }>({
+    field: QC_SEARCH_FIELDS[0]!.value,
+    keyword: "",
+  })
   const [pageNo, setPageNo] = React.useState(1)
   const [rows, setRows] = React.useState<TemuQcInspectionRow[]>([])
+  /** 当前 rows 实际查询所用的筛选（响应落地时写入）：徽章以它推导——切换筛选后、
+   *  新响应返回前，旧行若按「当前选中 filter」推导会短暂错标合格/不合格 */
+  const [loadedFilter, setLoadedFilter] = React.useState<"1" | "2" | "all">("2")
   const [total, setTotal] = React.useState(0)
   const [error, setError] = React.useState<string | null>(null)
   const [loading, startLoading] = React.useTransition()
@@ -64,24 +84,29 @@ export function TemuQualityPanel({ store }: { store?: string }) {
 
   const load = React.useCallback(() => {
     if (!store) return
+    const kw = appliedSearch.keyword.trim()
     startLoading(async () => {
       const reqId = ++loadReqRef.current
       const r = await getTemuQualityInspectionsAction({
         store,
         ...(filter === "all" ? {} : { skuQcResult: Number(filter) as 1 | 2 }),
         pageNo,
+        ...(appliedSearch.field === "purchaseNo" && kw ? { purchaseNo: kw } : {}),
+        ...(appliedSearch.field === "skuId" && kw ? { skuId: kw } : {}),
+        ...(appliedSearch.field === "skcId" && kw ? { skcId: kw } : {}),
       })
       if (reqId !== loadReqRef.current) return
       if (r.ok) {
         setRows(r.rows)
         setTotal(r.total)
+        setLoadedFilter(filter)
         setError(null)
       } else {
         setRows([])
         setError(r.error)
       }
     })
-  }, [store, filter, pageNo])
+  }, [store, filter, appliedSearch, pageNo])
 
   React.useEffect(load, [load])
 
@@ -106,6 +131,20 @@ export function TemuQualityPanel({ store }: { store?: string }) {
           {total > rows.length ? ` 条 · 第 ${pageNo}/${totalPages} 页` : " 条"}）
         </CardTitle>
         <div className="flex items-center gap-2">
+          <TemuSearchBar
+            fields={QC_SEARCH_FIELDS}
+            field={searchField}
+            onFieldChange={setSearchField}
+            keyword={searchKeyword}
+            onKeywordChange={setSearchKeyword}
+            onSearch={(f, kw) => {
+              setSearchField(f)
+              setAppliedSearch({ field: f, keyword: kw })
+              setPageNo(1)
+            }}
+            searching={loading}
+            className="w-72"
+          />
           <Select value={filter} onValueChange={(v) => {
             if (v === "1" || v === "2" || v === "all") {
               setFilter(v)
@@ -138,22 +177,29 @@ export function TemuQualityPanel({ store }: { store?: string }) {
               <TableRow>
                 <TableHead>缩略图</TableHead>
                 <TableHead>SKU</TableHead>
-                <TableHead>商品名 / 类目</TableHead>
+                <TableHead>货号 / 类目</TableHead>
+                <TableHead>SKC</TableHead>
+                <TableHead>质检结果</TableHead>
                 <TableHead>采购单号</TableHead>
                 <TableHead>结果更新时间</TableHead>
                 <TableHead>操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {loading && rows.length === 0 && <TableSkeletonRows cols={6} />}
+              {loading && rows.length === 0 && <TableSkeletonRows cols={8} />}
               {!loading && rows.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="h-20 text-center text-muted-foreground">
+                  <TableCell colSpan={8} className="h-20 text-center text-muted-foreground">
                     该筛选下暂无质检记录（仅平台送检后产生）
                   </TableCell>
                 </TableRow>
               )}
-              {rows.map((r) => (
+              {rows.map((r) => {
+                // 官方列表接口不回每行结果值（skuQcResult 只是入参）——列表本身按结果
+                // 筛出，徽章由数据落地时的筛选（loadedFilter）推导；「全部结果」下行内
+                // 无值则空占位
+                const qcResult = qcBadgeResult(r.skuQcResult, loadedFilter)
+                return (
                 <TableRow key={`${r.qcBillId ?? ""}-${r.productSkuId ?? ""}`}>
                   <TableCell>
                     {r.thumbUrl ? (
@@ -170,13 +216,30 @@ export function TemuQualityPanel({ store }: { store?: string }) {
                     <div className="font-mono text-xs">{r.productSkuId ?? <EmptyHint />}</div>
                     <div className="text-xs text-muted-foreground">{r.spec ?? <EmptyHint />}</div>
                   </TableCell>
-                  <TableCell className="max-w-56">
-                    <div className="truncate text-xs">{r.skuName ?? <EmptyHint />}</div>
-                    <div className="text-xs text-muted-foreground">{r.catName ?? <EmptyHint />}</div>
+                  {/* 货号（本地反查 temu_products，接口只回 ID 族）+ 类目第二行 */}
+                  <TableCell className="max-w-24">
+                    <TruncTip text={r.productSn ?? ""} className="max-w-24 font-mono text-xs" />
+                    <div className="truncate text-xs text-muted-foreground">
+                      {r.catName ?? <EmptyHint />}
+                    </div>
                   </TableCell>
-                  <TableCell className="font-mono text-xs">{r.purchaseNo ?? <EmptyHint center />}</TableCell>
+                  <TableCell className="font-mono text-xs">{r.productSkcId ?? <EmptyHint />}</TableCell>
+                  <TableCell>
+                    {qcResult === 1 ? (
+                      <span className="inline-flex items-center rounded-[4px] bg-emerald-500/15 px-1.5 py-0.5 text-xs text-emerald-700 dark:text-emerald-400">
+                        合格
+                      </span>
+                    ) : qcResult === 2 ? (
+                      <span className="inline-flex items-center rounded-[4px] bg-rose-500/15 px-1.5 py-0.5 text-xs text-rose-700 dark:text-rose-400">
+                        不合格
+                      </span>
+                    ) : (
+                      <EmptyHint />
+                    )}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">{r.purchaseNo ?? <EmptyHint />}</TableCell>
                   <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                    {r.qcResultUpdateTime ?? <EmptyHint center />}
+                    {r.qcResultUpdateTime ?? <EmptyHint />}
                   </TableCell>
                   <TableCell>
                     <Button
@@ -190,7 +253,8 @@ export function TemuQualityPanel({ store }: { store?: string }) {
                     </Button>
                   </TableCell>
                 </TableRow>
-              ))}
+                )
+              })}
             </TableBody>
           </table>
           </div>
@@ -287,6 +351,11 @@ function QcDetailDialog({
                   <Info label="收货单号" value={h.receiptNo} />
                   <Info label="送检时间" value={fmtMs(h.deliveryQcTime)} />
                   <Info label="质检组别" value={h.qcGroupName} />
+                  <Info label="质检人" value={h.qcOperatorName} />
+                  <Info label="质检开始" value={fmtMs(h.qcStartTime)} />
+                  <Info label="质检结束" value={fmtMs(h.qcEndTime)} />
+                  <Info label="审核人" value={h.auditName} />
+                  <Info label="审核时间" value={fmtMs(h.auditTime)} />
                 </div>
 
                 {h.skus.length > 0 && (

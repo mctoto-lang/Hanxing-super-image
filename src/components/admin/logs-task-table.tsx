@@ -1,4 +1,6 @@
 "use client"
+import { formatDateTime } from "@/lib/datetime"
+import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 
 import { useState, useCallback } from "react"
 import { Eye, Trash2 } from "lucide-react"
@@ -18,7 +20,6 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
 } from "@/components/ui/dialog"
 import { toast } from "sonner"
 import { toImageSrc } from "@/lib/utils"
@@ -113,10 +114,10 @@ export function LogsTaskTable({ tasks }: { tasks: TaskLogRow[] }) {
             <TableHead>用户</TableHead>
             <TableHead>状态</TableHead>
             <TableHead>模块</TableHead>
-            <TableHead className="text-right">积分</TableHead>
+            <TableHead>积分</TableHead>
             <TableHead>提示词</TableHead>
             <TableHead>时间</TableHead>
-            <TableHead className="text-right">操作</TableHead>
+            <TableHead>操作</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -143,7 +144,7 @@ export function LogsTaskTable({ tasks }: { tasks: TaskLogRow[] }) {
                     {SOURCE_LABELS[t.source] ?? t.source}
                   </Badge>
                 </TableCell>
-                <TableCell className="text-right tabular-nums">
+                <TableCell className="tabular-nums">
                   {t.creditsCharged}
                 </TableCell>
                 <TableCell
@@ -153,10 +154,10 @@ export function LogsTaskTable({ tasks }: { tasks: TaskLogRow[] }) {
                   {t.prompt}
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
-                  {new Date(t.createdAt).toLocaleString("zh-CN")}
+                  {formatDateTime(t.createdAt)}
                 </TableCell>
-                <TableCell className="text-right">
-                  <div className="flex justify-end gap-1">
+                <TableCell>
+                  <div className="flex gap-1">
                     <Button
                       size="sm"
                       variant="ghost"
@@ -184,7 +185,7 @@ export function LogsTaskTable({ tasks }: { tasks: TaskLogRow[] }) {
 
       {/* 任务详情弹窗（trap-focus：不锁页面滚动、不禁用侧边栏交互） */}
       <Dialog open={detailOpen} onOpenChange={setDetailOpen} modal="trap-focus">
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[640px]">
           <DialogHeader>
             <DialogTitle>任务详情</DialogTitle>
           </DialogHeader>
@@ -209,13 +210,13 @@ export function LogsTaskTable({ tasks }: { tasks: TaskLogRow[] }) {
                 <Field label="积分消耗" value={String(detail.creditsCharged)} />
                 <Field
                   label="创建时间"
-                  value={new Date(detail.createdAt).toLocaleString("zh-CN")}
+                  value={formatDateTime(detail.createdAt)}
                 />
                 <Field
                   label="完成时间"
                   value={
                     detail.completedAt
-                      ? new Date(detail.completedAt).toLocaleString("zh-CN")
+                      ? formatDateTime(detail.completedAt)
                       : "—"
                   }
                 />
@@ -283,7 +284,7 @@ export function LogsTaskTable({ tasks }: { tasks: TaskLogRow[] }) {
                           </p>
                         )}
                         <p className="mt-1 text-muted-foreground">
-                          {new Date(log.createdAt).toLocaleString("zh-CN")}
+                          {formatDateTime(log.createdAt)}
                         </p>
                       </div>
                     ))}
@@ -295,43 +296,27 @@ export function LogsTaskTable({ tasks }: { tasks: TaskLogRow[] }) {
         </DialogContent>
       </Dialog>
 
-      {/* 删除确认弹窗 */}
-      <Dialog
+      {/* 删除确认弹窗（复用 ConfirmDialog，全站确认口径） */}
+      <ConfirmDialog
         open={Boolean(deleteTarget)}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
-      >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-destructive">
-              <Trash2 className="size-5" />
-              确认删除
-            </DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
+        title="确认删除"
+        description={
+          <>
             确定要删除这条日志记录吗？此操作不可撤销。
-          </p>
-          {deleteTarget && (
-            <div className="rounded-lg bg-muted p-3 text-xs text-muted-foreground">
-              <p>用户：{deleteTarget.username ?? "—"}</p>
-              <p>
-                时间：{new Date(deleteTarget.createdAt).toLocaleString("zh-CN")}
-              </p>
-            </div>
-          )}
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setDeleteTarget(null)}
-              disabled={deleting}
-            >
-              取消
-            </Button>
-            <Button variant="destructive" onClick={confirmDelete} disabled={deleting}>
-              {deleting ? "删除中..." : "确认删除"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            {deleteTarget ? (
+              <span className="mt-2 block rounded-lg bg-muted p-3 text-xs text-muted-foreground">
+                用户：{deleteTarget.username ?? "—"} · 时间：
+                {formatDateTime(deleteTarget.createdAt)}
+              </span>
+            ) : null}
+          </>
+        }
+        confirmText="确认删除"
+        destructive
+        pending={deleting}
+        onConfirm={confirmDelete}
+      />
     </>
   )
 }

@@ -548,7 +548,7 @@ export function AutoApplyDialog({
           <table className="w-full caption-bottom text-xs">
             <TableHeader className={DIALOG_HEADER_CLS}>
               <TableRow>
-                <TableHead className="w-8 text-center [&:has([role=checkbox])]:pl-0">
+                <TableHead className="w-8">
                   <SelectAllCheckbox allChecked={allChecked} someChecked={someChecked} onToggle={toggleAll} />
                 </TableHead>
                 <TableHead className="w-14">主图</TableHead>
@@ -557,7 +557,7 @@ export function AutoApplyDialog({
                 <TableHead className="w-20">本地库存</TableHead>
                 <TableHead className="w-24">可申报上限</TableHead>
                 <TableHead className="w-28">申报数量</TableHead>
-                <TableHead className="w-20 text-center">状态</TableHead>
+                <TableHead className="w-20">状态</TableHead>
                 {!store && <TableHead className="w-24">店铺</TableHead>}
               </TableRow>
             </TableHeader>
@@ -582,7 +582,7 @@ export function AutoApplyDialog({
                       i === cursor || processingSkcs.has(r.productSkcId) ? "bg-primary/5" : undefined
                     }
                   >
-                    <TableCell className="text-center [&:has([role=checkbox])]:pl-0">
+                    <TableCell>
                       <Checkbox
                         checked={selected.has(r.productSkcId)}
                         disabled={busy || lim?.max === 0}
@@ -610,65 +610,56 @@ export function AutoApplyDialog({
                         <div className="size-9 rounded bg-muted" />
                       )}
                     </TableCell>
-                    <TableCell className="max-w-24 truncate font-mono">{r.productSn ?? <EmptyHint center />}</TableCell>
-                    <TableCell className="tabular-nums">{r.last7DaysSalesVolume ?? <EmptyHint center />}</TableCell>
-                    <TableCell className="tabular-nums">{invMap[r.productSn ?? ""]?.totalQty ?? <EmptyHint center />}</TableCell>
+                    <TableCell className="max-w-24 truncate font-mono">{r.productSn ?? <EmptyHint />}</TableCell>
+                    <TableCell className="tabular-nums">{r.last7DaysSalesVolume ?? <EmptyHint />}</TableCell>
+                    <TableCell className="tabular-nums">{invMap[r.productSn ?? ""]?.totalQty ?? <EmptyHint />}</TableCell>
                     <TableCell>
                       {(() => {
-                        /* 徽章/感叹号居中、数值保持左对齐（两域空值图标同口径） */
                         if (!lim)
                           return (
-                            <span className="flex w-full justify-center">
-                              <Badge className="rounded-[4px] bg-muted px-1 text-[10px] text-muted-foreground">未探测</Badge>
-                            </span>
+                            <Badge className="rounded-[4px] bg-muted px-1 text-[10px] text-muted-foreground">未探测</Badge>
                           )
                         if (lim.error)
                           return (
-                            <span className="flex w-full justify-center">
-                              <TooltipProvider>
-                                <Tooltip>
-                                  <TooltipTrigger className="cursor-default">
-                                    <Badge className="rounded-[4px] bg-red-500/15 px-1 text-[10px] text-red-700 dark:text-red-400">
-                                      探测失败
-                                    </Badge>
-                                  </TooltipTrigger>
-                                  <TooltipContent className="max-w-64 break-all">{lim.error}</TooltipContent>
-                                </Tooltip>
-                              </TooltipProvider>
-                            </span>
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger className="cursor-default">
+                                  <Badge className="rounded-[4px] bg-red-500/15 px-1 text-[10px] text-red-700 dark:text-red-400">
+                                    探测失败
+                                  </Badge>
+                                </TooltipTrigger>
+                                <TooltipContent className="max-w-64 break-all">{lim.error}</TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
                           )
                         if (lim.max === 0)
                           return (
-                            <span className="flex w-full justify-center">
-                              <TooltipProvider>
-                                <Tooltip>
-                                  <TooltipTrigger className="cursor-default">
-                                    <Badge className="rounded-[4px] bg-red-500/15 px-1 text-[10px] text-red-700 dark:text-red-400">
-                                      不可申报
-                                    </Badge>
-                                  </TooltipTrigger>
-                                  <TooltipContent>官方返回可申报上限为 0，当前不可申报</TooltipContent>
-                                </Tooltip>
-                              </TooltipProvider>
-                            </span>
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger className="cursor-default">
+                                  <Badge className="rounded-[4px] bg-red-500/15 px-1 text-[10px] text-red-700 dark:text-red-400">
+                                    不可申报
+                                  </Badge>
+                                </TooltipTrigger>
+                                <TooltipContent>官方返回可申报上限为 0，当前不可申报</TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
                           )
                         if (lim.max == null)
                           return (
-                            <span className="flex w-full justify-center">
-                              <TooltipProvider>
-                                <Tooltip>
-                                  <TooltipTrigger
-                                    className="cursor-default text-amber-600 dark:text-amber-400"
-                                    aria-label="未能解析上限"
-                                  >
-                                    <CircleAlert className="size-3.5" />
-                                  </TooltipTrigger>
-                                  <TooltipContent className="text-xs">
-                                    官方错误文案未能解析出该 SKU 的可申报上限，可重新探测
-                                  </TooltipContent>
-                                </Tooltip>
-                              </TooltipProvider>
-                            </span>
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger
+                                  className="cursor-default text-amber-600 dark:text-amber-400"
+                                  aria-label="未能解析上限"
+                                >
+                                  <CircleAlert className="size-3.5" />
+                                </TooltipTrigger>
+                                <TooltipContent className="text-xs">
+                                  官方错误文案未能解析出该 SKU 的可申报上限，可重新探测
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
                           )
                         return (
                           <TooltipProvider>
@@ -698,7 +689,7 @@ export function AutoApplyDialog({
                         aria-label="申报数量"
                       />
                     </TableCell>
-                    <TableCell className="text-center">
+                    <TableCell>
                       <StatusIconCell
                         status={statusBySkc[r.productSkcId]}
                         rowKey={`SKC ${r.productSkcId}`}
@@ -706,7 +697,7 @@ export function AutoApplyDialog({
                       />
                     </TableCell>
                     {!store && (
-                      <TableCell className="max-w-24 truncate text-xs">{r.storeName || <EmptyHint center />}</TableCell>
+                      <TableCell className="max-w-24 truncate text-xs">{r.storeName || <EmptyHint />}</TableCell>
                     )}
                   </TableRow>
                 )
@@ -1032,7 +1023,7 @@ export function AutoJoinDialog({
           <table className="w-full caption-bottom text-xs">
             <TableHeader className={DIALOG_HEADER_CLS}>
               <TableRow>
-                <TableHead className="w-8 text-center [&:has([role=checkbox])]:pl-0">
+                <TableHead className="w-8">
                   <SelectAllCheckbox allChecked={allChecked} someChecked={someChecked} onToggle={toggleAll} />
                 </TableHead>
                 <TableHead className="w-14">主图</TableHead>
@@ -1040,8 +1031,8 @@ export function AutoJoinDialog({
                 <TableHead className="w-40">子单号</TableHead>
                 <TableHead className="w-28">建议 / 下单</TableHead>
                 <TableHead className="w-20">本地库存</TableHead>
-                <TableHead className="w-24 text-center">库存核对</TableHead>
-                <TableHead className="w-20 text-center">状态</TableHead>
+                <TableHead className="w-24">库存核对</TableHead>
+                <TableHead className="w-20">状态</TableHead>
                 {!store && <TableHead className="w-24">店铺</TableHead>}
               </TableRow>
             </TableHeader>
@@ -1064,7 +1055,7 @@ export function AutoJoinDialog({
                     key={r.subPurchaseOrderSn}
                     className={processingSns.has(r.subPurchaseOrderSn) ? "bg-primary/5" : undefined}
                   >
-                    <TableCell className="text-center [&:has([role=checkbox])]:pl-0">
+                    <TableCell>
                       <Checkbox
                         checked={selected.has(r.subPurchaseOrderSn)}
                         disabled={applying}
@@ -1096,12 +1087,12 @@ export function AutoJoinDialog({
                     </TableCell>
                     <TableCell className="whitespace-nowrap tabular-nums">
                       <span className="text-muted-foreground">建议 </span>
-                      {r.adviceTotal ?? <EmptyHint center />}
+                      {r.adviceTotal ?? <EmptyHint />}
                       <span className="text-muted-foreground"> · 下单 </span>
-                      {r.purchaseTotal ?? <EmptyHint center />}
+                      {r.purchaseTotal ?? <EmptyHint />}
                     </TableCell>
-                    <TableCell className="tabular-nums">{invMap[r.productSn!]?.totalQty ?? <EmptyHint center />}</TableCell>
-                    <TableCell className="text-center">
+                    <TableCell className="tabular-nums">{invMap[r.productSn!]?.totalQty ?? <EmptyHint />}</TableCell>
+                    <TableCell>
                       {shortage > 0 ? (
                         <TooltipProvider>
                           <Tooltip>
@@ -1122,7 +1113,7 @@ export function AutoJoinDialog({
                         </Badge>
                       )}
                     </TableCell>
-                    <TableCell className="text-center">
+                    <TableCell>
                       <StatusIconCell
                         status={statusBySn[r.subPurchaseOrderSn]}
                         rowKey={r.subPurchaseOrderSn}
@@ -1130,7 +1121,7 @@ export function AutoJoinDialog({
                       />
                     </TableCell>
                     {!store && (
-                      <TableCell className="max-w-24 truncate text-xs">{r.storeName || <EmptyHint center />}</TableCell>
+                      <TableCell className="max-w-24 truncate text-xs">{r.storeName || <EmptyHint />}</TableCell>
                     )}
                   </TableRow>
                 )

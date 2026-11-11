@@ -43,7 +43,7 @@ export function ScenesConfig({ scenes }: { scenes: SceneRow[] }) {
               <TableHead>名称</TableHead>
               <TableHead className="hidden md:table-cell">注入提示词</TableHead>
               <TableHead>状态</TableHead>
-              <TableHead className="text-right">操作</TableHead>
+              <TableHead>操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -82,8 +82,8 @@ export function ScenesConfig({ scenes }: { scenes: SceneRow[] }) {
                       {s.isActive ? "启用" : "停用"}
                     </Badge>
                   </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex items-center justify-end gap-1">
+                  <TableCell>
+                    <div className="flex items-center gap-1">
                       <SceneEditButton row={s} />
                       <SceneToggleActiveButton id={s.id} isActive={s.isActive} />
                     </div>

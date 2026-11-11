@@ -1,8 +1,7 @@
+import Link from "next/link"
 import { requireSuperAdmin } from "@/lib/auth/session"
 import { listEnterprisesAction } from "@/server/actions/platform"
 import { listSubscriptionPlansAction } from "@/server/actions/platform-plans"
-import { listPresetModelsAction } from "@/server/actions/platform-models"
-import { listPresetChatModelsAction } from "@/server/actions/platform-chat-models"
 import {
   Card,
   CardContent,
@@ -12,8 +11,6 @@ import {
 } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Search } from "lucide-react"
 import {
   Table,
   TableBody,
@@ -27,19 +24,20 @@ import {
   parsePageParam,
   parseQueryParam,
 } from "@/components/shared/table-pagination"
+import { TableEmpty } from "@/components/shared/table-empty"
+import { formatDate } from "@/lib/datetime"
 import { PlanBadge } from "@/components/shared/plan-badge"
 import { EnterpriseCreateDialog } from "@/components/superadmin/enterprise-create-dialog"
 import { RechargeDialog } from "@/components/superadmin/recharge-dialog"
-import { ModulesDialog } from "@/components/superadmin/modules-dialog"
-import { MockupConfigDialog } from "@/components/superadmin/mockup-config-dialog"
-import { TemuAppConfigDialog } from "@/components/superadmin/temu-app-config-dialog"
-import { EnterpriseModelConfigDialog } from "@/components/superadmin/enterprise-model-config-dialog"
-import { EnterpriseConcurrencyDialog } from "@/components/superadmin/enterprise-concurrency-dialog"
 import { PlanAssignDialog } from "@/components/superadmin/plan-assign-dialog"
-import { MODULE_LABELS, TEMU_TAB_OPTIONS } from "@/lib/modules"
+import { ModulesDialog } from "@/components/superadmin/modules-dialog"
+import { EnterpriseFilterBar } from "@/components/superadmin/enterprise-filter-bar"
 import type { ModuleName } from "@/db/schema"
 
 export const dynamic = "force-dynamic"
+
+/** 排序白名单（与 listEnterprisesAction / EnterpriseFilterBar 的 sort 入参一致） */
+const SORT_VALUES = ["createdAt_desc", "createdAt_asc", "credits_desc"] as const
 
 export default async function EnterprisesPage({
   searchParams,
@@ -50,31 +48,25 @@ export default async function EnterprisesPage({
   const sp = await searchParams
   const page = parsePageParam(sp)
   const q = parseQueryParam(sp, "q")
+  const status = parseQueryParam(sp, "status")
+  const plan = parseQueryParam(sp, "plan")
+  const sortParam = parseQueryParam(sp, "sort")
+  const sort = (
+    (SORT_VALUES as readonly string[]).includes(sortParam) ? sortParam : "createdAt_desc"
+  ) as (typeof SORT_VALUES)[number]
 
-  const [
-    { items: enterprises, total, pageSize },
-    { items: presetModels, total: presetTotal },
-    { items: presetChatModels },
-    { items: plans },
-  ] = await Promise.all([
-    listEnterprisesAction({ page, pageSize: 20, q }),
-    listPresetModelsAction({ pageSize: 100 }), // 企业模型配置弹窗全量下拉
-    listPresetChatModelsAction({ pageSize: 100 }), // 对话模型白名单全量下拉
-    listSubscriptionPlansAction(), // 分配套餐弹窗数据源（启用中套餐）
-  ])
-  // 可分配套餐 = 启用中的套餐（弹窗内按企业当前套餐自动并入续期选项）
-  const assignablePlans = plans
-    .filter((p) => p.isActive)
-    .map((p) => ({
-      id: p.id,
-      name: p.name,
-      iconKey: p.iconKey,
-      color: p.color,
-      creditsPerCycle: p.creditsPerCycle,
-      cycleDays: p.cycleDays,
-      maxMembers: p.maxMembers,
-      isActive: p.isActive,
-    }))
+  const [{ items: enterprises, total, pageSize }, { items: plans }] =
+    await Promise.all([
+      listEnterprisesAction({
+        page,
+        pageSize: 20,
+        q,
+        status: status === "active" || status === "suspended" ? status : undefined,
+        planId: plan || undefined,
+        sort,
+      }),
+      listSubscriptionPlansAction(), // 套餐筛选下拉（含停用套餐，便于筛查存量）
+    ])
 
   return (
     <div className="space-y-4">
@@ -85,29 +77,26 @@ export default async function EnterprisesPage({
             创建企业、配置模块开关、充值积分（D20：唯一创建入口）· 共 {total} 家企业
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <form action="/platform/enterprises" className="flex items-center gap-2">
-            <Input
-              name="q"
-              defaultValue={q}
-              placeholder="搜索企业名 / Slug"
-              className="w-52"
-            />
-            <Button type="submit" variant="outline" size="sm">
-              <Search className="size-3.5" />
-              搜索
-            </Button>
-          </form>
-          <EnterpriseCreateDialog />
-        </div>
+        <EnterpriseCreateDialog />
       </div>
 
       <Card>
         <CardHeader>
           <CardTitle className="text-base">企业列表</CardTitle>
-          <CardDescription>共 {total} 家企业</CardDescription>
+          <CardDescription>
+            点击企业名称进入详情页，集中管理套餐 / 成员 / 积分流水与各项配置
+          </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          {/* 筛选条（客户端组件）：shadcn Select 选中即提交，h-8 齐高 */}
+          <EnterpriseFilterBar
+            q={q}
+            status={status}
+            plan={plan}
+            sort={sort}
+            plans={plans.map((p) => ({ id: p.id, name: p.name }))}
+          />
+
           <Table>
             <TableHeader>
               <TableRow>
@@ -115,53 +104,61 @@ export default async function EnterprisesPage({
                 <TableHead>Slug</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>订阅套餐</TableHead>
-                <TableHead className="text-right">积分余额</TableHead>
-                <TableHead>已开通模块</TableHead>
-                <TableHead>自定义模型</TableHead>
-                <TableHead>并发（生图/对话）</TableHead>
-                <TableHead className="text-right">操作</TableHead>
+                <TableHead>积分余额</TableHead>
+                <TableHead>成员</TableHead>
+                <TableHead>累计任务</TableHead>
+                <TableHead>操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {enterprises.length === 0 ? (
-                <TableRow>
-                  <TableCell
-                    colSpan={9}
-                    className="py-8 text-center text-muted-foreground"
-                  >
-                    {q ? `未找到与「${q}」匹配的企业` : "暂无企业，点击右上角创建"}
-                  </TableCell>
-                </TableRow>
+                <TableEmpty
+                  colSpan={8}
+                  noun="企业"
+                  filtered={!!(q || status || plan)}
+                />
               ) : null}
               {enterprises.map((e) => {
-                const visible = (e.visiblePresetModels as string[]) ?? []
-                const visibleChat = (e.visiblePresetChatModels as string[]) ?? []
+                const suspended = e.status !== "active"
                 // 行内可分配选项：启用中套餐 + 当前套餐（可能已停用，仅供续期）
-                const rowPlans =
-                  e.planId && !assignablePlans.some((p) => p.id === e.planId)
-                    ? [
-                        ...assignablePlans,
-                        {
-                          id: e.planId,
-                          name: e.planName ?? "",
-                          iconKey: e.planIconKey ?? "medal",
-                          color: e.planColor ?? "#8b5cf6",
-                          creditsPerCycle: e.planCreditsPerCycle ?? 0,
-                          cycleDays: e.planCycleDays ?? 30,
-                          maxMembers: e.planMaxMembers ?? null,
-                          isActive: false,
-                        },
-                      ]
-                    : assignablePlans
+                const rowPlans = plans
+                  .filter((p) => p.isActive)
+                  .map((p) => ({
+                    id: p.id,
+                    name: p.name,
+                    iconKey: p.iconKey,
+                    color: p.color,
+                    creditsPerCycle: p.creditsPerCycle,
+                    cycleDays: p.cycleDays,
+                    maxMembers: p.maxMembers,
+                    isActive: p.isActive,
+                  }))
+                if (e.planId && !rowPlans.some((p) => p.id === e.planId)) {
+                  rowPlans.push({
+                    id: e.planId,
+                    name: e.planName ?? "",
+                    iconKey: e.planIconKey ?? "medal",
+                    color: e.planColor ?? "#8b5cf6",
+                    creditsPerCycle: e.planCreditsPerCycle ?? 0,
+                    cycleDays: e.planCycleDays ?? 30,
+                    maxMembers: e.planMaxMembers ?? null,
+                    isActive: false,
+                  })
+                }
                 return (
-                  <TableRow key={e.id}>
-                    <TableCell className="font-medium">{e.name}</TableCell>
+                  <TableRow key={e.id} className={suspended ? "opacity-60" : undefined}>
+                    <TableCell className="font-medium">
+                      <Link
+                        href={`/platform/enterprises/${e.id}`}
+                        className="hover:underline"
+                      >
+                        {e.name}
+                      </Link>
+                    </TableCell>
                     <TableCell className="font-mono text-xs">{e.slug}</TableCell>
                     <TableCell>
-                      <Badge
-                        variant={e.status === "active" ? "default" : "destructive"}
-                      >
-                        {e.status === "active" ? "正常" : "已停用"}
+                      <Badge variant={suspended ? "destructive" : "default"}>
+                        {suspended ? "已停用" : "正常"}
                       </Badge>
                     </TableCell>
                     <TableCell>
@@ -175,8 +172,7 @@ export default async function EnterprisesPage({
                             size="sm"
                           />
                           <div className="text-xs text-muted-foreground">
-                            到期{" "}
-                            {new Date(e.planExpiresAt ?? "").toLocaleDateString("zh-CN")}
+                            到期 {formatDate(e.planExpiresAt)}
                           </div>
                         </div>
                       ) : (
@@ -185,53 +181,34 @@ export default async function EnterprisesPage({
                         </span>
                       )}
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">
+                    <TableCell className="tabular-nums">
                       {e.creditsBalance.toLocaleString("zh-CN")}
+                    </TableCell>
+                    <TableCell className="tabular-nums">
+                      {e.memberCount}
+                    </TableCell>
+                    <TableCell className="tabular-nums">
+                      {e.taskCount}
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
-                        {(e.enabledModules as ModuleName[])
-                          .filter((m) => m !== "settings" && !TEMU_TAB_OPTIONS.some((t) => t.value === m))
-                          .map((m) => (
-                            <Badge key={m} variant="outline" className="text-xs">
-                              {MODULE_LABELS[m] ?? m}
-                            </Badge>
-                          ))}
-                        {(e.enabledModules as ModuleName[]).includes("temu") && (
-                          <Badge variant="outline" className="text-xs">
-                            TEMU
-                            {(e.enabledModules as ModuleName[]).some((m) =>
-                              TEMU_TAB_OPTIONS.some((t) => t.value === m),
-                            )
-                              ? ` ·${
-                                  (e.enabledModules as ModuleName[]).filter((m) =>
-                                    TEMU_TAB_OPTIONS.some((t) => t.value === m),
-                                  ).length
-                                }页面`
-                              : ""}
-                          </Badge>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={e.allowCustomModels ? "default" : "outline"}>
-                        {e.allowCustomModels ? "允许" : "禁止"}
-                      </Badge>
-                      {visible.length > 0 ? (
-                        <span className="ml-2 text-xs text-muted-foreground">
-                          预置可见 {visible.length}/{presetTotal}
-                        </span>
-                      ) : (
-                        <span className="ml-2 text-xs text-muted-foreground">
-                          预置全部可见
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-xs tabular-nums text-muted-foreground">
-                      {e.maxConcurrent} / {e.chatMaxConcurrent}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex flex-wrap justify-end gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          nativeButton={false}
+                          render={<Link href={`/platform/enterprises/${e.id}`} />}
+                        >
+                          详情
+                        </Button>
+                        <ModulesDialog
+                          enterpriseId={e.id}
+                          enterpriseName={e.name}
+                          currentModules={e.enabledModules as ModuleName[]}
+                        />
+                        <RechargeDialog
+                          enterpriseId={e.id}
+                          enterpriseName={e.name}
+                        />
                         <PlanAssignDialog
                           enterpriseId={e.id}
                           enterpriseName={e.name}
@@ -249,38 +226,6 @@ export default async function EnterprisesPage({
                           }
                           plans={rowPlans}
                         />
-                        <RechargeDialog
-                          enterpriseId={e.id}
-                          enterpriseName={e.name}
-                        />
-                        <EnterpriseConcurrencyDialog
-                          enterpriseId={e.id}
-                          enterpriseName={e.name}
-                          maxConcurrent={e.maxConcurrent}
-                          chatMaxConcurrent={e.chatMaxConcurrent}
-                        />
-                        <ModulesDialog
-                          enterpriseId={e.id}
-                          enterpriseName={e.name}
-                          currentModules={e.enabledModules as ModuleName[]}
-                        />
-                        <MockupConfigDialog
-                          enterpriseId={e.id}
-                          enterpriseName={e.name}
-                        />
-                        <TemuAppConfigDialog
-                          enterpriseId={e.id}
-                          enterpriseName={e.name}
-                        />
-                        <EnterpriseModelConfigDialog
-                          enterpriseId={e.id}
-                          enterpriseName={e.name}
-                          allowCustomModels={e.allowCustomModels}
-                          visiblePresetModels={visible}
-                          presetModels={presetModels}
-                          visiblePresetChatModels={visibleChat}
-                          presetChatModels={presetChatModels}
-                        />
                       </div>
                     </TableCell>
                   </TableRow>
@@ -294,7 +239,7 @@ export default async function EnterprisesPage({
           pageSize={pageSize}
           total={total}
           basePath="/platform/enterprises"
-          query={{ q }}
+          query={{ q, status, plan, sort }}
         />
       </Card>
     </div>

@@ -67,6 +67,8 @@ export interface TaskDetail {
   imageSize: string | null
   imageCount: number
   resultImages: string[] | null
+  /** 与 resultImages 按位置对齐的转存探测尺寸（null=未探测到；旧任务可能整列缺省） */
+  resultImageSizes?: ({ width: number; height: number } | null)[] | null
   referenceImages: string[] | null
   errorMessage: string | null
   creditsCharged: number | null
@@ -227,11 +229,22 @@ export function TaskDetailCard({
   const refImages = task.referenceImages ?? []
   const refThumb = refImages[0] ?? null
 
-  // —— 结果图实测尺寸（onLoad 读取 naturalWidth/Height）——
-  // 用于：auto 任务显示真实比例；多图比例不一致时以最高图为基准容器
+  // —— 结果图尺寸（worker 转存时探测落库的持久化尺寸作初始种子，
+  // onLoad 实测 naturalWidth/Height 补齐种子缺失的图）——
+  // 用于：auto 任务显示真实比例；多图比例不一致时以最高图为基准容器；
+  // 整批过期（无 onLoad）时种子仍能撑出真实比例占位框。
+  // recordImgSize 的 first-wins 语义保证 DB 种子不被后续实测覆盖
   const [imgSizes, setImgSizes] = React.useState<
     Record<number, { w: number; h: number }>
-  >({})
+  >(() => {
+    const seed: Record<number, { w: number; h: number }> = {}
+    ;(task.resultImageSizes ?? []).forEach((s, i) => {
+      if (s && s.width > 0 && s.height > 0) {
+        seed[i] = { w: s.width, h: s.height }
+      }
+    })
+    return seed
+  })
   const recordImgSize = (i: number, el: HTMLImageElement) => {
     if (el.complete && el.naturalWidth > 0 && el.naturalHeight > 0) {
       setImgSizes((prev) =>
@@ -558,7 +571,9 @@ export function TaskDetailCard({
           {images.map((url, i) => {
             // 该格图片未完成加载（未实测到尺寸且未失败）：容器先按请求比例
             // 占位并叠加 shadcn Skeleton 骨架；加载完成后移除，恢复自适应
-            // 布局（缓存命中由 measureImgRef 挂载补查立即撤掉，不闪烁）
+            // 布局（缓存命中由 measureImgRef 挂载补查立即撤掉，不闪烁）。
+            // 图片过期/失败（onFallback）时同样按请求比例撑住格子，避免
+            // 整批过期时无基准比例导致占位塌成细条
             const cellLoading = !imgSizes[i] && !imgFailed[i]
             return (
               <div
@@ -567,8 +582,11 @@ export function TaskDetailCard({
                 style={
                   baseline
                     ? { aspectRatio: `${baseline.w} / ${baseline.h}` }
-                    : cellLoading
-                      ? { aspectRatio: `${width} / ${height}` }
+                    : cellLoading || imgFailed[i]
+                      ? {
+                          // 该格已知尺寸（DB 种子/实测）优先，回退请求比例
+                          aspectRatio: `${imgSizes[i]?.w ?? width} / ${imgSizes[i]?.h ?? height}`,
+                        }
                       : undefined
                 }
               >
@@ -576,7 +594,11 @@ export function TaskDetailCard({
                   ref={measureImgRef(i)}
                   src={toImageSrc(url, { width: 400 })}
                   alt={`生成图 ${i + 1}`}
-                  className={baseline ? "size-full object-contain" : "w-full"}
+                  className={
+                    baseline || imgFailed[i]
+                      ? "size-full object-contain"
+                      : "w-full"
+                  }
                   loading="lazy"
                   onLoad={(e) => handleImageLoad(i, e)}
                   onFallback={() => markImgFailed(i)}

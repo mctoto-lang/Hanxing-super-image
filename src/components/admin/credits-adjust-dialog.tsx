@@ -13,10 +13,20 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form"
 import { toast } from "sonner"
 import { useRouter } from "next/navigation"
+import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
+import { useForm } from "react-hook-form"
+import { adjustCreditsFormSchema } from "@/lib/forms/schemas"
 import { adjustUserCreditsAction } from "@/server/actions/admin-users"
 
 /**
@@ -24,7 +34,15 @@ import { adjustUserCreditsAction } from "@/server/actions/admin-users"
  *
  * 与「分配积分」（企业池 → 个人）互补：此处不经过企业池，
  * 由后端按差额记账（credit_transaction type=adjustment）。
+ *
+ * 表单口径：useForm + standardSchemaResolver（adjustCreditsFormSchema），
+ * 打开时以当前余额回填；服务端兜底错误显示在 footer 上方。
  */
+interface AdjustCreditsFormValues {
+  newBalance: number
+  remark?: string
+}
+
 export function CreditsAdjustDialog({
   targetUserId,
   targetUsername,
@@ -37,46 +55,43 @@ export function CreditsAdjustDialog({
   currentBalance: number
 }) {
   const [open, setOpen] = React.useState(false)
-  const [pending, startTransition] = React.useTransition()
-  const [value, setValue] = React.useState("")
-  const [remark, setRemark] = React.useState("")
+  const [serverError, setServerError] = React.useState<string | null>(null)
   const router = useRouter()
+
+  const form = useForm<AdjustCreditsFormValues>({
+    resolver: standardSchemaResolver(adjustCreditsFormSchema),
+    defaultValues: { newBalance: currentBalance, remark: "" },
+  })
+  const pending = form.formState.isSubmitting
 
   React.useEffect(() => {
     if (open) {
-      setValue(String(currentBalance))
-      setRemark("")
+      form.reset({ newBalance: currentBalance, remark: "" })
+      setServerError(null)
     }
-  }, [open, currentBalance])
+  }, [open, form, currentBalance])
 
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    const n = Math.floor(Number(value))
-    if (!Number.isFinite(n) || n < 0) {
-      toast.error("新余额必须是不小于 0 的整数")
-      return
-    }
-    if (n === currentBalance) {
+  async function onSubmit(values: AdjustCreditsFormValues) {
+    setServerError(null)
+    if (values.newBalance === currentBalance) {
       toast.info("新余额与当前一致，无需调整")
       return
     }
-    startTransition(async () => {
-      const res = await adjustUserCreditsAction({
-        targetUserId,
-        newBalance: n,
-        remark: remark || undefined,
-      })
-      if (res.ok) {
-        const sign = res.delta > 0 ? "+" : ""
-        toast.success(
-          `已调整 ${targetName ?? targetUsername} 积分：${currentBalance.toLocaleString("zh-CN")} → ${n.toLocaleString("zh-CN")}（${sign}${res.delta.toLocaleString("zh-CN")}）`,
-        )
-        setOpen(false)
-        router.refresh()
-      } else {
-        toast.error(res.error ?? "调整失败")
-      }
+    const res = await adjustUserCreditsAction({
+      targetUserId,
+      newBalance: values.newBalance,
+      remark: values.remark || undefined,
     })
+    if (res.ok) {
+      const sign = res.delta > 0 ? "+" : ""
+      toast.success(
+        `已调整 ${targetName ?? targetUsername} 积分：${currentBalance.toLocaleString("zh-CN")} → ${values.newBalance.toLocaleString("zh-CN")}（${sign}${res.delta.toLocaleString("zh-CN")}）`,
+      )
+      setOpen(false)
+      router.refresh()
+      return
+    }
+    setServerError(res.error ?? "调整失败")
   }
 
   return (
@@ -89,7 +104,7 @@ export function CreditsAdjustDialog({
           </Button>
         }
       />
-      <DialogContent className="sm:max-w-[420px]">
+      <DialogContent className="sm:max-w-[520px]">
         <DialogHeader>
           <DialogTitle>调整积分</DialogTitle>
           <DialogDescription>
@@ -97,41 +112,68 @@ export function CreditsAdjustDialog({
             」的个人配额新余额（不经企业池，按差额记入流水）
           </DialogDescription>
         </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
-            当前余额
-            <div className="text-sm font-semibold tabular-nums text-foreground">
-              {currentBalance.toLocaleString("zh-CN")}
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            <div className="rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
+              当前余额
+              <div className="text-sm font-semibold tabular-nums text-foreground">
+                {currentBalance.toLocaleString("zh-CN")}
+              </div>
             </div>
-          </div>
-          <div className="grid gap-2">
-            <Label htmlFor="adjust-balance">新余额</Label>
-            <Input
-              id="adjust-balance"
-              type="number"
-              min={0}
-              max={100_000_000}
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              required
+            <FormField
+              control={form.control}
+              name="newBalance"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>新余额</FormLabel>
+                  <FormControl>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={100_000_000}
+                      {...field}
+                      value={field.value ?? ""}
+                      onChange={(e) =>
+                        field.onChange(
+                          e.target.value === "" ? undefined : Number(e.target.value),
+                        )
+                      }
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
             />
-          </div>
-          <div className="grid gap-2">
-            <Label htmlFor="adjust-remark">备注（可选）</Label>
-            <Textarea
-              id="adjust-remark"
-              rows={2}
-              value={remark}
-              onChange={(e) => setRemark(e.target.value)}
-              placeholder="如：纠错补回 / 清零回收"
+            <FormField
+              control={form.control}
+              name="remark"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>备注（可选）</FormLabel>
+                  <FormControl>
+                    <Textarea
+                      rows={2}
+                      placeholder="如：纠错补回 / 清零回收"
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
             />
-          </div>
-          <DialogFooter>
-            <Button type="submit" disabled={pending}>
-              {pending ? "调整中..." : "确认调整"}
-            </Button>
-          </DialogFooter>
-        </form>
+            {serverError ? (
+              <p className="text-sm text-destructive">{serverError}</p>
+            ) : null}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+                取消
+              </Button>
+              <Button type="submit" disabled={pending}>
+                {pending ? "调整中…" : "确认调整"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </Form>
       </DialogContent>
     </Dialog>
   )

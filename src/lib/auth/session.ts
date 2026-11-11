@@ -82,6 +82,15 @@ export const getCurrentUserContext = cache(async (): Promise<UserContext | null>
       .from(permissionGroups)
       .where(eq(permissionGroups.id, user.groupId))
       .limit(1)
+    // 防御纵深：权限组必须属于用户所在企业（正常流程分配组时已校验；
+    // DB 直写/脏数据会让 allowedModels/allowedPages 跨企业生效，按无组处理）
+    if (group && group.enterpriseId !== user.enterpriseId) {
+      console.warn(
+        `[auth] 权限组归属异常，已忽略：group=${group.id} 属企业 ${group.enterpriseId}，` +
+          `用户=${user.id} 属企业 ${user.enterpriseId ?? "无"}`,
+      )
+      group = null
+    }
   }
 
   const accessibleModules = computeAccessibleModules(

@@ -23,15 +23,29 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form"
 import { toast } from "sonner"
 import { useRouter } from "next/navigation"
+import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
+import { useForm, useWatch, type Resolver } from "react-hook-form"
+import {
+  firstSizePresetError,
+  modelFormSchema,
+  type ModelFormValues,
+} from "@/lib/forms/model-schemas"
 import {
   createPresetModelAction,
   updatePresetModelAction,
   togglePresetModelActiveAction,
   type PresetModelRow,
 } from "@/server/actions/platform-models"
-import type { ModelSizePreset } from "@/db/schema"
 import { DEFAULT_SIZE_PRESETS } from "@/lib/image-sizes"
 import { ModelIconUpload } from "@/components/model-form/model-icon-upload"
 import { SizePresetsEditor } from "@/components/model-form/size-presets-editor"
@@ -41,45 +55,13 @@ import { BadgeField } from "@/components/model-form/badge-field"
  * 平台预置模型表单（需求 2a）
  *
  * 字段与企业管理员 ModelFormDialog 一致，但调用超管 Action（enterpriseId=NULL）。
+ * 统一设计语言（范式：recharge-dialog）：useForm + standardSchemaResolver
+ * （client-safe zod 镜像 @/lib/forms/model-schemas）→ FormField 体系字段级
+ * 内联校验；条件显隐由 useWatch 驱动；成功才 toast，服务端兜底错误统一
+ * 显示在 footer 上方一条。
  */
 
-interface FormState {
-  name: string
-  displayName: string
-  description: string
-  badgeText: string
-  badgeColor: string
-  apiEndpoint: string
-  apiKey: string
-  apiFormat: "openai" | "jimeng" | "gemini" | "grsai"
-  jimengResolution: "" | "1k" | "2k" | "4k"
-  jimengN: number
-  qualityEnabled: boolean
-  quality: string
-  useRatioParam: boolean
-  ratioParamField: string
-  /** grsai 格式：清晰度档位手动覆盖（空 = 按预设尺寸自动推导） */
-  grsaiImageSize: "" | "1K" | "2K" | "4K"
-  costPerImage: number
-  sizePresets: ModelSizePreset[]
-  supportsImageCount: boolean
-  supportsSmartSize: boolean
-  visibleInCreate: boolean
-  visibleInWorkspace: boolean
-  visibleInProduct: boolean
-  visibleInWeartry: boolean
-  visibleInMockup: boolean
-  supportsReferenceImage: boolean
-  maxReferenceImages: number
-  referenceImageField: string
-  maxConcurrent: number
-  maxRetries: number
-  apiTimeout: number
-  taskTimeout: number
-  iconUrl: string
-}
-
-function emptyState(): FormState {
+function emptyState(): ModelFormValues {
   return {
     name: "",
     displayName: "",
@@ -116,7 +98,7 @@ function emptyState(): FormState {
   }
 }
 
-function fromModel(m: PresetModelRow): FormState {
+function fromModel(m: PresetModelRow): ModelFormValues {
   const ec = m.extraConfig ?? {}
   return {
     ...emptyState(),
@@ -128,7 +110,7 @@ function fromModel(m: PresetModelRow): FormState {
     apiEndpoint: m.apiEndpoint,
     apiKey: "",
     apiFormat: m.apiFormat,
-    jimengResolution: (ec.jimengResolution as "" | "1k" | "2k" | "4k") ?? "",
+    jimengResolution: (ec.jimengResolution as ModelFormValues["jimengResolution"]) ?? "",
     jimengN: ec.jimengN ?? 1,
     qualityEnabled: Boolean(ec.quality),
     quality: (ec.quality as string) ?? "",
@@ -136,7 +118,7 @@ function fromModel(m: PresetModelRow): FormState {
     ratioParamField: m.ratioParamField ?? "",
     // 双读：新键优先，旧键 grsai_image_size 为存量数据
     grsaiImageSize:
-      ((ec.grsaiImageSize ?? ec.grsai_image_size) as FormState["grsaiImageSize"]) ??
+      ((ec.grsaiImageSize ?? ec.grsai_image_size) as ModelFormValues["grsaiImageSize"]) ??
       "",
     costPerImage: m.costPerImage,
     sizePresets: m.sizePresets
@@ -168,92 +150,117 @@ export function PresetModelFormDialog({
   trigger?: React.ReactElement
 }) {
   const [open, setOpen] = React.useState(false)
-  const [pending, startTransition] = React.useTransition()
-  const [state, setState] = React.useState<FormState>(
-    model ? fromModel(model) : emptyState(),
-  )
+  const [serverError, setServerError] = React.useState<string | null>(null)
   const router = useRouter()
   const isEdit = Boolean(model)
 
+  // raw: true —— 校验走 schema，但提交回调拿原始表单值（apiKey 不在 schema 的
+  // 输入类型内，由 ModelFormValues 单独声明；故此处对 resolver 做类型桥接）
+  const form = useForm<ModelFormValues>({
+    resolver: standardSchemaResolver(modelFormSchema, undefined, {
+      raw: true,
+    }) as unknown as Resolver<ModelFormValues>,
+    defaultValues: model ? fromModel(model) : emptyState(),
+  })
+  const pending = form.formState.isSubmitting
+
+  // 条件显隐（替代原 state 条件渲染；useWatch 替代 form.watch：后者使 React Compiler 跳过本组件记忆化）
+  const apiFormat = useWatch({ control: form.control, name: "apiFormat" })
+  const qualityEnabled = useWatch({
+    control: form.control,
+    name: "qualityEnabled",
+  })
+  const useRatioParam = useWatch({
+    control: form.control,
+    name: "useRatioParam",
+  })
+  const supportsReferenceImage = useWatch({
+    control: form.control,
+    name: "supportsReferenceImage",
+  })
+  // 勋章配色：与 badgeText 分属 BadgeField 双字段，经 form 回写/读取
+  const badgeColor = useWatch({ control: form.control, name: "badgeColor" })
+
+  // 编辑器条目输入框无法逐条目挂 FormMessage，统一取第一条嵌套错误兜底展示
+  const sizePresetError = firstSizePresetError(form.formState.errors.sizePresets)
+
+  // 每次打开时重置表单
   React.useEffect(() => {
-    if (open) setState(model ? fromModel(model) : emptyState())
-  }, [open, model])
+    if (open) {
+      form.reset(model ? fromModel(model) : emptyState())
+      setServerError(null)
+    }
+  }, [open, model, form])
 
-  function up<K extends keyof FormState>(key: K, val: FormState[K]) {
-    setState((s) => ({ ...s, [key]: val }))
-  }
+  async function onSubmit(values: ModelFormValues) {
+    setServerError(null)
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
+    // apiKey 不进 schema：创建必填、编辑留空=不修改（保持原行为，错误落字段）
+    if (!isEdit && !values.apiKey) {
+      form.setError("apiKey", { message: "请输入 API Key" })
+      return
+    }
 
     const input: Record<string, unknown> = {
-      name: state.name,
-      displayName: state.displayName,
-      description: state.description || undefined,
-      badgeText: state.badgeText || undefined,
-      badgeColor: state.badgeColor || undefined,
-      apiEndpoint: state.apiEndpoint,
-      apiFormat: state.apiFormat,
-      costPerImage: state.costPerImage,
-      sizePresets: state.sizePresets,
-      supportsImageCount: state.supportsImageCount,
-      supportsSmartSize: state.supportsSmartSize,
-      visibleInCreate: state.visibleInCreate,
-      visibleInWorkspace: state.visibleInWorkspace,
-      visibleInProduct: state.visibleInProduct,
-      visibleInWeartry: state.visibleInWeartry,
-      visibleInMockup: state.visibleInMockup,
-      supportsReferenceImage: state.supportsReferenceImage,
-      maxReferenceImages: state.maxReferenceImages,
-      referenceImageField: state.referenceImageField,
-      maxConcurrent: state.maxConcurrent,
-      maxRetries: state.maxRetries,
-      apiTimeout: state.apiTimeout,
-      taskTimeout: state.taskTimeout,
-      iconUrl: state.iconUrl || undefined,
+      name: values.name,
+      displayName: values.displayName,
+      description: values.description || undefined,
+      badgeText: values.badgeText || undefined,
+      badgeColor: values.badgeColor || undefined,
+      apiEndpoint: values.apiEndpoint,
+      apiFormat: values.apiFormat,
+      costPerImage: values.costPerImage,
+      sizePresets: values.sizePresets,
+      supportsImageCount: values.supportsImageCount,
+      supportsSmartSize: values.supportsSmartSize,
+      visibleInCreate: values.visibleInCreate,
+      visibleInWorkspace: values.visibleInWorkspace,
+      visibleInProduct: values.visibleInProduct,
+      visibleInWeartry: values.visibleInWeartry,
+      visibleInMockup: values.visibleInMockup,
+      supportsReferenceImage: values.supportsReferenceImage,
+      maxReferenceImages: values.maxReferenceImages,
+      referenceImageField: values.referenceImageField,
+      maxConcurrent: values.maxConcurrent,
+      maxRetries: values.maxRetries,
+      apiTimeout: values.apiTimeout,
+      taskTimeout: values.taskTimeout,
+      iconUrl: values.iconUrl || undefined,
     }
-    if (state.apiFormat === "jimeng") {
-      input.jimengResolution = state.jimengResolution || undefined
-      input.jimengN = state.jimengN
+    if (values.apiFormat === "jimeng") {
+      input.jimengResolution = values.jimengResolution || undefined
+      input.jimengN = values.jimengN
     }
-    if (state.apiFormat === "grsai") {
-      input.grsaiImageSize = state.grsaiImageSize || undefined
+    if (values.apiFormat === "grsai") {
+      input.grsaiImageSize = values.grsaiImageSize || undefined
     }
-    if (state.apiFormat === "openai" || state.apiFormat === "gemini") {
-      if (state.qualityEnabled && !state.quality.trim()) {
-        toast.error("已开启质量参数，请填入具体质量值")
-        return
-      }
-      input.quality = state.qualityEnabled ? state.quality.trim() : undefined
+    if (values.apiFormat === "openai" || values.apiFormat === "gemini") {
+      // 开启但未填值 / 非法比例字段名已由 schema 内联拦截，这里只做透传组装
+      input.quality = values.qualityEnabled ? values.quality.trim() : undefined
     }
-    if (state.apiFormat === "gemini") {
-      if (state.ratioParamField && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(state.ratioParamField)) {
-        toast.error("比例字段名仅限字母、数字与下划线，且不能以数字开头")
-        return
-      }
-      input.useRatioParam = state.useRatioParam
-      input.ratioParamField = state.useRatioParam
-        ? state.ratioParamField.trim() || undefined
+    if (values.apiFormat === "gemini") {
+      input.useRatioParam = values.useRatioParam
+      input.ratioParamField = values.useRatioParam
+        ? values.ratioParamField.trim() || undefined
         : undefined
     } else {
       // 比例传参仅 gemini 格式生效，其余格式提交复位值（防格式切换残留）
       input.useRatioParam = false
       input.ratioParamField = undefined
     }
-    if (state.apiKey) input.apiKey = state.apiKey
+    if (values.apiKey) input.apiKey = values.apiKey
 
-    startTransition(async () => {
-      const res = isEdit
-        ? await updatePresetModelAction(model!.id, input)
-        : await createPresetModelAction(input)
-      if (res.ok) {
-        toast.success(isEdit ? "平台模型已更新" : "平台模型已创建")
-        setOpen(false)
-        router.refresh()
-      } else {
-        toast.error(res.error ?? "操作失败")
-      }
-    })
+    const res = isEdit
+      ? await updatePresetModelAction(model!.id, input)
+      : await createPresetModelAction(input)
+    if (res.ok) {
+      toast.success(isEdit ? "平台模型已更新" : "平台模型已创建")
+      setOpen(false)
+      router.refresh()
+    } else {
+      // 服务端兜底错误（业务错误）：统一条内联展示，不再 toast
+      setServerError(res.error ?? "操作失败")
+    }
   }
 
   return (
@@ -274,465 +281,721 @@ export function PresetModelFormDialog({
             {isEdit ? "编辑平台预置模型" : "新建平台预置模型"}
           </DialogTitle>
         </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="grid gap-2">
-              <Label htmlFor="p-name">模型标识</Label>
-              <Input
-                id="p-name"
-                value={state.name}
-                onChange={(e) => up("name", e.target.value)}
-                placeholder="如 gpt-image-1"
-                required
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            {/* 基础信息 */}
+            <div className="grid grid-cols-2 gap-4">
+              <FormField
+                control={form.control}
+                name="name"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>模型标识</FormLabel>
+                    <FormControl>
+                      <Input {...field} placeholder="如 gpt-image-1" />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="displayName"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>显示名</FormLabel>
+                    <FormControl>
+                      <Input {...field} placeholder="如 GPT 图像生成" />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
               />
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="p-displayName">显示名</Label>
-              <Input
-                id="p-displayName"
-                value={state.displayName}
-                onChange={(e) => up("displayName", e.target.value)}
-                placeholder="如 GPT 图像生成"
-                required
-              />
-            </div>
-          </div>
 
-          {/* 描述 */}
-          <div className="grid gap-2">
-            <Label htmlFor="p-description">模型描述（可选）</Label>
-            <Textarea
-              id="p-description"
-              rows={2}
-              value={state.description}
-              onChange={(e) => up("description", e.target.value)}
-              placeholder="展示在自由创作模型卡片名称下方，如：高质量写实风格，适合人物与场景"
-              maxLength={300}
-            />
-          </div>
-
-          {/* 勋章 */}
-          <BadgeField
-            text={state.badgeText}
-            color={state.badgeColor}
-            onTextChange={(v) => up("badgeText", v)}
-            onColorChange={(v) => up("badgeColor", v)}
-          />
-
-          <div className="grid gap-2">
-            <Label htmlFor="p-apiEndpoint">API 地址</Label>
-            <Input
-              id="p-apiEndpoint"
-              value={state.apiEndpoint}
-              onChange={(e) => up("apiEndpoint", e.target.value)}
-              placeholder="https://api.example.com/v1（以 /v1 结尾）"
-              required
-            />
-          </div>
-
-          {/* 图标 + API Key */}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="grid gap-2">
-              <Label>模型图标</Label>
-              <ModelIconUpload
-                value={state.iconUrl || null}
-                onChange={(url) => up("iconUrl", url ?? "")}
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="p-apiKey">API Key</Label>
-              <Input
-                id="p-apiKey"
-                type="password"
-                value={state.apiKey}
-                onChange={(e) => up("apiKey", e.target.value)}
-                placeholder={isEdit ? "留空则不修改" : "请输入 API Key"}
-                required={!isEdit}
-              />
-            </div>
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="grid gap-2">
-              <Label>接口格式</Label>
-              <Select
-                value={state.apiFormat}
-                onValueChange={(v) =>
-                  up(
-                    "apiFormat",
-                    (v ?? "openai") as FormState["apiFormat"],
-                  )
-                }
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue>
-                    {state.apiFormat === "jimeng"
-                      ? "即梦"
-                      : state.apiFormat === "gemini"
-                        ? "Gemini（OpenAI 兼容中转）"
-                        : state.apiFormat === "grsai"
-                          ? "Gemini (Grsai)"
-                          : "OpenAI 标准生图"}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="openai">OpenAI 标准生图</SelectItem>
-                  <SelectItem value="jimeng">即梦</SelectItem>
-                  <SelectItem value="gemini">Gemini（OpenAI 兼容中转）</SelectItem>
-                  <SelectItem value="grsai">Gemini (Grsai)</SelectItem>
-                </SelectContent>
-              </Select>
-              {state.apiFormat === "openai" && (
-                <p className="text-xs text-muted-foreground">
-                  请求 POST {"{接口地址}"}/images/generations，尺寸走 size 字段，
-                  参考图以 URL 链接传入 image 字段（接口地址配到 /v1 结尾）
-                </p>
-              )}
-              {state.apiFormat === "gemini" && (
-                <p className="text-xs text-muted-foreground">
-                  请求形状同 OpenAI 标准生图（POST {"{接口地址}"}/images/generations、
-                  Bearer 鉴权），供 Gemini 系中转模型使用；可在下方配置生图时
-                  传比例参数代替尺寸参数
-                </p>
-              )}
-              {state.apiFormat === "grsai" && (
-                <p className="text-xs text-muted-foreground">
-                  请求 POST {"{接口地址}"}/api/generate（接口地址配到域名或 /v1
-                  结尾，如 https://grsaiapi.com），比例自动取自下方启用的尺寸预设
-                  （aspectRatio），清晰度档位可选；参考图传入 images 字段
-                </p>
-              )}
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="p-costPerImage">每张积分</Label>
-              <Input
-                id="p-costPerImage"
-                type="number"
-                min={0}
-                value={state.costPerImage}
-                onChange={(e) => up("costPerImage", Number(e.target.value))}
-              />
-            </div>
-          </div>
-
-          {state.apiFormat === "jimeng" && (
-            <div className="grid gap-4 rounded-md border p-3 sm:grid-cols-2">
-              <div className="grid gap-2">
-                <Label>分辨率</Label>
-                <Select
-                  value={state.jimengResolution || "__none"}
-                  onValueChange={(v) =>
-                    up(
-                      "jimengResolution",
-                      (v === "__none" ? "" : v) as FormState["jimengResolution"],
-                    )
-                  }
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue>
-                      {state.jimengResolution
-                        ? state.jimengResolution.toUpperCase()
-                        : "默认"}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none">默认</SelectItem>
-                    <SelectItem value="1k">1K</SelectItem>
-                    <SelectItem value="2k">2K</SelectItem>
-                    <SelectItem value="4k">4K</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="p-jimengN">生成数量 N（1-8）</Label>
-                <Input
-                  id="p-jimengN"
-                  type="number"
-                  min={1}
-                  max={8}
-                  value={state.jimengN}
-                  onChange={(e) => up("jimengN", Number(e.target.value))}
-                />
-                <p className="text-xs text-muted-foreground">
-                  每次生成 N 张，按张计费；创作页选择为次数，总张数 = 次数 ×
-                  N。N &gt; 4 时自动拆分多次即梦请求（单次上游上限 4 张）。
-                </p>
-              </div>
-            </div>
-          )}
-
-          {(state.apiFormat === "openai" || state.apiFormat === "gemini") && (
-            <div className="space-y-3 rounded-md border p-3">
-              <label className="flex items-center justify-between">
-                <span className="text-sm font-medium">
-                  质量参数（quality）
-                  <span className="ml-2 text-xs font-normal text-muted-foreground">
-                    开启后生图请求透传 quality 字段，值按上游接口文档填写；关闭则不传
-                  </span>
-                </span>
-                <Switch
-                  checked={state.qualityEnabled}
-                  onCheckedChange={(v) => up("qualityEnabled", v)}
-                />
-              </label>
-              {state.qualityEnabled && (
-                <div className="grid gap-2">
-                  <Label htmlFor="p-quality">质量值</Label>
-                  <Input
-                    id="p-quality"
-                    value={state.quality}
-                    onChange={(e) => up("quality", e.target.value)}
-                    placeholder="如 high、medium、low、auto、hd、standard"
-                    list="p-quality-suggestions"
-                  />
-                  <datalist id="p-quality-suggestions">
-                    <option value="high" />
-                    <option value="medium" />
-                    <option value="low" />
-                    <option value="auto" />
-                    <option value="hd" />
-                    <option value="standard" />
-                  </datalist>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Grsai 专属：清晰度档位（比例自动取自启用的尺寸预设） */}
-          {state.apiFormat === "grsai" && (
-            <div className="grid gap-2 rounded-md border p-3">
-              <Label>清晰度档位（imageSize）</Label>
-              <Select
-                value={state.grsaiImageSize || "__auto"}
-                onValueChange={(v) =>
-                  up(
-                    "grsaiImageSize",
-                    (v === "__auto" ? "" : v) as FormState["grsaiImageSize"],
-                  )
-                }
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue>
-                    {state.grsaiImageSize
-                      ? state.grsaiImageSize
-                      : "自动（按预设尺寸推导）"}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__auto">自动（按预设尺寸推导）</SelectItem>
-                  <SelectItem value="1K">1K</SelectItem>
-                  <SelectItem value="2K">2K</SelectItem>
-                  <SelectItem value="4K">4K</SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                自动档按所选尺寸预设的总像素推导（约 ≤160 万像素 → 1K、
-                ≤600 万像素 → 2K、更大 → 4K）；生图比例无需配置，自动取自
-                下方启用的尺寸预设（如 1024x1536 → 2:3）
-              </p>
-            </div>
-          )}
-
-          {/* Gemini 专属：生图传尺寸还是传比例 */}
-          {state.apiFormat === "gemini" && (
-            <div className="space-y-3 rounded-md border p-3">
-              <label className="flex items-center justify-between">
-                <span className="text-sm font-medium">
-                  传比例参数（代替尺寸）
-                  <span className="ml-2 text-xs font-normal text-muted-foreground">
-                    开启后生图请求传所选比例（由尺寸预设归约，如 1024x1024 →
-                    1:1），不再传 size；关闭则与 OpenAI 格式一致传 size
-                  </span>
-                </span>
-                <Switch
-                  checked={state.useRatioParam}
-                  onCheckedChange={(v) => up("useRatioParam", v)}
-                />
-              </label>
-              {state.useRatioParam && (
-                <div className="grid gap-2">
-                  <Label htmlFor="p-ratioParamField">比例字段名</Label>
-                  <Input
-                    id="p-ratioParamField"
-                    value={state.ratioParamField}
-                    onChange={(e) => up("ratioParamField", e.target.value)}
-                    placeholder="留空默认 aspect_ratio，按中转站文档填写"
-                  />
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* 尺寸预设 */}
-          <div className="grid gap-2">
-            <Label>尺寸预设（比例 + 实际尺寸）</Label>
-            <SizePresetsEditor
-              value={state.sizePresets}
-              onChange={(v) => up("sizePresets", v)}
-            />
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-4">
-            <div className="grid gap-2">
-              <Label htmlFor="p-maxConcurrent">最大并发</Label>
-              <Input
-                id="p-maxConcurrent"
-                type="number"
-                min={1}
-                max={9999}
-                value={state.maxConcurrent}
-                onChange={(e) => up("maxConcurrent", Number(e.target.value))}
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="p-maxRetries">最大重试</Label>
-              <Input
-                id="p-maxRetries"
-                type="number"
-                min={0}
-                value={state.maxRetries}
-                onChange={(e) => up("maxRetries", Number(e.target.value))}
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="p-apiTimeout">请求超时(秒)</Label>
-              <Input
-                id="p-apiTimeout"
-                type="number"
-                min={1}
-                value={state.apiTimeout}
-                onChange={(e) => up("apiTimeout", Number(e.target.value))}
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="p-taskTimeout">任务总超时(秒)</Label>
-              <Input
-                id="p-taskTimeout"
-                type="number"
-                min={0}
-                value={state.taskTimeout}
-                onChange={(e) => up("taskTimeout", Number(e.target.value))}
-              />
-            </div>
-          </div>
-
-          {/* 可见性 + 创作页能力 */}
-          <div className="space-y-3 rounded-md border p-3">
-            <div className="grid gap-2">
-              <Label>页面可见性</Label>
-              <div className="flex flex-wrap gap-4">
-                <label className="flex items-center gap-2 text-sm">
-                  <Checkbox
-                    checked={state.visibleInCreate}
-                    onCheckedChange={(v) => up("visibleInCreate", v === true)}
-                  />
-                  创作页
-                </label>
-                <label className="flex items-center gap-2 text-sm">
-                  <Checkbox
-                    checked={state.visibleInWorkspace}
-                    onCheckedChange={(v) => up("visibleInWorkspace", v === true)}
-                  />
-                  批量生图
-                </label>
-                <label className="flex items-center gap-2 text-sm">
-                  <Checkbox
-                    checked={state.visibleInProduct}
-                    onCheckedChange={(v) => up("visibleInProduct", v === true)}
-                  />
-                  商品图片
-                </label>
-                <label className="flex items-center gap-2 text-sm">
-                  <Checkbox
-                    checked={state.visibleInWeartry}
-                    onCheckedChange={(v) => up("visibleInWeartry", v === true)}
-                  />
-                  穿戴图片
-                </label>
-                <label className="flex items-center gap-2 text-sm">
-                  <Checkbox
-                    checked={state.visibleInMockup}
-                    onCheckedChange={(v) => up("visibleInMockup", v === true)}
-                  />
-                  样机渲染
-                </label>
-              </div>
-            </div>
-            <label className="flex items-center justify-between border-t pt-3">
-              <span className="text-sm font-medium">
-                创作页生成数量选择（1-4）
-                <span className="ml-2 text-xs font-normal text-muted-foreground">
-                  开启后用户可在自由创作页选择 1-4；即梦模型下为「次数」，每次出
-                  N 张（总张数 = 次数 × N）
-                </span>
-              </span>
-              <Switch
-                checked={state.supportsImageCount}
-                onCheckedChange={(v) => up("supportsImageCount", v)}
-              />
-            </label>
-            <label className="flex items-center justify-between border-t pt-3">
-              <span className="text-sm font-medium">
-                支持智能比例
-                <span className="ml-2 text-xs font-normal text-muted-foreground">
-                  开启后创作页可选「智能」，size 传 auto 由模型决定尺寸
-                </span>
-              </span>
-              <Switch
-                checked={state.supportsSmartSize}
-                onCheckedChange={(v) => up("supportsSmartSize", v)}
-              />
-            </label>
-          </div>
-
-          <div className="space-y-3 rounded-md border p-3">
-            <label className="flex items-center justify-between">
-              <span className="text-sm font-medium">支持参考图</span>
-              <Switch
-                checked={state.supportsReferenceImage}
-                onCheckedChange={(v) => up("supportsReferenceImage", v)}
-              />
-            </label>
-            {state.supportsReferenceImage ? (
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label htmlFor="p-maxReferenceImages">最大参考图数</Label>
-                  <Input
-                    id="p-maxReferenceImages"
-                    type="number"
-                    min={1}
-                    max={10}
-                    value={state.maxReferenceImages}
-                    onChange={(e) =>
-                      up("maxReferenceImages", Number(e.target.value))
-                    }
-                  />
-                </div>
-                {/* grsai 固定用 images 字段（适配器硬编码，见 grsai-image.ts），
-                    不暴露字段名配置，避免填了 image 之类的值被静默忽略 */}
-                {state.apiFormat !== "grsai" && (
-                  <div className="grid gap-2">
-                    <Label htmlFor="p-referenceImageField">
-                      参考图 API 字段名
-                    </Label>
-                    <Input
-                      id="p-referenceImageField"
-                      value={state.referenceImageField}
-                      onChange={(e) => up("referenceImageField", e.target.value)}
-                      placeholder="留空按格式默认：openai→image，即梦→filePaths"
+            {/* 描述 */}
+            <FormField
+              control={form.control}
+              name="description"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>模型描述（可选）</FormLabel>
+                  <FormControl>
+                    <Textarea
+                      rows={2}
+                      {...field}
+                      placeholder="展示在自由创作模型卡片名称下方，如：高质量写实风格，适合人物与场景"
+                      maxLength={300}
                     />
-                  </div>
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            {/* 勋章（文字/配色双字段组件：文字走本 FormField，配色经 form 回写） */}
+            <FormField
+              control={form.control}
+              name="badgeText"
+              render={({ field }) => (
+                <FormItem>
+                  <FormControl>
+                    <BadgeField
+                      text={field.value}
+                      color={badgeColor}
+                      onTextChange={field.onChange}
+                      onColorChange={(v) =>
+                        form.setValue("badgeColor", v, {
+                          shouldDirty: true,
+                          shouldValidate: true,
+                        })
+                      }
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="apiEndpoint"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>API 地址</FormLabel>
+                  <FormControl>
+                    <Input
+                      {...field}
+                      placeholder="https://api.example.com/v1（以 /v1 结尾）"
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            {/* 图标 + API Key */}
+            <div className="grid grid-cols-2 gap-4">
+              <FormField
+                control={form.control}
+                name="iconUrl"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>模型图标</FormLabel>
+                    <FormControl>
+                      <ModelIconUpload
+                        value={field.value || null}
+                        onChange={(url) => field.onChange(url ?? "")}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="apiKey"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>API Key</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="password"
+                        {...field}
+                        placeholder={isEdit ? "留空则不修改" : "请输入 API Key"}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            {/* 接口格式 */}
+            <div className="grid grid-cols-2 gap-4">
+              <FormField
+                control={form.control}
+                name="apiFormat"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>接口格式</FormLabel>
+                    <Select
+                      value={field.value}
+                      onValueChange={(v) =>
+                        field.onChange(
+                          (v ?? "openai") as ModelFormValues["apiFormat"],
+                        )
+                      }
+                    >
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue>
+                            {field.value === "jimeng"
+                              ? "即梦"
+                              : field.value === "gemini"
+                                ? "Gemini（OpenAI 兼容中转）"
+                                : field.value === "grsai"
+                                  ? "Gemini (Grsai)"
+                                  : "OpenAI 标准生图"}
+                          </SelectValue>
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="openai">OpenAI 标准生图</SelectItem>
+                        <SelectItem value="jimeng">即梦</SelectItem>
+                        <SelectItem value="gemini">
+                          Gemini（OpenAI 兼容中转）
+                        </SelectItem>
+                        <SelectItem value="grsai">Gemini (Grsai)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {apiFormat === "openai" && (
+                      <p className="text-xs text-muted-foreground">
+                        请求 POST {"{接口地址}"}/images/generations，尺寸走 size 字段，
+                        参考图以 URL 链接传入 image 字段（接口地址配到 /v1 结尾）
+                      </p>
+                    )}
+                    {apiFormat === "gemini" && (
+                      <p className="text-xs text-muted-foreground">
+                        请求形状同 OpenAI 标准生图（POST {"{接口地址}"}/images/generations、
+                        Bearer 鉴权），供 Gemini 系中转模型使用；可在下方配置生图时
+                        传比例参数代替尺寸参数
+                      </p>
+                    )}
+                    {apiFormat === "grsai" && (
+                      <p className="text-xs text-muted-foreground">
+                        请求 POST {"{接口地址}"}/api/generate（接口地址配到域名或 /v1
+                        结尾，如 https://grsaiapi.com），比例自动取自下方启用的尺寸预设
+                        （aspectRatio），清晰度档位可选；参考图传入 images 字段
+                      </p>
+                    )}
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="costPerImage"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>每张积分</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="number"
+                        min={0}
+                        {...field}
+                        value={field.value ?? ""}
+                        onChange={(e) =>
+                          field.onChange(
+                            e.target.value === ""
+                              ? undefined
+                              : Number(e.target.value),
+                          )
+                        }
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            {/* 即梦特定字段 */}
+            {apiFormat === "jimeng" && (
+              <div className="grid gap-4 rounded-md border p-3 sm:grid-cols-2">
+                <FormField
+                  control={form.control}
+                  name="jimengResolution"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>分辨率</FormLabel>
+                      <Select
+                        value={field.value || "__none"}
+                        onValueChange={(v) =>
+                          field.onChange(
+                            (v === "__none" ? "" : v) as ModelFormValues["jimengResolution"],
+                          )
+                        }
+                      >
+                        <FormControl>
+                          <SelectTrigger className="w-full">
+                            <SelectValue>
+                              {field.value ? field.value.toUpperCase() : "默认"}
+                            </SelectValue>
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="__none">默认</SelectItem>
+                          <SelectItem value="1k">1K</SelectItem>
+                          <SelectItem value="2k">2K</SelectItem>
+                          <SelectItem value="4k">4K</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="jimengN"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>生成数量 N（1-8）</FormLabel>
+                      <FormControl>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={8}
+                          {...field}
+                          value={field.value ?? ""}
+                          onChange={(e) =>
+                            field.onChange(
+                              e.target.value === ""
+                                ? undefined
+                                : Number(e.target.value),
+                            )
+                          }
+                        />
+                      </FormControl>
+                      <p className="text-xs text-muted-foreground">
+                        每次生成 N 张，按张计费；创作页选择为次数，总张数 = 次数 ×
+                        N。N &gt; 4 时自动拆分多次即梦请求（单次上游上限 4 张）。
+                      </p>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+            )}
+
+            {(apiFormat === "openai" || apiFormat === "gemini") && (
+              <div className="space-y-3 rounded-md border p-3">
+                <FormField
+                  control={form.control}
+                  name="qualityEnabled"
+                  render={({ field }) => (
+                    <FormItem className="flex items-center justify-between">
+                      <FormLabel>
+                        质量参数（quality）
+                        <span className="ml-2 text-xs font-normal text-muted-foreground">
+                          开启后生图请求透传 quality 字段，值按上游接口文档填写；关闭则不传
+                        </span>
+                      </FormLabel>
+                      <FormControl>
+                        <Switch
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+                {qualityEnabled && (
+                  <FormField
+                    control={form.control}
+                    name="quality"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>质量值</FormLabel>
+                        <FormControl>
+                          <Input
+                            {...field}
+                            placeholder="如 high、medium、low、auto、hd、standard"
+                            list="p-quality-suggestions"
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                )}
+                <datalist id="p-quality-suggestions">
+                  <option value="high" />
+                  <option value="medium" />
+                  <option value="low" />
+                  <option value="auto" />
+                  <option value="hd" />
+                  <option value="standard" />
+                </datalist>
+              </div>
+            )}
+
+            {/* Grsai 专属：清晰度档位（比例自动取自启用的尺寸预设） */}
+            {apiFormat === "grsai" && (
+              <div className="grid gap-2 rounded-md border p-3">
+                <FormField
+                  control={form.control}
+                  name="grsaiImageSize"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>清晰度档位（imageSize）</FormLabel>
+                      <Select
+                        value={field.value || "__auto"}
+                        onValueChange={(v) =>
+                          field.onChange(
+                            (v === "__auto" ? "" : v) as ModelFormValues["grsaiImageSize"],
+                          )
+                        }
+                      >
+                        <FormControl>
+                          <SelectTrigger className="w-full">
+                            <SelectValue>
+                              {field.value
+                                ? field.value
+                                : "自动（按预设尺寸推导）"}
+                            </SelectValue>
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="__auto">
+                            自动（按预设尺寸推导）
+                          </SelectItem>
+                          <SelectItem value="1K">1K</SelectItem>
+                          <SelectItem value="2K">2K</SelectItem>
+                          <SelectItem value="4K">4K</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        自动档按所选尺寸预设的总像素推导（约 ≤160 万像素 → 1K、
+                        ≤600 万像素 → 2K、更大 → 4K）；生图比例无需配置，自动取自
+                        下方启用的尺寸预设（如 1024x1536 → 2:3）
+                      </p>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+            )}
+
+            {/* Gemini 专属：生图传尺寸还是传比例 */}
+            {apiFormat === "gemini" && (
+              <div className="space-y-3 rounded-md border p-3">
+                <FormField
+                  control={form.control}
+                  name="useRatioParam"
+                  render={({ field }) => (
+                    <FormItem className="flex items-center justify-between">
+                      <FormLabel>
+                        传比例参数（代替尺寸）
+                        <span className="ml-2 text-xs font-normal text-muted-foreground">
+                          开启后生图请求传所选比例（由尺寸预设归约，如 1024x1024 →
+                          1:1），不再传 size；关闭则与 OpenAI 格式一致传 size
+                        </span>
+                      </FormLabel>
+                      <FormControl>
+                        <Switch
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+                {useRatioParam && (
+                  <FormField
+                    control={form.control}
+                    name="ratioParamField"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>比例字段名</FormLabel>
+                        <FormControl>
+                          <Input
+                            {...field}
+                            placeholder="留空默认 aspect_ratio，按中转站文档填写"
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
                 )}
               </div>
-            ) : null}
-          </div>
+            )}
 
-          <DialogFooter>
-            <Button type="submit" disabled={pending}>
-              {pending ? "保存中..." : isEdit ? "保存" : "创建"}
-            </Button>
-          </DialogFooter>
-        </form>
+            {/* 尺寸预设 */}
+            <FormField
+              control={form.control}
+              name="sizePresets"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>尺寸预设（比例 + 实际尺寸）</FormLabel>
+                  <FormControl>
+                    <SizePresetsEditor
+                      value={field.value}
+                      onChange={field.onChange}
+                    />
+                  </FormControl>
+                  {sizePresetError ? (
+                    <p className="text-sm text-destructive">{sizePresetError}</p>
+                  ) : null}
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            {/* 计费/并发/超时 */}
+            <div className="grid gap-4 sm:grid-cols-4">
+              <FormField
+                control={form.control}
+                name="maxConcurrent"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>最大并发</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={9999}
+                        {...field}
+                        value={field.value ?? ""}
+                        onChange={(e) =>
+                          field.onChange(
+                            e.target.value === ""
+                              ? undefined
+                              : Number(e.target.value),
+                          )
+                        }
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="maxRetries"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>最大重试</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="number"
+                        min={0}
+                        {...field}
+                        value={field.value ?? ""}
+                        onChange={(e) =>
+                          field.onChange(
+                            e.target.value === ""
+                              ? undefined
+                              : Number(e.target.value),
+                          )
+                        }
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="apiTimeout"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>请求超时(秒)</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="number"
+                        min={1}
+                        {...field}
+                        value={field.value ?? ""}
+                        onChange={(e) =>
+                          field.onChange(
+                            e.target.value === ""
+                              ? undefined
+                              : Number(e.target.value),
+                          )
+                        }
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="taskTimeout"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>任务总超时(秒)</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="number"
+                        min={0}
+                        {...field}
+                        value={field.value ?? ""}
+                        onChange={(e) =>
+                          field.onChange(
+                            e.target.value === ""
+                              ? undefined
+                              : Number(e.target.value),
+                          )
+                        }
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            {/* 可见性 + 创作页能力 */}
+            <div className="space-y-3 rounded-md border p-3">
+              <div className="grid gap-2">
+                <Label>页面可见性</Label>
+                <div className="flex flex-wrap gap-4">
+                  {(
+                    [
+                      ["visibleInCreate", "创作页"],
+                      ["visibleInWorkspace", "批量生图"],
+                      ["visibleInProduct", "商品图片"],
+                      ["visibleInWeartry", "穿戴图片"],
+                      ["visibleInMockup", "样机渲染"],
+                    ] as const
+                  ).map(([fieldName, label]) => (
+                    <FormField
+                      key={fieldName}
+                      control={form.control}
+                      name={fieldName}
+                      render={({ field }) => (
+                        <FormItem className="flex items-center gap-2">
+                          <FormControl>
+                            <Checkbox
+                              checked={field.value}
+                              onCheckedChange={(v) => field.onChange(v === true)}
+                            />
+                          </FormControl>
+                          <FormLabel className="font-normal">{label}</FormLabel>
+                        </FormItem>
+                      )}
+                    />
+                  ))}
+                </div>
+              </div>
+              <FormField
+                control={form.control}
+                name="supportsImageCount"
+                render={({ field }) => (
+                  <FormItem className="flex items-center justify-between border-t pt-3">
+                    <FormLabel>
+                      创作页生成数量选择（1-4）
+                      <span className="ml-2 text-xs font-normal text-muted-foreground">
+                        开启后用户可在自由创作页选择 1-4；即梦模型下为「次数」，每次出
+                        N 张（总张数 = 次数 × N）
+                      </span>
+                    </FormLabel>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="supportsSmartSize"
+                render={({ field }) => (
+                  <FormItem className="flex items-center justify-between border-t pt-3">
+                    <FormLabel>
+                      支持智能比例
+                      <span className="ml-2 text-xs font-normal text-muted-foreground">
+                        开启后创作页可选「智能」，size 传 auto 由模型决定尺寸
+                      </span>
+                    </FormLabel>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            {/* 参考图 */}
+            <div className="space-y-3 rounded-md border p-3">
+              <FormField
+                control={form.control}
+                name="supportsReferenceImage"
+                render={({ field }) => (
+                  <FormItem className="flex items-center justify-between">
+                    <FormLabel>支持参考图</FormLabel>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+              {supportsReferenceImage ? (
+                <div className="grid grid-cols-2 gap-4">
+                  <FormField
+                    control={form.control}
+                    name="maxReferenceImages"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>最大参考图数</FormLabel>
+                        <FormControl>
+                          <Input
+                            type="number"
+                            min={1}
+                            max={10}
+                            {...field}
+                            value={field.value ?? ""}
+                            onChange={(e) =>
+                              field.onChange(
+                                e.target.value === ""
+                                  ? undefined
+                                  : Number(e.target.value),
+                              )
+                            }
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  {/* grsai 固定用 images 字段（适配器硬编码，见 grsai-image.ts），
+                      不暴露字段名配置，避免填了 image 之类的值被静默忽略 */}
+                  {apiFormat !== "grsai" && (
+                    <FormField
+                      control={form.control}
+                      name="referenceImageField"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>参考图 API 字段名</FormLabel>
+                          <FormControl>
+                            <Input
+                              {...field}
+                              placeholder="留空按格式默认：openai→image，即梦→filePaths"
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
+                </div>
+              ) : null}
+            </div>
+
+            {serverError ? (
+              <p className="text-sm text-destructive">{serverError}</p>
+            ) : null}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)} disabled={pending}>
+                取消
+              </Button>
+              <Button type="submit" disabled={pending}>
+                {pending ? "保存中…" : isEdit ? "保存" : "创建"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </Form>
       </DialogContent>
     </Dialog>
   )

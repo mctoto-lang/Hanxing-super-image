@@ -216,7 +216,7 @@ function MetricCard({
         {badge ? <CardAction>{badge}</CardAction> : null}
       </CardHeader>
       <CardContent className="pt-0">
-        <div className="text-2xl font-semibold tabular-nums">
+        <div className="text-2xl font-bold tabular-nums">
           {value}
           {unit ? (
             <span className="ml-1 text-sm font-normal text-muted-foreground">

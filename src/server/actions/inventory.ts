@@ -35,7 +35,6 @@ import {
   type MovementType,
   type StockStatus,
 } from "@/server/services/inventory-core"
-import { temuDayStr } from "@/server/services/temu-time"
 
 /**
  * 库存管理 action 层（单权限 key inventory，可看即可用；危险操作 UI 层二次确认）

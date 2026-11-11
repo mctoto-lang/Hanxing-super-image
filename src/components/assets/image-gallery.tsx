@@ -54,12 +54,21 @@ function columnsForWidth(width: number): number {
   return 2
 }
 
-/** 瀑布流卡片图片：加载前以方形骨架占位，加载完成按自然比例淡入 */
-function CardImage({ src, alt }: { src: string; alt: string }) {
+/** 瀑布流卡片图片：加载前按持久化尺寸（缺省方形）骨架占位，加载完成按自然比例淡入 */
+function CardImage({
+  src,
+  alt,
+  size,
+}: {
+  src: string
+  alt: string
+  size?: { width: number; height: number } | null
+}) {
   const [loaded, setLoaded] = React.useState(false)
 
   React.useEffect(() => setLoaded(false), [src])
 
+  const aspectRatio = size ? size.width / size.height : 1
   return (
     <div className="relative w-full">
       <SmartImage
@@ -67,10 +76,20 @@ function CardImage({ src, alt }: { src: string; alt: string }) {
         alt={alt}
         onLoad={() => setLoaded(true)}
         onFallback={() => setLoaded(true)}
+        fallbackAspectRatio={aspectRatio}
         className={cn(
           "w-full object-cover transition-opacity duration-500",
-          loaded ? "opacity-100" : "aspect-square opacity-0",
+          loaded ? "opacity-100" : "opacity-0",
         )}
+        style={
+          loaded
+            ? undefined
+            : {
+                // 加载前以持久化尺寸撑住骨架位（与过期占位同比例），
+                // 缺省回退方形
+                aspectRatio,
+              }
+        }
       />
       {!loaded ? (
         <Skeleton className="absolute inset-0 rounded-none" aria-hidden />
@@ -227,6 +246,7 @@ export function ImageGallery({
           flatIndex: cards.length,
           url,
           item,
+          size: item.imageSizes?.[imgIdx] ?? null,
         })
       })
     }
@@ -544,6 +564,7 @@ export function ImageGallery({
                       <CardImage
                         src={toImageSrc(card.url, { width: 480 })}
                         alt={card.item.prompt.slice(0, 50)}
+                        size={card.size}
                       />
                     )}
                     {/* 批量选择模式：左上角常显选中圈 */}

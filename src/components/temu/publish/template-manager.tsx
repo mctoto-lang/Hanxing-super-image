@@ -137,7 +137,7 @@ export function TemuTemplateManager({ canManage }: { canManage: boolean }) {
                     </TableCell>
                     {canManage && (
                       <TableCell>
-                        <div className="flex justify-end gap-1">
+                        <div className="flex justify-start gap-1">
                           <Button
                             variant="ghost"
                             size="sm"

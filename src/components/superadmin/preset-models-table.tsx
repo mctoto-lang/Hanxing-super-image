@@ -9,6 +9,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { TableEmpty } from "@/components/shared/table-empty"
 import {
   PresetModelEditButton,
   PresetModelToggleActiveButton,
@@ -45,10 +46,10 @@ export function PresetModelsTable({ models }: { models: PresetModelRow[] }) {
           <TableHead className="w-8" aria-label="拖动排序" />
           <TableHead>显示名</TableHead>
           <TableHead>接口</TableHead>
-          <TableHead className="text-right">积分/张</TableHead>
+          <TableHead>积分/张</TableHead>
           <TableHead>可见性</TableHead>
           <TableHead>状态</TableHead>
-          <TableHead className="text-right">操作</TableHead>
+          <TableHead>操作</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -66,7 +67,7 @@ export function PresetModelsTable({ models }: { models: PresetModelRow[] }) {
                 </span>
               ) : null}
             </TableCell>
-            <TableCell className="text-right tabular-nums">
+            <TableCell className="tabular-nums">
               {m.costPerImage}
             </TableCell>
             <TableCell>
@@ -105,8 +106,8 @@ export function PresetModelsTable({ models }: { models: PresetModelRow[] }) {
                 <Badge variant="outline">停用</Badge>
               )}
             </TableCell>
-            <TableCell className="text-right">
-              <div className="flex justify-end gap-1">
+            <TableCell>
+              <div className="flex gap-1">
                 <PresetModelEditButton model={m} />
                 <PresetModelToggleActiveButton model={m} />
               </div>
@@ -114,11 +115,7 @@ export function PresetModelsTable({ models }: { models: PresetModelRow[] }) {
           </TableRow>
         ))}
         {ordered.length === 0 ? (
-          <TableRow>
-            <TableCell colSpan={7} className="text-center text-muted-foreground">
-              暂无平台预置模型，点击右上角新建
-            </TableCell>
-          </TableRow>
+          <TableEmpty colSpan={7} noun="平台预置模型" />
         ) : null}
       </TableBody>
     </Table>

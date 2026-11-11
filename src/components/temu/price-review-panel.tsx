@@ -82,7 +82,7 @@ const yuan = (fen: number | null | undefined) =>
 /** 价差百分比（正=建议/调价降价 → 红色下降趋势线；负=涨价 → 绿色；0 无图标）。
  *  核价单与调价单同款展示 */
 function DeltaPctCell({ deltaPct }: { deltaPct: number | null }) {
-  if (deltaPct == null) return <EmptyHint center />
+  if (deltaPct == null) return <EmptyHint />
   const tone =
     deltaPct > 0
       ? "text-red-600 dark:text-red-400"
@@ -312,7 +312,7 @@ function ReviewSection({
                 <TableHead>申报价</TableHead>
                 <TableHead>建议价</TableHead>
                 <TableHead>价差</TableHead>
-                <TableHead className="text-center">状态</TableHead>
+                <TableHead>状态</TableHead>
                 <TableHead>操作</TableHead>
               </TableRow>
             </TableHeader>
@@ -342,10 +342,10 @@ function ReviewSection({
                   <TableCell className="max-w-56">
                     <ProductNameCell name={r.products[0]?.productName ?? null} />
                   </TableCell>
-                  <TableCell className="font-mono text-xs">{r.products[0]?.productSn ?? <EmptyHint center />}</TableCell>
+                  <TableCell className="font-mono text-xs">{r.products[0]?.productSn ?? <EmptyHint />}</TableCell>
                   <TableCell>
                     {r.skuIds.length === 0 ? (
-                      <EmptyHint center />
+                      <EmptyHint />
                     ) : r.skuIds.length === 1 ? (
                       <span className="font-mono text-xs">{r.skuIds[0]}</span>
                     ) : (
@@ -364,15 +364,15 @@ function ReviewSection({
                     )}
                   </TableCell>
                   <TableCell className="tabular-nums">
-                    {r.supplyPrice != null ? yuan(r.supplyPrice) : <EmptyHint center />}
+                    {r.supplyPrice != null ? yuan(r.supplyPrice) : <EmptyHint />}
                   </TableCell>
                   <TableCell className="tabular-nums">
-                    {r.suggestSupplyPrice != null ? yuan(r.suggestSupplyPrice) : <EmptyHint center />}
+                    {r.suggestSupplyPrice != null ? yuan(r.suggestSupplyPrice) : <EmptyHint />}
                   </TableCell>
                   <TableCell className="tabular-nums">
                     <DeltaPctCell deltaPct={r.deltaPct} />
                   </TableCell>
-                  <TableCell className="text-center">
+                  <TableCell>
                     <StatusBadge label={r.statusLabel} tone={reviewTone(r.status)} />
                   </TableCell>
                   <TableCell>
@@ -380,7 +380,7 @@ function ReviewSection({
                         确认建议价的主态；对齐调价单 0/1 可操作的口径）。
                         canBargain=false：官方锁议价（极端压价单），拒绝置灰 */}
                     {r.status === 0 || r.status === 1 ? (
-                      <div className="flex justify-end gap-1.5">
+                      <div className="flex justify-start gap-1.5">
                         {/* 已操作冻结（官方状态回写有秒级延迟，行仍留在列表）+
                             in-flight 期间禁用，防重复提交（官方报 4000000）。
                             Trigger 挂 span：Button disabled 带 pointer-events-none，
@@ -747,20 +747,20 @@ function AdjustSection({
                   <TableCell className="max-w-56">
                     <ProductNameCell name={r.productName} />
                   </TableCell>
-                  <TableCell className="font-mono text-xs">{r.skcExtCode ?? r.skcId ?? <EmptyHint center />}</TableCell>
+                  <TableCell className="font-mono text-xs">{r.skcExtCode ?? r.skcId ?? <EmptyHint />}</TableCell>
                   <TableCell className="text-xs">
                     {/* 货号 → 规格 → SKU ID 优先显示（官方部分行不返回 skuExtCode） */}
                     {r.skuItems.length === 0 ? (
-                      <EmptyHint center />
+                      <EmptyHint />
                     ) : (
                       `${r.skuItems[0]?.skuExtCode ?? r.skuItems[0]?.spec ?? r.skuItems[0]?.skuId ?? "—"}${r.skuItems.length > 1 ? ` 等 ${r.skuItems.length} 个` : ""}`
                     )}
                   </TableCell>
                   <TableCell className="tabular-nums">
-                    {r.currentSupplyPrice != null ? yuan(r.currentSupplyPrice) : <EmptyHint center />}
+                    {r.currentSupplyPrice != null ? yuan(r.currentSupplyPrice) : <EmptyHint />}
                   </TableCell>
                   <TableCell className="tabular-nums">
-                    {r.newSupplyPrice != null ? yuan(r.newSupplyPrice) : <EmptyHint center />}
+                    {r.newSupplyPrice != null ? yuan(r.newSupplyPrice) : <EmptyHint />}
                   </TableCell>
                   <TableCell className="tabular-nums">
                     <DeltaPctCell deltaPct={deltaPctOf(r.currentSupplyPrice, r.newSupplyPrice)} />
@@ -770,7 +770,7 @@ function AdjustSection({
                     <TruncTip text={r.adjustReason ?? ""} className="max-w-40 text-muted-foreground" />
                   </TableCell>
                   <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                    {r.orderCreateTime != null ? fmtTs(r.orderCreateTime) : <EmptyHint center />}
+                    {r.orderCreateTime != null ? fmtTs(r.orderCreateTime) : <EmptyHint />}
                   </TableCell>
                   {actionable && (
                     <TableCell>

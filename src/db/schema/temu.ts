@@ -823,3 +823,43 @@ export const temuLogisticsConfig = pgTable("temu_logistics_config", {
   updatedBy: uuid("updated_by"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 })
+
+/** 优先发货链接标记（商品信息页「设置 → 设为优先发货」；官方无对应接口，纯本地标记）。
+ *  同货号允许多链接标记（不排他，人工挑选）；备货页标记列/发货台库存参考列按
+ *  productSkcId 匹配展示徽章。迁移 0094。 */
+export const temuPriorityLinks = pgTable(
+  "temu_priority_link",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    enterpriseId: uuid("enterprise_id")
+      .notNull()
+      .references(() => enterprises.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => temuStores.id, { onDelete: "cascade" }),
+    productSkcId: varchar("product_skc_id", { length: 32 }).notNull(),
+    /** 货号（展示/对账冗余，标记时快照） */
+    productSn: varchar("product_sn", { length: 64 }),
+    productName: text("product_name"),
+    createdBy: uuid("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("gt_temu_priority_link_uq").on(t.enterpriseId, t.storeId, t.productSkcId),
+    index("gt_temu_priority_link_skc").on(t.enterpriseId, t.productSkcId),
+  ],
+)
+
+/** TEMU 域企业级配置（每企业一行，无行回落代码默认值；口径仿 inventory_settings）。
+ *  滞销筛选阈值：商品信息页状态筛选「滞销」= 窗口天数内日销量合计 ≤ 阈值件数。迁移 0094。 */
+export const temuSettings = pgTable("temu_settings", {
+  enterpriseId: uuid("enterprise_id")
+    .primaryKey()
+    .references(() => enterprises.id, { onDelete: "cascade" }),
+  /** 滞销判定窗口天数（1-365，默认 30） */
+  stagnantWindowDays: integer("stagnant_window_days").default(30).notNull(),
+  /** 滞销销量上限件数（0-100000，默认 0：窗口合计 ≤ 该值判滞销） */
+  stagnantThresholdQty: integer("stagnant_threshold_qty").default(0).notNull(),
+  updatedBy: uuid("updated_by"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+})

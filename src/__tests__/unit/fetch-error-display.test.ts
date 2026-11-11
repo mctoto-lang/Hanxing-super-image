@@ -72,7 +72,7 @@ describe("openai 适配器端点网络失败", () => {
       },
       task: { prompt: "p", imageSize: "1024x1024", imageCount: 1 },
       apiKey: "k",
-      downloadAndUpload: async (url) => url,
+      downloadAndUpload: async (url) => ({ url, width: null, height: null }),
     })
     expect(results[0]!.error).toContain("生图请求网络失败")
     expect(results[0]!.error).toContain("https://www.example-relay.com/v1/images/generations")

@@ -1,28 +1,21 @@
 "use client"
 
-import { useState } from "react"
+import * as React from "react"
 import { useRouter } from "next/navigation"
 import { Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogTitle,
-} from "@/components/ui/dialog"
+import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import { deleteBannerAction } from "@/server/actions/platform-banners"
 
-/** 删除横幅（二次确认） */
+/** 删除横幅（复用 ConfirmDialog，与全站确认弹窗口径一致） */
 export function BannerDeleteButton({ id, title }: { id: string; title: string }) {
   const router = useRouter()
-  const [open, setOpen] = useState(false)
-  const [loading, setLoading] = useState(false)
+  const [open, setOpen] = React.useState(false)
+  const [pending, startTransition] = React.useTransition()
 
-  const confirmDelete = async () => {
-    setLoading(true)
-    try {
+  function handleConfirm() {
+    startTransition(async () => {
       const res = await deleteBannerAction({ id })
       if (!res.ok) {
         toast.error(res.error ?? "删除失败")
@@ -31,9 +24,7 @@ export function BannerDeleteButton({ id, title }: { id: string; title: string })
       toast.success("横幅已删除")
       setOpen(false)
       router.refresh()
-    } finally {
-      setLoading(false)
-    }
+    })
   }
 
   return (
@@ -47,26 +38,16 @@ export function BannerDeleteButton({ id, title }: { id: string; title: string })
       >
         <Trash2 className="size-3.5" />
       </Button>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-sm">
-          <DialogTitle>删除横幅</DialogTitle>
-          <DialogDescription>
-            确定删除「{title}」？删除后立即从全站轮换中移除，且不可恢复。
-          </DialogDescription>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>
-              取消
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={confirmDelete}
-              disabled={loading}
-            >
-              删除
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmDialog
+        open={open}
+        onOpenChange={setOpen}
+        title="删除横幅"
+        description={`确定删除「${title}」？删除后立即从全站轮换中移除，且不可恢复。`}
+        confirmText="确认删除"
+        destructive
+        pending={pending}
+        onConfirm={handleConfirm}
+      />
     </>
   )
 }

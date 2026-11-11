@@ -164,11 +164,75 @@ export const subscriptionPlanInputSchema = z.object({
 
 export const updateSubscriptionPlanSchema = subscriptionPlanInputSchema.extend({
   id: z.string().uuid("缺少套餐 ID"),
+  /** 编辑弹窗「启用套餐」开关（可选：不传则不改状态，状态管理入口仍为 toggle） */
+  isActive: z.boolean().optional(),
 })
 
 export const toggleSubscriptionPlanSchema = z.object({
   id: z.string().uuid("缺少套餐 ID"),
   isActive: z.boolean(),
+})
+
+/** 更新企业基本信息（名称/Slug/Logo，至少一项） */
+export const updateEnterpriseInfoSchema = z
+  .object({
+    enterpriseId: z.string().uuid("请选择企业"),
+    name: z.string().min(2, "企业名称至少 2 字符").max(100).optional(),
+    slug: z
+      .string()
+      .min(2)
+      .max(50)
+      .regex(slugRegex, "slug 只能含小写字母、数字、短横线")
+      .optional(),
+    /** null = 清除 Logo；与成员头像同源（/api/upload/avatar 上传） */
+    logoUrl: z
+      .string()
+      .max(500)
+      .regex(/^(https?:\/\/|\/)/, "Logo 地址不合法")
+      .nullable()
+      .optional(),
+  })
+  .refine(
+    (d) => d.name !== undefined || d.slug !== undefined || d.logoUrl !== undefined,
+    { message: "至少修改一项" },
+  )
+
+/** 停用/启用企业（停用后成员可登录但业务操作 403） */
+export const setEnterpriseStatusSchema = z.object({
+  enterpriseId: z.string().uuid("请选择企业"),
+  status: z.enum(["active", "suspended"]),
+})
+
+/** 超管编辑平台用户（用户名/昵称/类型/归属企业/角色；全量提交、服务端 diff） */
+export const updatePlatformUserSchema = z
+  .object({
+    userId: z.string().uuid("缺少用户 ID"),
+    username: z
+      .string()
+      .min(2, "用户名至少 2 字符")
+      .max(50, "用户名最多 50 字符")
+      .regex(/^[a-zA-Z0-9_-]+$/, "用户名只能含字母、数字、下划线、短横线"),
+    name: z.string().max(100).optional(),
+    isSuperAdmin: z.boolean(),
+    /** 空串 = 无企业（仅超管合法；服务端对超管强制清空） */
+    enterpriseId: z.string().uuid("请选择企业").or(z.literal("")),
+    enterpriseRole: z.enum(["owner", "admin", "member"]),
+  })
+  .refine((d) => d.isSuperAdmin || d.enterpriseId !== "", {
+    message: "企业用户必须归属企业",
+    path: ["enterpriseId"],
+  })
+
+/** 停用/启用平台用户（停用后无法登录、在途会话周期复核即时降权） */
+export const setPlatformUserStatusSchema = z.object({
+  userId: z.string().uuid("缺少用户 ID"),
+  status: z.enum(["active", "disabled"]),
+})
+
+/** 超管重置平台用户密码（owner 忘密码的唯一兜底入口） */
+export const resetPlatformUserPasswordSchema = z.object({
+  userId: z.string().uuid("缺少用户 ID"),
+  newPassword: z.string().min(6, "密码至少 6 字符").max(128, "密码最多 128 字符"),
 })
 
 /** 给企业分配套餐（分配即发放首期到企业积分池） */

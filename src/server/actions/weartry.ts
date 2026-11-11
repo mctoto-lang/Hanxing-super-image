@@ -277,6 +277,14 @@ export async function aiAssistOutfitAction(input: {
   }
   const d = parsed.data
 
+  // 参考图归属校验（与生图链路口径一致：只允许本企业上传的图片，
+  // 防止借 AI 分析读取他企业图片内容）
+  const refErr = await validateReferenceImageUrls(
+    d.referenceImages,
+    scope.enterpriseId,
+  )
+  if (refErr) return { ok: false, error: refErr }
+
   if (await aiActionRateLimiter.consume(scope.enterpriseId, ctx.user.id)) {
     return { ok: false, error: "操作过于频繁，请稍后再试" }
   }

@@ -258,7 +258,7 @@ export function DeliverMethodTabs({
           </div>
           <div className="space-y-1">
             <Label className="text-xs">发货总箱数</Label>
-            <Input className="h-8 text-xs" type="number" min={1} value={pkgNum} onChange={(e) => setPkg(e.target.value)} />
+            <Input className="h-8 rounded-md text-xs" type="number" min={1} value={pkgNum} onChange={(e) => setPkg(e.target.value)} />
           </div>
         </div>
       )}
@@ -406,7 +406,7 @@ export function DeliverMethodTabs({
           </div>
           <div className="space-y-1">
             <Label className="text-xs">发货总箱数</Label>
-            <Input className="h-8 text-xs" type="number" min={1} value={pkgNum} onChange={(e) => setPkg(e.target.value)} />
+            <Input className="h-8 rounded-md text-xs" type="number" min={1} value={pkgNum} onChange={(e) => setPkg(e.target.value)} />
           </div>
         </div>
       )}

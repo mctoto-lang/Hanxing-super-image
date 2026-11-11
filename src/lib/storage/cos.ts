@@ -20,6 +20,7 @@ import {
   DEFAULT_DOWNLOAD_HOST_SUFFIXES,
 } from "./config"
 import { parseDataImageUrl } from "./data-url"
+import { probeImageSize, type SavedImage } from "./image-dim"
 
 /**
  * 腾讯云 COS 存储适配器（双桶 + category 路由）。
@@ -238,7 +239,13 @@ export function createCosAdapter(cfg: StorageConfig): CosAdapter {
         // Domain 缺省时 SDK 走默认公网域名；内网开关开启时强制 tencentcos.cn
         ...(domain ? { Domain: domain } : {}),
       })
-      return canonicalUrl(target.bucket, cfg.cosRegion, key)
+      // 转存 buffer 在手，顺带探测像素尺寸（失败 null，不阻断上传）
+      const dim = probeImageSize(buffer)
+      return {
+        url: canonicalUrl(target.bucket, cfg.cosRegion, key),
+        width: dim?.width ?? null,
+        height: dim?.height ?? null,
+      }
     },
 
     async saveFromUrl(
@@ -254,9 +261,10 @@ export function createCosAdapter(cfg: StorageConfig): CosAdapter {
         throw new Error("下载失败: 无效 URL")
       }
       // 中转服务器预转存：上游返回的已是本桶对象（key 含本企业段），直接
-      // 复用，省去每张图 2×（下载+上传）应用带宽与转存延迟
+      // 复用，省去每张图 2×（下载+上传）应用带宽与转存延迟。
+      // buffer 不经过应用，无从探测尺寸（null；调用方回退兜底比例）
       if (isOwnCosObjectUrl(targetUrl, cfg, enterpriseId)) {
-        return sourceUrl
+        return { url: sourceUrl, width: null, height: null } satisfies SavedImage
       }
       // data: URL（模型 b64_json 回传）：内容自包含，直接解码上传，
       // 不走网络下载与域名白名单（data: 非 https 会被白名单误拒）

@@ -34,6 +34,8 @@ export default async function CreatePage({
       imageSize: r.imageSize,
       imageCount: r.imageCount,
       resultImages: (r.resultImages as string[] | null) ?? null,
+      resultImageSizes:
+        (r.resultImageSizes as TaskDetail["resultImageSizes"]) ?? null,
       referenceImages: (r.referenceImages as string[] | null) ?? null,
       errorMessage: r.errorMessage,
       creditsCharged: r.creditsCharged,

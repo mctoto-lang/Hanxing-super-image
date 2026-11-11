@@ -11,6 +11,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import { Form } from "@/components/ui/form"
 import { toast } from "sonner"
 import { useRouter } from "next/navigation"
 import {
@@ -24,14 +25,15 @@ import {
   chatModelFormFromRow,
   emptyChatModelState,
   buildChatModelInput,
-  type ChatModelFormState,
+  useChatModelForm,
 } from "@/components/model-form/chat-model-fields"
 
 /**
  * 企业私有对话模型表单（OpenAI 兼容）
  *
- * 字段组件与超管平台预置对话模型表单共用（model-form/chat-model-fields），
- * 此处包装企业 Action（enterpriseId=本企业，受 allowCustomModels 门控）。
+ * 字段组件与超管平台预置对话模型表单共用（model-form/chat-model-fields，
+ * RHF 统一设计语言），此处包装企业 Action（enterpriseId=本企业，受
+ * allowCustomModels 门控）。
  */
 
 export function AdminChatModelFormDialog({
@@ -42,39 +44,36 @@ export function AdminChatModelFormDialog({
   trigger?: React.ReactElement
 }) {
   const [open, setOpen] = React.useState(false)
-  const [pending, startTransition] = React.useTransition()
-  const [state, setState] = React.useState<ChatModelFormState>(
-    model ? chatModelFormFromRow(model) : emptyChatModelState(),
-  )
+  const [serverError, setServerError] = React.useState<string | null>(null)
+  const form = useChatModelForm()
   const router = useRouter()
   const isEdit = Boolean(model)
+  const pending = form.formState.isSubmitting
 
   React.useEffect(() => {
-    if (open) setState(model ? chatModelFormFromRow(model) : emptyChatModelState())
-  }, [open, model])
+    if (open) {
+      form.reset(model ? chatModelFormFromRow(model) : emptyChatModelState())
+      setServerError(null)
+    }
+  }, [open, model, form])
 
-  function up<K extends keyof ChatModelFormState>(
-    key: K,
-    val: ChatModelFormState[K],
-  ) {
-    setState((s) => ({ ...s, [key]: val }))
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    const input = buildChatModelInput(state)
-    startTransition(async () => {
-      const res = isEdit
-        ? await updateChatModelAction(model!.id, input)
-        : await createChatModelAction(input)
-      if (res.ok) {
-        toast.success(isEdit ? "对话模型已更新" : "对话模型已创建")
-        setOpen(false)
-        router.refresh()
-      } else {
-        toast.error(res.error ?? "操作失败")
-      }
-    })
+  async function onSubmit(values: ReturnType<typeof emptyChatModelState>) {
+    if (!isEdit && !values.apiKey.trim()) {
+      form.setError("apiKey", { message: "请输入 API Key" })
+      return
+    }
+    setServerError(null)
+    const input = buildChatModelInput(values)
+    const res = isEdit
+      ? await updateChatModelAction(model!.id, input)
+      : await createChatModelAction(input)
+    if (res.ok) {
+      toast.success(isEdit ? "对话模型已更新" : "对话模型已创建")
+      setOpen(false)
+      router.refresh()
+    } else {
+      setServerError(res.error ?? "操作失败")
+    }
   }
 
   return (
@@ -95,14 +94,22 @@ export function AdminChatModelFormDialog({
             {isEdit ? "编辑企业对话模型" : "新建企业对话模型"}
           </DialogTitle>
         </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <ChatModelFields state={state} up={up} isEdit={isEdit} />
-          <DialogFooter>
-            <Button type="submit" disabled={pending}>
-              {pending ? "保存中..." : isEdit ? "保存" : "创建"}
-            </Button>
-          </DialogFooter>
-        </form>
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            <ChatModelFields form={form} isEdit={isEdit} />
+            {serverError ? (
+              <p className="text-sm text-destructive">{serverError}</p>
+            ) : null}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)} disabled={pending}>
+                取消
+              </Button>
+              <Button type="submit" disabled={pending}>
+                {pending ? "保存中…" : isEdit ? "保存" : "创建"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </Form>
       </DialogContent>
     </Dialog>
   )

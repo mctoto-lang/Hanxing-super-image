@@ -1,7 +1,6 @@
 "use client"
 
 import * as React from "react"
-import { useActionState } from "react"
 import { Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -14,7 +13,6 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
@@ -22,9 +20,32 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form"
 import { toast } from "sonner"
 import { useRouter } from "next/navigation"
+import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
+import { useForm } from "react-hook-form"
+import type { z } from "zod"
+import { userCreateFormSchema } from "@/lib/forms/schemas"
 import { createUserAndAssignAction } from "@/server/actions/platform"
+
+type UserCreateValues = z.infer<typeof userCreateFormSchema>
+
+const DEFAULT_VALUES: UserCreateValues = {
+  username: "",
+  password: "",
+  name: "",
+  email: "",
+  enterpriseId: "",
+  role: "member",
+}
 
 export function UserCreateDialog({
   enterprises,
@@ -32,138 +53,193 @@ export function UserCreateDialog({
   enterprises: { id: string; name: string }[]
 }) {
   const [open, setOpen] = React.useState(false)
-  const [enterpriseId, setEnterpriseId] = React.useState("")
-  const [role, setRole] = React.useState<"owner" | "admin" | "member">("member")
+  const [serverError, setServerError] = React.useState<string | null>(null)
   const router = useRouter()
 
-  const [state, formAction, pending] = useActionState(
-    async (_prev: unknown, formData: FormData) => {
-      const res = await createUserAndAssignAction({
-        username: String(formData.get("username") ?? ""),
-        password: String(formData.get("password") ?? ""),
-        name: String(formData.get("name") ?? "") || undefined,
-        email: String(formData.get("email") ?? "") || undefined,
-        enterpriseId: String(formData.get("enterpriseId") ?? ""),
-        role: (formData.get("role") as "owner" | "admin" | "member") ?? "member",
-      })
-      if (res.ok) {
-        toast.success("用户创建成功")
-        setOpen(false)
-        router.refresh()
-        return null
-      }
-      toast.error(res.error ?? "创建失败")
-      return { error: res.error }
-    },
-    null,
-  )
+  const form = useForm<UserCreateValues>({
+    resolver: standardSchemaResolver(userCreateFormSchema),
+    defaultValues: DEFAULT_VALUES,
+  })
+  const pending = form.formState.isSubmitting
+
+  React.useEffect(() => {
+    if (open) {
+      form.reset(DEFAULT_VALUES)
+      setServerError(null)
+    }
+  }, [open, form])
+
+  async function onSubmit(values: UserCreateValues) {
+    setServerError(null)
+    const res = await createUserAndAssignAction({
+      username: values.username,
+      password: values.password,
+      name: values.name?.trim() || undefined,
+      email: values.email?.trim() || undefined,
+      enterpriseId: values.enterpriseId,
+      role: values.role,
+    })
+    if (res.ok) {
+      toast.success("用户创建成功")
+      setOpen(false)
+      router.refresh()
+      return
+    }
+    // 服务端兜底错误：统一条内联展示，不再 toast
+    setServerError(res.error ?? "创建失败")
+  }
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger render={<Button><Plus className="size-4" />创建用户</Button>} />
-      <DialogContent className="sm:max-w-[480px]">
+      <DialogContent className="sm:max-w-[520px]">
         <DialogHeader>
           <DialogTitle>创建用户并分配企业</DialogTitle>
           <DialogDescription>
             用户名全局唯一；新用户默认分配到企业默认权限组（D19）
           </DialogDescription>
         </DialogHeader>
-        <form action={formAction} className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="username">用户名</Label>
-              <Input
-                id="username"
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <FormField
+                control={form.control}
                 name="username"
-                required
-                placeholder="如：zhangsan"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>用户名</FormLabel>
+                    <FormControl>
+                      <Input {...field} placeholder="如：zhangsan" />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="name"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>昵称</FormLabel>
+                    <FormControl>
+                      <Input {...field} placeholder="如：张三" />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
               />
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="name">昵称</Label>
-              <Input id="name" name="name" placeholder="如：张三" />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="password">密码</Label>
-              <Input
-                id="password"
+            <div className="grid grid-cols-2 gap-4">
+              <FormField
+                control={form.control}
                 name="password"
-                type="password"
-                required
-                minLength={6}
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>密码</FormLabel>
+                    <FormControl>
+                      <Input type="password" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="email"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>邮箱（可选）</FormLabel>
+                    <FormControl>
+                      <Input type="email" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
               />
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="email">邮箱（可选）</Label>
-              <Input id="email" name="email" type="email" />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="grid gap-2">
-              <Label>归属企业</Label>
-              <input type="hidden" name="enterpriseId" value={enterpriseId} />
-              <Select
-                value={enterpriseId}
-                onValueChange={(v) => setEnterpriseId(v ?? "")}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="选择企业">
-                    {enterpriseId
-                      ? (enterprises.find((e) => e.id === enterpriseId)?.name ?? "选择企业")
-                      : "选择企业"}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {enterprises.map((e) => (
-                    <SelectItem key={e.id} value={e.id}>
-                      {e.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="role">角色</Label>
-              <Select
+            <div className="grid grid-cols-2 gap-4">
+              <FormField
+                control={form.control}
+                name="enterpriseId"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>归属企业</FormLabel>
+                    <Select
+                      value={field.value}
+                      onValueChange={(v) => field.onChange(v ?? "")}
+                      items={enterprises.map((e) => ({ value: e.id, label: e.name }))}
+                    >
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="选择企业">
+                            {field.value
+                              ? (enterprises.find((e) => e.id === field.value)?.name ?? "选择企业")
+                              : "选择企业"}
+                          </SelectValue>
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        {enterprises.map((e) => (
+                          <SelectItem key={e.id} value={e.id}>
+                            {e.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
                 name="role"
-                value={role}
-                onValueChange={(v) =>
-                  setRole((v ?? "member") as "owner" | "admin" | "member")
-                }
-                items={[
-                  { value: "member", label: "成员" },
-                  { value: "admin", label: "成员管理员" },
-                  { value: "owner", label: "企业管理员" },
-                ]}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue>
-                    {role === "owner"
-                      ? "企业管理员"
-                      : role === "admin"
-                        ? "成员管理员"
-                        : "成员"}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="member">成员</SelectItem>
-                  <SelectItem value="admin">成员管理员</SelectItem>
-                  <SelectItem value="owner">企业管理员</SelectItem>
-                </SelectContent>
-              </Select>
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>角色</FormLabel>
+                    <Select
+                      value={field.value}
+                      onValueChange={(v) => field.onChange(v ?? "member")}
+                      items={[
+                        { value: "member", label: "成员" },
+                        { value: "admin", label: "成员管理员" },
+                        { value: "owner", label: "企业管理员" },
+                      ]}
+                    >
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue>
+                            {field.value === "owner"
+                              ? "企业管理员"
+                              : field.value === "admin"
+                                ? "成员管理员"
+                                : "成员"}
+                          </SelectValue>
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="member">成员</SelectItem>
+                        <SelectItem value="admin">成员管理员</SelectItem>
+                        <SelectItem value="owner">企业管理员</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
             </div>
-          </div>
-          {state?.error ? (
-            <p role="alert" className="text-sm text-destructive">{state.error}</p>
-          ) : null}
-          <DialogFooter>
-            <Button type="submit" disabled={pending || !enterpriseId}>
-              {pending ? "创建中..." : "创建"}
-            </Button>
-          </DialogFooter>
-        </form>
+            {serverError ? (
+              <p className="text-sm text-destructive">{serverError}</p>
+            ) : null}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+                取消
+              </Button>
+              <Button type="submit" disabled={pending}>
+                {pending ? "创建中…" : "创建"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </Form>
       </DialogContent>
     </Dialog>
   )

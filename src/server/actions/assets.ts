@@ -42,6 +42,7 @@ export async function listAssetsAction(opts?: {
       prompt: generationTasks.prompt,
       status: generationTasks.status,
       resultImages: generationTasks.resultImages,
+      resultImageSizes: generationTasks.resultImageSizes,
       source: generationTasks.source,
       taskType: generationTasks.taskType,
       userId: generationTasks.userId,
@@ -125,6 +126,8 @@ export async function fetchAssetsPageAction(opts: {
       taskId: a.id,
       prompt: a.prompt,
       images: (a.resultImages as string[] | null) ?? [],
+      imageSizes:
+        (a.resultImageSizes as GalleryItem["imageSizes"]) ?? undefined,
       modelDisplayName: a.modelDisplayName ?? "样机渲染",
       source: a.source,
       // 展示/筛选用完成时间（图片实际产出时刻），缺省回退提交时间

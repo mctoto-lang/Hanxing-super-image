@@ -404,6 +404,9 @@ export function buildGrsaiRequestBody(
 export interface ImageGenResult {
   index: number
   url?: string
+  /** 转存时探测到的像素尺寸（本桶复用/探测失败为 null；无 url 时无意义） */
+  width?: number | null
+  height?: number | null
   error?: string
 }
 
@@ -455,26 +458,45 @@ export function isContentPolicyError(message: string): boolean {
   return CONTENT_POLICY_PATTERNS.some((pattern) => pattern.test(message))
 }
 
+/** result_image_sizes 的单元素类型（与 result_images 按位置一一对应；null=未探测到） */
+export type ResultImageSize = { width: number; height: number } | null
+
 /**
  * 合并历史成功图片与本轮结果（重试补张时保留已成功图片）。
- * 返回按序号升序排列的成功序号 + 一一对应的 URL 列表。
+ * 返回按序号升序排列的成功序号 + 一一对应的 URL 列表 + 尺寸列表
+ * （尺寸同样按位置对齐：历史项保留原尺寸——无记录为 null，本轮覆盖
+ * 时随新 URL 一起替换为本轮探测值）。
  */
 export function mergeImageResults(
   prevIndexes: number[],
   prevUrls: string[],
+  prevSizes: ResultImageSize[] | null,
   results: ImageGenResult[],
-): { succeededIndexes: number[]; resultImages: string[] } {
-  const map = new Map<number, string>()
+): {
+  succeededIndexes: number[]
+  resultImages: string[]
+  resultImageSizes: ResultImageSize[]
+} {
+  const map = new Map<number, { url: string; size: ResultImageSize }>()
   prevIndexes.forEach((idx, i) => {
     const url = prevUrls[i]
-    if (url) map.set(idx, url)
+    if (url) map.set(idx, { url, size: prevSizes?.[i] ?? null })
   })
   for (const r of results) {
-    if (r.url) map.set(r.index, r.url)
+    if (r.url) {
+      map.set(r.index, {
+        url: r.url,
+        size:
+          r.width != null && r.height != null
+            ? { width: r.width, height: r.height }
+            : null,
+      })
+    }
   }
   const succeededIndexes = [...map.keys()].sort((a, b) => a - b)
   return {
     succeededIndexes,
-    resultImages: succeededIndexes.map((i) => map.get(i)!),
+    resultImages: succeededIndexes.map((i) => map.get(i)!.url),
+    resultImageSizes: succeededIndexes.map((i) => map.get(i)!.size),
   }
 }

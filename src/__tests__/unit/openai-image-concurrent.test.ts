@@ -96,7 +96,7 @@ describe("callOpenAiImageApi 并发调度", () => {
       model: MODEL,
       task: { prompt: "p", imageSize: "1024x1024", imageCount: 4 },
       apiKey: "k",
-      downloadAndUpload: async (url) => url,
+      downloadAndUpload: async (url) => ({ url, width: null, height: null }),
       slots: { acquireSlot: sem.acquire, releaseSlot: sem.release },
     })
 
@@ -116,7 +116,7 @@ describe("callOpenAiImageApi 并发调度", () => {
       model: MODEL,
       task: { prompt: "p", imageSize: "1024x1024", imageCount: 4 },
       apiKey: "k",
-      downloadAndUpload: async (url) => url,
+      downloadAndUpload: async (url) => ({ url, width: null, height: null }),
     })
 
     expect(results).toHaveLength(4)
@@ -133,7 +133,7 @@ describe("callOpenAiImageApi 并发调度", () => {
       model: MODEL,
       task: { prompt: "p", imageSize: "1024x1024", imageCount: 2 },
       apiKey: "k",
-      downloadAndUpload: async (url) => url,
+      downloadAndUpload: async (url) => ({ url, width: null, height: null }),
       slots: { acquireSlot: sem.acquire, releaseSlot: sem.release },
     })
 
@@ -152,7 +152,7 @@ describe("callOpenAiImageApi 并发调度", () => {
       model: MODEL,
       task: { prompt: "p", imageSize: "1024x1024", imageCount: 4 },
       apiKey: "k",
-      downloadAndUpload: async (url) => url,
+      downloadAndUpload: async (url) => ({ url, width: null, height: null }),
       slots: { acquireSlot: sem.acquire, releaseSlot: sem.release },
     })
 
@@ -178,7 +178,7 @@ describe("callOpenAiImageApi 并发调度", () => {
         indexes: [1, 3], // 仅补第 2、4 张
       },
       apiKey: "k",
-      downloadAndUpload: async (url) => url,
+      downloadAndUpload: async (url) => ({ url, width: null, height: null }),
     })
 
     expect(stats.callCount).toBe(2)
@@ -198,7 +198,7 @@ describe("callOpenAiImageApi 并发调度", () => {
       model: MODEL,
       task: { prompt: "p", imageSize: "1024x1024", imageCount: 2 },
       apiKey: "k",
-      downloadAndUpload: async (url) => url,
+      downloadAndUpload: async (url) => ({ url, width: null, height: null }),
       signal: controller.signal,
       slots: { acquireSlot: sem.acquire, releaseSlot: sem.release },
     })
@@ -214,36 +214,58 @@ describe("callOpenAiImageApi 并发调度", () => {
 })
 
 describe("mergeImageResults 结果合并", () => {
-  it("历史成功 + 本轮成功按序号升序合并，URL 一一对应", () => {
-    const { succeededIndexes, resultImages } = mergeImageResults(
-      [0],
-      ["a"],
-      [
-        { index: 2, url: "c" },
-        { index: 1, url: "b" },
-      ],
-    )
+  it("历史成功 + 本轮成功按序号升序合并，URL/尺寸一一对应", () => {
+    const { succeededIndexes, resultImages, resultImageSizes } =
+      mergeImageResults(
+        [0],
+        ["a"],
+        [{ width: 100, height: 200 }],
+        [
+          { index: 2, url: "c" },
+          { index: 1, url: "b" },
+        ],
+      )
     expect(succeededIndexes).toEqual([0, 1, 2])
     expect(resultImages).toEqual(["a", "b", "c"])
+    // 历史尺寸保留，本轮未探测到尺寸的补 null
+    expect(resultImageSizes).toEqual([{ width: 100, height: 200 }, null, null])
   })
 
-  it("本轮失败张（error）不覆盖历史成功", () => {
-    const { succeededIndexes, resultImages } = mergeImageResults(
-      [0, 1],
-      ["a", "b"],
-      [{ index: 1, error: "重试仍失败" }, { index: 2, url: "c" }],
-    )
+  it("本轮失败张（error）不覆盖历史成功（尺寸同样保留）", () => {
+    const { succeededIndexes, resultImages, resultImageSizes } =
+      mergeImageResults(
+        [0, 1],
+        ["a", "b"],
+        [{ width: 10, height: 10 }, null],
+        [{ index: 1, error: "重试仍失败" }, { index: 2, url: "c" }],
+      )
     expect(succeededIndexes).toEqual([0, 1, 2])
     expect(resultImages).toEqual(["a", "b", "c"])
+    expect(resultImageSizes).toEqual([{ width: 10, height: 10 }, null, null])
   })
 
   it("全部失败时保持历史不变", () => {
     const { succeededIndexes, resultImages } = mergeImageResults(
       [0],
       ["a"],
+      null,
       [{ index: 1, error: "x" }, { index: 2, error: "y" }],
     )
     expect(succeededIndexes).toEqual([0])
     expect(resultImages).toEqual(["a"])
+  })
+
+  it("重试成功覆盖同序号：URL 与尺寸一并替换为本轮值", () => {
+    const { resultImages, resultImageSizes } = mergeImageResults(
+      [0, 1],
+      ["old-a", "b"],
+      [{ width: 100, height: 100 }, { width: 50, height: 50 }],
+      [{ index: 0, url: "new-a", width: 800, height: 600 }],
+    )
+    expect(resultImages).toEqual(["new-a", "b"])
+    expect(resultImageSizes).toEqual([
+      { width: 800, height: 600 },
+      { width: 50, height: 50 },
+    ])
   })
 })

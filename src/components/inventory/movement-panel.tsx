@@ -5,7 +5,15 @@ import { toast } from "sonner"
 import type { DateRange } from "react-day-picker"
 import { ArrowLeftRight, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { HistoryDateRangePicker } from "@/components/product-v2/history-date-range-picker"
+import { MovementTemuSyncPanel } from "./movement-temu-sync-panel"
 import {
   getInventoryMovementProductsAction,
   type InventoryMovementProductRow,
@@ -38,14 +46,16 @@ function toBjDay(d: Date): string {
 
 export function MovementPanel() {
   const [rows, setRows] = React.useState<InventoryMovementProductRow[]>([])
-  const [summary, setSummary] = React.useState({ products: 0, inQty: 0, outQty: 0 })
   const [range, setRange] = React.useState<DateRange | undefined>(() => {
     const t = bjToday()
     return { from: t, to: t }
   })
+  const [summary, setSummary] = React.useState({ products: 0, inQty: 0, outQty: 0 })
   const [loading, startLoad] = React.useTransition()
   // SSR 首帧无数据：首次加载完成前恒显骨架，避免水合前闪空态文案
   const [loadedOnce, setLoadedOnce] = React.useState(false)
+  /** 面板内子视图：出入明细 / TEMU发货单同步（官方后台发货单的人工核对补扣入口） */
+  const [view, setView] = React.useState<"records" | "temu-sync">("records")
   const [movementTarget, setMovementTarget] = React.useState<MovementDialogTarget | null>(null)
   const [detailId, setDetailId] = React.useState<string | null>(null)
   // 并发请求序号：快速连续切换日期范围时，旧响应后到不再覆盖新范围的数据
@@ -179,40 +189,69 @@ export function MovementPanel() {
     [],
   )
 
+  /** 视图切换下拉：records 时在父级工具栏；temu-sync 时经 headerSlot 下放与筛选/按钮同排 */
+  const viewSelect = (
+    <Select
+      items={[
+        { value: "records", label: "出入明细" },
+        { value: "temu-sync", label: "TEMU发货单同步" },
+      ]}
+      value={view}
+      onValueChange={(v) => setView(v === "temu-sync" ? "temu-sync" : "records")}
+    >
+      <SelectTrigger className="h-8 w-40 text-xs" aria-label="出入视图切换">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="records">出入明细</SelectItem>
+        <SelectItem value="temu-sync">TEMU发货单同步</SelectItem>
+      </SelectContent>
+    </Select>
+  )
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2 text-base font-normal">
-          库存出入
-          {loading ? <Loader2 className="size-3.5 animate-spin text-muted-foreground" /> : null}
-          <span className="text-sm font-normal text-muted-foreground">
-            （{summary.products} 个货号 · 入 {summary.inQty} · 出 {summary.outQty}）
-          </span>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <HistoryDateRangePicker value={range} onChange={setRange} size="sm" className="h-8" />
-          <Button size="sm" className="h-8" onClick={() => setMovementTarget({})}>
-            <ArrowLeftRight className="size-3.5" /> 库存变动
-          </Button>
-        </div>
-      </div>
-      <DataTable
-        columns={columns}
-        data={rows}
-        containerClassName="min-h-0 flex-1"
-        initialSorting={[{ id: "productCode", desc: false }]}
-        columnDividers
-        infinite
-        preserveScrollRef={preserveScrollRef}
-        scrollJump
-        loading={loading || !loadedOnce}
-        onRowClick={(r) => setDetailId(r.productId)}
-        empty={
-          <div className="space-y-2 py-6 text-center text-muted-foreground">
-            <p>所选日期范围无库存变动</p>
+      {/* 标题行仅出入明细视图：TEMU发货单同步视图无标题，工具栏（含视图切换下拉）
+          由子面板渲染 */}
+      {view === "records" && (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-base font-normal">
+            库存出入
+            {loading ? <Loader2 className="size-3.5 animate-spin text-muted-foreground" /> : null}
+            <span className="text-sm font-normal text-muted-foreground">
+              （{summary.products} 个货号 · 入 {summary.inQty} · 出 {summary.outQty}）
+            </span>
           </div>
-        }
-      />
+          <div className="flex flex-wrap items-center gap-2">
+            {viewSelect}
+            <HistoryDateRangePicker value={range} onChange={setRange} size="sm" className="h-8" />
+            <Button size="sm" className="h-8" onClick={() => setMovementTarget({})}>
+              <ArrowLeftRight className="size-3.5" /> 库存变动
+            </Button>
+          </div>
+        </div>
+      )}
+      {view === "temu-sync" ? (
+        <MovementTemuSyncPanel headerSlot={viewSelect} />
+      ) : (
+        <DataTable
+          columns={columns}
+          data={rows}
+          containerClassName="min-h-0 flex-1"
+          initialSorting={[{ id: "productCode", desc: false }]}
+          columnDividers
+          infinite
+          preserveScrollRef={preserveScrollRef}
+          scrollJump
+          loading={loading || !loadedOnce}
+          onRowClick={(r) => setDetailId(r.productId)}
+          empty={
+            <div className="space-y-2 py-6 text-center text-muted-foreground">
+              <p>所选日期范围无库存变动</p>
+            </div>
+          }
+        />
+      )}
 
       <MovementDialog
         target={movementTarget}

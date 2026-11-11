@@ -61,7 +61,7 @@ export function ConfirmDialog({
             disabled={pending}
             onClick={() => void onConfirm()}
           >
-            {pending ? "处理中..." : confirmText}
+            {pending ? "处理中…" : confirmText}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -48,7 +48,7 @@ import { ChartAreaInteractive } from "@/components/chart-area-interactive"
 import {
   TemuCategoryShare,
   TemuSalesTop10,
-  TemuSalesTop20Cards,
+  TemuSalesTop30Cards,
   TemuShipStatsCards,
   TemuStoreSelect,
   TemuStoreManager,
@@ -103,13 +103,20 @@ export default async function TemuPage({
 
   const sp = await searchParams
   const pick = (k: string) => (Array.isArray(sp[k]) ? sp[k][0] : sp[k]) as string | undefined
-  // 在售筛选缺省"在售"；sale=all 为显式"全部"（哨兵值，避免选了全部又被缺省值覆盖）
+  // 在售筛选缺省"在售"；sale=all 为显式"全部"（哨兵值，避免选了全部又被缺省值覆盖）；
+  // hot/stagnant 为热销/滞销口径（服务端 loadTemuProducts 分支处理）
   const saleRaw = pick("sale")
-  const sale = saleRaw === "all" ? undefined : saleRaw === "off" ? "off" : "on"
+  const sale =
+    saleRaw === "all"
+      ? undefined
+      : saleRaw === "off" || saleRaw === "hot" || saleRaw === "stagnant"
+        ? saleRaw
+        : "on"
   const query = temuListQuerySchema.parse({
     tab: pick("tab") ?? "overview",
     store: pick("store") || undefined,
     q: pick("q") || undefined,
+    qf: pick("qf") || undefined,
     sale,
     page: pick("page") || 1,
     range: pick("range") || undefined,
@@ -326,7 +333,7 @@ async function OverviewTab({
       </div>
 
       {/* Row4 售出 TOP20 三卡（今日/七日/三十日，按货号汇总：前 3 名主图领奖台 + 4-20 名滚动列表） */}
-      <TemuSalesTop20Cards data={salesTopBySn} />
+      <TemuSalesTop30Cards data={salesTopBySn} />
 
       {/* Row5 发货统计三卡：今日发货占比环形图 + 本周发货包裹/货物数量（发货仓库可筛选）。
           key=storeId：切店是 soft navigation，组件树位置不变时 client state 不会重置——
@@ -342,14 +349,14 @@ async function ProductsTab({
   query,
   saleAll,
 }: {
-  query: { store?: string; q?: string; page: number; sale?: 'on' | 'off'; sort?: string }
+  query: { store?: string; q?: string; qf?: string; page: number; sale?: 'on' | 'off' | 'hot' | 'stagnant'; sort?: string }
   /** URL 显式携带 sale=all（全部状态）：query.sale 为 undefined，与「URL 无
    *  sale 参数的缺省在售」两种语义靠该标志区分，切排序/搜索时才不丢筛选 */
   saleAll: boolean
 }) {
   // 首屏 20 条 + 对应销量/库存/趋势序列；后续页由 ProductsInfiniteTable 下滑自动加载
-  const { rows, salesInfo } = await getTemuProductsPageAction(query.store, query.q, query.sale, 1, query.sort)
-  const total = await getTemuProductsAction(query.store, query.q, 1, query.sale, query.sort).then((r) => r.total)
+  const { rows, salesInfo } = await getTemuProductsPageAction(query.store, query.q, query.sale, 1, query.sort, query.qf)
+  const total = await getTemuProductsAction(query.store, query.q, 1, query.sale, query.sort, query.qf).then((r) => r.total)
   return (
     // h-full 高度链（根容器固定高 → tab 包装层 flex-1）：CardContent 为内部滚动区
     // （scrollbar-hide 隐藏滚动条），表体滚动/表头吸顶，无限下滑加载
@@ -361,6 +368,7 @@ async function ProductsTab({
           saleAll={saleAll}
           store={query.store}
           q={query.q}
+          qf={query.qf}
           sort={query.sort ?? "listed"}
         />
       </CardHeader>
@@ -372,9 +380,10 @@ async function ProductsTab({
           {/* key 随筛选变：组件内部 useState(initialRows) 不随 props 重置，
               筛选/搜索/排序/切店后必须重建才载入新数据（否则停留旧列表直到手动刷新） */}
           <ProductsInfiniteTable
-            key={`${query.store ?? "all"}|${query.q ?? ""}|${query.sale ?? ""}|${query.sort ?? "listed"}`}
+            key={`${query.store ?? "all"}|${query.q ?? ""}|${query.qf ?? ""}|${query.sale ?? ""}|${query.sort ?? "listed"}`}
             store={query.store}
             q={query.q}
+            qf={query.qf}
             sale={query.sale}
             sort={query.sort}
             initialRows={rows}

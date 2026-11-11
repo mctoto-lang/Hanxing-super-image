@@ -44,6 +44,8 @@ export function ProductPicker({
   const [q, setQ] = React.useState("")
   const [rows, setRows] = React.useState<PickedProduct[]>([])
   const [, startTransition] = React.useTransition()
+  /** 搜索弹层元素 id：供触发按钮 aria-controls 引用（combobox 角色必需） */
+  const listboxId = React.useId()
 
   React.useEffect(() => {
     if (!open) return
@@ -64,6 +66,7 @@ export function ProductPicker({
             type="button"
             role="combobox"
             aria-expanded={open}
+            aria-controls={listboxId}
             className={cn(
               "flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30 dark:hover:bg-input/50",
               !value && "text-muted-foreground",
@@ -91,7 +94,7 @@ export function ProductPicker({
         )}
         <ChevronsUpDown className="size-3.5 shrink-0 opacity-50" />
       </PopoverTrigger>
-      <PopoverContent className="w-[360px] p-0" align="start">
+      <PopoverContent id={listboxId} className="w-[360px] p-0" align="start">
         <Command shouldFilter={false}>
           <CommandInput
             value={q}

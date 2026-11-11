@@ -1,7 +1,6 @@
 "use client"
 
 import * as React from "react"
-import { useActionState } from "react"
 import { Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -13,7 +12,6 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
@@ -21,9 +19,30 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form"
 import { toast } from "sonner"
 import { useRouter } from "next/navigation"
+import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
+import { useForm } from "react-hook-form"
+import { memberCreateFormSchema } from "@/lib/forms/schemas"
 import { createMemberAction } from "@/server/actions/admin-users"
+
+interface MemberCreateValues {
+  username: string
+  password: string
+  name?: string
+  email?: string
+  // 与 memberCreateFormSchema 的枚举保持一致（企业侧 Select 只提供 member/admin）
+  role: "member" | "admin" | "owner"
+  groupId?: string
+}
 
 export function MemberCreateDialog({
   groups,
@@ -31,122 +50,189 @@ export function MemberCreateDialog({
   groups: Array<{ id: string; name: string; isDefault: boolean }>
 }) {
   const [open, setOpen] = React.useState(false)
-  const [role, setRole] = React.useState<"member" | "admin">("member")
-  const [groupId, setGroupId] = React.useState("")
+  const [serverError, setServerError] = React.useState<string | null>(null)
   const router = useRouter()
 
-  const [state, formAction, pending] = useActionState(
-    async (_prev: unknown, formData: FormData) => {
-      const res = await createMemberAction({
-        username: String(formData.get("username") ?? ""),
-        password: String(formData.get("password") ?? ""),
-        name: String(formData.get("name") ?? "") || undefined,
-        email: String(formData.get("email") ?? "") || undefined,
-        role: (formData.get("role") as "admin" | "member" | undefined) ?? "member",
-        // 未选择时走后端默认逻辑：自动进入企业默认权限组
-        groupId: groupId || undefined,
-      })
-      if (res.ok) {
-        toast.success("成员创建成功")
-        setOpen(false)
-        router.refresh()
-        return null
-      }
-      toast.error(res.error ?? "创建失败")
-      return { error: res.error }
-    },
-    null,
-  )
+  const form = useForm<MemberCreateValues>({
+    resolver: standardSchemaResolver(memberCreateFormSchema),
+    defaultValues: { username: "", password: "", name: "", email: "", role: "member", groupId: "" },
+  })
+  const pending = form.formState.isSubmitting
+
+  React.useEffect(() => {
+    if (open) {
+      form.reset({ username: "", password: "", name: "", email: "", role: "member", groupId: "" })
+      setServerError(null)
+    }
+  }, [open, form])
+
+  async function onSubmit(values: MemberCreateValues) {
+    setServerError(null)
+    const res = await createMemberAction({
+      username: values.username,
+      password: values.password,
+      name: values.name?.trim() || undefined,
+      email: values.email?.trim() || undefined,
+      role: values.role,
+      // 未选择时走后端默认逻辑：自动进入企业默认权限组
+      groupId: values.groupId || undefined,
+    })
+    if (res.ok) {
+      toast.success("成员创建成功")
+      setOpen(false)
+      router.refresh()
+      return
+    }
+    setServerError(res.error ?? "创建失败")
+  }
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger render={<Button><Plus className="size-4" />添加成员</Button>} />
-      <DialogContent className="sm:max-w-[440px]">
+      <DialogContent className="sm:max-w-[520px]">
         <DialogHeader>
           <DialogTitle>添加成员</DialogTitle>
         </DialogHeader>
-        <form action={formAction} className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="username">用户名</Label>
-              <Input id="username" name="username" required />
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <FormField
+                control={form.control}
+                name="username"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>用户名</FormLabel>
+                    <FormControl>
+                      <Input {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="name"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>昵称</FormLabel>
+                    <FormControl>
+                      <Input {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="name">昵称</Label>
-              <Input id="name" name="name" />
+            <div className="grid grid-cols-2 gap-4">
+              <FormField
+                control={form.control}
+                name="password"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>密码</FormLabel>
+                    <FormControl>
+                      <Input type="password" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="email"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>邮箱（可选）</FormLabel>
+                    <FormControl>
+                      <Input type="email" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
             </div>
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="password">密码</Label>
-              <Input id="password" name="password" type="password" required minLength={6} />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="email">邮箱（可选）</Label>
-              <Input id="email" name="email" type="email" />
-            </div>
-          </div>
-          <div className="grid gap-2">
-            <Label>角色</Label>
-            <Select
+            <FormField
+              control={form.control}
               name="role"
-              value={role}
-              onValueChange={(v) => setRole((v ?? "member") as "member" | "admin")}
-              items={[
-                { value: "member", label: "成员" },
-                { value: "admin", label: "成员管理员" },
-              ]}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue>
-                  {role === "admin" ? "成员管理员" : "成员"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="member">成员</SelectItem>
-                <SelectItem value="admin">成员管理员</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="grid gap-2">
-            <Label>权限组</Label>
-            <Select
-              value={groupId || "__default__"}
-              onValueChange={(v) => setGroupId(v && v !== "__default__" ? v : "")}
-              items={[
-                { value: "__default__", label: "默认权限组（自动分配）" },
-                ...groups.map((g) => ({
-                  value: g.id,
-                  label: g.isDefault ? `${g.name}（默认）` : g.name,
-                })),
-              ]}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue>
-                  {groupId
-                    ? (groups.find((g) => g.id === groupId)?.name ?? "选择权限组")
-                    : "默认权限组（自动分配）"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__default__">默认权限组（自动分配）</SelectItem>
-                {groups.map((g) => (
-                  <SelectItem key={g.id} value={g.id}>
-                    {g.isDefault ? `${g.name}（默认）` : g.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          {state?.error ? (
-            <p role="alert" className="text-sm text-destructive">{state.error}</p>
-          ) : null}
-          <DialogFooter>
-            <Button type="submit" disabled={pending}>
-              {pending ? "创建中..." : "创建"}
-            </Button>
-          </DialogFooter>
-        </form>
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>角色</FormLabel>
+                  <Select
+                    value={field.value}
+                    onValueChange={(v) => field.onChange(v ?? "member")}
+                    items={[
+                      { value: "member", label: "成员" },
+                      { value: "admin", label: "成员管理员" },
+                    ]}
+                  >
+                    <FormControl>
+                      <SelectTrigger className="w-full">
+                        <SelectValue>
+                          {field.value === "admin" ? "成员管理员" : "成员"}
+                        </SelectValue>
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value="member">成员</SelectItem>
+                      <SelectItem value="admin">成员管理员</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="groupId"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>权限组</FormLabel>
+                  <Select
+                    value={field.value || "__default__"}
+                    onValueChange={(v) => field.onChange(v && v !== "__default__" ? v : "")}
+                    items={[
+                      { value: "__default__", label: "默认权限组（自动分配）" },
+                      ...groups.map((g) => ({
+                        value: g.id,
+                        label: g.isDefault ? `${g.name}（默认）` : g.name,
+                      })),
+                    ]}
+                  >
+                    <FormControl>
+                      <SelectTrigger className="w-full">
+                        <SelectValue>
+                          {field.value
+                            ? (groups.find((g) => g.id === field.value)?.name ?? "选择权限组")
+                            : "默认权限组（自动分配）"}
+                        </SelectValue>
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value="__default__">默认权限组（自动分配）</SelectItem>
+                      {groups.map((g) => (
+                        <SelectItem key={g.id} value={g.id}>
+                          {g.isDefault ? `${g.name}（默认）` : g.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            {serverError ? (
+              <p className="text-sm text-destructive">{serverError}</p>
+            ) : null}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+                取消
+              </Button>
+              <Button type="submit" disabled={pending}>
+                {pending ? "创建中…" : "创建"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </Form>
       </DialogContent>
     </Dialog>
   )

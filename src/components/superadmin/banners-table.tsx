@@ -11,6 +11,8 @@ import {
 } from "@/components/ui/table"
 import { ExternalLink } from "lucide-react"
 import { BANNER_ICON_OPTIONS } from "@/lib/banner"
+import { formatDateTime } from "@/lib/datetime"
+import { TableEmpty } from "@/components/shared/table-empty"
 import {
   BannerEditButton,
   BannerToggleActiveButton,
@@ -21,7 +23,7 @@ import { DragHandle, useDragSort } from "@/hooks/use-drag-sort"
 import { reorderBannersAction } from "@/server/actions/platform-banners"
 
 function formatTime(v: Date | null): string {
-  return v ? new Date(v).toLocaleString("zh-CN") : "—"
+  return formatDateTime(v)
 }
 
 /** 投放周期状态（与展示端筛选规则一致：结束即不再展示） */
@@ -46,10 +48,11 @@ function periodBadge(
  */
 export function BannersTable({
   items,
-  emptyHint,
+  q = "",
 }: {
   items: BannerRow[]
-  emptyHint: string
+  /** 当前搜索关键词（空态两态文案用） */
+  q?: string
 }) {
   const { ordered, rowProps, handleProps } = useDragSort({
     items,
@@ -68,16 +71,12 @@ export function BannersTable({
           <TableHead>投放周期</TableHead>
           <TableHead>倒计时截止</TableHead>
           <TableHead>状态</TableHead>
-          <TableHead className="text-right">操作</TableHead>
+          <TableHead>操作</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {ordered.length === 0 ? (
-          <TableRow>
-            <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
-              {emptyHint}
-            </TableCell>
-          </TableRow>
+          <TableEmpty colSpan={7} noun="横幅" filtered={!!q} />
         ) : (
           ordered.map((b) => {
             const period = periodBadge(b.startsAt, b.endsAt)
@@ -130,8 +129,8 @@ export function BannersTable({
                     {b.isActive ? "启用" : "停用"}
                   </Badge>
                 </TableCell>
-                <TableCell className="text-right">
-                  <div className="flex items-center justify-end gap-1">
+                <TableCell>
+                  <div className="flex items-center gap-1">
                     <BannerEditButton row={b} />
                     <BannerToggleActiveButton id={b.id} isActive={b.isActive} />
                     <BannerDeleteButton id={b.id} title={b.title} />

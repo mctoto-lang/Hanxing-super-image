@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm"
 import { db } from "@/db/client"
 import { enterprises, permissionGroups, users } from "@/db/schema"
 import { MODULE_NAMES } from "@/db/schema/_shared"
-import { temuStores } from "@/db/schema/temu"
+import { temuProducts, temuSkuMaps, temuStores } from "@/db/schema/temu"
 import { encrypt } from "@/lib/crypto"
 import {
   getTemuPurchaseOrdersAction,
@@ -22,13 +22,18 @@ import {
  */
 
 const mockSession = vi.hoisted(() => ({ userId: null as string | null }))
+/** temuCached 入参键审计（「缓存键含搜索」断言用；透传不缓存） */
+const temuCacheKeys = vi.hoisted(() => [] as string[])
 vi.mock("@/lib/auth/config", () => ({
   auth: async () =>
     mockSession.userId ? { user: { id: mockSession.userId } } : null,
 }))
 vi.mock("next/cache", () => ({ revalidatePath: () => {} }))
 vi.mock("@/server/services/temu-cache", () => ({
-  temuCached: (_key: string, load: () => Promise<unknown>) => load(),
+  temuCached: (key: string, load: () => Promise<unknown>) => {
+    temuCacheKeys.push(key)
+    return load()
+  },
   invalidateTemuCache: () => {},
 }))
 vi.mock("@/lib/temu-api/app-config", () => ({
@@ -533,6 +538,85 @@ describe("质检（bg.goods.qualityinspection.*，参数表 docs §8.17）", () 
     // 12+ 候选全败的破案结构：分页必须 pageInfo 包装
     expect(body.pageInfo).toEqual({ pageNo: 1, pageSize: 20 })
     expect(body.skuQcResult).toBe(2)
+  })
+
+  it("货号本地反查：SKC 直查命中 / sku_map 两跳命中 / 未命中 null", async () => {
+    mockSession.userId = ownerId
+    // 本地档案：SKC 2282117255→B9901（直查命中）；2282117256→B9902（skc 缺失行经 sku_map 两跳）
+    await db.insert(temuProducts).values([
+      { storeId, productSkcId: "2282117255", productId: "P9901", productSn: "B9901", skcStatus: 1 },
+      { storeId, productSkcId: "2282117256", productId: "P9902", productSn: "B9902", skcStatus: 1 },
+    ])
+    await db.insert(temuSkuMaps).values({ storeId, skuId: "53180679208", skcId: "2282117256" })
+    const fn = mockFulfillmentFetch({
+      "bg.goods.qualityinspection.get": {
+        total: 3,
+        skuList: [
+          { qcBillId: 990011, productSkuId: 53180679207, productSkcId: 2282117255, skuName: "a", catName: "宠物用品", purchaseNo: "WB2611100001", qcResultUpdateTime: "2026-11-10 09:00:00" },
+          { qcBillId: 990012, productSkuId: 53180679208, productSkcId: null, skuName: "b", catName: "宠物用品", purchaseNo: "WB2611100002", qcResultUpdateTime: "2026-11-10 09:00:00" },
+          { qcBillId: 990013, productSkuId: 53180679999, productSkcId: 2282117299, skuName: "c", catName: "宠物用品", purchaseNo: "WB2611100003", qcResultUpdateTime: "2026-11-10 09:00:00" },
+        ],
+      },
+    })
+    vi.stubGlobal("fetch", fn)
+    const r = await getTemuQualityInspectionsAction({ store: storeId, pageNo: 1 })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    const bySku = new Map(r.rows.map((x) => [x.productSkuId, x.productSn]))
+    expect(bySku.get("53180679207")).toBe("B9901")
+    expect(bySku.get("53180679208")).toBe("B9902")
+    expect(bySku.get("53180679999")).toBeNull()
+  })
+
+  it("搜索入参：采购单号/SKU 逗号拆分透传官方数组参数（缓存键含搜索）", async () => {
+    mockSession.userId = ownerId
+    const fn = mockFulfillmentFetch({
+      "bg.goods.qualityinspection.get": { total: 0, skuList: [] },
+    })
+    vi.stubGlobal("fetch", fn)
+    temuCacheKeys.length = 0
+    const r = await getTemuQualityInspectionsAction({
+      store: storeId,
+      purchaseNo: "WB1, WB2，WB3",
+      skuId: "111,222",
+    })
+    expect(r.ok).toBe(true)
+    const body = JSON.parse(String(fn.mock.calls[0]![1]!.body)) as Record<string, unknown>
+    // 逗号/中文逗号/空白混合拆分去空；ID 族转数字数组；未传字段不下发
+    expect(body.purchaseNo).toEqual(["WB1", "WB2", "WB3"])
+    expect(body.skuIdList).toEqual([111, 222])
+    expect(body.skcIdList).toBeUndefined()
+    // 缓存键拼入拆分后的搜索串：不同搜索不同键（否则 30s 内共享缓存 → 串页）
+    expect(temuCacheKeys).toHaveLength(1)
+    expect(temuCacheKeys[0]).toContain("WB1,WB2,WB3")
+    expect(temuCacheKeys[0]).toContain("111,222")
+  })
+
+  it("搜索入参：非数字/超量 token 报参数错误，绝不静默丢过滤条件退化为全量", async () => {
+    mockSession.userId = ownerId
+    const fn = mockFulfillmentFetch({
+      "bg.goods.qualityinspection.get": { total: 0, skuList: [] },
+    })
+    vi.stubGlobal("fetch", fn)
+    // 全非数字：不能不下发 skuIdList 退化成未过滤全量
+    const r1 = await getTemuQualityInspectionsAction({ store: storeId, skuId: "AB123" })
+    expect(r1.ok).toBe(false)
+    if (!r1.ok) expect(r1.error).toContain("SKU ID")
+    // 混合输入混入非数字：整体报错而非静默丢弃该 token
+    const r2 = await getTemuQualityInspectionsAction({ store: storeId, skcId: "123, AB, 456" })
+    expect(r2.ok).toBe(false)
+    if (!r2.ok) expect(r2.error).toContain("SKC ID")
+    // Number 可解析但非纯数字的 token（1e3/0x10）同样拒绝
+    const r3 = await getTemuQualityInspectionsAction({ store: storeId, skuId: "1e3" })
+    expect(r3.ok).toBe(false)
+    // 超过 50 个 token 报错而非静默截断
+    const r4 = await getTemuQualityInspectionsAction({
+      store: storeId,
+      skuId: Array.from({ length: 51 }, (_, i) => i + 1).join(","),
+    })
+    expect(r4.ok).toBe(false)
+    // 校验失败时不发任何官方请求
+    expect(fn.mock.calls).toHaveLength(0)
   })
 
   it("详情：真实结构（qcDetail 内嵌每条 historyVOS），疵点/尺码/SKU 行随单据映射", async () => {

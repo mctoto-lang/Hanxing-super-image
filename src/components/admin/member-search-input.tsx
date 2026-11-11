@@ -8,17 +8,30 @@ import { useRouter } from "next/navigation"
 /**
  * 成员搜索输入：无独立搜索按钮，300ms 防抖自动搜索（回车立即提交）；
  * 搜索条件变化时重置回第 1 页。
+ *
+ * basePath/placeholder 参数化（原硬编码 /admin/users），供 admin 域他页复用。
  */
-export function MemberSearchInput({ defaultValue = "" }: { defaultValue?: string }) {
+export function MemberSearchInput({
+  defaultValue = "",
+  basePath = "/admin/users",
+  placeholder = "搜索用户名 / 昵称 / 邮箱",
+}: {
+  defaultValue?: string
+  /** 搜索结果页路由（如 /admin/users） */
+  basePath?: string
+  placeholder?: string
+}) {
   const router = useRouter()
   const [value, setValue] = React.useState(defaultValue)
   const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const navigate = React.useCallback(
     (q: string) => {
-      router.replace(q ? `/admin/users?q=${encodeURIComponent(q)}` : "/admin/users")
+      router.replace(
+        q ? `${basePath}?q=${encodeURIComponent(q)}` : basePath,
+      )
     },
-    [router],
+    [router, basePath],
   )
 
   // 外部值变化（翻页带回、清除筛选）时同步本地输入框
@@ -51,7 +64,7 @@ export function MemberSearchInput({ defaultValue = "" }: { defaultValue?: string
             navigate(value.trim())
           }
         }}
-        placeholder="搜索用户名 / 昵称 / 邮箱"
+        placeholder={placeholder}
         className="pl-8"
       />
     </div>

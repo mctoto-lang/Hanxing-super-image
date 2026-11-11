@@ -78,3 +78,30 @@ describe("图片代理租户绑定（inventory 前缀）", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })
+
+describe("图片代理租户绑定（gen/thumb 缩略图前缀）", () => {
+  afterEach(() => {
+    mockSession.user = null
+    vi.unstubAllGlobals()
+  })
+
+  it("本企业 gen/thumb/<entId>/ 缩略图 → 放行（修复 thumb 误判租户段）", async () => {
+    mockSession.user = { enterpriseId: ENT_A, isSuperAdmin: false }
+    const fetchMock = vi.fn(async () => new Response("ok", { status: 200 }))
+    vi.stubGlobal("fetch", fetchMock)
+
+    const resp = await GET(proxyRequest(`/gen/thumb/${ENT_A}/2026/11/x.png`))
+    expect(resp.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("企业 A 用户请求他企业 gen/thumb/<entIdB>/ → 403，不回源", async () => {
+    mockSession.user = { enterpriseId: ENT_A, isSuperAdmin: false }
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+
+    const resp = await GET(proxyRequest(`/gen/thumb/${ENT_B}/2026/11/x.png`))
+    expect(resp.status).toBe(403)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})

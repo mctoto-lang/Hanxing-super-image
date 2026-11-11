@@ -186,7 +186,15 @@ export async function callGrsaiImageApi(opts: {
           )
         }
         const url = extractGrsaiImage(data)
-        if (url) return { index, url: await downloadAndUpload(url, index) }
+        if (url) {
+          const saved = await downloadAndUpload(url, index)
+          return {
+            index,
+            url: saved.url,
+            width: saved.width,
+            height: saved.height,
+          }
+        }
 
         throw new Error(
           extractErrorMessage(data) ?? "Grsai 生图 API 响应无可识别的图片字段",

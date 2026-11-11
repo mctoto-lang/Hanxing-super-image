@@ -258,7 +258,7 @@ export function TemuAdsWorkbench({
                 <TableRow>
                   <TableHead>主图</TableHead>
                   <TableHead>商品</TableHead>
-                  <TableHead className="text-center">状态</TableHead>
+                  <TableHead>状态</TableHead>
                   <TableHead>日预算</TableHead>
                   <TableHead>目标 ROAS</TableHead>
                   <TableHead>花费</TableHead>
@@ -294,39 +294,39 @@ export function TemuAdsWorkbench({
                         {row.productSn ?? row.productId}
                       </p>
                     </TableCell>
-                    <TableCell className="text-center">
+                    <TableCell>
                       {row.plan ? (
                         <Badge variant="secondary" className="rounded-[4px]">{row.plan.adShowStatusLabel}</Badge>
                       ) : (
-                        <EmptyHint center />
+                        <EmptyHint />
                       )}
                     </TableCell>
                     <TableCell className="tabular-nums">
-                      {row.plan ? yuan(row.plan.budget) : <EmptyHint center />}
+                      {row.plan ? yuan(row.plan.budget) : <EmptyHint />}
                     </TableCell>
                     <TableCell className="tabular-nums">
-                      {row.plan?.roas ?? <EmptyHint center />}
+                      {row.plan?.roas ?? <EmptyHint />}
                     </TableCell>
                     <TableCell className="tabular-nums">
                       {(row.report?.adSpend ?? row.plan?.spendFen) != null
                         ? yuan(row.report?.adSpend ?? row.plan?.spendFen)
-                        : <EmptyHint center />}
+                        : <EmptyHint />}
                     </TableCell>
                     <TableCell className="tabular-nums">
                       {(row.report?.orderPayAmt ?? row.plan?.orderPayAmtFen) != null
                         ? yuan(row.report?.orderPayAmt ?? row.plan?.orderPayAmtFen)
-                        : <EmptyHint center />}
+                        : <EmptyHint />}
                     </TableCell>
                     <TableCell className="tabular-nums">
-                      {row.report?.roas != null ? row.report.roas.toFixed(2) : (row.plan?.roasSummary ?? <EmptyHint center />)}
+                      {row.report?.roas != null ? row.report.roas.toFixed(2) : (row.plan?.roasSummary ?? <EmptyHint />)}
                     </TableCell>
                     <TableCell className="tabular-nums">
                       {row.report?.transactionCost != null
                         ? yuan(row.report.transactionCost)
-                        : <EmptyHint center />}
+                        : <EmptyHint />}
                     </TableCell>
                     <TableCell className="tabular-nums">
-                      {row.report?.goodsNum != null ? num(row.report.goodsNum) : <EmptyHint center />}
+                      {row.report?.goodsNum != null ? num(row.report.goodsNum) : <EmptyHint />}
                     </TableCell>
                     <TableCell className="tabular-nums text-muted-foreground">
                       {row.report?.imprCnt != null ? num(row.report.imprCnt) : <EmptyHint />} /{" "}
@@ -334,7 +334,7 @@ export function TemuAdsWorkbench({
                     </TableCell>
                     <TableCell>
                       {row.plan ? (
-                        <div className="flex justify-end gap-1.5">
+                        <div className="flex justify-start gap-1.5">
                           <Button
                             size="sm"
                             variant="outline"

@@ -20,6 +20,8 @@ import {
   TablePagination,
   parsePageParam,
 } from "@/components/shared/table-pagination"
+import { TableEmpty } from "@/components/shared/table-empty"
+import { StatCard } from "@/components/shared/stat-card"
 import {
   AdminChatModelFormDialog,
   AdminChatModelEditButton,
@@ -71,36 +73,9 @@ export default async function AdminChatModelsPage({
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              平台预置
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="text-2xl font-bold tabular-nums">
-            {presetCount}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              企业私有
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="text-2xl font-bold tabular-nums">
-            {privateCount}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              启用中
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="text-2xl font-bold tabular-nums">
-            {activeCount}
-          </CardContent>
-        </Card>
+        <StatCard label="平台预置">{presetCount.toLocaleString('zh-CN')}</StatCard>
+        <StatCard label="企业私有">{privateCount.toLocaleString('zh-CN')}</StatCard>
+        <StatCard label="启用中">{activeCount.toLocaleString('zh-CN')}</StatCard>
       </div>
 
       <Card>
@@ -121,7 +96,7 @@ export default async function AdminChatModelsPage({
                 <TableHead>价格（积分/百万tokens）</TableHead>
                 <TableHead>参数</TableHead>
                 <TableHead>状态</TableHead>
-                <TableHead className="text-right">操作</TableHead>
+                <TableHead>操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -169,13 +144,13 @@ export default async function AdminChatModelsPage({
                         <Badge variant="outline">停用</Badge>
                       )}
                     </TableCell>
-                    <TableCell className="text-right">
+                    <TableCell>
                       {readOnly ? (
                         <span className="text-xs text-muted-foreground">
                           只读
                         </span>
                       ) : (
-                        <div className="flex justify-end gap-1">
+                        <div className="flex gap-1">
                           <AdminChatModelEditButton model={m} />
                           <AdminChatModelToggleActiveButton model={m} />
                         </div>
@@ -185,14 +160,7 @@ export default async function AdminChatModelsPage({
                 )
               })}
               {chatModels.length === 0 ? (
-                <TableRow>
-                  <TableCell
-                    colSpan={6}
-                    className="text-center text-muted-foreground"
-                  >
-                    暂无对话模型，点击右上角新建
-                  </TableCell>
-                </TableRow>
+                <TableEmpty colSpan={6} noun="对话模型" />
               ) : null}
             </TableBody>
           </Table>

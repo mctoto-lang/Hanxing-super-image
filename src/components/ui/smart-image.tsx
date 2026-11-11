@@ -8,6 +8,16 @@ interface SmartImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
   src: string
   /** 占位文案，默认「图片已过期」 */
   fallbackText?: string
+  /**
+   * 失效占位框的宽高比（宽÷高），默认 1（方形）。
+   *
+   * 调用方应传入持久化的真实尺寸比例（generation_task.result_image_sizes，
+   * worker 转存时探测落库）；未覆盖的场景（参考图/无记录）回退方形。
+   * 宽度确定、高度自适应的场景由该比例撑出占位框，避免塌成细条；
+   * 固定尺寸容器（size-full/h-full）场景高度已被约束，该比例不生效、
+   * 行为不变。
+   */
+  fallbackAspectRatio?: number
   /** 进入失效占位态（图片为空或重试后仍失败）时回调，供外层撤掉加载骨架 */
   onFallback?: () => void
   /** React 19：ref 作为常规 prop 接收并透传给内部 <img>（水合时序补偿检查用） */
@@ -28,7 +38,9 @@ export function SmartImage({
   alt = "",
   className,
   fallbackText = "图片已过期",
+  fallbackAspectRatio = 1,
   onFallback,
+  style,
   ...rest
 }: SmartImageProps) {
   const [errored, setErrored] = React.useState(false)
@@ -51,6 +63,9 @@ export function SmartImage({
           "flex flex-col items-center justify-center gap-0.5 overflow-hidden bg-muted text-muted-foreground",
           className,
         )}
+        // 调用方 style 在后展开可覆盖默认比例；宽度确定、高度自适应的
+        // 场景由此撑出占位框，固定尺寸容器不受影响（见 props 注释）
+        style={{ aspectRatio: fallbackAspectRatio, ...style }}
         title={src ? fallbackText : "暂无图片"}
       >
         <ImageIcon className="size-4 shrink-0 opacity-50" />
@@ -78,6 +93,7 @@ export function SmartImage({
         }
       }}
       className={className}
+      style={style}
       {...rest}
     />
   )

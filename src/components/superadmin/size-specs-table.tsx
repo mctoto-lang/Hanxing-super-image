@@ -42,7 +42,7 @@ function PlatformGroup({ platformKey, rows }: { platformKey: string; rows: SizeS
               <TableHead>比例</TableHead>
               <TableHead className="hidden md:table-cell">说明</TableHead>
               <TableHead>状态</TableHead>
-              <TableHead className="text-right">操作</TableHead>
+              <TableHead>操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -67,8 +67,8 @@ function PlatformGroup({ platformKey, rows }: { platformKey: string; rows: SizeS
                     {s.isActive ? "启用" : "停用"}
                   </Badge>
                 </TableCell>
-                <TableCell className="text-right">
-                  <div className="flex items-center justify-end gap-1">
+                <TableCell>
+                  <div className="flex items-center gap-1">
                     <SizeSpecEditButton row={s} />
                     <SizeSpecToggleActiveButton id={s.id} isActive={s.isActive} />
                   </div>

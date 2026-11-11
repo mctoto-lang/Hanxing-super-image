@@ -3,6 +3,8 @@
 import * as React from "react"
 import { Loader2, Store } from "lucide-react"
 import { toast } from "sonner"
+import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
+import { useForm } from "react-hook-form"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -14,12 +16,32 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form"
+import { temuAppSettingFormSchema } from "@/lib/forms/config-schemas"
 import {
   getTemuAppSettingAction,
   saveTemuAppSettingAction,
 } from "@/server/actions/platform"
+
+interface TemuAppSettingFormValues {
+  appKey: string
+  appSecret: string
+  testMode: boolean
+}
+
+const blankDefaults: TemuAppSettingFormValues = {
+  appKey: "",
+  appSecret: "",
+  testMode: false,
+}
 
 /**
  * 企业级 TEMU 官方开放平台应用配置（超管）
@@ -27,6 +49,9 @@ import {
  * 每个企业可对接各自的自研应用：app_key / app_secret（AES 加密落库，
  * 掩码回显、留空不修改）/ testMode（切官方文档测试账号，供正式应用
  * 审批下来前联调）。未配置的企业其店铺同步与 TEMU 工作台不可用。
+ *
+ * 远端回填：open 时 getTemuAppSettingAction 拉取 → form.reset(映射值)；
+ * 加载失败时禁用整表（防假「未配置」态诱导覆盖既有凭证）。
  */
 export function TemuAppConfigDialog({
   enterpriseId,
@@ -39,29 +64,33 @@ export function TemuAppConfigDialog({
   const [loading, setLoading] = React.useState(false)
   /** 加载失败：不渲染可保存的空表单，防止假「未配置」态诱导覆盖既有凭证 */
   const [loadError, setLoadError] = React.useState(false)
-  const [saving, setSaving] = React.useState(false)
-  const [appKey, setAppKey] = React.useState("")
-  const [appSecret, setAppSecret] = React.useState("")
+  const [serverError, setServerError] = React.useState<string | null>(null)
   const [hasSecret, setHasSecret] = React.useState(false)
-  const [testMode, setTestMode] = React.useState(false)
+
+  const form = useForm<TemuAppSettingFormValues>({
+    resolver: standardSchemaResolver(temuAppSettingFormSchema),
+    defaultValues: blankDefaults,
+  })
+  const pending = form.formState.isSubmitting
 
   React.useEffect(() => {
     if (!open) return
     let stop = false
     setLoading(true)
     setLoadError(false)
+    setServerError(null)
     void getTemuAppSettingAction(enterpriseId)
       .then((cfg) => {
         if (stop) return
-        setAppKey(cfg.appKey)
-        setAppSecret(cfg.appSecret)
         setHasSecret(Boolean(cfg.appSecret))
-        setTestMode(cfg.testMode)
+        form.reset({
+          appKey: cfg.appKey,
+          appSecret: cfg.appSecret,
+          testMode: cfg.testMode,
+        })
       })
       .catch(() => {
-        if (stop) return
-        setLoadError(true)
-        toast.error("加载失败，请重试")
+        if (!stop) setLoadError(true)
       })
       .finally(() => {
         if (!stop) setLoading(false)
@@ -69,27 +98,26 @@ export function TemuAppConfigDialog({
     return () => {
       stop = true
     }
-  }, [open, enterpriseId])
+  }, [open, enterpriseId, form])
 
-  const handleSave = async () => {
-    setSaving(true)
+  async function onSubmit(values: TemuAppSettingFormValues) {
+    setServerError(null)
     try {
       const res = await saveTemuAppSettingAction({
         enterpriseId,
-        appKey,
-        appSecret,
-        testMode,
+        appKey: values.appKey,
+        appSecret: values.appSecret,
+        testMode: values.testMode,
       })
       if (!res.ok) {
-        toast.error(res.error ?? "保存失败")
+        setServerError(res.error ?? "保存失败")
         return
       }
       toast.success("TEMU 应用配置已保存")
       setOpen(false)
     } catch {
-      toast.error("保存失败，请重试")
-    } finally {
-      setSaving(false)
+      // server action 抛异常（网络/DB/会话失效）时兜底，避免 void handleSubmit 吞掉 rejection 无反馈
+      setServerError("保存失败，请重试")
     }
   }
 
@@ -103,7 +131,7 @@ export function TemuAppConfigDialog({
           </Button>
         }
       />
-      <DialogContent className="sm:max-w-[440px]">
+      <DialogContent className="sm:max-w-[420px]">
         <DialogHeader>
           <DialogTitle>TEMU 应用配置</DialogTitle>
           <DialogDescription>
@@ -120,50 +148,92 @@ export function TemuAppConfigDialog({
             配置加载失败，请关闭后重试；为避免覆盖既有凭证，已停用编辑表单。
           </div>
         ) : (
-          <div className="space-y-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="temu-app-key">app_key</Label>
-              <Input
-                id="temu-app-key"
-                value={appKey}
-                onChange={(e) => setAppKey(e.target.value)}
-                placeholder="TEMU 开放平台自研应用的 app_key"
+          <Form {...form}>
+            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+              <FormField
+                control={form.control}
+                name="appKey"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>app_key</FormLabel>
+                    <FormControl>
+                      <Input
+                        {...field}
+                        placeholder="TEMU 开放平台自研应用的 app_key"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
               />
-            </div>
 
-            <div className="space-y-1.5">
-              <Label htmlFor="temu-app-secret">app_secret</Label>
-              <Input
-                id="temu-app-secret"
-                type="password"
-                value={appSecret}
-                onChange={(e) => setAppSecret(e.target.value)}
-                placeholder={hasSecret ? "已配置（掩码提交=不修改，清空并保存=删除）" : "app_secret（仅超管可见）"}
+              <FormField
+                control={form.control}
+                name="appSecret"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>app_secret</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="password"
+                        {...field}
+                        placeholder={
+                          hasSecret
+                            ? "已配置（掩码提交=不修改，清空并保存=删除）"
+                            : "app_secret（仅超管可见）"
+                        }
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
               />
-            </div>
 
-            <div className="flex items-center justify-between rounded-lg border p-3">
-              <div>
-                <div className="text-sm font-medium">测试模式</div>
-                <div className="text-xs text-muted-foreground">
-                  调用时改用官方文档测试账号（全托），供正式应用审批下来前联调；店铺
-                  access_token 也须用测试账号的
-                </div>
-              </div>
-              <Switch checked={testMode} onCheckedChange={setTestMode} />
-            </div>
+              <FormField
+                control={form.control}
+                name="testMode"
+                render={({ field }) => (
+                  <FormItem className="flex items-center justify-between rounded-lg border p-3">
+                    <div className="space-y-0.5">
+                      <FormLabel className="text-sm font-medium">测试模式</FormLabel>
+                      <p className="text-xs text-muted-foreground">
+                        调用时改用官方文档测试账号（全托），供正式应用审批下来前联调；店铺
+                        access_token 也须用测试账号的
+                      </p>
+                    </div>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={(v) => field.onChange(Boolean(v))}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
 
-            <p className="text-xs text-muted-foreground">
-              未配置凭证时，该企业的店铺同步与 TEMU 工作台不可用；凭证与店铺 token
-              均加密存储。
-            </p>
-          </div>
+              <p className="text-xs text-muted-foreground">
+                未配置凭证时，该企业的店铺同步与 TEMU 工作台不可用；凭证与店铺 token
+                均加密存储。
+              </p>
+
+              {serverError ? (
+                <p className="text-sm text-destructive">{serverError}</p>
+              ) : null}
+            </form>
+          </Form>
         )}
 
         <DialogFooter>
-          <Button disabled={saving || loading || loadError} onClick={() => void handleSave()}>
-            {saving ? <Loader2 className="size-4 animate-spin" /> : null}
-            保存
+          <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+            取消
+          </Button>
+          <Button
+            type="button"
+            disabled={pending || loading || loadError}
+            onClick={() => void form.handleSubmit(onSubmit)()}
+          >
+            {pending ? <Loader2 className="size-4 animate-spin" /> : null}
+            {pending ? "保存中…" : "保存"}
           </Button>
         </DialogFooter>
       </DialogContent>

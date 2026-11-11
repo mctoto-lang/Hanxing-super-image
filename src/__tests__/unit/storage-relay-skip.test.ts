@@ -86,9 +86,13 @@ describe("isOwnCosObjectUrl 中转预转存识别", () => {
 describe("saveFromUrl 中转预转存跳过", () => {
   const adapter = createCosAdapter(cfg)
 
-  it("本桶对象 URL 原样返回（零网络请求）", async () => {
+  it("本桶对象 URL 原样返回（零网络请求；尺寸无从探测为 null）", async () => {
     const url = `https://${BUCKET_HOST}/gen/${ENT}/2026/09/u.png`
-    await expect(adapter.saveFromUrl(url, ENT, "generate")).resolves.toBe(url)
+    await expect(adapter.saveFromUrl(url, ENT, "generate")).resolves.toEqual({
+      url,
+      width: null,
+      height: null,
+    })
   })
 
   it("外域 URL 仍被下载白名单拒绝", async () => {
@@ -102,7 +106,11 @@ describe("本地适配器同源跳过", () => {
   it("同源 /uploads/<entId>/ 原样返回", async () => {
     const { saveFromUrl } = await import("@/lib/storage/local")
     const url = `https://app.example.com/uploads/${ENT}/image/2026/09/u.png`
-    await expect(saveFromUrl(url, ENT)).resolves.toBe(url)
+    await expect(saveFromUrl(url, ENT)).resolves.toEqual({
+      url,
+      width: null,
+      height: null,
+    })
   })
 })
 

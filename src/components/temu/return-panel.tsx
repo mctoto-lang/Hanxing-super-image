@@ -21,7 +21,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
+import { TemuSearchBar, type SearchBarField } from "@/components/temu/search-bar"
 import {
   Select,
   SelectContent,
@@ -41,6 +41,7 @@ import { formatDateTime as fmtMs } from "@/lib/datetime"
 import { EmptyHint } from "@/components/temu/products-table"
 import { TruncTip } from "@/components/temu/trunc-tip"
 import { TableSkeletonRows } from "@/components/temu/table-skeleton"
+import { normalizeSearchForSkuView } from "@/components/temu/return-search-normalize"
 
 /** 出库时间窗预设按视图区分：退供包裹 30/90/365；SKU 明细上限 31 天（官方 100000004） */
 const PKG_WINDOWS = [
@@ -62,6 +63,17 @@ const WIN_LABEL: Record<Win, string> = {
   "365": "近365天",
 }
 
+/** 共享搜索条字段：包裹视图三字段 / SKU 视图两字段（官方入参，逗号分隔多值） */
+const RETURN_PKG_SEARCH_FIELDS: SearchBarField[] = [
+  { value: "express", label: "运单号", placeholder: "逗号分隔可多值…" },
+  { value: "sub", label: "采购子单号", placeholder: "逗号分隔可多值…" },
+  { value: "pkg", label: "退供包裹号", placeholder: "逗号分隔可多值…" },
+]
+const RETURN_SKU_SEARCH_FIELDS: SearchBarField[] = [
+  { value: "sub", label: "采购子单号", placeholder: "逗号分隔可多值…" },
+  { value: "pkg", label: "退供包裹号", placeholder: "逗号分隔可多值…" },
+]
+
 /**
  * 退货工作台（退供三件套 bg.refund.returnpackage*，实时 + 30s 缓存）：
  * 发货至仓库被退数据跟进——退供包裹列表（状态/原因/物流）+ 包裹 SKC 明细 +
@@ -73,9 +85,15 @@ export function TemuReturnPanel({ store }: { store?: string }) {
   const [view, setView] = React.useState<"packages" | "sku">("packages")
   const [status, setStatus] = React.useState<"all" | "1" | "2">("all")
   const [win, setWin] = React.useState<Win>("90")
-  /** 精确筛选：草稿态（输入中不触发），回车/失焦提交后才进查询 */
-  const [draft, setDraft] = React.useState({ express: "", sub: "", pkg: "" })
-  const [applied, setApplied] = React.useState({ express: "", sub: "", pkg: "" })
+  /** 精确筛选（共享搜索条）：草稿态（输入中不触发），按钮/回车提交后才进查询 */
+  const [draft, setDraft] = React.useState<{ field: string; keyword: string }>({
+    field: "sub",
+    keyword: "",
+  })
+  const [applied, setApplied] = React.useState<{ field: string; keyword: string }>({
+    field: "sub",
+    keyword: "",
+  })
   const [pageNo, setPageNo] = React.useState(1)
   const [pkgRows, setPkgRows] = React.useState<TemuReturnPackageRow[]>([])
   const [skuRows, setSkuRows] = React.useState<TemuReturnSkuRow[]>([])
@@ -106,21 +124,24 @@ export function TemuReturnPanel({ store }: { store?: string }) {
     startLoading(async () => {
       const reqId = ++loadReqRef.current
       const base = { store, pageNo }
+      const kw = applied.keyword.trim()
       const r =
         view === "packages"
           ? await getTemuReturnPackagesAction({
               ...base,
               window: pkgWin,
               ...(status === "all" ? {} : { status }),
-              ...(applied.express ? { expressDeliverySn: applied.express } : {}),
-              ...(applied.sub ? { purchaseSubOrderSn: applied.sub } : {}),
-              ...(applied.pkg ? { returnSupplierPackageNo: applied.pkg } : {}),
+              ...(view === "packages" && applied.field === "express" && kw
+                ? { expressDeliverySn: kw }
+                : {}),
+              ...(applied.field === "sub" && kw ? { purchaseSubOrderSn: kw } : {}),
+              ...(applied.field === "pkg" && kw ? { returnSupplierPackageNo: kw } : {}),
             })
           : await getTemuReturnSkuDetailAction({
               ...base,
               window: skuWin,
-              ...(applied.pkg ? { returnSupplierPackageNo: applied.pkg } : {}),
-              ...(applied.sub ? { purchaseSubOrderSn: applied.sub } : {}),
+              ...(applied.field === "sub" && kw ? { purchaseSubOrderSn: kw } : {}),
+              ...(applied.field === "pkg" && kw ? { returnSupplierPackageNo: kw } : {}),
             })
       if (reqId !== loadReqRef.current) return
       if (r.ok) {
@@ -152,10 +173,6 @@ export function TemuReturnPanel({ store }: { store?: string }) {
 
   // 官方分页 pageNo 上限 200（schema 同口径）：封顶防点到 201 页收到 zod 英文报错
   const totalPages = Math.min(200, Math.max(1, Math.ceil(total / 20)))
-  const commitDraft = () => {
-    setApplied(draft)
-    setPageNo(1)
-  }
 
   return (
     <Card className="flex min-h-0 flex-1 flex-col">
@@ -188,6 +205,12 @@ export function TemuReturnPanel({ store }: { store?: string }) {
                       ? w
                       : "90",
                 )
+                // SKU 视图无运单号字段：运单号原样改作采购子单号过滤几乎必然查空且
+                // 无提示——字段归一到采购子单号并清空关键词（sub/pkg 两视图通用，保留）
+                if (v === "sku") {
+                  setDraft(normalizeSearchForSkuView)
+                  setApplied(normalizeSearchForSkuView)
+                }
               }
             }}
           >
@@ -225,41 +248,21 @@ export function TemuReturnPanel({ store }: { store?: string }) {
               ))}
             </SelectContent>
           </Select>
-          {/* 精确筛选（逗号分隔多值 → 官方数组参数）；回车提交避免逐键触发查询 */}
-          <form
-            className="flex items-center gap-2"
-            onSubmit={(e) => {
-              e.preventDefault()
-              commitDraft()
+          {/* 精确筛选（共享搜索条，逗号分隔多值 → 官方数组参数）；按钮/回车触发 */}
+          <TemuSearchBar
+            fields={view === "packages" ? RETURN_PKG_SEARCH_FIELDS : RETURN_SKU_SEARCH_FIELDS}
+            field={draft.field}
+            onFieldChange={(v) => setDraft((d) => ({ ...d, field: v }))}
+            keyword={draft.keyword}
+            onKeywordChange={(v) => setDraft((d) => ({ ...d, keyword: v }))}
+            onSearch={(f, kw) => {
+              setDraft({ field: f, keyword: kw })
+              setApplied({ field: f, keyword: kw })
+              setPageNo(1)
             }}
-          >
-            {view === "packages" && (
-              <Input
-                value={draft.express}
-                onChange={(e) => setDraft((d) => ({ ...d, express: e.target.value }))}
-                placeholder="运单号，逗号分隔"
-                className="h-8 w-36 text-xs"
-                aria-label="按运单号筛选"
-              />
-            )}
-            <Input
-              value={draft.sub}
-              onChange={(e) => setDraft((d) => ({ ...d, sub: e.target.value }))}
-              placeholder="采购子单号，逗号分隔"
-              className="h-8 w-36 text-xs"
-              aria-label="按采购子单号筛选"
-            />
-            <Input
-              value={draft.pkg}
-              onChange={(e) => setDraft((d) => ({ ...d, pkg: e.target.value }))}
-              placeholder="退供包裹号，逗号分隔"
-              className="h-8 w-36 text-xs"
-              aria-label="按退供包裹号筛选"
-            />
-            <Button type="submit" variant="outline" size="sm" className="h-8 text-xs">
-              筛选
-            </Button>
-          </form>
+            searching={loading}
+            className="w-72"
+          />
           <Button variant="outline" size="sm" className="h-8 text-xs" onClick={load} disabled={loading} aria-label="刷新退货列表">
             {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
             刷新
@@ -281,7 +284,7 @@ export function TemuReturnPanel({ store }: { store?: string }) {
                       <TableHead>采购子单号</TableHead>
                       <TableHead>运单号</TableHead>
                       <TableHead>退供数量</TableHead>
-                      <TableHead className="text-center">包裹状态</TableHead>
+                      <TableHead>包裹状态</TableHead>
                       <TableHead>退供原因</TableHead>
                       <TableHead>物流方式</TableHead>
                       <TableHead>交接方式</TableHead>
@@ -301,21 +304,21 @@ export function TemuReturnPanel({ store }: { store?: string }) {
                     )}
                     {pkgRows.map((r, i) => (
                       <TableRow key={`${r.returnSupplierPackageNo ?? ""}-${r.purchaseSubOrderSn ?? ""}-${i}`}>
-                        <TableCell className="font-mono">{r.returnSupplierPackageNo ?? <EmptyHint center />}</TableCell>
-                        <TableCell className="font-mono">{r.purchaseSubOrderSn ?? <EmptyHint center />}</TableCell>
-                        <TableCell className="font-mono">{r.expressDeliverySn ?? <EmptyHint center />}</TableCell>
-                        <TableCell className="tabular-nums">{r.returnSupplierQuantity ?? <EmptyHint center />}</TableCell>
-                        <TableCell className="text-center">
+                        <TableCell className="font-mono">{r.returnSupplierPackageNo ?? <EmptyHint />}</TableCell>
+                        <TableCell className="font-mono">{r.purchaseSubOrderSn ?? <EmptyHint />}</TableCell>
+                        <TableCell className="font-mono">{r.expressDeliverySn ?? <EmptyHint />}</TableCell>
+                        <TableCell className="tabular-nums">{r.returnSupplierQuantity ?? <EmptyHint />}</TableCell>
+                        <TableCell>
                           <StatusBadge desc={r.packageStatusDesc} />
                         </TableCell>
                         <TableCell className="max-w-44">
                           <TruncTip text={r.returnSupplierReasonDesc ?? ""} className="max-w-44" />
                         </TableCell>
-                        <TableCell>{r.logisticsTypeDesc ?? <EmptyHint center />}</TableCell>
-                        <TableCell>{r.returnHandOverTypeDesc ?? <EmptyHint center />}</TableCell>
-                        <TableCell>{r.payMethodDesc ?? <EmptyHint center />}</TableCell>
+                        <TableCell>{r.logisticsTypeDesc ?? <EmptyHint />}</TableCell>
+                        <TableCell>{r.returnHandOverTypeDesc ?? <EmptyHint />}</TableCell>
+                        <TableCell>{r.payMethodDesc ?? <EmptyHint />}</TableCell>
                         <TableCell className="whitespace-nowrap text-muted-foreground">
-                          {r.outboundTime != null ? fmtMs(r.outboundTime) : <EmptyHint center />}
+                          {r.outboundTime != null ? fmtMs(r.outboundTime) : <EmptyHint />}
                         </TableCell>
                         <TableCell>
                           <Button
@@ -355,16 +358,16 @@ export function TemuReturnPanel({ store }: { store?: string }) {
                     )}
                     {skuRows.map((r, i) => (
                       <TableRow key={`${r.packageSn ?? ""}-${r.productSkuId ?? ""}-${i}`}>
-                        <TableCell className="font-mono">{r.packageSn ?? <EmptyHint center />}</TableCell>
+                        <TableCell className="font-mono">{r.packageSn ?? <EmptyHint />}</TableCell>
                         <TableCell className="max-w-56">
                           <div className="font-mono">{r.productSn ?? <EmptyHint />}</div>
                           <TruncTip text={r.productName ?? ""} className="max-w-56 text-muted-foreground" />
                         </TableCell>
-                        <TableCell className="font-mono">{r.productSkuId ?? <EmptyHint center />}</TableCell>
-                        <TableCell>{r.mainSaleSpec ?? <EmptyHint center />}</TableCell>
-                        <TableCell className="tabular-nums">{r.quantity ?? <EmptyHint center />}</TableCell>
+                        <TableCell className="font-mono">{r.productSkuId ?? <EmptyHint />}</TableCell>
+                        <TableCell>{r.mainSaleSpec ?? <EmptyHint />}</TableCell>
+                        <TableCell className="tabular-nums">{r.quantity ?? <EmptyHint />}</TableCell>
                         <TableCell className="whitespace-nowrap text-muted-foreground">
-                          {r.outboundTime != null ? fmtMs(r.outboundTime) : <EmptyHint center />}
+                          {r.outboundTime != null ? fmtMs(r.outboundTime) : <EmptyHint />}
                         </TableCell>
                       </TableRow>
                     ))}

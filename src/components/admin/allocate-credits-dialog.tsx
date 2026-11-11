@@ -13,10 +13,20 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form"
 import { toast } from "sonner"
 import { useRouter } from "next/navigation"
+import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
+import { useForm } from "react-hook-form"
+import { allocateCreditsFormSchema } from "@/lib/forms/schemas"
 import { allocateCreditsToUserAction } from "@/server/actions/admin-users"
 
 /**
@@ -24,7 +34,15 @@ import { allocateCreditsToUserAction } from "@/server/actions/admin-users"
  *
  * 从企业共享积分池扣减 amount，累加到成员个人配额。
  * 企业池余额不足时由后端事务拒绝。
+ *
+ * 表单口径：useForm + standardSchemaResolver（allocateCreditsFormSchema），
+ * 字段级内联校验；服务端兜底错误显示在 footer 上方。
  */
+interface AllocateCreditsFormValues {
+  amount: number
+  remark?: string
+}
+
 export function AllocateCreditsDialog({
   targetUserId,
   targetUsername,
@@ -39,39 +57,36 @@ export function AllocateCreditsDialog({
   enterpriseBalance: number
 }) {
   const [open, setOpen] = React.useState(false)
-  const [pending, startTransition] = React.useTransition()
-  const [amount, setAmount] = React.useState("")
-  const [remark, setRemark] = React.useState("")
+  const [serverError, setServerError] = React.useState<string | null>(null)
   const router = useRouter()
+
+  const form = useForm<AllocateCreditsFormValues>({
+    resolver: standardSchemaResolver(allocateCreditsFormSchema),
+    defaultValues: { amount: 0 as unknown as number, remark: "" },
+  })
+  const pending = form.formState.isSubmitting
 
   React.useEffect(() => {
     if (open) {
-      setAmount("")
-      setRemark("")
+      form.reset({ amount: undefined as unknown as number, remark: "" })
+      setServerError(null)
     }
-  }, [open])
+  }, [open, form])
 
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    const n = Math.floor(Number(amount))
-    if (!Number.isFinite(n) || n <= 0) {
-      toast.error("分配数量必须为正整数")
+  async function onSubmit(values: AllocateCreditsFormValues) {
+    setServerError(null)
+    const res = await allocateCreditsToUserAction({
+      targetUserId,
+      amount: values.amount,
+      remark: values.remark || undefined,
+    })
+    if (res.ok) {
+      toast.success(`已分配 ${values.amount} 积分给 ${targetName ?? targetUsername}`)
+      setOpen(false)
+      router.refresh()
       return
     }
-    startTransition(async () => {
-      const res = await allocateCreditsToUserAction({
-        targetUserId,
-        amount: n,
-        remark: remark || undefined,
-      })
-      if (res.ok) {
-        toast.success(`已分配 ${n} 积分给 ${targetName ?? targetUsername}`)
-        setOpen(false)
-        router.refresh()
-      } else {
-        toast.error(res.error ?? "分配失败")
-      }
-    })
+    setServerError(res.error ?? "分配失败")
   }
 
   return (
@@ -84,7 +99,7 @@ export function AllocateCreditsDialog({
           </Button>
         }
       />
-      <DialogContent className="sm:max-w-[420px]">
+      <DialogContent className="sm:max-w-[520px]">
         <DialogHeader>
           <DialogTitle>分配积分</DialogTitle>
           <DialogDescription>
@@ -92,49 +107,76 @@ export function AllocateCreditsDialog({
            」的个人配额（生图扣个人配额）
           </DialogDescription>
         </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-            <div className="rounded-md border bg-muted/30 p-2">
-              成员当前配额
-              <div className="text-sm font-semibold tabular-nums text-foreground">
-                {currentBalance.toLocaleString("zh-CN")}
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+              <div className="rounded-md border bg-muted/30 p-2">
+                成员当前配额
+                <div className="text-sm font-semibold tabular-nums text-foreground">
+                  {currentBalance.toLocaleString("zh-CN")}
+                </div>
+              </div>
+              <div className="rounded-md border bg-muted/30 p-2">
+                企业池余额
+                <div className="text-sm font-semibold tabular-nums text-foreground">
+                  {enterpriseBalance.toLocaleString("zh-CN")}
+                </div>
               </div>
             </div>
-            <div className="rounded-md border bg-muted/30 p-2">
-              企业池余额
-              <div className="text-sm font-semibold tabular-nums text-foreground">
-                {enterpriseBalance.toLocaleString("zh-CN")}
-              </div>
-            </div>
-          </div>
-          <div className="grid gap-2">
-            <Label htmlFor="alloc-amount">分配数量</Label>
-            <Input
-              id="alloc-amount"
-              type="number"
-              min={1}
-              max={1_000_000}
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              required
+            <FormField
+              control={form.control}
+              name="amount"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>分配数量</FormLabel>
+                  <FormControl>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={1_000_000}
+                      {...field}
+                      value={field.value ?? ""}
+                      onChange={(e) =>
+                        field.onChange(
+                          e.target.value === "" ? undefined : Number(e.target.value),
+                        )
+                      }
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
             />
-          </div>
-          <div className="grid gap-2">
-            <Label htmlFor="alloc-remark">备注（可选）</Label>
-            <Textarea
-              id="alloc-remark"
-              rows={2}
-              value={remark}
-              onChange={(e) => setRemark(e.target.value)}
-              placeholder="如：本月设计组配额"
+            <FormField
+              control={form.control}
+              name="remark"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>备注（可选）</FormLabel>
+                  <FormControl>
+                    <Textarea
+                      rows={2}
+                      placeholder="如：本月设计组配额"
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
             />
-          </div>
-          <DialogFooter>
-            <Button type="submit" disabled={pending}>
-              {pending ? "分配中..." : "确认分配"}
-            </Button>
-          </DialogFooter>
-        </form>
+            {serverError ? (
+              <p className="text-sm text-destructive">{serverError}</p>
+            ) : null}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+                取消
+              </Button>
+              <Button type="submit" disabled={pending}>
+                {pending ? "分配中…" : "确认分配"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </Form>
       </DialogContent>
     </Dialog>
   )

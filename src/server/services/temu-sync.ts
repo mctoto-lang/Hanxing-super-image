@@ -215,7 +215,7 @@ export async function mirrorProductImages(
   for (const row of pending) {
     const source = row.mainImageUrl!
     try {
-      const url = await storage.saveFromUrl(
+      const saved = await storage.saveFromUrl(
         source,
         store.enterpriseId,
         "temu",
@@ -223,7 +223,7 @@ export async function mirrorProductImages(
       )
       await db
         .update(temuProducts)
-        .set({ mainImageCosUrl: url, mainImageCosSource: source })
+        .set({ mainImageCosUrl: saved.url, mainImageCosSource: source })
         .where(eq(temuProducts.id, row.id))
       done++
     } catch (err) {

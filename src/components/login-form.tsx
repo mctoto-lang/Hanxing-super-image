@@ -123,6 +123,7 @@ export function LoginForm({
             </div>
           </form>
           <div className="relative hidden bg-gradient-to-br from-primary/20 via-background to-background md:block">
+            {/* eslint-disable-next-line @next/next/no-img-element -- COS 外域图，容器有渐变兜底，不走 next/image 服务端优化 */}
             <img
               src={toImageSrc(BRAND_IMAGE_URL, { width: 800 })}
               alt="瀚星 Super Image 品牌视觉"

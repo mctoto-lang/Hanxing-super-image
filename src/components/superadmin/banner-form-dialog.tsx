@@ -111,8 +111,8 @@ function BannerForm({ row, onDone }: { row: BannerRow | null; onDone: () => void
   }
 
   return (
-    <div className="space-y-3">
-      <div className="space-y-1.5">
+    <div className="space-y-4">
+      <div className="grid gap-2">
         <Label>标题</Label>
         <Input
           value={title}
@@ -121,7 +121,7 @@ function BannerForm({ row, onDone }: { row: BannerRow | null; onDone: () => void
           maxLength={100}
         />
       </div>
-      <div className="space-y-1.5">
+      <div className="grid gap-2">
         <Label>内容文案</Label>
         <Textarea
           value={content}
@@ -131,8 +131,8 @@ function BannerForm({ row, onDone }: { row: BannerRow | null; onDone: () => void
           rows={2}
         />
       </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="space-y-1.5">
+      <div className="grid grid-cols-2 gap-4">
+        <div className="grid gap-2">
           <Label>跳转链接（站外，可空）</Label>
           <Input
             value={linkUrl}
@@ -140,7 +140,7 @@ function BannerForm({ row, onDone }: { row: BannerRow | null; onDone: () => void
             placeholder="https://example.com/promo"
           />
         </div>
-        <div className="space-y-1.5">
+        <div className="grid gap-2">
           <Label>按钮文字</Label>
           <Input
             value={linkLabel}
@@ -150,8 +150,8 @@ function BannerForm({ row, onDone }: { row: BannerRow | null; onDone: () => void
           />
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="space-y-1.5">
+      <div className="grid grid-cols-2 gap-4">
+        <div className="grid gap-2">
           <Label>图标</Label>
           <Select
             value={icon}
@@ -173,8 +173,8 @@ function BannerForm({ row, onDone }: { row: BannerRow | null; onDone: () => void
           </Select>
         </div>
       </div>
-      <div className="grid grid-cols-3 gap-3">
-        <div className="space-y-1.5">
+      <div className="grid grid-cols-3 gap-4">
+        <div className="grid gap-2">
           <Label>倒计时截止（可空）</Label>
           <Input
             type="datetime-local"
@@ -182,7 +182,7 @@ function BannerForm({ row, onDone }: { row: BannerRow | null; onDone: () => void
             onChange={(e) => setCountdownEndsAt(e.target.value)}
           />
         </div>
-        <div className="space-y-1.5">
+        <div className="grid gap-2">
           <Label>投放开始（可空）</Label>
           <Input
             type="datetime-local"
@@ -190,7 +190,7 @@ function BannerForm({ row, onDone }: { row: BannerRow | null; onDone: () => void
             onChange={(e) => setStartsAt(e.target.value)}
           />
         </div>
-        <div className="space-y-1.5">
+        <div className="grid gap-2">
           <Label>投放结束（可空）</Label>
           <Input
             type="datetime-local"
@@ -234,7 +234,7 @@ export function BannerCreateDialog() {
         新建横幅
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-[520px]">
           <DialogTitle>新建广告横幅</DialogTitle>
           <DialogDescription>
             配置内容、倒计时与站外跳转链接，多条横幅将在登录后页面随机轮换展示
@@ -255,7 +255,7 @@ export function BannerEditButton({ row }: { row: BannerRow }) {
         <Pencil className="size-3.5" />
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-[520px]">
           <DialogTitle>编辑横幅：{row.title}</DialogTitle>
           <DialogDescription>
             保存后已关闭该横幅的用户会重新看到它（内容指纹更新）

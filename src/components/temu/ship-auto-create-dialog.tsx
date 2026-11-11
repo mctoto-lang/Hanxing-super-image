@@ -33,11 +33,12 @@ import {
 } from "@/server/actions/temu-ship"
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import { chunkSns } from "./ship-packing"
+import { defaultDeliverNum } from "./ship-auto-create-default"
 
 /**
  * 自动创建发货弹窗（发货台勾选后「自动创建发货」）：创建视图的全自动版——
  * - 发货仓库：全部收货仓分组共用所选的一个卖家发货仓库；
- * - 发货数：每 SKU 默认发货台行内调整值 ?? min(官方可发上限, 备货数)（可改，钳制 1–上限）；
+ * - 发货数：每 SKU 默认发货台行内调整值 ?? 官方可发上限（缺上限回落备货数；可改，钳制 1–上限）；
  * - 拆包裹：按货号「每包件数」（默认读库存档案装箱数 cartonQty，未建档=整单一包）
  *   定长拆箱——前包满装、尾包裹余数（每 SKU 合计=发货数；多 SKU 第 i 箱合并为第 i 包），
  *   单包裹数 >10（官方上限）红字阻断该单并提示增大每包件数；
@@ -82,7 +83,7 @@ export function AutoCreateShipDialog({
   store: string
   /** 发货台勾选行（快照传入，弹窗内不再随列表刷新变化） */
   rows: TemuShipStagingRow[]
-  /** 发货台行内调整快照，sn → skuId → 数量（优先于默认 min(上限,备货数)） */
+  /** 发货台行内调整快照，sn → skuId → 数量（优先于默认可发上限） */
   initialNums?: Record<string, Record<number, number>>
   onClose: () => void
   /** 任一单创建成功后回调（父层刷新发货台） */
@@ -100,7 +101,7 @@ export function AutoCreateShipDialog({
   >([])
   /** 全部组共用的发货仓库 */
   const [addressId, setAddressId] = React.useState<number | null>(null)
-  /** 每 SKU 发货数（sn → skuId → 数量），默认发货台调整值 ?? min(上限, 备货数) */
+  /** 每 SKU 发货数（sn → skuId → 数量），默认发货台调整值 ?? 可发上限（缺上限回落备货数） */
   const [nums, setNums] = React.useState<Record<string, Record<number, number>>>({})
   /** 每货号每包件数（原始货号串 → 输入值；空串=整单一包） */
   const [perByCode, setPerByCode] = React.useState<Record<string, string>>({})
@@ -159,15 +160,16 @@ export function AutoCreateShipDialog({
       if (missing.length > 0) {
         toast.warning(`${missing.length} 单未返回收货地址分组（可能已超时移出发货台），创建时将跳过`, { duration: 8000 })
       }
-      // 发货数默认值（发货台行内调整优先）+ 每包件数默认（档案装箱数）
+      // 发货数默认值（发货台行内调整优先，否则官方可发上限；缺上限回落备货数）+ 每包件数默认（档案装箱数）
       const nextNums: Record<string, Record<number, number>> = {}
       const nextPer: Record<string, string> = {}
       for (const r of rows) {
         const bySku: Record<number, number> = {}
         for (const s of r.skus) {
-          bySku[s.productSkuId] =
-            initialNums?.[r.subPurchaseOrderSn]?.[s.productSkuId] ??
-            Math.min(s.skuDeliveryQuantityMaxLimit ?? 9999, s.productSkuPurchaseQuantity ?? 1)
+          bySku[s.productSkuId] = defaultDeliverNum(
+            s,
+            initialNums?.[r.subPurchaseOrderSn]?.[s.productSkuId],
+          )
         }
         nextNums[r.subPurchaseOrderSn] = bySku
         if (r.skcExtCode) {
@@ -387,7 +389,7 @@ export function AutoCreateShipDialog({
                         <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
                           每包件数
                           <Input
-                            className="h-6 w-16 text-xs tabular-nums"
+                            className="h-6 w-16 rounded-md text-xs tabular-nums"
                             type="number"
                             inputMode="numeric"
                             min={1}
@@ -415,7 +417,7 @@ export function AutoCreateShipDialog({
                         >
                           SKU {s.productSkuId}
                           <Input
-                            className="h-6 w-16 text-xs tabular-nums"
+                            className="h-6 w-16 rounded-md text-xs tabular-nums"
                             type="number"
                             inputMode="numeric"
                             min={1}

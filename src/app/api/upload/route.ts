@@ -64,7 +64,7 @@ export const POST = withRouteHandler(async (request: Request) => {
   const buffer = Buffer.from(await file.arrayBuffer())
   const ext = isPdf ? "pdf" : safeImageExt(file.name)
   const storage = await getStorage()
-  const url = await storage.saveFromBuffer(buffer, enterpriseId, ext, category)
+  const saved = await storage.saveFromBuffer(buffer, enterpriseId, ext, category)
 
-  return NextResponse.json({ url })
+  return NextResponse.json({ url: saved.url })
 })

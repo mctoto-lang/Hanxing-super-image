@@ -220,10 +220,21 @@ describe("callGrsaiImageApi 端到端", () => {
       model: MODEL,
       task: { prompt: "p", imageSize: "1024x1536", imageCount: 1 },
       apiKey: "k",
-      downloadAndUpload: async (url) => `stored:${url}`,
+      downloadAndUpload: async (url) => ({
+        url: `stored:${url}`,
+        width: 768,
+        height: 1152,
+      }),
     })
 
-    expect(results).toEqual([{ index: 0, url: "stored:https://img/1" }])
+    expect(results).toEqual([
+      {
+        index: 0,
+        url: "stored:https://img/1",
+        width: 768,
+        height: 1152,
+      },
+    ])
     expect(bodies[0]).toMatchObject({
       model: "nano-banana-2",
       aspectRatio: "2:3",
@@ -248,7 +259,7 @@ describe("callGrsaiImageApi 端到端", () => {
       model: MODEL,
       task: { prompt: "p", imageSize: "1024x1024", imageCount: 1 },
       apiKey: "k",
-      downloadAndUpload: async (url) => url,
+      downloadAndUpload: async (url) => ({ url, width: null, height: null }),
     })
 
     expect(results).toHaveLength(1)
@@ -265,7 +276,7 @@ describe("callGrsaiImageApi 端到端", () => {
       model: MODEL,
       task: { prompt: "p", imageSize: "1024x1024", imageCount: 1 },
       apiKey: "k",
-      downloadAndUpload: async (url) => url,
+      downloadAndUpload: async (url) => ({ url, width: null, height: null }),
     })
 
     expect(results[0]!.error).toMatch(/Grsai 生图 API 错误 401/)

@@ -26,7 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Combobox, type ComboboxOption } from "@/components/ui/combobox"
+import { TemuSearchBar, type SearchBarField } from "@/components/temu/search-bar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Sheet,
@@ -44,6 +44,7 @@ import {
   getShipStagingAction,
   type TemuShipStagingRow,
 } from "@/server/actions/temu-ship"
+import { getPriorityShipLinksAction } from "@/server/actions/temu"
 import { EmptyHint } from "@/components/temu/products-table"
 import { TruncTip } from "@/components/temu/trunc-tip"
 import { TableSkeletonRows } from "@/components/temu/table-skeleton"
@@ -108,7 +109,7 @@ export function PackageSplitTable({
               {skuIds.map((id) => (
                 <TableCell key={id}>
                   <Input
-                    className="h-7 w-16 text-xs tabular-nums"
+                    className="h-7 w-16 rounded-md text-xs tabular-nums"
                     type="number"
                     inputMode="numeric"
                     min={0}
@@ -234,7 +235,7 @@ function DeliverNumCell({
                       <img src={s.imgUrl} alt="" className="size-7 shrink-0 rounded object-cover" loading="lazy" />
                     ) : null}
                     <Input
-                      className="h-7 min-w-0 flex-1 text-xs tabular-nums"
+                      className="h-7 min-w-0 flex-1 rounded-md text-xs tabular-nums"
                       type="number"
                       inputMode="numeric"
                       value={draft[s.productSkuId] ?? ""}
@@ -430,7 +431,7 @@ function AdjustPackagesSheet({
                       <TableCell>
                         <div className="flex flex-nowrap items-center gap-1 whitespace-nowrap">
                           <Input
-                            className="h-7 w-20 text-xs tabular-nums"
+                            className="h-7 w-20 rounded-md text-xs tabular-nums"
                             type="number"
                             inputMode="numeric"
                             min={1}
@@ -449,7 +450,7 @@ function AdjustPackagesSheet({
                             >
                               <span className="text-[11px] text-muted-foreground">包裹{i + 1} 数量</span>
                               <Input
-                                className="h-6 w-14 border-0 bg-transparent px-1 text-xs tabular-nums focus-visible:ring-1"
+                                className="h-6 w-14 rounded-md border-0 bg-transparent px-1 text-xs tabular-nums focus-visible:ring-1"
                                 type="number"
                                 inputMode="numeric"
                                 min={0}
@@ -506,7 +507,7 @@ function AdjustPackagesSheet({
                                 <div className="space-y-1">
                                   <Label className="text-[11px]">*送货数</Label>
                                   <Input
-                                    className="h-7 text-xs tabular-nums"
+                                    className="h-7 rounded-md text-xs tabular-nums"
                                     type="number"
                                     inputMode="numeric"
                                     min={1}
@@ -519,7 +520,7 @@ function AdjustPackagesSheet({
                                 <div className="space-y-1">
                                   <Label className="text-[11px]">*每包件数</Label>
                                   <Input
-                                    className="h-7 text-xs tabular-nums"
+                                    className="h-7 rounded-md text-xs tabular-nums"
                                     type="number"
                                     inputMode="numeric"
                                     min={1}
@@ -595,6 +596,13 @@ type GroupDraft = {
 
 type MallAddr = { id: number; label: string; isDefault: boolean; fullText: string }
 
+/** 发货台共享搜索条字段（官方入参透传；备货单号支持逗号/空白分隔多值，最多 100） */
+const STAGING_SEARCH_FIELDS: SearchBarField[] = [
+  { value: "sn", label: "备货单号", placeholder: "逗号分隔可多值…" },
+  { value: "skc", label: "SKC", placeholder: "输入 SKC ID…" },
+  { value: "ext", label: "货号", placeholder: "输入货号…" },
+]
+
 export function ShipStaging({
   store,
   storeName,
@@ -616,11 +624,19 @@ export function ShipStaging({
 
   const [stagingRows, setStagingRows] = React.useState<TemuShipStagingRow[]>([])
   const [stagingSel, setStagingSel] = React.useState<Set<string>>(new Set())
-  const [filters, setFilters] = React.useState({ sn: "", skc: "", ext: "" })
+  /** 共享搜索条（按钮/回车触发提交；空关键词=清除筛选）——draft 两态防逐键重查 */
+  const [searchField, setSearchField] = React.useState(STAGING_SEARCH_FIELDS[0]!.value)
+  const [searchKeyword, setSearchKeyword] = React.useState("")
+  const [appliedSearch, setAppliedSearch] = React.useState<{ field: string; keyword: string }>({
+    field: STAGING_SEARCH_FIELDS[0]!.value,
+    keyword: "",
+  })
   /** 发货台行内调整的实际发货数（sn → skuId → 数量）；未调整的单走默认 min(上限,备货数) */
   const [adjust, setAdjust] = React.useState<Record<string, Record<number, number>>>({})
   /** 库存参考（批次4）：货号 → 库存合计 + 已创建未装箱（软提示，不占用） */
   const [invRef, setInvRef] = React.useState<Record<string, { totalQty: number; pendingUnpacked: number }>>({})
+  /** 优先发货链接集合（商品信息页设置菜单打的本地标记）：库存参考列后徽章 */
+  const [prioritySkcs, setPrioritySkcs] = React.useState<Set<string>>(new Set())
 
   const [groups, setGroups] = React.useState<GroupDraft[]>([])
   const [mallAddrs, setMallAddrs] = React.useState<MallAddr[]>([])
@@ -660,12 +676,13 @@ export function ShipStaging({
   )
 
   const loadStaging = React.useCallback(() => {
+    const kw = appliedSearch.keyword.trim()
     startLoading(async () => {
       const r = await getShipStagingAction({
         store,
-        subPurchaseOrderSn: filters.sn.trim() || undefined,
-        skcId: filters.skc.trim() || undefined,
-        skcExtCode: filters.ext.trim() || undefined,
+        subPurchaseOrderSn: appliedSearch.field === "sn" && kw ? kw : undefined,
+        skcId: appliedSearch.field === "skc" && kw ? kw : undefined,
+        skcExtCode: appliedSearch.field === "ext" && kw ? kw : undefined,
       })
       if (r.ok) {
         setStagingRows(r.rows)
@@ -675,13 +692,23 @@ export function ShipStaging({
         setError(r.error)
       }
     })
-  }, [store, filters])
+  }, [store, appliedSearch])
 
-  // 输入即搜索：筛选变化防抖 400ms 后重查（刷新按钮直调 loadStaging 不等防抖）
+  // 搜索条提交（按钮/回车）即重查；刷新按钮直调 loadStaging
   React.useEffect(() => {
-    const t = setTimeout(loadStaging, 400)
-    return () => clearTimeout(t)
+    loadStaging()
   }, [loadStaging])
+
+  // 优先发货标记集合与企业店铺视图无关，进面板拉一次
+  React.useEffect(() => {
+    let cancelled = false
+    void getPriorityShipLinksAction().then((r) => {
+      if (!cancelled) setPrioritySkcs(new Set(r.skcIds))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   React.useEffect(() => {
     const codes = [...new Set(stagingRows.map((r) => r.skcExtCode).filter((c): c is string => Boolean(c)))]
@@ -697,50 +724,6 @@ export function ShipStaging({
       cancelled = true
     }
   }, [stagingRows, store])
-
-  const setFilter = (k: "sn" | "skc" | "ext", v: string) =>
-    setFilters((f) => ({ ...f, [k]: v.trim() }))
-
-  /** 下拉 options 取自当前（已按关键字服务端筛选的）发货台行 */
-  const snOptions = React.useMemo(() => {
-    const seen = new Set<string>()
-    const out: ComboboxOption[] = []
-    for (const r of stagingRows) {
-      if (seen.has(r.subPurchaseOrderSn)) continue
-      seen.add(r.subPurchaseOrderSn)
-      out.push({
-        value: r.subPurchaseOrderSn,
-        label: r.subPurchaseOrderSn,
-        description: r.productName ?? null,
-        badge: r.skcExtCode ?? null,
-      })
-    }
-    return out
-  }, [stagingRows])
-
-  const skcOptions = React.useMemo(() => {
-    const seen = new Set<string>()
-    const out: ComboboxOption[] = []
-    for (const r of stagingRows) {
-      if (r.productSkcId == null) continue
-      const v = String(r.productSkcId)
-      if (seen.has(v)) continue
-      seen.add(v)
-      out.push({ value: v, label: v, description: r.skcExtCode ?? null })
-    }
-    return out
-  }, [stagingRows])
-
-  const extOptions = React.useMemo(() => {
-    const seen = new Set<string>()
-    const out: ComboboxOption[] = []
-    for (const r of stagingRows) {
-      if (!r.skcExtCode || seen.has(r.skcExtCode)) continue
-      seen.add(r.skcExtCode)
-      out.push({ value: r.skcExtCode, label: r.skcExtCode, description: r.productName ?? null })
-    }
-    return out
-  }, [stagingRows])
 
   const toggleSel = (sn: string) =>
     setStagingSel((s) => {
@@ -992,11 +975,11 @@ export function ShipStaging({
                     <span className="min-w-52 flex-1 whitespace-nowrap">备货单信息</span>
                     <span className="w-24 whitespace-nowrap">发货店铺</span>
                     <span className="w-32 whitespace-nowrap">发货仓库</span>
-                    <span className="w-24 whitespace-nowrap text-right">备货单总件数（件）</span>
-                    <span className="w-24 whitespace-nowrap text-right">实际发货数（件）</span>
-                    <span className="w-24 whitespace-nowrap text-right">剩余待发货数（件）</span>
-                    <span className="w-20 whitespace-nowrap text-right">包裹数（个）</span>
-                    <span className="w-24 whitespace-nowrap text-right">操作</span>
+                    <span className="w-24 whitespace-nowrap">备货单总件数（件）</span>
+                    <span className="w-24 whitespace-nowrap">实际发货数（件）</span>
+                    <span className="w-24 whitespace-nowrap">剩余待发货数（件）</span>
+                    <span className="w-20 whitespace-nowrap">包裹数（个）</span>
+                    <span className="w-24 whitespace-nowrap">操作</span>
                   </div>
 
                   {g.orders.map((o, oi) => {
@@ -1081,15 +1064,15 @@ export function ShipStaging({
                               </TooltipContent>
                             </Tooltip>
                           </div>
-                          {/* 数量统计（纯展示，编辑走调整包裹抽屉） */}
-                          <div className="w-24 text-right text-xs tabular-nums">
+                          {/* 数量统计（纯展示，编辑走调整包裹抽屉；全站口径数字列左对齐） */}
+                          <div className="w-24 text-xs tabular-nums">
                             {st?.purchaseQuantity ?? <EmptyHint />}
                           </div>
-                          <div className="w-24 text-right text-xs font-medium tabular-nums">{numSum}</div>
-                          <div className="w-24 text-right text-xs tabular-nums">{remain ?? <EmptyHint />}</div>
-                          <div className="w-20 text-right text-xs tabular-nums">{o.packages.length}</div>
-                          {/* 操作区：调整包裹/移除（一列竖排整体居中） */}
-                          <div className="flex w-24 flex-col items-center justify-center gap-1.5 py-1.5 pr-3">
+                          <div className="w-24 text-xs font-medium tabular-nums">{numSum}</div>
+                          <div className="w-24 text-xs tabular-nums">{remain ?? <EmptyHint />}</div>
+                          <div className="w-20 text-xs tabular-nums">{o.packages.length}</div>
+                          {/* 操作区：调整包裹/移除（竖排一列，与左对齐表头一致） */}
+                          <div className="flex w-24 flex-col gap-1.5 py-1.5 pr-3">
                             <Button
                               variant="outline"
                               size="sm"
@@ -1278,32 +1261,18 @@ export function ShipStaging({
     <Card className="flex h-full min-h-0 flex-col">
       <CardHeader className="gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          <Combobox
-            value={filters.sn || null}
-            onChange={(v) => setFilter("sn", v)}
-            onSearchChange={(v) => setFilter("sn", v)}
-            options={snOptions}
-            placeholder="备货单号"
-            searchPlaceholder="输入备货单号搜索…"
-            className="h-8 w-48 text-xs"
-          />
-          <Combobox
-            value={filters.skc || null}
-            onChange={(v) => setFilter("skc", v)}
-            onSearchChange={(v) => setFilter("skc", v)}
-            options={skcOptions}
-            placeholder="SKC"
-            searchPlaceholder="输入 SKC 搜索…"
-            className="h-8 w-36 text-xs"
-          />
-          <Combobox
-            value={filters.ext || null}
-            onChange={(v) => setFilter("ext", v)}
-            onSearchChange={(v) => setFilter("ext", v)}
-            options={extOptions}
-            placeholder="货号"
-            searchPlaceholder="输入货号搜索…"
-            className="h-8 w-40 text-xs"
+          <TemuSearchBar
+            fields={STAGING_SEARCH_FIELDS}
+            field={searchField}
+            onFieldChange={setSearchField}
+            keyword={searchKeyword}
+            onKeywordChange={setSearchKeyword}
+            onSearch={(f, kw) => {
+              setSearchField(f)
+              setAppliedSearch({ field: f, keyword: kw })
+            }}
+            searching={loading}
+            className="w-72"
           />
           <div className="ml-auto flex items-center gap-2">
             {viewSwitch}
@@ -1356,23 +1325,20 @@ export function ShipStaging({
           <table className="w-max min-w-full caption-bottom text-xs [&_td:not(:first-child)]:border-l [&_td:not(:first-child)]:border-border">
             <TableHeader className={TEMU_TABLE_HEADER_CLASS}>
               <TableRow>
-                <TableHead className="w-8 text-center [&:has([role=checkbox])]:pl-0">
-                  {/* base-ui Checkbox 渲染为块级 flex <span>，text-align 对它无效——flex 包装才真居中 */}
-                  <span className="flex justify-center">
-                    <Checkbox
-                      checked={allSelected}
-                      indeterminate={!allSelected && someSelected}
-                      // 部分勾选（半选「-」态）或全选时点击 = 取消全部
-                      onCheckedChange={() =>
-                        setStagingSel(() =>
-                          allSelected || someSelected
-                            ? new Set()
-                            : new Set(stagingRows.map((r) => r.subPurchaseOrderSn)),
-                        )
-                      }
-                      aria-label="全选本页"
-                    />
-                  </span>
+                <TableHead className="w-8">
+                  <Checkbox
+                    checked={allSelected}
+                    indeterminate={!allSelected && someSelected}
+                    // 部分勾选（半选「-」态）或全选时点击 = 取消全部
+                    onCheckedChange={() =>
+                      setStagingSel(() =>
+                        allSelected || someSelected
+                          ? new Set()
+                          : new Set(stagingRows.map((r) => r.subPurchaseOrderSn)),
+                      )
+                    }
+                    aria-label="全选本页"
+                  />
                 </TableHead>
                 <TableHead className="min-w-60">备货单信息</TableHead>
                 <TableHead className="w-24">货号</TableHead>
@@ -1402,15 +1368,12 @@ export function ShipStaging({
                   const remain = Math.max(0, (r.purchaseQuantity ?? 0) - numSum)
                   return (
                     <TableRow key={r.subPurchaseOrderSn}>
-                      <TableCell className="text-center [&:has([role=checkbox])]:pl-0">
-                        {/* base-ui Checkbox 渲染为块级 flex <span>，text-align 对它无效——flex 包装才真居中 */}
-                        <span className="flex justify-center">
-                          <Checkbox
-                            checked={stagingSel.has(r.subPurchaseOrderSn)}
-                            onCheckedChange={() => toggleSel(r.subPurchaseOrderSn)}
-                            aria-label={`选择 ${r.subPurchaseOrderSn}`}
-                          />
-                        </span>
+                      <TableCell>
+                        <Checkbox
+                          checked={stagingSel.has(r.subPurchaseOrderSn)}
+                          onCheckedChange={() => toggleSel(r.subPurchaseOrderSn)}
+                          aria-label={`选择 ${r.subPurchaseOrderSn}`}
+                        />
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2.5">
@@ -1442,13 +1405,13 @@ export function ShipStaging({
                           </div>
                         </div>
                       </TableCell>
-                      <TableCell className="font-mono text-xs">{r.skcExtCode ?? <EmptyHint center />}</TableCell>
+                      <TableCell className="font-mono text-xs">{r.skcExtCode ?? <EmptyHint />}</TableCell>
                       <TableCell className="max-w-32">
                         <TruncTip text={r.receiveAddressText ?? r.subWarehouseName ?? ""} className="max-w-32">
                           {r.subWarehouseName ?? <EmptyHint />}
                         </TruncTip>
                       </TableCell>
-                      <TableCell className="text-xs tabular-nums">{r.purchaseQuantity ?? <EmptyHint center />}</TableCell>
+                      <TableCell className="text-xs tabular-nums">{r.purchaseQuantity ?? <EmptyHint />}</TableCell>
                       <TableCell>
                         <DeliverNumCell
                           row={r}
@@ -1468,29 +1431,37 @@ export function ShipStaging({
                         )}
                       </TableCell>
                       <TableCell className="text-xs tabular-nums">
-                        {(() => {
-                          const ref = r.skcExtCode ? invRef[r.skcExtCode] : undefined
-                          if (!ref) return <EmptyHint center />
-                          return (
-                            <Tooltip>
-                              <TooltipTrigger
-                                render={
-                                  <span className="cursor-default">
-                                    <span className={ref.totalQty < numSum ? "font-medium text-red-600" : ""}>
-                                      {ref.totalQty}
+                        <span className="inline-flex items-center gap-1">
+                          {(() => {
+                            const ref = r.skcExtCode ? invRef[r.skcExtCode] : undefined
+                            if (!ref) return <EmptyHint />
+                            return (
+                              <Tooltip>
+                                <TooltipTrigger
+                                  render={
+                                    <span className="cursor-default">
+                                      <span className={ref.totalQty < numSum ? "font-medium text-red-600" : ""}>
+                                        {ref.totalQty}
+                                      </span>
+                                      {ref.pendingUnpacked > 0 ? (
+                                        <span className="text-muted-foreground"> / 未装 {ref.pendingUnpacked}</span>
+                                      ) : null}
                                     </span>
-                                    {ref.pendingUnpacked > 0 ? (
-                                      <span className="text-muted-foreground"> / 未装 {ref.pendingUnpacked}</span>
-                                    ) : null}
-                                  </span>
-                                }
-                              />
-                              <TooltipContent>
-                                库存合计 {ref.totalQty} · 已创建未装箱 {ref.pendingUnpacked}（不占用）
-                              </TooltipContent>
-                            </Tooltip>
-                          )
-                        })()}
+                                  }
+                                />
+                                <TooltipContent>
+                                  库存合计 {ref.totalQty} · 已创建未装箱 {ref.pendingUnpacked}（不占用）
+                                </TooltipContent>
+                              </Tooltip>
+                            )
+                          })()}
+                          {/* 优先发货（商品信息页设置菜单打的本地标记，同备货页标记列口径） */}
+                          {r.productSkcId != null && prioritySkcs.has(String(r.productSkcId)) && (
+                            <Badge className="gap-0.5 rounded-[4px] bg-cyan-500/15 px-1 text-[10px] text-cyan-700 dark:text-cyan-400">
+                              <Zap className="size-3" /> 优先发货
+                            </Badge>
+                          )}
+                        </span>
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-xs">
                         {r.purchaseTime != null ? fmtMs(r.purchaseTime) : <EmptyHint />}

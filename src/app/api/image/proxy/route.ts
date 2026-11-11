@@ -83,7 +83,15 @@ function extractTenantSegment(pathname: string, cfg: StorageConfig): string | nu
     cfg.temuPrefix,
     cfg.inventoryPrefix,
   ]) {
-    if (prefix && p.startsWith(prefix)) {
+    if (!prefix) continue
+    // 缩略图子前缀（gen/thumb/<entId>/...）：先跳过 thumb 段再取租户段，
+    // 否则会把字面量 "thumb" 误当企业 ID（本企业缩略图经代理被 403）
+    const thumbPrefix = `${prefix}thumb/`
+    if (p.startsWith(thumbPrefix)) {
+      const seg = p.slice(thumbPrefix.length).split("/")[0]
+      return seg || null
+    }
+    if (p.startsWith(prefix)) {
       const seg = p.slice(prefix.length).split("/")[0]
       return seg || null
     }

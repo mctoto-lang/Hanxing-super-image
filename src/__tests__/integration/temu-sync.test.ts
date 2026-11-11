@@ -50,7 +50,11 @@ const storageMock = vi.hoisted(() => ({
       _enterpriseId: string,
       _category: string,
       _trustedHostHints?: string[],
-    ) => `https://cos.example.com/temu/${url.slice(-8)}`,
+    ) => ({
+      url: `https://cos.example.com/temu/${url.slice(-8)}`,
+      width: null,
+      height: null,
+    }),
   ),
 }))
 vi.mock("@/lib/storage", () => ({ getStorage: async () => storageMock }))

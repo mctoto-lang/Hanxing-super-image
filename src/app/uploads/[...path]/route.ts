@@ -23,6 +23,11 @@ import { verifyUploadToken } from "@/lib/storage/upload-token"
  *   - 宽限期：UPLOADS_UNSIGNED_GRACE_END（ISO 日期）之前无签名访问仍放行
  *     （低频告警计数），到期后强制 401。未配置视为宽限中——上线收紧由
  *     运维显式设置日期驱动。
+ *
+ * 租户校验（会话路径）：本地存储 key 规范 uploads/<enterpriseId>/...，
+ * 首段即租户段——非本企业且非超管 → 403（口径对齐 /api/image/proxy 的
+ * extractTenantSegment）；_platform 段为平台资产（头像等）放行。HMAC
+ * 令牌由服务端签发（机器消费方），不做会话租户校验。
  */
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -54,13 +59,24 @@ function unsignedGraceEndMs(): number | null {
 async function authorized(
   req: Request,
   pathname: string,
-): Promise<{ ok: true } | { ok: false; status: 401 }> {
-  // 1) 短时效令牌（机器消费方）
+  tenantSegment: string,
+): Promise<{ ok: true } | { ok: false; status: 401 | 403 }> {
+  // 1) 短时效令牌（机器消费方，服务端签发）
   const { searchParams } = new URL(req.url)
   if (verifyUploadToken(pathname, searchParams)) return { ok: true }
-  // 2) 登录会话（浏览器同源 <img> 自带 cookie）
+  // 2) 登录会话（浏览器同源 <img> 自带 cookie）+ 租户段校验
   const session = await auth()
-  if (session?.user) return { ok: true }
+  if (session?.user) {
+    if (
+      tenantSegment === "_platform" || // 平台资产（头像等）
+      session.user.enterpriseId === tenantSegment ||
+      session.user.isSuperAdmin
+    ) {
+      return { ok: true }
+    }
+    // 他企业对象：知道 URL 也不可读（对齐 /api/image/proxy 口径）
+    return { ok: false, status: 403 }
+  }
   // 3) 宽限期放行无签名访问（到期后 fail-closed）
   const graceEnd = unsignedGraceEndMs()
   if (graceEnd === null || Date.now() < graceEnd) {
@@ -101,8 +117,12 @@ export async function GET(
 
   const pathname = `/uploads/${segments.join("/")}`
 
-  const authz = await authorized(req, pathname)
-  if (!authz.ok) return new Response("unauthorized", { status: authz.status })
+  const authz = await authorized(req, pathname, segments[0] ?? "")
+  if (!authz.ok) {
+    return new Response(authz.status === 403 ? "forbidden" : "unauthorized", {
+      status: authz.status,
+    })
+  }
 
   // getLocalPath 内部 resolve 并困在 UPLOAD_ROOT 内，越界（含 .. 段）→ 404
   const abs = getLocalPath(pathname)

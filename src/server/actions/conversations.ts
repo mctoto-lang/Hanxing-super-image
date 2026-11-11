@@ -219,6 +219,7 @@ export async function listConversationTasksAction(conversationId: string) {
       imageSize: generationTasks.imageSize,
       imageCount: generationTasks.imageCount,
       resultImages: generationTasks.resultImages,
+      resultImageSizes: generationTasks.resultImageSizes,
       referenceImages: generationTasks.referenceImages,
       errorMessage: generationTasks.errorMessage,
       creditsCharged: generationTasks.creditsCharged,

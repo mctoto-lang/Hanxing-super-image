@@ -131,6 +131,7 @@ export function TestimonialCard({
       )}
     >
       <div className="flex items-center gap-3">
+        {/* eslint-disable-next-line @next/next/no-img-element -- 落地页惯例用原生 <img>（unsplash 外域头像，见文件头注释） */}
         <img
           src={author.avatar}
           alt={author.name}

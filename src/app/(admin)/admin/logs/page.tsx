@@ -1,6 +1,7 @@
 import Link from "next/link"
 import { FileText, LogIn } from "lucide-react"
 import { requireEnterpriseAdmin } from "@/lib/auth/session"
+import { formatDateTime } from "@/lib/datetime"
 import {
   listTaskLogsAction,
   listLoginLogsAction,
@@ -206,7 +207,7 @@ async function LoginSection({ page }: { page: number }) {
                     {l.failureReason ?? "—"}
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
-                    {new Date(l.createdAt).toLocaleString("zh-CN")}
+                    {formatDateTime(l.createdAt)}
                   </TableCell>
                 </TableRow>
               ))

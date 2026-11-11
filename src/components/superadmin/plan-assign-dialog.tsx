@@ -7,15 +7,28 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form"
 import { toast } from "sonner"
 import { useRouter } from "next/navigation"
+import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
+import { useForm, useWatch } from "react-hook-form"
+import type { z } from "zod"
 import { cn } from "@/lib/utils"
+import { formatDateTime } from "@/lib/datetime"
+import { planAssignFormSchema } from "@/lib/forms/schemas"
 import { PlanBadge } from "@/components/shared/plan-badge"
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import {
@@ -55,6 +68,8 @@ function toLocalInput(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+type PlanAssignValues = z.infer<typeof planAssignFormSchema>
+
 /**
  * 给企业分配 / 更换 / 续期套餐（超管，/platform/enterprises 行内操作）：
  *
@@ -75,18 +90,37 @@ export function PlanAssignDialog({
   plans: AssignablePlan[]
 }) {
   const [open, setOpen] = React.useState(false)
-  const [pending, setPending] = React.useState(false)
+  const [serverError, setServerError] = React.useState<string | null>(null)
+  /** 「取消套餐」确认流独立 pending（主表单用 formState.isSubmitting） */
   const [clearOpen, setClearOpen] = React.useState(false)
+  const [clearPending, setClearPending] = React.useState(false)
   const router = useRouter()
 
   // 默认选中当前套餐（续期场景），否则第一个可分配套餐
-  const [planId, setPlanId] = React.useState(
-    current?.planId ?? plans.find((p) => p.isActive)?.id ?? plans[0]?.id ?? "",
-  )
-  const [expiresAt, setExpiresAt] = React.useState("")
+  const form = useForm<PlanAssignValues>({
+    resolver: standardSchemaResolver(planAssignFormSchema),
+    defaultValues: {
+      planId: current?.planId ?? plans.find((p) => p.isActive)?.id ?? plans[0]?.id ?? "",
+      expiresAt: "",
+    },
+  })
+  const pending = form.formState.isSubmitting
 
+  // useWatch：hook 订阅，React Compiler 可记忆化
+  const planId = useWatch({ control: form.control, name: "planId" })
   const selected = plans.find((p) => p.id === planId) ?? null
   const isRenew = !!current && current.planId === planId
+
+  React.useEffect(() => {
+    if (open) {
+      form.reset({
+        planId:
+          current?.planId ?? plans.find((p) => p.isActive)?.id ?? plans[0]?.id ?? "",
+        expiresAt: "",
+      })
+      setServerError(null)
+    }
+  }, [open, form, current, plans])
 
   // 打开或切换套餐时重算默认到期：续期 = 当前到期(+或 now 取晚者) + 周期天数；分配 = now + 周期天数
   React.useEffect(() => {
@@ -98,56 +132,56 @@ export function PlanAssignDialog({
     if (current && current.planId === plan.id && !current.isExpired) {
       base = new Date(Math.max(now.getTime(), new Date(current.expiresAt).getTime()))
     }
-    setExpiresAt(toLocalInput(new Date(base.getTime() + plan.cycleDays * DAY_MS)))
-  }, [open, planId, plans, current])
+    form.setValue("expiresAt", toLocalInput(new Date(base.getTime() + plan.cycleDays * DAY_MS)))
+  }, [open, planId, plans, current, form])
 
-  async function handleSubmit() {
-    if (!selected || !expiresAt) return
-    setPending(true)
-    try {
-      const expiresIso = new Date(expiresAt).toISOString()
-      let ok = false
-      let message = ""
-      if (isRenew) {
-        const res = await renewEnterprisePlanAction({
-          enterpriseId,
-          expiresAt: expiresIso,
-        })
-        ok = res.ok
-        message = res.ok
-          ? `${res.restarted ? "已重新开通并发放首期" : "续期成功"}` +
-            (res.grantedCredits > 0
-              ? `，本期发放 ${res.grantedCredits.toLocaleString("zh-CN")} 积分`
-              : "")
-          : res.error ?? "续期失败"
-      } else {
-        const res = await assignEnterprisePlanAction({
-          enterpriseId,
-          planId,
-          expiresAt: expiresIso,
-        })
-        ok = res.ok
-        message = res.ok
-          ? `已分配套餐「${res.planName}」` +
-            (res.grantedCredits > 0
-              ? `，本期发放 ${res.grantedCredits.toLocaleString("zh-CN")} 积分`
-              : "")
-          : res.error ?? "分配失败"
-      }
-      if (ok) {
-        toast.success(message)
-        setOpen(false)
-        router.refresh()
-      } else {
-        toast.error(message)
-      }
-    } finally {
-      setPending(false)
+  async function onSubmit(values: PlanAssignValues) {
+    setServerError(null)
+    if (!selected) {
+      setServerError("请选择套餐")
+      return
     }
+    const expiresIso = new Date(values.expiresAt).toISOString()
+    let ok = false
+    let message = ""
+    if (isRenew) {
+      const res = await renewEnterprisePlanAction({
+        enterpriseId,
+        expiresAt: expiresIso,
+      })
+      ok = res.ok
+      message = res.ok
+        ? `${res.restarted ? "已重新开通并发放首期" : "续期成功"}` +
+          (res.grantedCredits > 0
+            ? `，本期发放 ${res.grantedCredits.toLocaleString("zh-CN")} 积分`
+            : "")
+        : res.error ?? "续期失败"
+    } else {
+      const res = await assignEnterprisePlanAction({
+        enterpriseId,
+        planId: values.planId,
+        expiresAt: expiresIso,
+      })
+      ok = res.ok
+      message = res.ok
+        ? `已分配套餐「${res.planName}」` +
+          (res.grantedCredits > 0
+            ? `，本期发放 ${res.grantedCredits.toLocaleString("zh-CN")} 积分`
+            : "")
+        : res.error ?? "分配失败"
+    }
+    if (ok) {
+      toast.success(message)
+      setOpen(false)
+      router.refresh()
+      return
+    }
+    // 服务端兜底错误：统一条内联展示，不再 toast
+    setServerError(message)
   }
 
   async function handleClear() {
-    setPending(true)
+    setClearPending(true)
     try {
       const res = await clearEnterprisePlanAction({ enterpriseId })
       if (res.ok) {
@@ -156,10 +190,12 @@ export function PlanAssignDialog({
         setOpen(false)
         router.refresh()
       } else {
-        toast.error(res.error ?? "取消失败")
+        // 错误统一落到主弹窗 footer 上方的内联条，关闭确认框以便看到
+        setServerError(res.error ?? "取消失败")
+        setClearOpen(false)
       }
     } finally {
-      setPending(false)
+      setClearPending(false)
     }
   }
 
@@ -182,118 +218,135 @@ export function PlanAssignDialog({
             </DialogDescription>
           </DialogHeader>
 
-          {current ? (
-            <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-sm">
-              <span className="text-xs text-muted-foreground">当前</span>
-              <PlanBadge
-                iconKey={current.iconKey}
-                color={current.color}
-                name={current.planName}
-                isExpired={current.isExpired}
-                size="sm"
+          <Form {...form}>
+            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+              {current ? (
+                <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-sm">
+                  <span className="text-xs text-muted-foreground">当前</span>
+                  <PlanBadge
+                    iconKey={current.iconKey}
+                    color={current.color}
+                    name={current.planName}
+                    isExpired={current.isExpired}
+                    size="sm"
+                  />
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    到期 {formatDateTime(current.expiresAt)}
+                    {current.isExpired ? " · 已过期" : ""}
+                  </span>
+                </div>
+              ) : null}
+
+              <FormField
+                control={form.control}
+                name="planId"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>选择套餐</FormLabel>
+                    {plans.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">
+                        暂无可分配套餐，请先到「订阅套餐」页创建并启用
+                      </p>
+                    ) : (
+                      <FormControl>
+                        <div className="grid gap-2">
+                          {plans.map((p) => {
+                            const active = field.value === p.id
+                            return (
+                              <button
+                                key={p.id}
+                                type="button"
+                                onClick={() => field.onChange(p.id)}
+                                className={cn(
+                                  "flex items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
+                                  active
+                                    ? "border-primary bg-primary/5"
+                                    : "hover:bg-accent",
+                                )}
+                              >
+                                <PlanBadge
+                                  iconKey={p.iconKey}
+                                  color={p.color}
+                                  name={p.name}
+                                  size="md"
+                                />
+                                <span className="text-xs text-muted-foreground">
+                                  每 {p.cycleDays} 天 {p.creditsPerCycle.toLocaleString("zh-CN")} 积分
+                                  {p.maxMembers ? ` · 最多 ${p.maxMembers} 人` : ""}
+                                </span>
+                                {!p.isActive ? (
+                                  <span className="ml-auto text-xs text-muted-foreground">
+                                    已停用（仅续期可用）
+                                  </span>
+                                ) : null}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </FormControl>
+                    )}
+                    <FormMessage />
+                  </FormItem>
+                )}
               />
-              <span className="ml-auto text-xs text-muted-foreground">
-                到期 {new Date(current.expiresAt).toLocaleString("zh-CN", { dateStyle: "short", timeStyle: "short" })}
-                {current.isExpired ? " · 已过期" : ""}
-              </span>
-            </div>
-          ) : null}
 
-          <div className="grid gap-2">
-            <Label>选择套餐</Label>
-            {plans.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                暂无可分配套餐，请先到「订阅套餐」页创建并启用
-              </p>
-            ) : (
-              <div className="grid gap-2">
-                {plans.map((p) => {
-                  const active = p.id === planId
-                  return (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => setPlanId(p.id)}
-                      className={cn(
-                        "flex items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
-                        active
-                          ? "border-primary bg-primary/5"
-                          : "hover:bg-accent",
-                      )}
-                    >
-                      <PlanBadge
-                        iconKey={p.iconKey}
-                        color={p.color}
-                        name={p.name}
-                        size="md"
-                      />
-                      <span className="text-xs text-muted-foreground">
-                        每 {p.cycleDays} 天 {p.creditsPerCycle.toLocaleString("zh-CN")} 积分
-                        {p.maxMembers ? ` · 最多 ${p.maxMembers} 人` : ""}
-                      </span>
-                      {!p.isActive ? (
-                        <span className="ml-auto text-xs text-muted-foreground">
-                          已停用（仅续期可用）
-                        </span>
-                      ) : null}
-                    </button>
-                  )
-                })}
-              </div>
-            )}
-          </div>
+              <FormField
+                control={form.control}
+                name="expiresAt"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>
+                      <CalendarClock className="mr-1 inline size-3.5" />
+                      到期时间{isRenew ? "（续期需晚于当前到期时间）" : ""}
+                    </FormLabel>
+                    <FormControl>
+                      <Input type="datetime-local" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
 
-          <div className="grid gap-2">
-            <Label htmlFor="plan-expires">
-              <CalendarClock className="mr-1 inline size-3.5" />
-              到期时间{isRenew ? "（续期需晚于当前到期时间）" : ""}
-            </Label>
-            <Input
-              id="plan-expires"
-              type="datetime-local"
-              value={expiresAt}
-              onChange={(e) => setExpiresAt(e.target.value)}
-            />
-          </div>
+              {serverError ? (
+                <p className="text-sm text-destructive">{serverError}</p>
+              ) : null}
 
-          <div className="flex items-center justify-between gap-2 pt-1">
-            {current ? (
-              <Button
-                type="button"
-                variant="ghost"
-                className="text-destructive hover:text-destructive"
-                onClick={() => setClearOpen(true)}
-                disabled={pending}
-              >
-                取消套餐
-              </Button>
-            ) : (
-              <span />
-            )}
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setOpen(false)}
-                disabled={pending}
-              >
-                取消
-              </Button>
-              <Button
-                type="button"
-                onClick={handleSubmit}
-                disabled={pending || !planId || !expiresAt}
-              >
-                {pending
-                  ? "处理中..."
-                  : isRenew
-                    ? "确认续期"
-                    : current
-                      ? "确认更换"
-                      : "确认分配"}
-              </Button>
-            </div>
-          </div>
+              <DialogFooter className="sm:justify-between">
+                {current ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="text-destructive hover:text-destructive"
+                    onClick={() => setClearOpen(true)}
+                    disabled={pending || clearPending}
+                  >
+                    取消套餐
+                  </Button>
+                ) : (
+                  <span />
+                )}
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setOpen(false)}
+                    disabled={pending}
+                  >
+                    取消
+                  </Button>
+                  <Button type="submit" disabled={pending}>
+                    {pending
+                      ? "处理中…"
+                      : isRenew
+                        ? "确认续期"
+                        : current
+                          ? "确认更换"
+                          : "确认分配"}
+                  </Button>
+                </div>
+              </DialogFooter>
+            </form>
+          </Form>
         </DialogContent>
       </Dialog>
 
@@ -304,7 +357,7 @@ export function PlanAssignDialog({
         description={`确定取消「${enterpriseName}」的套餐吗？取消后停止周期发放，企业保留现有积分池余额，发放记录保留审计。`}
         confirmText="确认取消套餐"
         destructive
-        pending={pending}
+        pending={clearPending}
         onConfirm={handleClear}
       />
     </>

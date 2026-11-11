@@ -42,10 +42,46 @@ const cnDate = (d: Date) =>
   `${d.getMonth() + 1}月${d.getDate()}日 周${["日", "一", "二", "三", "四", "五", "六"][d.getDay()]}`
 
 /**
+ * 预选默认值（18 点规则）：当前 <17 点 → 今日 18:00，≥17 点 → 次日 18:00；
+ * 目标时刻不可约时逐级回落——目标日有槽位但 18 时超窗口 → 窗口内离 18 最近的小时；
+ * 目标时刻已过期/目标日无槽位 → 最早未过期槽位的窗口开始（已过则抬到当前后 1 分钟）；
+ * 全部过期 → null（不预选 = 不预约）。
+ */
+export function defaultPickup(
+  slots: PickupSlot[],
+  now: number,
+): { date: Date; hour: string; min: string } | null {
+  const nowDate = new Date(now)
+  const target = new Date(nowDate)
+  if (nowDate.getHours() >= 17) target.setDate(target.getDate() + 1)
+  const slot = slots.find((s) => s.bjDate === ymd(target))
+  if (slot) {
+    const from = Number(slot.start.slice(0, 2))
+    const to = Number(slot.end.slice(0, 2))
+    const hour = 18 >= from && 18 <= to ? 18 : 18 < from ? from : to
+    if (new Date(`${slot.bjDate}T${String(hour).padStart(2, "0")}:00`).getTime() > now) {
+      return { date: slot.date, hour: String(hour).padStart(2, "0"), min: "00" }
+    }
+  }
+  // 回落：最早未过期槽位（end > now）
+  const first = slots.find((s) => new Date(`${s.bjDate}T${s.end.slice(0, 5)}`).getTime() > now)
+  if (!first) return null
+  let hour = first.start.slice(0, 2)
+  let min = first.start.slice(3, 5)
+  if (new Date(`${first.bjDate}T${first.start.slice(0, 5)}`).getTime() <= now) {
+    const d = new Date(now + 60_000)
+    hour = String(d.getHours()).padStart(2, "0")
+    min = String(d.getMinutes()).padStart(2, "0")
+  }
+  return { date: first.date, hour, min }
+}
+
+/**
  * 预约取货时间选择（装箱发货抽屉 / 自动预约发货弹窗共用）：
  * 日历仅可选槽位日期、时/分约束在当日可约窗口内；onChange 回传 epoch 毫秒
  * （日期+时+分未选全 = null = 不预约）。换物流公司时用 key 重置内部状态；
- * autoEarliest=true 时槽位到达自动预选最早可约时段。
+ * autoEarliest=true 时槽位到达按 18 点规则自动预选（<17 点→今日 18:00，≥17 点→次日 18:00；
+ * 目标不可约回落最早可约时段）。
  */
 export function PickupTimePicker({
   slots,
@@ -55,7 +91,7 @@ export function PickupTimePicker({
 }: {
   slots: PickupSlot[]
   disabled?: boolean
-  /** 自动预选最早可约时段（日=最早未过期槽位、时/分=窗口开始，已过则抬到当前之后） */
+  /** 自动预选（18 点规则：<17 点→今日 18:00，≥17 点→次日 18:00；不可约时回落最早可约时段） */
   autoEarliest?: boolean
   onChange: (ms: number | null) => void
 }) {
@@ -80,21 +116,14 @@ export function PickupTimePicker({
       ? new Date(`${ymd(pickDate)}T${pickHour}:${pickMin}`).getTime()
       : null
 
-  // 槽位到达（或变化）时自动预选最早可约时段（跳过已过期槽位；全部过期则不预选=不预约）
+  // 槽位到达（或变化）时按 18 点规则自动预选（目标不可约回落最早可约；全部过期则不预选=不预约）
   React.useEffect(() => {
     if (!autoEarliest || slots.length === 0) return
-    const now = Date.now()
-    const first = slots.find((s) => new Date(`${s.bjDate}T${s.end.slice(0, 5)}`).getTime() > now)
-    if (!first) return
-    setPickDate(first.date)
-    setPickHour(first.start.slice(0, 2))
-    setPickMin(first.start.slice(3, 5))
-    // 窗口开始时刻已过 → 抬到当前时刻之后（end>now 已保证小时上界在窗口内）
-    if (new Date(`${first.bjDate}T${first.start.slice(0, 5)}`).getTime() <= now) {
-      const d = new Date(now + 60_000)
-      setPickHour(String(d.getHours()).padStart(2, "0"))
-      setPickMin(String(d.getMinutes()).padStart(2, "0"))
-    }
+    const p = defaultPickup(slots, Date.now())
+    if (!p) return
+    setPickDate(p.date)
+    setPickHour(p.hour)
+    setPickMin(p.min)
   }, [autoEarliest, slots])
 
   React.useEffect(() => {

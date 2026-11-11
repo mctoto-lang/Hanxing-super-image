@@ -20,6 +20,8 @@ import {
   temuIngestLogs,
   temuShipOrders,
   temuShipPackages,
+  temuPriorityLinks,
+  temuSettings,
   type TemuSyncStatus,
 } from "@/db/schema"
 import {
@@ -41,7 +43,10 @@ import { TEMU_TZ, temuDayStr, temuStartOfToday, temuYesterdayStr } from "@/serve
 
 /**
  * TEMU 数据面板 Server Actions（手册 §6：查询 requireEnterpriseContext，
- * 写操作 requireEnterpriseAdmin；全部强制 getCurrentEnterpriseScope 企业隔离）
+ * 写操作 requireEnterpriseAdmin；全部强制 getCurrentEnterpriseScope 企业隔离。
+ * 例外（2026-11-11 口径）：业务操作类写操作（优先发货标记/滞销阈值等，入口在
+ * TEMU 页各 tab）不要求管理员，TEMU 页可见即可用=校验 canAccess("temu")，
+ * 同 temu-ship/temu-publish 工作台写操作守卫口径）
  */
 
 // ---------- 查询 ----------
@@ -326,6 +331,8 @@ async function loadTemuOverview(enterpriseId: string, storeId?: string): Promise
 export interface TemuProductRow {
   id: string
   productSkcId: string
+  /** 归属店铺 id（优先发货标记等链接级写操作的定位键） */
+  storeId: string
   productId: string | null
   productName: string | null
   category: string | null
@@ -356,13 +363,42 @@ export interface TemuProductRow {
   lastSeenAt: Date
 }
 
+/** 商品状态筛选项：on/off 官方 skcStatus 口径；hot=热销（salesv2 hotTag）；
+ *  stagnant=滞销（企业级阈值：窗口天数日销量合计 ≤ 阈值件数，temu_settings 可配） */
+export type TemuSaleFilter = "on" | "off" | "hot" | "stagnant"
+
+/** 滞销筛选兜底配置（temu_settings 无行时；与迁移 0094 列默认一致）。
+ *  "use server" 文件禁导出常量，默认值内联于此与 loadTemuProducts 分支注释处 */
+const DEFAULT_STAGNANT_WINDOW_DAYS = 30
+const DEFAULT_STAGNANT_THRESHOLD_QTY = 0
+
+/** 滞销筛选配置（企业级；无行回落默认值） */
+async function getTemuStagnantConfig(
+  enterpriseId: string,
+): Promise<{ windowDays: number; thresholdQty: number }> {
+  const [row] = await db
+    .select({
+      windowDays: temuSettings.stagnantWindowDays,
+      thresholdQty: temuSettings.stagnantThresholdQty,
+    })
+    .from(temuSettings)
+    .where(eq(temuSettings.enterpriseId, enterpriseId))
+    .limit(1)
+  return {
+    windowDays: row?.windowDays ?? DEFAULT_STAGNANT_WINDOW_DAYS,
+    thresholdQty: row?.thresholdQty ?? DEFAULT_STAGNANT_THRESHOLD_QTY,
+  }
+}
+
 /** 商品列表（分页 + SKC/SPU(goodsId/productId)/货号/商品名 模糊搜索 + 在售筛选 + 排序） */
 export async function getTemuProductsAction(
   storeId: string | undefined,
   q: string | undefined,
   page: number,
-  sale?: "on" | "off",
+  sale?: TemuSaleFilter,
   sort?: string,
+  /** 搜索字段：缺省/all=五字段混合；sn=货号、name=商品名、skc=SKC 单列 ilike */
+  qf?: string,
 ): Promise<{ rows: TemuProductRow[]; total: number }> {
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
@@ -370,9 +406,10 @@ export async function getTemuProductsAction(
   // page<1 会使 OFFSET 为负直接打爆 Postgres，超长 q 也不该全量进 ilike
   const safePage = Math.min(Math.max(1, Math.trunc(Number(page)) || 1), 500)
   const safeQ = q?.slice(0, 100)
+  const safeQf = qf === "sn" || qf === "name" || qf === "skc" ? qf : "all"
   return temuCached(
-    `${enterpriseId}:products:${storeId ?? "all"}:${safeQ ?? ""}:${sale ?? ""}:${sort ?? "listed"}:${safePage}`,
-    () => loadTemuProducts(enterpriseId, storeId, safeQ, safePage, sale, sort),
+    `${enterpriseId}:products:${storeId ?? "all"}:${safeQ ?? ""}:${safeQf}:${sale ?? ""}:${sort ?? "listed"}:${safePage}`,
+    () => loadTemuProducts(enterpriseId, storeId, safeQ, safePage, sale, sort, safeQf),
   )
 }
 
@@ -381,8 +418,9 @@ async function loadTemuProducts(
   storeId: string | undefined,
   q: string | undefined,
   page: number,
-  sale?: "on" | "off",
+  sale?: TemuSaleFilter,
   sort?: string,
+  qf: string = "all",
 ): Promise<{ rows: TemuProductRow[]; total: number }> {
   const storeIds = await resolveStoreIds(enterpriseId, storeId)
   if (storeIds.length === 0) return { rows: [], total: 0 }
@@ -390,17 +428,25 @@ async function loadTemuProducts(
   const PAGE_SIZE = 20
   const conds = [inArray(temuProducts.storeId, storeIds)]
   if (q) {
-    // SKC/SKU（productSkcId 前缀/子串命中 SKU 编号）、SPU（productId/goodsId）、货号、商品名
     const like = `%${q}%`
-    conds.push(
-      sql`(
-        ${temuProducts.productSkcId} ilike ${like}
-        or ${temuProducts.productId} ilike ${like}
-        or ${temuProducts.goodsId} ilike ${like}
-        or ${temuProducts.productSn} ilike ${like}
-        or ${temuProducts.productName} ilike ${like}
-      )`,
-    )
+    if (qf === "sn") {
+      conds.push(sql`${temuProducts.productSn} ilike ${like}`)
+    } else if (qf === "name") {
+      conds.push(sql`${temuProducts.productName} ilike ${like}`)
+    } else if (qf === "skc") {
+      conds.push(sql`${temuProducts.productSkcId} ilike ${like}`)
+    } else {
+      // 全部：SKC/SKU（productSkcId 前缀/子串命中 SKU 编号）、SPU（productId/goodsId）、货号、商品名
+      conds.push(
+        sql`(
+          ${temuProducts.productSkcId} ilike ${like}
+          or ${temuProducts.productId} ilike ${like}
+          or ${temuProducts.goodsId} ilike ${like}
+          or ${temuProducts.productSn} ilike ${like}
+          or ${temuProducts.productName} ilike ${like}
+        )`,
+      )
+    }
   }
   if (sale === "on") {
     // 在售：官方 API skcSiteStatus=1（实测 1=在售且 100% 落在销售管理数据内）；
@@ -411,6 +457,52 @@ async function loadTemuProducts(
     conds.push(
       sql`(${temuProducts.skcStatus} is null or ${temuProducts.skcStatus} not in (1, 11))`,
     )
+  } else if (sale === "hot") {
+    // 热销：各店每 SKC 最新销售批次 overview.hotTag='true'（口径同展开面板 🔥 标记）
+    const hotSq = db
+      .selectDistinctOn([temuSalesOverviews.storeId, temuSalesOverviews.skcId], {
+        skcId: temuSalesOverviews.skcId,
+        overview: temuSalesOverviews.overview,
+      })
+      .from(temuSalesOverviews)
+      .where(inArray(temuSalesOverviews.storeId, storeIds))
+      .orderBy(
+        temuSalesOverviews.storeId,
+        temuSalesOverviews.skcId,
+        desc(temuSalesOverviews.capturedAt),
+        desc(temuSalesOverviews.id),
+      )
+      .as("hot_sq")
+    conds.push(
+      inArray(
+        temuProducts.productSkcId,
+        db
+          .select({ skcId: hotSq.skcId })
+          .from(hotSq)
+          .where(sql`(${hotSq.overview} ->> 'hotTag') = 'true'`),
+      ),
+    )
+  } else if (sale === "stagnant") {
+    // 滞销：窗口天数内（北京日界）日销量合计 ≤ 阈值件数（≤ 与库存域滞销口径
+    // 一致：默认阈值 0 = 零销量判滞销）；窗口内完全无销售行的 SKC 不参与判定
+    // （可能是新上架/未同步，不误标）；阈值企业级可配（temu_settings）。
+    // 叠加在售基线（与「在售」选项同口径）：已下架商品对滞销处理是噪音
+    conds.push(sql`${temuProducts.skcStatus} in (1, 11)`)
+    const cfg = await getTemuStagnantConfig(enterpriseId)
+    const windowStartDay = temuDayStr(new Date(Date.now() - (cfg.windowDays - 1) * 86400_000))
+    const stagnantSq = db
+      .select({ skcId: temuSalesOverviews.skcId })
+      .from(temuSalesOverviews)
+      .where(
+        and(
+          inArray(temuSalesOverviews.storeId, storeIds),
+          gte(temuSalesOverviews.capturedDay, windowStartDay),
+        ),
+      )
+      .groupBy(temuSalesOverviews.skcId)
+      .having(sql`sum(coalesce(${temuSalesOverviews.todaySalesVolume}, 0)) <= ${cfg.thresholdQty}`)
+      .as("stagnant_sq")
+    conds.push(inArray(temuProducts.productSkcId, db.select({ skcId: stagnantSq.skcId }).from(stagnantSq)))
   }
 
   // 排序口径归一（未知值回落默认）
@@ -462,6 +554,7 @@ async function loadTemuProducts(
   const productCols = {
     id: temuProducts.id,
     productSkcId: temuProducts.productSkcId,
+    storeId: temuProducts.storeId,
     productId: temuProducts.productId,
     productName: temuProducts.productName,
     category: temuProducts.category,
@@ -513,11 +606,12 @@ async function loadTemuProducts(
 export async function getTemuProductsPageAction(
   storeId: string | undefined,
   q: string | undefined,
-  sale: "on" | "off" | undefined,
+  sale: TemuSaleFilter | undefined,
   page: number,
   sort?: string,
+  qf?: string,
 ): Promise<{ rows: TemuProductRow[]; salesInfo: TemuProductSalesInfo }> {
-  const { rows } = await getTemuProductsAction(storeId, q, page, sale, sort)
+  const { rows } = await getTemuProductsAction(storeId, q, page, sale, sort, qf)
   const salesInfo = await getTemuProductSalesInfoAction(
     storeId,
     rows.map((r) => r.productSkcId),
@@ -710,7 +804,7 @@ export interface TemuSalesTopBySnRow {
   last30DaysSalesVolume: number
 }
 
-/** 售出 TOP 榜（按货号）：概览页底部 TOP20 卡片用。同货号多 SKC 合并为一个
+/** 售出 TOP 榜（按货号）：概览页底部 TOP30 卡片用。同货号多 SKC 合并为一个
  *  货号，与 SKC 口径的 getTemuSalesTopAction（TOP10 条形图）并存互不影响 */
 export async function getTemuSalesTopBySnAction(storeId?: string): Promise<TemuSalesTopBySnRow[]> {
   const ctx = await requireEnterpriseContext()
@@ -791,9 +885,9 @@ async function loadTemuSalesTopBySn(enterpriseId: string, storeId?: string): Pro
     last7DaysSalesVolume: Number(r.last7),
     last30DaysSalesVolume: Number(r.last30),
   }))
-  // 三口径各自 top20 并集（与 SKC 口径同因：只按单一口径预筛会漏其他口径的真实前二十）
+  // 三口径各自 top30 并集（与 SKC 口径同因：只按单一口径预筛会漏其他口径的真实前三十）
   const bySnMetric = (key: "todaySalesVolume" | "last7DaysSalesVolume" | "last30DaysSalesVolume") =>
-    [...mapped].sort((a, b) => b[key] - a[key]).slice(0, 20)
+    [...mapped].sort((a, b) => b[key] - a[key]).slice(0, 30)
   const union = new Map<string, TemuSalesTopBySnRow>()
   for (const r of [...bySnMetric("todaySalesVolume"), ...bySnMetric("last7DaysSalesVolume"), ...bySnMetric("last30DaysSalesVolume")]) {
     union.set(r.sn, r)
@@ -1497,4 +1591,152 @@ async function resolveStoreIds(enterpriseId: string, storeId?: string): Promise<
   if (storeId) conds.push(eq(temuStores.id, storeId))
   const rows = await db.select({ id: temuStores.id }).from(temuStores).where(and(...conds))
   return rows.map((r) => r.id)
+}
+
+// ---------- 优先发货链接标记（本地自建，迁移 0094；官方无对应接口） ----------
+
+/** 优先发货链接集合（商品信息页设置菜单/备货页标记列/发货台库存参考列共用） */
+export async function getPriorityShipLinksAction(
+  storeId?: string,
+): Promise<{ skcIds: string[] }> {
+  const ctx = await requireEnterpriseContext()
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  const conds = [eq(temuPriorityLinks.enterpriseId, enterpriseId)]
+  if (storeId) conds.push(eq(temuPriorityLinks.storeId, storeId))
+  const rows = await db
+    .select({ skcId: temuPriorityLinks.productSkcId })
+    .from(temuPriorityLinks)
+    .where(and(...conds))
+  return { skcIds: rows.map((r) => r.skcId) }
+}
+
+/** 设为优先发货（幂等：唯一约束 (企业,店,SKC)，重复设置只更新快照字段） */
+export async function setPriorityShipAction(input: {
+  storeId: string
+  productSkcId: string
+  productSn?: string | null
+  productName?: string | null
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const ctx = await requireEnterpriseContext()
+  // 操作类写操作例外口径（见文件头）：TEMU 页可见即可用，不要求企业管理员
+  if (!ctx.canAccess("temu")) {
+    return { ok: false, error: "当前账号没有「TEMU」页面权限，无法执行该操作" }
+  }
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  const skcId = String(input.productSkcId || "").trim().slice(0, 32)
+  if (!skcId) return { ok: false, error: "缺少 SKC 编号" }
+  // 店铺归属校验（防跨企业越权写标记）
+  const [store] = await db
+    .select({ id: temuStores.id })
+    .from(temuStores)
+    .where(and(eq(temuStores.id, input.storeId), eq(temuStores.enterpriseId, enterpriseId)))
+    .limit(1)
+  if (!store) return { ok: false, error: "店铺不存在或无权访问" }
+  await db
+    .insert(temuPriorityLinks)
+    .values({
+      enterpriseId,
+      storeId: input.storeId,
+      productSkcId: skcId,
+      productSn: input.productSn?.slice(0, 64) || null,
+      productName: input.productName || null,
+      createdBy: ctx.user.id,
+    })
+    .onConflictDoUpdate({
+      target: [temuPriorityLinks.enterpriseId, temuPriorityLinks.storeId, temuPriorityLinks.productSkcId],
+      set: {
+        productSn: input.productSn?.slice(0, 64) || null,
+        productName: input.productName || null,
+        createdBy: ctx.user.id,
+      },
+    })
+  revalidatePath("/temu")
+  return { ok: true }
+}
+
+/** 取消优先发货 */
+export async function unsetPriorityShipAction(input: {
+  storeId: string
+  productSkcId: string
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const ctx = await requireEnterpriseContext()
+  // 操作类写操作例外口径（见文件头）：TEMU 页可见即可用，不要求企业管理员
+  if (!ctx.canAccess("temu")) {
+    return { ok: false, error: "当前账号没有「TEMU」页面权限，无法执行该操作" }
+  }
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  const skcId = String(input.productSkcId || "").trim().slice(0, 32)
+  if (!skcId) return { ok: false, error: "缺少 SKC 编号" }
+  await db
+    .delete(temuPriorityLinks)
+    .where(
+      and(
+        eq(temuPriorityLinks.enterpriseId, enterpriseId),
+        eq(temuPriorityLinks.storeId, input.storeId),
+        eq(temuPriorityLinks.productSkcId, skcId),
+      ),
+    )
+  revalidatePath("/temu")
+  return { ok: true }
+}
+
+// ---------- TEMU 域企业级设置（temu_settings，迁移 0094） ----------
+
+/** 读滞销筛选阈值（无行回落默认值；商品信息页阈值弹窗回显用） */
+export async function getTemuSettingsAction(): Promise<{
+  stagnantWindowDays: number
+  stagnantThresholdQty: number
+}> {
+  const ctx = await requireEnterpriseContext()
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  const cfg = await getTemuStagnantConfig(enterpriseId)
+  return {
+    stagnantWindowDays: cfg.windowDays,
+    stagnantThresholdQty: cfg.thresholdQty,
+  }
+}
+
+/** 更新滞销筛选阈值（两项可缺省=保持现值；变更后失效商品列表缓存） */
+export async function updateTemuStagnantSettingsAction(input: {
+  stagnantWindowDays?: number
+  stagnantThresholdQty?: number
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const ctx = await requireEnterpriseContext()
+  // 操作类写操作例外口径（见文件头）：TEMU 页可见即可用，不要求企业管理员
+  if (!ctx.canAccess("temu")) {
+    return { ok: false, error: "当前账号没有「TEMU」页面权限，无法执行该操作" }
+  }
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  const days = input.stagnantWindowDays
+  const qty = input.stagnantThresholdQty
+  if (days !== undefined && (!Number.isInteger(days) || days < 1 || days > 365)) {
+    return { ok: false, error: "滞销窗口天数须为 1-365 的整数" }
+  }
+  if (qty !== undefined && (!Number.isInteger(qty) || qty < 0 || qty > 100000)) {
+    return { ok: false, error: "滞销销量上限须为 0-100000 的整数" }
+  }
+  const cur = await getTemuStagnantConfig(enterpriseId)
+  const nextDays = days ?? cur.windowDays
+  const nextQty = qty ?? cur.thresholdQty
+  await db
+    .insert(temuSettings)
+    .values({
+      enterpriseId,
+      stagnantWindowDays: nextDays,
+      stagnantThresholdQty: nextQty,
+      updatedBy: ctx.user.id,
+    })
+    .onConflictDoUpdate({
+      target: temuSettings.enterpriseId,
+      set: {
+        stagnantWindowDays: nextDays,
+        stagnantThresholdQty: nextQty,
+        updatedBy: ctx.user.id,
+        updatedAt: new Date(),
+      },
+    })
+  // 阈值变了，滞销筛选的缓存结果全部失效
+  invalidateTemuCache(enterpriseId)
+  revalidatePath("/temu")
+  return { ok: true }
 }

@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import { Area, AreaChart, CartesianGrid, XAxis } from "recharts"
-import { ChevronDown, ChevronRight, TrendingUp } from "lucide-react"
+import { ChevronDown, ChevronRight, ImagePlus, Loader2, Settings, SlidersHorizontal, TrendingUp, Type, Zap } from "lucide-react"
 import { toast } from "sonner"
 import {
   ChartContainer,
@@ -21,11 +21,28 @@ import {
 import { TEMU_TABLE_HEADER_CLASS } from "@/components/temu/table-header-style"
 import { EmptyHint } from "@/components/temu/empty-hint"
 import { TruncTip } from "@/components/temu/trunc-tip"
+import { ProductMediaEditDialog } from "@/components/temu/product-media-edit-dialog"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ZoomableImage } from "@/components/ui/zoomable-image"
 import { Input } from "@/components/ui/input"
+import { TemuSearchBar, type SearchBarField } from "@/components/temu/search-bar"
+import { Label } from "@/components/ui/label"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   Select,
   SelectContent,
@@ -48,11 +65,17 @@ import { temuImageSrc } from "@/lib/temu/image"
 import { formatDate } from "@/lib/datetime"
 import {
   getTemuProductsPageAction,
+  getPriorityShipLinksAction,
+  setPriorityShipAction,
+  unsetPriorityShipAction,
+  getTemuSettingsAction,
+  updateTemuStagnantSettingsAction,
   type TemuProductRow,
   type TemuProductSalesInfo,
   type TemuSkuDetailRow,
   type TemuInventoryInfo,
   type TemuProductDetailExtra,
+  type TemuSaleFilter,
 } from "@/server/actions/temu"
 
 /**
@@ -183,12 +206,123 @@ export function ProductSalesTrendPopover({ series }: { series: SalesSeriesPoint[
   )
 }
 
-/** 商品信息工具行：防抖搜索（输入即搜）+ 在售筛选 + 排序（URL 驱动，与切店下拉同交互） */
+/** 滞销阈值设置按钮 + 弹窗（搜索框右侧；企业级共享配置 temu_settings） */
+/** 商品页共享搜索条字段（本地库 ilike：全部=五字段混合，其余单列） */
+const PRODUCT_SEARCH_FIELDS: SearchBarField[] = [
+  { value: "all", label: "全部", placeholder: "搜索 SKC/SPU/货号/商品名" },
+  { value: "sn", label: "货号", placeholder: "输入货号…" },
+  { value: "name", label: "商品名", placeholder: "输入商品名…" },
+  { value: "skc", label: "SKC", placeholder: "输入 SKC…" },
+]
+
+function StagnantThresholdButton() {
+  const [open, setOpen] = React.useState(false)
+  const [days, setDays] = React.useState("30")
+  const [qty, setQty] = React.useState("0")
+  const [saving, setSaving] = React.useState(false)
+  const [loaded, setLoaded] = React.useState(false)
+
+  React.useEffect(() => {
+    if (open && !loaded) {
+      setLoaded(true)
+      void getTemuSettingsAction().then((s) => {
+        setDays(String(s.stagnantWindowDays))
+        setQty(String(s.stagnantThresholdQty))
+      })
+    }
+  }, [open, loaded])
+
+  const save = async () => {
+    const d = Number(days)
+    const n = Number(qty)
+    if (!Number.isInteger(d) || d < 1 || d > 365) {
+      toast.error("滞销窗口天数须为 1-365 的整数")
+      return
+    }
+    if (!Number.isInteger(n) || n < 0 || n > 100000) {
+      toast.error("滞销销量上限须为 0-100000 的整数")
+      return
+    }
+    setSaving(true)
+    try {
+      const r = await updateTemuStagnantSettingsAction({
+        stagnantWindowDays: d,
+        stagnantThresholdQty: n,
+      })
+      if (r.ok) {
+        toast.success("滞销阈值已保存")
+        setOpen(false)
+      } else {
+        toast.error(r.error)
+      }
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <>
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-8 w-8 p-0 text-xs"
+        aria-label="滞销阈值设置"
+        onClick={() => setOpen(true)}
+      >
+        <SlidersHorizontal className="size-3.5" />
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle>滞销阈值</DialogTitle>
+            <DialogDescription>
+              状态筛选「滞销」口径：近 X 天销量合计 ≤ X 件的链接。企业级共享配置，全企业生效。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="grid gap-1.5">
+              <Label htmlFor="stagnant-days">窗口天数（1-365）</Label>
+              <Input
+                id="stagnant-days"
+                inputMode="numeric"
+                value={days}
+                onChange={(e) => setDays(e.target.value)}
+                className="h-9"
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="stagnant-qty">销量上限（件，0-100000）</Label>
+              <Input
+                id="stagnant-qty"
+                inputMode="numeric"
+                value={qty}
+                onChange={(e) => setQty(e.target.value)}
+                className="h-9"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>
+              取消
+            </Button>
+            <Button onClick={() => void save()} disabled={saving}>
+              {saving ? <Loader2 className="size-4 animate-spin" /> : null}
+              保存
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}
+
+/** 商品信息工具行：防抖搜索（输入即搜）+ 在售/热销/滞销筛选 + 排序（URL 驱动，与切店下拉同交互） */
 export function TemuProductsSaleFilter({
   current,
   saleAll = false,
   store,
   q,
+  qf,
   sort,
 }: {
   current?: string
@@ -197,6 +331,7 @@ export function TemuProductsSaleFilter({
   saleAll?: boolean
   store?: string
   q?: string
+  qf?: string
   sort?: string
 }) {
   const router = useRouter()
@@ -206,6 +341,8 @@ export function TemuProductsSaleFilter({
     { value: ALL, label: "全部状态" },
     { value: "on", label: "在售" },
     { value: "off", label: "未上架" },
+    { value: "hot", label: "热销" },
+    { value: "stagnant", label: "滞销" },
   ]
   const sortItems = [
     { value: "listed", label: "上架时间" },
@@ -215,14 +352,24 @@ export function TemuProductsSaleFilter({
   ]
   const currentSort = sort === "today" || sort === "last7" || sort === "sn" ? sort : "listed"
 
-  /** 组 URL：q/sale/sort 任意变化都重置回第 1 页（page 参数本就不携带） */
-  const push = (next: { q?: string; sale?: string; sort?: string }) => {
+  /** 搜索条草稿态（URL q/qf 回填）：按钮/回车提交才跳转，空关键词=清除筛选 */
+  const [searchField, setSearchField] = React.useState(
+    qf === "sn" || qf === "name" || qf === "skc" ? qf : "all",
+  )
+  const [searchKeyword, setSearchKeyword] = React.useState(q ?? "")
+
+  /** 组 URL：q/qf/sale/sort 任意变化都重置回第 1 页（page 参数本就不携带） */
+  const push = (next: { q?: string; qf?: string; sale?: string; sort?: string }) => {
     const p = new URLSearchParams({ tab: "products" })
     if (store) p.set("store", store)
     const qVal = next.q !== undefined ? next.q : q
     if (qVal) p.set("q", qVal)
+    const qfVal = next.qf !== undefined ? next.qf : qf
+    if (qfVal && qfVal !== "all") p.set("qf", qfVal)
     const saleVal = next.sale !== undefined ? next.sale : current
-    if (saleVal === ALL || saleVal === "on" || saleVal === "off") p.set("sale", saleVal)
+    if (saleVal === ALL || saleVal === "on" || saleVal === "off" || saleVal === "hot" || saleVal === "stagnant") {
+      p.set("sale", saleVal)
+    }
     // 切排序/提交搜索时 next.sale 不带、current 为 undefined：若用户显式
     // 选过「全部状态」（URL sale=all）须保留，否则参数丢失、页面回落缺省
     // "在售"；URL 本无 sale 参数（缺省在售）则保持缺省，不写 sale 参数
@@ -232,35 +379,25 @@ export function TemuProductsSaleFilter({
     router.push(`/temu?${p.toString()}`)
   }
 
-  // 防抖即搜：停顿 500ms 后提交；卸载清定时器避免离开页面后仍跳转
-  const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
-  React.useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current)
-    }
-  }, [])
-  const onSearch = (raw: string) => {
-    const value = raw.trim()
-    if (timerRef.current) clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(() => {
-      // 与当前值相同不重复跳转（初次挂载 defaultValue 不触发 onChange）
-      if (value === (q ?? "")) return
-      push({ q: value || "" })
-    }, 500)
-  }
-
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <Input
-        type="search"
-        defaultValue={q ?? ""}
-        placeholder="搜索 SKC/SPU/货号/商品名"
-        onChange={(e) => onSearch(e.target.value)}
-        className="h-8 w-56 text-xs"
+      <TemuSearchBar
+        fields={PRODUCT_SEARCH_FIELDS}
+        field={searchField}
+        onFieldChange={setSearchField}
+        keyword={searchKeyword}
+        onKeywordChange={setSearchKeyword}
+        onSearch={(f, kw) => push({ q: kw || "", qf: f })}
+        className="w-80"
       />
+      <StagnantThresholdButton />
       <Select
         items={saleItems}
-        value={current === "on" || current === "off" ? current : ALL}
+        value={
+          current === "on" || current === "off" || current === "hot" || current === "stagnant"
+            ? current
+            : ALL
+        }
         onValueChange={(v) => {
           if (v) push({ sale: v })
         }}
@@ -338,7 +475,7 @@ const PRODUCTS_PAGE_SIZE = 20
 /** 库存数据单元格：主值 = 仓内库存（warehouseInventoryNum，卖家口径「可用库存」，
  *  与申报备货视图同口径）；悬停按官方参数表顺序逐项展示九项官方 desc 文案 */
 function AvailableStockCell({ info }: { info: TemuInventoryInfo | null }) {
-  if (!info) return <EmptyHint center />
+  if (!info) return <EmptyHint />
   return (
     <TooltipProvider>
       <Tooltip>
@@ -513,11 +650,27 @@ function ProductDetailPanel({
   )
 }
 
-/** SKU 明细展开子表：尺码/货号/申报价/今日·7日·30日·总销量（salesv2 priceDetail） */
-function SkuDetailSubtable({ skus }: { skus: TemuSkuDetailRow[] }) {
+/** SKU 明细展开子表：尺码/货号/申报价/今日·7日·30日·总销量（salesv2 priceDetail）。
+ *  「缺货数量」右侧「设置」列：链接级操作菜单（换图片/换标题/优先发货）——
+ *  操作作用于该 SKU 所属链接（SKC），任一尺码行入口等价 */
+function SkuDetailSubtable({
+  skus,
+  row,
+  isPriority,
+  onTogglePriority,
+  onEditImages,
+}: {
+  skus: TemuSkuDetailRow[]
+  /** 所属链接主行（productId/货号/商品名快照源） */
+  row: TemuProductRow
+  isPriority: boolean
+  onTogglePriority: () => void
+  onEditImages: () => void
+}) {
   // 空值图标居中与主表同口径（数值列数字保持左对齐、仅空值图标居中）
   const num = (v: unknown) =>
-    typeof v === "number" ? v.toLocaleString("zh-CN") : v == null ? <EmptyHint center /> : String(v)
+    typeof v === "number" ? v.toLocaleString("zh-CN") : v == null ? <EmptyHint /> : String(v)
+  const hasProductId = !!row.productId
   return (
     <table className="w-full caption-bottom text-xs">
       <TableHeader>
@@ -531,22 +684,52 @@ function SkuDetailSubtable({ skus }: { skus: TemuSkuDetailRow[] }) {
           <TableHead>近 30 日</TableHead>
           <TableHead>总销量</TableHead>
           <TableHead>缺货数量</TableHead>
+          <TableHead>设置</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {skus.map((s, i) => (
           <TableRow key={String(s.productSkuId ?? i)} className="hover:bg-transparent">
-            <TableCell className="px-3 py-1.5 font-mono">{s.productSkuId ?? <EmptyHint center />}</TableCell>
-            <TableCell>{s.className ?? <EmptyHint center />}</TableCell>
-            <TableCell className="font-mono">{s.skuExtCode ?? <EmptyHint center />}</TableCell>
+            <TableCell className="px-3 py-1.5 font-mono">{s.productSkuId ?? <EmptyHint />}</TableCell>
+            <TableCell>{s.className ?? <EmptyHint />}</TableCell>
+            <TableCell className="font-mono">{s.skuExtCode ?? <EmptyHint />}</TableCell>
             <TableCell className="tabular-nums">
-              {s.supplierPrice != null ? `¥${(s.supplierPrice / 100).toFixed(2)}` : <EmptyHint center />}
+              {s.supplierPrice != null ? `¥${(s.supplierPrice / 100).toFixed(2)}` : <EmptyHint />}
             </TableCell>
             <TableCell className="tabular-nums">{num(s.todaySaleVolume)}</TableCell>
             <TableCell className="tabular-nums">{num(s.lastSevenDaysSaleVolume)}</TableCell>
             <TableCell className="tabular-nums">{num(s.lastThirtyDaysSaleVolume)}</TableCell>
             <TableCell className="tabular-nums">{num(s.totalSaleVolume)}</TableCell>
             <TableCell className="tabular-nums">{num(s.lackQuantity)}</TableCell>
+            <TableCell>
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-6"
+                      aria-label="链接设置"
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  }
+                >
+                  <Settings className="size-3.5" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="min-w-44">
+                  <DropdownMenuItem onClick={onEditImages} disabled={!hasProductId}>
+                    <ImagePlus className="size-3.5" /> 换图片{!hasProductId ? "（缺 SPU 编号）" : ""}
+                  </DropdownMenuItem>
+                  {/* 官方无改标题接口（docs §8.12 探针：edit.task 参数黑盒）——置灰保留入口 */}
+                  <DropdownMenuItem disabled>
+                    <Type className="size-3.5" /> 换标题（官方未开放）
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={onTogglePriority}>
+                    <Zap className="size-3.5" /> {isPriority ? "取消优先发货" : "设为优先发货"}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -557,6 +740,7 @@ function SkuDetailSubtable({ skus }: { skus: TemuSkuDetailRow[] }) {
 export function ProductsInfiniteTable({
   store,
   q,
+  qf,
   sale,
   sort,
   initialRows,
@@ -564,7 +748,8 @@ export function ProductsInfiniteTable({
 }: {
   store?: string
   q?: string
-  sale?: "on" | "off"
+  qf?: string
+  sale?: TemuSaleFilter
   sort?: string
   initialRows: TemuProductRow[]
   initialSalesInfo: TemuProductSalesInfo
@@ -579,6 +764,43 @@ export function ProductsInfiniteTable({
   const pageRef = React.useRef(1)
   /** SKU 明细展开行（按行 id 记录；展开后追加行不计入渐进渲染批次） */
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set())
+  /** 优先发货链接集合（temu_priority_link 本地标记；进页拉一次，set/unset 后本地增删） */
+  const [prioritySkcs, setPrioritySkcs] = React.useState<Set<string>>(new Set())
+  /** 换图片弹窗目标行（null=关） */
+  const [editImagesRow, setEditImagesRow] = React.useState<TemuProductRow | null>(null)
+
+  React.useEffect(() => {
+    let cancelled = false
+    void getPriorityShipLinksAction(store).then((r) => {
+      if (!cancelled) setPrioritySkcs(new Set(r.skcIds))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [store])
+
+  const togglePriority = async (r: TemuProductRow) => {
+    const isPriority = prioritySkcs.has(r.productSkcId)
+    const res = isPriority
+      ? await unsetPriorityShipAction({ storeId: r.storeId ?? "", productSkcId: r.productSkcId })
+      : await setPriorityShipAction({
+          storeId: r.storeId ?? "",
+          productSkcId: r.productSkcId,
+          productSn: r.productSn,
+          productName: r.productName,
+        })
+    if (res.ok) {
+      setPrioritySkcs((prev) => {
+        const next = new Set(prev)
+        if (isPriority) next.delete(r.productSkcId)
+        else next.add(r.productSkcId)
+        return next
+      })
+      toast.success(isPriority ? "已取消优先发货" : "已设为优先发货")
+    } else {
+      toast.error(res.error)
+    }
+  }
   // 渐进渲染：已加载行先按批露出，滚到底再露下一批/拉下一页——无限滚动只追加
   // 不清除，几千 SKU 全量渲染时 DOM 与 React 树持续膨胀，表格滚动明显卡顿
   const ROW_STEP = 40
@@ -617,7 +839,7 @@ export function ProductsInfiniteTable({
     setLoading(true)
     try {
       const next = pageRef.current + 1
-      const r = await getTemuProductsPageAction(store, q, sale, next, sort)
+      const r = await getTemuProductsPageAction(store, q, sale, next, sort, qf)
       setRows((prev) => {
         const seen = new Set(prev.map((x) => x.id))
         return prev.concat(r.rows.filter((x) => !seen.has(x.id)))
@@ -638,7 +860,7 @@ export function ProductsInfiniteTable({
       loadingRef.current = false
       setLoading(false)
     }
-  }, [store, q, sale, sort])
+  }, [store, q, qf, sale, sort])
 
   React.useEffect(() => {
     const el = sentinelRef.current
@@ -676,7 +898,7 @@ export function ProductsInfiniteTable({
             <TableHead>商品名</TableHead>
             <TableHead>货号</TableHead>
             <TableHead>申报价格</TableHead>
-            <TableHead className="text-center">状态</TableHead>
+            <TableHead>状态</TableHead>
             <TableHead>今日销量</TableHead>
             <TableHead>七日销量</TableHead>
             <TableHead>三十日销量</TableHead>
@@ -756,11 +978,11 @@ export function ProductsInfiniteTable({
                     )}
                   </span>
                 </TableCell>
-                <TableCell className="font-mono text-xs">{r.productSn ?? <EmptyHint center />}</TableCell>
+                <TableCell className="font-mono text-xs">{r.productSn ?? <EmptyHint />}</TableCell>
                 <TableCell className="tabular-nums">
-                  {r.supplierPrice != null ? `¥${(r.supplierPrice / 100).toFixed(2)}` : <EmptyHint center />}
+                  {r.supplierPrice != null ? `¥${(r.supplierPrice / 100).toFixed(2)}` : <EmptyHint />}
                 </TableCell>
-                <TableCell className="text-center">
+                <TableCell>
                   <Tooltip>
                     <TooltipTrigger className="cursor-default">
                       <Badge className={`rounded-[4px] ${status.className}`}>{status.label}</Badge>
@@ -774,15 +996,15 @@ export function ProductsInfiniteTable({
                     </TooltipContent>
                   </Tooltip>
                 </TableCell>
-                <TableCell className="tabular-nums">{sales?.todaySalesVolume ?? <EmptyHint center />}</TableCell>
+                <TableCell className="tabular-nums">{sales?.todaySalesVolume ?? <EmptyHint />}</TableCell>
                 <TableCell className="tabular-nums">
-                  {sales?.extra.last7DaysSalesVolume ?? <EmptyHint center />}
+                  {sales?.extra.last7DaysSalesVolume ?? <EmptyHint />}
                 </TableCell>
                 <TableCell className="tabular-nums">
-                  {sales?.extra.last30DaysSalesVolume ?? <EmptyHint center />}
+                  {sales?.extra.last30DaysSalesVolume ?? <EmptyHint />}
                 </TableCell>
                 <TableCell className="tabular-nums">
-                  {sales?.availableSaleDays != null ? Math.round(sales.availableSaleDays) : <EmptyHint center />}
+                  {sales?.availableSaleDays != null ? Math.round(sales.availableSaleDays) : <EmptyHint />}
                 </TableCell>
                 <TableCell className="tabular-nums">
                   <AvailableStockCell info={sales?.extra.inventoryInfo ?? null} />
@@ -797,7 +1019,15 @@ export function ProductsInfiniteTable({
                       leafCategory={sales?.leafCategory}
                       skus={skuRows}
                     />
-                    {skuRows.length > 0 && <SkuDetailSubtable skus={skuRows} />}
+                    {skuRows.length > 0 && (
+                      <SkuDetailSubtable
+                        skus={skuRows}
+                        row={r}
+                        isPriority={prioritySkcs.has(r.productSkcId)}
+                        onTogglePriority={() => void togglePriority(r)}
+                        onEditImages={() => setEditImagesRow(r)}
+                      />
+                    )}
                   </TableCell>
                 </TableRow>
               )}
@@ -823,6 +1053,15 @@ export function ProductsInfiniteTable({
             : ""}
       </div>
 
+      {/* 换图片弹窗（设置菜单入口；作用于所属链接） */}
+      <ProductMediaEditDialog
+        open={editImagesRow !== null}
+        onOpenChange={(v) => {
+          if (!v) setEditImagesRow(null)
+        }}
+        row={editImagesRow}
+        storeId={editImagesRow?.storeId ?? store}
+      />
     </>
   )
 }

@@ -146,13 +146,13 @@ describe("callOpenAiImageApi 比例参数进入请求体", () => {
       model: { ...MODEL, useRatioParam: true, ratioParamField: null },
       task: { prompt: "p", imageSize: "1024x1024", imageCount: 1 },
       apiKey: "k",
-      downloadAndUpload: async (url) => url,
+      downloadAndUpload: async (url) => ({ url, width: null, height: null }),
     })
     await callOpenAiImageApi({
       model: MODEL,
       task: { prompt: "p", imageSize: "1024x1024", imageCount: 1 },
       apiKey: "k",
-      downloadAndUpload: async (url) => url,
+      downloadAndUpload: async (url) => ({ url, width: null, height: null }),
     })
 
     expect(bodies).toHaveLength(2)

@@ -258,7 +258,6 @@ export function StockOverviewPanel({
     () => [
       {
         id: "sel",
-        meta: { align: "center" },
         header: () => {
           const all = data.length > 0 && data.every((r) => selectedIds.has(r.id))
           const some = data.some((r) => selectedIds.has(r.id))
@@ -341,7 +340,6 @@ export function StockOverviewPanel({
         id: "status",
         header: "状态",
         accessorFn: (row) => row.status,
-        meta: { align: "center" },
         cell: ({ row }) => (
           <Tooltip>
             <TooltipTrigger
@@ -370,13 +368,12 @@ export function StockOverviewPanel({
           row.original.availableDays != null ? (
             <span className="tabular-nums">{row.original.availableDays}</span>
           ) : (
-            <EmptyHint center />
+            <EmptyHint />
           ),
       },
       {
         accessorKey: "shipState",
         header: "发货状态",
-        meta: { align: "center" },
         cell: ({ row }) => (
           <InvBadge
             className={SHIP_STATE_BADGE[row.original.shipState]}
@@ -389,7 +386,6 @@ export function StockOverviewPanel({
       {
         accessorKey: "productionState",
         header: "生产状态",
-        meta: { align: "center" },
         cell: ({ row }) => (
           <InvBadge
             className={PRODUCTION_STATE_BADGE[row.original.productionState]}
@@ -406,7 +402,7 @@ export function StockOverviewPanel({
           row.original.cartonQty != null ? (
             <span className="tabular-nums">{row.original.cartonQty}</span>
           ) : (
-            <EmptyHint center />
+            <EmptyHint />
           ),
       },
       {
@@ -416,7 +412,7 @@ export function StockOverviewPanel({
           row.original.moq != null ? (
             <span className="tabular-nums">{row.original.moq}</span>
           ) : (
-            <EmptyHint center />
+            <EmptyHint />
           ),
       },
       {
@@ -426,7 +422,7 @@ export function StockOverviewPanel({
           row.original.leadTimeDays != null ? (
             <span className="tabular-nums">{row.original.leadTimeDays}</span>
           ) : (
-            <EmptyHint center />
+            <EmptyHint />
           ),
       },
       {

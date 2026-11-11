@@ -80,7 +80,7 @@ export const POST = withRouteHandler(async (request: Request) => {
   }
 
   const storage = await getStorage()
-  const url = await storage.saveFromBuffer(buffer, enterpriseId, ext, "config")
+  const saved = await storage.saveFromBuffer(buffer, enterpriseId, ext, "config")
 
-  return NextResponse.json({ url })
+  return NextResponse.json({ url: saved.url })
 })

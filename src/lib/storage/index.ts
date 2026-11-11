@@ -5,6 +5,7 @@ import {
   type ImageCategory,
 } from "@/lib/storage/config"
 import { createCosAdapter } from "@/lib/storage/cos"
+import type { SavedImage } from "@/lib/storage/image-dim"
 
 /**
  * 存储统一接口（手册 §3、§10.5）
@@ -14,21 +15,21 @@ import { createCosAdapter } from "@/lib/storage/cos"
  */
 
 export interface StorageAdapter {
-  /** 从远程 URL 拉取并转存（用于 AI 上游结果图），返回可访问 URL。
+  /** 从远程 URL 拉取并转存（用于 AI 上游结果图），返回可访问 URL 与探测尺寸。
    *  trustedHostHints：调用方可信域名提示（如模型 API 端点），同站域名自动放行。 */
   saveFromUrl(
     sourceUrl: string,
     enterpriseId: string,
     category: ImageCategory,
     trustedHostHints?: string[],
-  ): Promise<string>
-  /** 从 Buffer 保存，返回可访问 URL */
+  ): Promise<SavedImage>
+  /** 从 Buffer 保存，返回可访问 URL 与探测尺寸 */
   saveFromBuffer(
     buffer: Buffer,
     enterpriseId: string,
     ext: string,
     category: ImageCategory,
-  ): Promise<string>
+  ): Promise<SavedImage>
   /**
    * 删除对象（按可访问 URL）；已不存在视为成功。
    * cleanup cron 按保留天数清理过期图；保留 DB 中的 URL，前端用占位提示。
@@ -99,3 +100,8 @@ export function resetStorageAdapterCache(): void {
 export type { ImageCategory, StorageConfig } from "@/lib/storage/config"
 export { createCosAdapter } from "@/lib/storage/cos"
 export { saveFromUrl, saveFromBuffer } from "@/lib/storage/local"
+export {
+  probeImageSize,
+  type ImageDim,
+  type SavedImage,
+} from "@/lib/storage/image-dim"

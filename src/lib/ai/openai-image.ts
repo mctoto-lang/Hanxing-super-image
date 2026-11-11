@@ -21,6 +21,7 @@ import {
   buildOpenAiRequestBody,
   type ImageGenResult,
 } from "@/lib/ai/image-model-config"
+import type { SavedImage } from "@/lib/storage/image-dim"
 
 export interface OpenAiImageModel {
   name: string
@@ -53,11 +54,11 @@ export interface ImageApiSlotCallbacks {
   releaseSlot?: () => Promise<void>
 }
 
-/** 下载并转存图片的回调（由调用方注入 storage 逻辑） */
+/** 下载并转存图片的回调（由调用方注入 storage 逻辑），返回 URL 与探测尺寸 */
 export type DownloadAndUploadFn = (
   imageUrl: string,
   imageIndex: number,
-) => Promise<string>
+) => Promise<SavedImage>
 
 /** 槽位等待重试间隔（等待期间不计时单张超时，拿到槽位才开始计时；200ms 降低释放到拾取延迟） */
 const SLOT_WAIT_MS = 200
@@ -200,7 +201,15 @@ export async function callOpenAiImageApi(opts: {
 
         const data: unknown = await response.json()
         const url = extractOpenAiImage(data)
-        if (url) return { index, url: await downloadAndUpload(url, index) }
+        if (url) {
+          const saved = await downloadAndUpload(url, index)
+          return {
+            index,
+            url: saved.url,
+            width: saved.width,
+            height: saved.height,
+          }
+        }
 
         const errMsg = extractErrorMessage(data)
         throw new Error(

@@ -14,6 +14,7 @@ import {
   sameSiteAsHost,
 } from "./config"
 import { parseDataImageUrl } from "./data-url"
+import { probeImageSize, type SavedImage } from "./image-dim"
 
 /**
  * 本地文件存储（手册 §3、§10.5）
@@ -41,16 +42,21 @@ export async function saveFromBuffer(
   enterpriseId: string,
   ext: string,
   kind: "image" | "thumb" = "image",
-): Promise<string> {
+): Promise<SavedImage> {
   const relDir = `${enterpriseId}/${kind}/${datePath()}`
   const absDir = path.join(UPLOAD_ROOT, relDir)
   await fs.mkdir(absDir, { recursive: true })
   const filename = `${randomUUID()}.${ext}`
   const absPath = path.join(absDir, filename)
   await fs.writeFile(absPath, buffer)
-  // 返回可访问的相对 URL（由 /uploads 静态托管或代理）
+  // 返回可访问的相对 URL（由 /uploads 静态托管或代理）+ 顺带探测尺寸
   const rel = `${relDir}/${filename}`
-  return `${env.NEXT_PUBLIC_APP_URL}/uploads/${rel}`
+  const dim = probeImageSize(buffer)
+  return {
+    url: `${env.NEXT_PUBLIC_APP_URL}/uploads/${rel}`,
+    width: dim?.width ?? null,
+    height: dim?.height ?? null,
+  }
 }
 
 /** 最大下载体积 50MB（防止恶意/异常上游耗尽磁盘） */
@@ -179,7 +185,7 @@ export async function saveFromUrl(
   enterpriseId: string,
   kind: "image" | "thumb" = "image",
   trustedHostHints: string[] = [],
-): Promise<string> {
+): Promise<SavedImage> {
   const ext = extFromUrl(sourceUrl)
   let targetUrl: URL
   try {
@@ -187,9 +193,10 @@ export async function saveFromUrl(
   } catch {
     throw new Error(`下载失败: 无效 URL`)
   }
-  // 已是本服务 /uploads 对象（key 含本企业段）：直接复用，不重复落盘
+  // 已是本服务 /uploads 对象（key 含本企业段）：直接复用，不重复落盘。
+  // buffer 不经过应用，无从探测尺寸（null；调用方回退兜底比例）
   if (isOwnLocalObjectUrl(targetUrl, enterpriseId)) {
-    return sourceUrl
+    return { url: sourceUrl, width: null, height: null }
   }
   // data: URL（模型 b64_json 回传）：内容自包含，直接解码落盘，
   // 不走网络下载与域名白名单（data: 非 https 会被白名单误拒）

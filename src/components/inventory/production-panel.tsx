@@ -154,7 +154,6 @@ export function ProductionPanel() {
         ? ([
             {
               id: "sel",
-              meta: { align: "center" },
               header: () => {
                 const selectable = data.filter((r) => r.remainQty > 0)
                 const all = selectable.length > 0 && selectable.every((r) => selectedIds.has(r.id))
@@ -265,7 +264,6 @@ export function ProductionPanel() {
       {
         accessorKey: "status",
         header: "状态",
-        meta: { align: "center" },
         cell: ({ row }) => (
           <InvBadge
             className={PRODUCTION_STATUS_BADGE[row.original.status]}

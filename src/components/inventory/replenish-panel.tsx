@@ -108,7 +108,6 @@ export function ReplenishPanel() {
     () => [
       {
         id: "sel",
-        meta: { align: "center" },
         header: () => {
           const someSelected = selectable.some((r) => selected.has(r.productId))
           return (
@@ -176,7 +175,7 @@ export function ReplenishPanel() {
           row.original.dailySales > 0 ? (
             <span className="tabular-nums">{row.original.dailySales}</span>
           ) : (
-            <EmptyHint center />
+            <EmptyHint />
           ),
       },
       {
@@ -211,7 +210,7 @@ export function ReplenishPanel() {
           row.original.targetQty != null ? (
             <span className="tabular-nums text-muted-foreground">{row.original.targetQty}</span>
           ) : (
-            <EmptyHint center />
+            <EmptyHint />
           ),
       },
       {
@@ -237,7 +236,6 @@ export function ReplenishPanel() {
         id: "flags",
         header: "标记",
         enableSorting: false,
-        meta: { align: "center" },
         cell: ({ row }) =>
           row.original.stagnant ? (
             <InvBadge className="border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-400">
@@ -254,7 +252,7 @@ export function ReplenishPanel() {
               {row.original.expectedDate}
             </span>
           ) : (
-            <EmptyHint center />
+            <EmptyHint />
           ),
       },
     ],

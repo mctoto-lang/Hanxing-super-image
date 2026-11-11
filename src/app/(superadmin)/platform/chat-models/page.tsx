@@ -11,6 +11,8 @@ import {
   TablePagination,
   parsePageParam,
 } from "@/components/shared/table-pagination"
+import { PageHeader } from "@/components/shared/page-header"
+import { StatCard } from "@/components/shared/stat-card"
 import { ChatModelFormDialog } from "@/components/superadmin/chat-model-form-dialog"
 import { PresetChatModelsTable } from "@/components/superadmin/preset-chat-models-table"
 
@@ -34,38 +36,20 @@ export default async function PlatformChatModelsPage({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">平台预置对话模型</h1>
-          <p className="text-sm text-muted-foreground">
-            超管管理全企业共享的对话模型（OpenAI 兼容格式，enterpriseId
-            为空）；用于提示词模板的裂变/细化/重生成/提取/翻译；API Key 加密落库
-          </p>
-        </div>
+      <PageHeader
+        title="平台预置对话模型"
+        description="超管管理全企业共享的对话模型（OpenAI 兼容格式，enterpriseId 为空）；用于提示词模板的裂变/细化/重生成/提取/翻译；API Key 加密落库"
+      >
         <ChatModelFormDialog />
-      </div>
+      </PageHeader>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              预置对话模型总数
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="text-2xl font-bold tabular-nums">
-            {total}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              启用中
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="text-2xl font-bold tabular-nums">
-            {activeCount}
-          </CardContent>
-        </Card>
+        <StatCard label="预置对话模型总数">
+          {total.toLocaleString("zh-CN")}
+        </StatCard>
+        <StatCard label="启用中">
+          {activeCount.toLocaleString("zh-CN")}
+        </StatCard>
       </div>
 
       <Card>

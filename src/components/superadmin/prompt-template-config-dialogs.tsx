@@ -1,12 +1,13 @@
 "use client"
 
-import { useRef, useState } from "react"
+import * as React from "react"
 import { useRouter } from "next/navigation"
 import { Pencil, Plus, Power, RotateCcw } from "lucide-react"
 import { toast } from "sonner"
+import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
+import { useForm, useWatch } from "react-hook-form"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { MorphingInfinity } from "@/components/ui/morphing-infinity"
 import {
@@ -15,7 +16,23 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form"
 import { TemplateVarChips } from "@/components/superadmin/template-var-chips"
+import { promptTemplateFormSchema } from "@/lib/forms/config-schemas"
 import {
   createPromptTemplateConfigAction,
   togglePromptTemplateConfigActiveAction,
@@ -86,149 +103,242 @@ export interface PromptTemplateConfigRow {
   isActive: boolean
 }
 
+interface PromptTemplateFormValues {
+  scene: string
+  name: string
+  template: string
+  note?: string
+}
+
+/** 新增弹窗「未选择场景」占位项（onValueChange 映射回空串以触发必填校验） */
+const SCENE_NONE = "__none__"
+const SCENE_NONE_LABEL = "选择场景…"
+
 function PromptTemplateForm({
   row,
   onDone,
+  open,
   variant = "product",
 }: {
   row: PromptTemplateConfigRow | null
   onDone: () => void
+  /** 父级弹窗开合（open 时重置为行数据 defaults） */
+  open: boolean
   variant?: PromptConfigVariant
 }) {
   const maps = getVariantMaps(variant)
   const router = useRouter()
-  const [submitting, setSubmitting] = useState(false)
-  const [scene, setScene] = useState<string>(row?.scene ?? "")
-  const [name, setName] = useState(row?.name ?? "")
-  const [template, setTemplate] = useState(row?.template ?? "")
-  const [note, setNote] = useState(row?.note ?? "")
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const [serverError, setServerError] = React.useState<string | null>(null)
+  const textareaRef = React.useRef<HTMLTextAreaElement | null>(null)
+
+  const defaults = React.useMemo<PromptTemplateFormValues>(
+    () => ({
+      scene: row?.scene ?? "",
+      name: row?.name ?? "",
+      template: row?.template ?? "",
+      note: row?.note ?? "",
+    }),
+    [row],
+  )
+
+  const form = useForm<PromptTemplateFormValues>({
+    resolver: standardSchemaResolver(promptTemplateFormSchema),
+    defaultValues: defaults,
+  })
+  const pending = form.formState.isSubmitting
+  // useWatch 替代 form.watch：后者返回不可安全 memoize 的函数，会使 React Compiler 跳过本组件记忆化
+  const scene = useWatch({ control: form.control, name: "scene" })
 
   const sceneNote = scene ? row?.note || maps.notes[scene] || "" : ""
   const sceneVars = scene ? (maps.vars[scene] ?? []) : []
   const isCustomScene = row !== null
 
-  const submit = async () => {
-    setSubmitting(true)
-    try {
-      const base = {
-        name,
-        template,
-        note: note || undefined,
-      }
-      const res = row
-        ? await updatePromptTemplateConfigAction(row.id, base)
-        : await createPromptTemplateConfigAction({
-            ...base,
-            scene: scene as (typeof PRODUCT_PROMPT_SCENES)[number],
-          })
-      if (!res.ok) {
-        toast.error(res.error ?? "保存失败")
-        return
-      }
-      toast.success(row ? "模板已更新" : "模板已创建")
-      onDone()
-      router.refresh()
-    } finally {
-      setSubmitting(false)
+  React.useEffect(() => {
+    if (open) {
+      form.reset(defaults)
+      setServerError(null)
     }
+  }, [open, form, defaults])
+
+  async function onSubmit(values: PromptTemplateFormValues) {
+    setServerError(null)
+    const base = {
+      name: values.name,
+      template: values.template,
+      note: values.note || undefined,
+    }
+    const res = row
+      ? await updatePromptTemplateConfigAction(row.id, base)
+      : await createPromptTemplateConfigAction({
+          ...base,
+          scene: values.scene as (typeof PRODUCT_PROMPT_SCENES)[number],
+        })
+    if (!res.ok) {
+      setServerError(res.error ?? "保存失败")
+      return
+    }
+    toast.success(row ? "模板已更新" : "模板已创建")
+    onDone()
+    router.refresh()
   }
 
   /** 恢复内置默认模板（seed 同源） */
   const resetToDefault = () => {
     if (scene && maps.defaults[scene]) {
-      setTemplate(maps.defaults[scene]!)
+      form.setValue("template", maps.defaults[scene]!, { shouldValidate: true })
       toast.info("已填入内置默认模板，保存后生效")
     }
   }
 
   return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-3">
-        <div className="space-y-1.5">
-          <Label>场景（scene）</Label>
-          {isCustomScene ? (
-            <Input value={maps.labels[scene] ?? scene} disabled />
-          ) : (
-            <select
-              value={scene}
-              onChange={(e) => {
-                setScene(e.target.value)
-                setName(maps.labels[e.target.value] ?? e.target.value)
-                if (maps.defaults[e.target.value]) {
-                  setTemplate(maps.defaults[e.target.value]!)
-                }
-              }}
-              className="h-9 w-full rounded-md border bg-transparent px-3 text-sm"
-            >
-              <option value="">选择场景…</option>
-              {maps.scenes.map((s) => (
-                <option key={s} value={s}>
-                  {maps.labels[s] ?? s}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
-        <div className="space-y-1.5">
-          <Label>模板名称</Label>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="套图 AI 帮写" />
-        </div>
-      </div>
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between">
-          <Label>提示词模板</Label>
-          {scene && maps.defaults[scene] && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2 text-xs"
-              onClick={resetToDefault}
-            >
-              <RotateCcw className="mr-1 size-3" />
-              恢复默认
-            </Button>
-          )}
-        </div>
-        <Textarea
-          ref={textareaRef}
-          value={template}
-          onChange={(e) => setTemplate(e.target.value)}
-          rows={10}
-          className="field-sizing-fixed font-mono text-xs"
-          placeholder="模板正文，支持 {{platformLabel}} 等变量；未引用的变量不注入"
-        />
-        <TemplateVarChips
-          vars={sceneVars}
-          template={template}
-          textareaRef={textareaRef}
-          onTemplateChange={setTemplate}
-        />
-        <p className="text-xs text-muted-foreground">
-          {sceneNote || "选择场景后显示可用变量说明"}
-        </p>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="space-y-1.5">
-          <Label>变量说明（note）</Label>
-          <Input
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            placeholder="留空使用内置说明"
+    <Form {...form}>
+      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+        <div className="grid grid-cols-2 gap-4">
+          <FormField
+            control={form.control}
+            name="scene"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>场景（scene）</FormLabel>
+                {isCustomScene ? (
+                  <Input value={maps.labels[field.value] ?? field.value} disabled />
+                ) : (
+                  <Select
+                    value={field.value || SCENE_NONE}
+                    onValueChange={(v) => {
+                      const next = v && v !== SCENE_NONE ? v : ""
+                      field.onChange(next)
+                      if (next) {
+                        form.setValue("name", maps.labels[next] ?? next, {
+                          shouldValidate: true,
+                        })
+                        if (maps.defaults[next]) {
+                          form.setValue("template", maps.defaults[next]!, {
+                            shouldValidate: true,
+                          })
+                        }
+                      }
+                    }}
+                    items={[
+                      { value: SCENE_NONE, label: SCENE_NONE_LABEL },
+                      ...maps.scenes.map((s) => ({
+                        value: s,
+                        label: maps.labels[s] ?? s,
+                      })),
+                    ]}
+                  >
+                    <FormControl>
+                      <SelectTrigger className="w-full">
+                        <SelectValue>
+                          {field.value
+                            ? (maps.labels[field.value] ?? field.value)
+                            : SCENE_NONE_LABEL}
+                        </SelectValue>
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value={SCENE_NONE}>{SCENE_NONE_LABEL}</SelectItem>
+                      {maps.scenes.map((s) => (
+                        <SelectItem key={s} value={s}>
+                          {maps.labels[s] ?? s}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name="name"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>模板名称</FormLabel>
+                <FormControl>
+                  <Input {...field} placeholder="套图 AI 帮写" />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
           />
         </div>
-      </div>
-      <div className="flex justify-end gap-2 pt-2">
-        <Button variant="outline" onClick={onDone}>
-          取消
-        </Button>
-        <Button onClick={submit} disabled={submitting || !scene}>
-          {submitting && <MorphingInfinity className="mr-1 size-4" />}
-          保存
-        </Button>
-      </div>
-    </div>
+        <FormField
+          control={form.control}
+          name="template"
+          render={({ field }) => (
+            <FormItem>
+              <div className="flex items-center justify-between">
+                <FormLabel>提示词模板</FormLabel>
+                {scene && maps.defaults[scene] && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={resetToDefault}
+                  >
+                    <RotateCcw className="mr-1 size-3" />
+                    恢复默认
+                  </Button>
+                )}
+              </div>
+              <FormControl>
+                <Textarea
+                  rows={10}
+                  className="field-sizing-fixed font-mono text-xs"
+                  placeholder="模板正文，支持 {{platformLabel}} 等变量；未引用的变量不注入"
+                  ref={(el: HTMLTextAreaElement | null) => {
+                    textareaRef.current = el
+                    field.ref(el)
+                  }}
+                  value={field.value}
+                  onChange={(e) => field.onChange(e.target.value)}
+                />
+              </FormControl>
+              <TemplateVarChips
+                vars={sceneVars}
+                template={field.value}
+                textareaRef={textareaRef}
+                onTemplateChange={(next) => field.onChange(next)}
+              />
+              <p className="text-xs text-muted-foreground">
+                {sceneNote || "选择场景后显示可用变量说明"}
+              </p>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <div className="grid grid-cols-2 gap-4">
+          <FormField
+            control={form.control}
+            name="note"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>变量说明（note）</FormLabel>
+                <FormControl>
+                  <Input {...field} placeholder="留空使用内置说明" />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </div>
+        {serverError ? (
+          <p className="text-sm text-destructive">{serverError}</p>
+        ) : null}
+        <div className="flex justify-end gap-2 pt-2">
+          <Button type="button" variant="outline" onClick={onDone}>
+            取消
+          </Button>
+          <Button type="submit" disabled={pending || !scene}>
+            {pending && <MorphingInfinity className="mr-1 size-4" />}
+            {pending ? "保存中…" : "保存"}
+          </Button>
+        </div>
+      </form>
+    </Form>
   )
 }
 
@@ -238,7 +348,7 @@ export function PromptTemplateFormDialog({
 }: {
   variant?: PromptConfigVariant
 } = {}) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = React.useState(false)
   return (
     <>
       <Button onClick={() => setOpen(true)}>
@@ -246,13 +356,14 @@ export function PromptTemplateFormDialog({
         新增模板
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent className="sm:max-w-[640px]">
           <DialogTitle>新增提示词模板</DialogTitle>
           <DialogDescription>
             为缺失场景补建模板（内置默认已覆盖全部场景，通常只需编辑现有行）
           </DialogDescription>
           <PromptTemplateForm
             row={null}
+            open={open}
             onDone={() => setOpen(false)}
             variant={variant}
           />
@@ -270,18 +381,19 @@ export function PromptTemplateEditButton({
   row: PromptTemplateConfigRow
   variant?: PromptConfigVariant
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = React.useState(false)
   return (
     <>
       <Button variant="ghost" size="icon-xs" onClick={() => setOpen(true)}>
         <Pencil className="size-3.5" />
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent className="sm:max-w-[640px]">
           <DialogTitle>编辑模板：{row.name}</DialogTitle>
           <DialogDescription>scene: {row.scene}</DialogDescription>
           <PromptTemplateForm
             row={row}
+            open={open}
             onDone={() => setOpen(false)}
             variant={variant}
           />
@@ -300,7 +412,7 @@ export function PromptTemplateToggleActiveButton({
   isActive: boolean
 }) {
   const router = useRouter()
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = React.useState(false)
   return (
     <Button
       variant="ghost"

@@ -211,3 +211,128 @@ export function RankingBarChart({
     </ChartContainer>
   )
 }
+
+/** 24 小时时段分布竖向柱状图（hour 0-23 补齐后传入） */
+export function HourlyBarChart({
+  data,
+  emptyText = "暂无数据",
+}: {
+  data: Array<{ hour: number; count: number }>
+  emptyText?: string
+}) {
+  const config = {
+    count: { label: "生图次数", color: "var(--chart-1)" },
+  } satisfies ChartConfig
+
+  const total = data.reduce((sum, d) => sum + d.count, 0)
+  if (total === 0) {
+    return (
+      <div className="flex h-[240px] items-center justify-center text-sm text-muted-foreground">
+        {emptyText}
+      </div>
+    )
+  }
+
+  return (
+    <ChartContainer config={config} className="h-[240px] w-full">
+      <BarChart data={data} margin={{ left: 4, right: 8 }} barSize={10}>
+        <CartesianGrid vertical={false} strokeDasharray="3 3" />
+        <XAxis
+          dataKey="hour"
+          tickLine={false}
+          axisLine={false}
+          tickMargin={8}
+          interval={2}
+          tickFormatter={(v: number) => `${v}时`}
+        />
+        <YAxis tickLine={false} axisLine={false} width={32} allowDecimals={false} />
+        <ChartTooltip
+          content={<ChartTooltipContent hideLabel />}
+          formatter={(value) => [value as number, "生图次数"]}
+          labelFormatter={(label) => `${label}:00 - ${label}:59`}
+        />
+        <Bar dataKey="count" fill="var(--color-count)" radius={3} />
+      </BarChart>
+    </ChartContainer>
+  )
+}
+
+/**
+ * 通用多序列趋势面积图（1-2 条独立曲线，不堆叠）。
+ *
+ * 与 TrendAreaChart（任务数/完成数堆叠，完成 ⊆ 任务）区分：本组件用于
+ * 量纲独立或无包含关系的序列（积分消耗单曲线、用户/企业增长双曲线）。
+ */
+export function MultiSeriesAreaChart({
+  data,
+  series,
+  emptyText = "暂无数据",
+}: {
+  /** 每行含 day + 各序列 key 对应数值 */
+  data: Array<Record<string, number | string>>
+  series: Array<{ key: string; label: string; color?: string }>
+  emptyText?: string
+}) {
+  // 渐变 id 必须按实例唯一：同页会同时渲染多个本组件（积分消耗 + 用户/企业增长），
+  // 若用与实例无关的字面量 id（如 fillSeries0），后渲染实例的 url(#) 引用会按
+  // 文档树序解析到第一个实例的同名渐变，导致面积填充取错色。
+  const uid = React.useId().replace(/:/g, "")
+  const config = Object.fromEntries(
+    series.map((s, i) => [
+      s.key,
+      { label: s.label, color: s.color ?? `var(--chart-${i + 1})` },
+    ]),
+  ) satisfies ChartConfig
+
+  if (data.length === 0) {
+    return (
+      <div className="flex h-[240px] items-center justify-center text-sm text-muted-foreground">
+        {emptyText}
+      </div>
+    )
+  }
+
+  return (
+    <ChartContainer config={config} className="h-[240px] w-full">
+      <AreaChart data={data} margin={{ left: 4, right: 8 }}>
+        <defs>
+          {series.map((s) => (
+            <linearGradient key={s.key} id={`${uid}-fill-${s.key}`} x1="0" y1="0" x2="0" y2="1">
+              <stop
+                offset="5%"
+                stopColor={`var(--color-${s.key})`}
+                fillOpacity={0.4}
+              />
+              <stop
+                offset="95%"
+                stopColor={`var(--color-${s.key})`}
+                fillOpacity={0.05}
+              />
+            </linearGradient>
+          ))}
+        </defs>
+        <CartesianGrid vertical={false} strokeDasharray="3 3" />
+        <XAxis
+          dataKey="day"
+          tickLine={false}
+          axisLine={false}
+          tickMargin={8}
+          minTickGap={24}
+          tickFormatter={(v: string) => v.slice(5)}
+        />
+        <YAxis tickLine={false} axisLine={false} width={32} allowDecimals={false} />
+        <ChartTooltip content={<ChartTooltipContent />} />
+        {series.map((s) => (
+          <Area
+            key={s.key}
+            dataKey={s.key}
+            type="monotone"
+            stroke={`var(--color-${s.key})`}
+            fill={`url(#${uid}-fill-${s.key})`}
+          />
+        ))}
+        <ChartLegend content={<ChartLegendContent />} />
+      </AreaChart>
+    </ChartContainer>
+  )
+}

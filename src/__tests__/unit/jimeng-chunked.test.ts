@@ -14,7 +14,7 @@ const MODEL = {
   apiEndpoint: "https://api.example.com/gen",
   apiTimeout: 5,
 }
-const dl = vi.fn(async (url: string) => url)
+const dl = vi.fn(async (url: string) => ({ url, width: null, height: null }))
 
 function okResponse(images: string[]) {
   return { ok: true, json: async () => ({ images }) }
@@ -36,13 +36,14 @@ afterEach(() => {
 })
 
 function callWith(imageCount: number, extraConfig: Record<string, unknown> = {}) {
+  // 测试断言以 URL 数组为准（callJimengApi 现返回 SavedImage[]）
   return callJimengApi({
     model: MODEL,
     task: { prompt: "p", imageSize: "1024x1024", imageCount, referenceImages: [] },
     extraConfig,
     apiKey: "k",
     downloadAndUpload: dl,
-  })
+  }).then((saved) => saved.map((s) => s.url))
 }
 
 describe("callJimengApi 请求拆分", () => {

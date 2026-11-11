@@ -1,5 +1,5 @@
 import { requireEnterpriseAdmin } from "@/lib/auth/session"
-import { listGroupsAction } from "@/server/actions/admin-groups"
+import { listGroupsAction, listAllGroupsAction } from "@/server/actions/admin-groups"
 import { listModelsAction } from "@/server/actions/admin-models"
 import {
   listAdminChatModelsAction,
@@ -22,10 +22,13 @@ import {
 } from "@/components/ui/table"
 import { GroupCreateDialog } from "@/components/admin/group-create-dialog"
 import { GroupEditDialog } from "@/components/admin/group-edit-dialog"
+import { GroupMembersDialog } from "@/components/admin/group-members-dialog"
+import { GroupDeleteDialog } from "@/components/admin/group-delete-dialog"
 import {
   TablePagination,
   parsePageParam,
 } from "@/components/shared/table-pagination"
+import { TableEmpty } from "@/components/shared/table-empty"
 
 export const dynamic = "force-dynamic"
 
@@ -36,13 +39,19 @@ export default async function AdminGroupsPage({
 }) {
   await requireEnterpriseAdmin()
   const page = parsePageParam(await searchParams)
-  const [{ items: groups, total, pageSize }, { items: imageModels }, { items: chatModels }] =
-    await Promise.all([
-      listGroupsAction({ page, pageSize: 20 }),
-      // 模型勾选器数据源（企业可见生图/对话模型，pageSize 上限 50）
-      listModelsAction({ page: 1, pageSize: 50 }),
-      listAdminChatModelsAction({ page: 1, pageSize: 50 }),
-    ])
+  const [
+    { items: groups, total, pageSize },
+    allGroups,
+    { items: imageModels },
+    { items: chatModels },
+  ] = await Promise.all([
+    listGroupsAction({ page, pageSize: 20 }),
+    // 组成员弹窗「全部转移至」下拉需要全量组（跨页场景，>50 组时按 total 翻页拉全量）
+    listAllGroupsAction(),
+    // 模型勾选器数据源（企业可见生图/对话模型，pageSize 上限 50）
+    listModelsAction({ page: 1, pageSize: 50 }),
+    listAdminChatModelsAction({ page: 1, pageSize: 50 }),
+  ])
 
   const imageOptions = imageModels.map((m) => ({
     id: m.id,
@@ -82,22 +91,15 @@ export default async function AdminGroupsPage({
                 <TableHead>允许页面</TableHead>
                 <TableHead>生图模型</TableHead>
                 <TableHead>对话模型</TableHead>
-                <TableHead className="text-right">并发上限</TableHead>
-                <TableHead className="text-right">成员数</TableHead>
-                <TableHead className="text-right">优先级</TableHead>
-                <TableHead className="text-right">操作</TableHead>
+                <TableHead>并发上限</TableHead>
+                <TableHead>成员数</TableHead>
+                <TableHead>优先级</TableHead>
+                <TableHead>操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {groups.length === 0 ? (
-                <TableRow>
-                  <TableCell
-                    colSpan={9}
-                    className="py-8 text-center text-muted-foreground"
-                  >
-                    暂无权限组
-                  </TableCell>
-                </TableRow>
+                <TableEmpty colSpan={9} noun="权限组" />
               ) : null}
               {groups.map((g) => {
                 const allowedModels = g.allowedModels as string[]
@@ -150,31 +152,45 @@ export default async function AdminGroupsPage({
                       </span>
                     )}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">
+                  <TableCell className="tabular-nums">
                     {g.maxConcurrent}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {g.memberCount}
+                  <TableCell>
+                    <GroupMembersDialog
+                      group={{ id: g.id, name: g.name, memberCount: g.memberCount }}
+                      groups={allGroups.map((x) => ({
+                        id: x.id,
+                        name: x.name,
+                        isDefault: x.isDefault,
+                      }))}
+                    />
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">
+                  <TableCell className="tabular-nums">
                     {g.priority}
                   </TableCell>
-                  <TableCell className="text-right">
-                    <GroupEditDialog
-                      group={{
-                        id: g.id,
-                        name: g.name,
-                        description: g.description,
-                        allowedModels,
-                        allowedChatModels,
-                        allowedPages: g.allowedPages as string[],
-                        maxConcurrent: g.maxConcurrent,
-                        priority: g.priority,
-                        isDefault: g.isDefault,
-                      }}
-                      imageModels={imageOptions}
-                      chatModels={chatOptions}
-                    />
+                  <TableCell>
+                    <div className="flex items-center gap-1">
+                      <GroupEditDialog
+                        group={{
+                          id: g.id,
+                          name: g.name,
+                          description: g.description,
+                          allowedModels,
+                          allowedChatModels,
+                          allowedPages: g.allowedPages as string[],
+                          maxConcurrent: g.maxConcurrent,
+                          priority: g.priority,
+                          isDefault: g.isDefault,
+                        }}
+                        imageModels={imageOptions}
+                        chatModels={chatOptions}
+                      />
+                      {!g.isDefault ? (
+                        <GroupDeleteDialog
+                          group={{ id: g.id, name: g.name, memberCount: g.memberCount }}
+                        />
+                      ) : null}
+                    </div>
                   </TableCell>
                 </TableRow>
                 )

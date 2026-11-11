@@ -1,7 +1,10 @@
 "use client"
 
+import * as React from "react"
+import { z } from "zod"
+import { useForm, type UseFormReturn } from "react-hook-form"
+import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
 import {
@@ -11,6 +14,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form"
 import { ModelIconUpload } from "@/components/model-form/model-icon-upload"
 import { BadgeField } from "@/components/model-form/badge-field"
 import {
@@ -25,12 +35,16 @@ import {
 import { THINKING_LEVEL_LABELS } from "@/components/chat/types"
 
 /**
- * 对话模型表单字段（超管平台预置 / 企业私有 共用）
+ * 对话模型表单字段（超管平台预置 / 企业私有 共用，RHF 统一设计语言）。
  *
  * 接口格式四选：openai / claude / gemini / grok（端点提示随格式切换）；
  * temperature / maxTokens 留空 = 使用默认值（工作台内部 AI 用）；
  * 最大上下文 / 单次最大输出 / 百万 token 厘级价格 / 思考强度为
  * /chat 交互对话专用配置。价格界面输入「积分」（两位小数），存厘（×100 整数）。
+ *
+ * 用法：弹窗内 `const form = useChatModelForm()` →
+ * `<Form {...form}><form onSubmit={form.handleSubmit(...)}>`；
+ * 编辑回填 defaultValues 用 chatModelFormFromRow，提交组装用 buildChatModelInput。
  */
 
 export const CHAT_FORMAT_LABELS: Record<string, string> = {
@@ -98,6 +112,70 @@ export interface ChatModelFormState {
   maxRetries: number
   apiTimeout: number
   taskTimeout: number
+}
+
+/** 数值字符串的区间校验（空值跳过，交由提交组装兜底） */
+function numStringRange(
+  label: string,
+  min: number,
+  max: number,
+): (v: string) => true | string {
+  return (v: string) => {
+    if (v.trim() === "") return true
+    const n = Number(v)
+    return Number.isFinite(n) && n >= min && n <= max ? true : `${label}须在 ${min} - ${max} 之间`
+  }
+}
+
+/** 客户端 zod 镜像（服务端 chatModelConfigSchema 仍是权威；apiKey 必填性由弹窗按 isEdit setError） */
+const chatModelFormSchema = z.object({
+  name: z.string().min(1, "请输入模型标识").max(100, "模型标识最多 100 字符"),
+  displayName: z.string().min(1, "请输入显示名").max(200, "显示名最多 200 字符"),
+  description: z.string().max(300, "描述最多 300 字"),
+  badgeText: z.string().max(30, "勋章文字最多 30 字"),
+  badgeColor: z.string().max(30),
+  apiEndpoint: z.string().min(1, "请输入 API 地址").max(500, "API 地址最多 500 字符"),
+  apiKey: z.string(),
+  formatType: z.string(),
+  iconUrl: z.string().max(500, "图标地址最多 500 字符"),
+  temperature: z.string().refine(numStringRange("Temperature", 0, 2)),
+  maxTokens: z.string().refine(numStringRange("Max Tokens", 0, 1_000_000)),
+  maxContextTokens: z
+    .string()
+    .refine((v) => v.trim() !== "", "请输入最大上下文")
+    .refine(numStringRange("最大上下文", 1024, 2_000_000)),
+  maxOutputTokens: z
+    .string()
+    .refine((v) => v.trim() !== "", "请输入单次最大输出")
+    .refine(numStringRange("单次最大输出", 256, 1_000_000)),
+  inputPrice: z.string().refine(numStringRange("输入价格", 0, 10_000)),
+  outputPrice: z.string().refine(numStringRange("输出价格", 0, 10_000)),
+  supportsThinking: z.boolean(),
+  supportsVision: z.boolean(),
+  // 思考档位覆盖为可选高级字段，客户端不做逐项校验（服务端 re-validate）；
+  // 用 z.custom 保持精确的 Record 类型（z.record 会退化为 Record<string, any>）
+  thinkingOverrides: z.custom<ThinkingOverridesFormState>(
+    (v) => typeof v === "object" && v !== null,
+  ),
+  maxConcurrent: z
+    .number({ message: "请输入最大并发" })
+    .int("最大并发必须为整数")
+    .min(1, "最大并发至少 1")
+    .max(9999, "最大并发不能超过 9999"),
+  maxRetries: z
+    .number({ message: "请输入最大重试" })
+    .int()
+    .min(0, "最大重试不能为负"),
+  apiTimeout: z.number({ message: "请输入请求超时" }).int().min(1, "请求超时至少 1 秒"),
+  taskTimeout: z.number({ message: "请输入任务总超时" }).int().min(0, "任务总超时不能为负"),
+})
+
+/** 对话模型表单 hook（统一设计语言入口） */
+export function useChatModelForm(): UseFormReturn<ChatModelFormState> {
+  return useForm<ChatModelFormState>({
+    resolver: standardSchemaResolver(chatModelFormSchema),
+    defaultValues: emptyChatModelState(),
+  })
 }
 
 export function emptyChatModelState(): ChatModelFormState {
@@ -283,245 +361,333 @@ export function buildChatModelInput(
 }
 
 export function ChatModelFields({
-  state,
-  up,
+  form,
   isEdit,
 }: {
-  state: ChatModelFormState
-  up: <K extends keyof ChatModelFormState>(
-    key: K,
-    val: ChatModelFormState[K],
-  ) => void
+  form: UseFormReturn<ChatModelFormState>
   isEdit: boolean
 }) {
+  const formatType = form.watch("formatType")
+  const supportsThinking = form.watch("supportsThinking")
+  const badgeColor = form.watch("badgeColor")
+  const overrides = form.watch("thinkingOverrides")
+
   const upOverride = (
     level: ActiveThinkingLevel,
     field: "effort" | "budgetTokens",
     val: string,
   ) => {
-    up("thinkingOverrides", {
-      ...state.thinkingOverrides,
-      [level]: { ...state.thinkingOverrides[level], [field]: val },
+    form.setValue("thinkingOverrides", {
+      ...overrides,
+      [level]: { ...overrides[level], [field]: val },
     })
   }
 
+  const intField = (field: {
+    onChange: (v: number) => void
+    value: number
+  }) => ({
+    ...field,
+    value: field.value,
+    onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+      field.onChange(
+        e.target.value === "" ? ("" as unknown as number) : Number(e.target.value),
+      ),
+  })
+
   return (
     <>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="grid gap-2">
-          <Label htmlFor="cm-name">模型标识</Label>
-          <Input
-            id="cm-name"
-            value={state.name}
-            onChange={(e) => up("name", e.target.value)}
-            placeholder="如 gpt-4o、claude-sonnet-4、gemini-2.5-flash"
-            required
-          />
-        </div>
-        <div className="grid gap-2">
-          <Label htmlFor="cm-displayName">显示名</Label>
-          <Input
-            id="cm-displayName"
-            value={state.displayName}
-            onChange={(e) => up("displayName", e.target.value)}
-            placeholder="如 GPT-4o"
-            required
-          />
-        </div>
-      </div>
-
-      <div className="grid gap-2">
-        <Label htmlFor="cm-description">模型描述（可选）</Label>
-        <Textarea
-          id="cm-description"
-          rows={2}
-          value={state.description}
-          onChange={(e) => up("description", e.target.value)}
-          placeholder="展示在对话模型选择处，如：综合能力强，适合日常问答"
-          maxLength={300}
+      <div className="grid grid-cols-2 gap-4">
+        <FormField
+          control={form.control}
+          name="name"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>模型标识</FormLabel>
+              <FormControl>
+                <Input {...field} placeholder="如 gpt-4o、claude-sonnet-4、gemini-2.5-flash" />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="displayName"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>显示名</FormLabel>
+              <FormControl>
+                <Input {...field} placeholder="如 GPT-4o" />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
         />
       </div>
 
-      <BadgeField
-        text={state.badgeText}
-        color={state.badgeColor}
-        onTextChange={(v) => up("badgeText", v)}
-        onColorChange={(v) => up("badgeColor", v)}
+      <FormField
+        control={form.control}
+        name="description"
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>模型描述（可选）</FormLabel>
+            <FormControl>
+              <Textarea
+                rows={2}
+                {...field}
+                placeholder="展示在对话模型选择处，如：综合能力强，适合日常问答"
+                maxLength={300}
+              />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+
+      <FormField
+        control={form.control}
+        name="badgeText"
+        render={({ field }) => (
+          <FormItem>
+            <BadgeField
+              text={field.value}
+              color={badgeColor}
+              onTextChange={field.onChange}
+              onColorChange={(v) => form.setValue("badgeColor", v)}
+            />
+            <FormMessage />
+          </FormItem>
+        )}
       />
 
       {/* 接口格式 + API 地址 */}
-      <div className="grid gap-4 sm:grid-cols-[200px_1fr]">
-        <div className="grid gap-2">
-          <Label>接口格式</Label>
-          <Select
-            value={state.formatType}
-            onValueChange={(v) => up("formatType", v ?? "openai")}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue>
-                {CHAT_FORMAT_LABELS[state.formatType as keyof typeof CHAT_FORMAT_LABELS] ?? state.formatType}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {Object.entries(CHAT_FORMAT_LABELS).map(([value, label]) => (
-                <SelectItem key={value} value={value}>
-                  {label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="grid gap-2">
-          <Label htmlFor="cm-apiEndpoint">API 地址</Label>
-          <Input
-            id="cm-apiEndpoint"
-            value={state.apiEndpoint}
-            onChange={(e) => up("apiEndpoint", e.target.value)}
-            placeholder={CHAT_FORMAT_ENDPOINT_EXAMPLES[state.formatType as "openai"] ?? "https://api.example.com/v1"}
-            required
-          />
-          <p className="text-xs text-muted-foreground">
-            {FORMAT_ENDPOINT_HINTS[state.formatType] ?? FORMAT_ENDPOINT_HINTS.openai}
-          </p>
-        </div>
+      <div className="grid grid-cols-2 gap-4">
+        <FormField
+          control={form.control}
+          name="formatType"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>接口格式</FormLabel>
+              <Select
+                value={field.value}
+                onValueChange={(v) => field.onChange(v ?? "openai")}
+                items={Object.entries(CHAT_FORMAT_LABELS).map(([value, label]) => ({
+                  value,
+                  label,
+                }))}
+              >
+                <FormControl>
+                  <SelectTrigger className="w-full">
+                    <SelectValue>
+                      {CHAT_FORMAT_LABELS[field.value] ?? field.value}
+                    </SelectValue>
+                  </SelectTrigger>
+                </FormControl>
+                <SelectContent>
+                  {Object.entries(CHAT_FORMAT_LABELS).map(([value, label]) => (
+                    <SelectItem key={value} value={value}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="apiEndpoint"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>API 地址</FormLabel>
+              <FormControl>
+                <Input
+                  {...field}
+                  placeholder={
+                    CHAT_FORMAT_ENDPOINT_EXAMPLES[
+                      formatType as "openai"
+                    ] ?? "https://api.example.com/v1"
+                  }
+                />
+              </FormControl>
+              <p className="text-xs text-muted-foreground">
+                {FORMAT_ENDPOINT_HINTS[formatType] ?? FORMAT_ENDPOINT_HINTS.openai}
+              </p>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div className="grid gap-2">
-          <Label>模型图标</Label>
-          <ModelIconUpload
-            value={state.iconUrl || null}
-            onChange={(url) => up("iconUrl", url ?? "")}
-          />
-        </div>
-        <div className="grid gap-2">
-          <Label htmlFor="cm-apiKey">API Key</Label>
-          <Input
-            id="cm-apiKey"
-            type="password"
-            value={state.apiKey}
-            onChange={(e) => up("apiKey", e.target.value)}
-            placeholder={isEdit ? "留空则不修改" : "请输入 API Key"}
-            required={!isEdit}
-          />
-        </div>
+      <div className="grid grid-cols-2 gap-4">
+        <FormField
+          control={form.control}
+          name="iconUrl"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>模型图标</FormLabel>
+              <FormControl>
+                <ModelIconUpload
+                  value={field.value || null}
+                  onChange={(url) => field.onChange(url ?? "")}
+                />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="apiKey"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>API Key</FormLabel>
+              <FormControl>
+                <Input
+                  type="password"
+                  {...field}
+                  placeholder={isEdit ? "留空则不修改" : "请输入 API Key"}
+                />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
       </div>
 
       {/* 能力与计费（/chat 交互对话专用） */}
-      <div className="grid gap-4 rounded-md border p-3 sm:grid-cols-2">
-        <div className="grid gap-2">
-          <Label htmlFor="cm-maxContextTokens">最大上下文（tokens）</Label>
-          <Input
-            id="cm-maxContextTokens"
-            type="number"
-            min={1024}
-            max={2000000}
-            value={state.maxContextTokens}
-            onChange={(e) => up("maxContextTokens", e.target.value)}
-            placeholder="32768"
-          />
-          <p className="text-xs text-muted-foreground">上下文进度环分母，超限自动省略早期消息</p>
-        </div>
-        <div className="grid gap-2">
-          <Label htmlFor="cm-maxOutputTokens">单次最大输出（tokens）</Label>
-          <Input
-            id="cm-maxOutputTokens"
-            type="number"
-            min={256}
-            max={1000000}
-            value={state.maxOutputTokens}
-            onChange={(e) => up("maxOutputTokens", e.target.value)}
-            placeholder="4096"
-          />
-          <p className="text-xs text-muted-foreground">单条回复的 max_tokens 上限</p>
-        </div>
-        <div className="grid gap-2">
-          <Label htmlFor="cm-inputPrice">百万输入 token 价格（积分）</Label>
-          <Input
-            id="cm-inputPrice"
-            type="number"
-            min={0}
-            step={0.01}
-            value={state.inputPrice}
-            onChange={(e) => up("inputPrice", e.target.value)}
-            placeholder="0（免费）"
-          />
-          <p className="text-xs text-muted-foreground">
-            精确到 0.01 积分；留空或 0 = 免费
-          </p>
-        </div>
-        <div className="grid gap-2">
-          <Label htmlFor="cm-outputPrice">百万输出 token 价格（积分）</Label>
-          <Input
-            id="cm-outputPrice"
-            type="number"
-            min={0}
-            step={0.01}
-            value={state.outputPrice}
-            onChange={(e) => up("outputPrice", e.target.value)}
-            placeholder="0（免费）"
-          />
-        </div>
-        <div className="flex items-center justify-between gap-3 sm:col-span-2">
-          <div>
-            <Label htmlFor="cm-supportsThinking">支持思考强度</Label>
-            <p className="text-xs text-muted-foreground">
-              开启后用户可滑动选择 关闭 / 低 / 中 / 高 / 加强 / 最大 / 极限 思考强度
-            </p>
-          </div>
-          <Switch
-            id="cm-supportsThinking"
-            checked={state.supportsThinking}
-            onCheckedChange={(v) => up("supportsThinking", v)}
-          />
-        </div>
-
-        <div className="flex items-center justify-between gap-3 sm:col-span-2">
-          <div>
-            <Label htmlFor="cm-supportsVision">支持多模态（图片输入）</Label>
-            <p className="text-xs text-muted-foreground">
-              开启后用户可在对话输入框点击 @ 上传图片（需模型本身支持图片理解）
-            </p>
-          </div>
-          <Switch
-            id="cm-supportsVision"
-            checked={state.supportsVision}
-            onCheckedChange={(v) => up("supportsVision", v)}
-          />
-        </div>
+      <div className="grid gap-4 rounded-md border p-3 grid-cols-1 sm:grid-cols-2">
+        <FormField
+          control={form.control}
+          name="maxContextTokens"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>最大上下文（tokens）</FormLabel>
+              <FormControl>
+                <Input type="number" min={1024} max={2000000} {...field} placeholder="32768" />
+              </FormControl>
+              <p className="text-xs text-muted-foreground">
+                上下文进度环分母，超限自动省略早期消息
+              </p>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="maxOutputTokens"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>单次最大输出（tokens）</FormLabel>
+              <FormControl>
+                <Input type="number" min={256} max={1000000} {...field} placeholder="4096" />
+              </FormControl>
+              <p className="text-xs text-muted-foreground">单条回复的 max_tokens 上限</p>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="inputPrice"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>百万输入 token 价格（积分）</FormLabel>
+              <FormControl>
+                <Input type="number" min={0} step={0.01} {...field} placeholder="0（免费）" />
+              </FormControl>
+              <p className="text-xs text-muted-foreground">
+                精确到 0.01 积分；留空或 0 = 免费
+              </p>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="outputPrice"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>百万输出 token 价格（积分）</FormLabel>
+              <FormControl>
+                <Input type="number" min={0} step={0.01} {...field} placeholder="0（免费）" />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="supportsThinking"
+          render={({ field }) => (
+            <FormItem>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <FormLabel>支持思考强度</FormLabel>
+                  <p className="text-xs text-muted-foreground">
+                    开启后用户可滑动选择 关闭 / 低 / 中 / 高 / 加强 / 最大 / 极限 思考强度
+                  </p>
+                </div>
+                <FormControl>
+                  <Switch checked={field.value} onCheckedChange={field.onChange} />
+                </FormControl>
+              </div>
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="supportsVision"
+          render={({ field }) => (
+            <FormItem>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <FormLabel>支持多模态（图片输入）</FormLabel>
+                  <p className="text-xs text-muted-foreground">
+                    开启后用户可在对话输入框点击 @ 上传图片（需模型本身支持图片理解）
+                  </p>
+                </div>
+                <FormControl>
+                  <Switch checked={field.value} onCheckedChange={field.onChange} />
+                </FormControl>
+              </div>
+            </FormItem>
+          )}
+        />
 
         {/* 思考档位参数覆盖（管理员自定义高档位参数，先测试再投产） */}
-        {state.supportsThinking ? (
+        {supportsThinking ? (
           <div className="grid gap-3 border-t pt-3 sm:col-span-2">
             <div>
-              <Label>思考档位参数覆盖（可选）</Label>
+              <FormLabel>思考档位参数覆盖（可选）</FormLabel>
               <p className="text-xs text-muted-foreground">
-                {OVERRIDE_HINTS[state.formatType] ?? OVERRIDE_HINTS.openai}
+                {OVERRIDE_HINTS[formatType] ?? OVERRIDE_HINTS.openai}
                 ；留空档位使用内置默认值。建议覆盖后先在对话页测试再投入生产。
               </p>
             </div>
-            <div className="grid gap-3 sm:grid-cols-3">
+            <div className="grid gap-3 grid-cols-1 sm:grid-cols-3">
               {CHAT_ACTIVE_THINKING_LEVELS.map((level) => {
-                const form = state.thinkingOverrides[level]
-                const isTokenFormat =
-                  state.formatType === "claude" || state.formatType === "gemini"
+                const row = overrides[level]
+                const isTokenFormat = formatType === "claude" || formatType === "gemini"
                 const id = `cm-thinking-${level}`
                 return (
                   <div key={level} className="grid gap-1.5">
-                    <Label htmlFor={id} className="text-xs">
+                    <FormLabel htmlFor={id} className="text-xs">
                       {THINKING_LEVEL_LABELS[level]}
-                    </Label>
+                    </FormLabel>
                     {isTokenFormat ? (
                       <Input
                         id={id}
                         type="number"
                         min={-1}
-                        value={form.budgetTokens}
+                        value={row?.budgetTokens ?? ""}
                         onChange={(e) =>
                           upOverride(level, "budgetTokens", e.target.value)
                         }
                         placeholder={String(
-                          state.formatType === "gemini"
+                          formatType === "gemini"
                             ? GEMINI_THINKING_BUDGETS[level]
                             : CLAUDE_THINKING_BUDGETS[level],
                         )}
@@ -529,7 +695,7 @@ export function ChatModelFields({
                     ) : (
                       <Input
                         id={id}
-                        value={form.effort}
+                        value={row?.effort ?? ""}
                         onChange={(e) => upOverride(level, "effort", e.target.value)}
                         placeholder={OPENAI_REASONING_EFFORTS[level]}
                       />
@@ -543,75 +709,93 @@ export function ChatModelFields({
       </div>
 
       {/* 生成参数（留空 = 默认；工作台内部 AI 消费） */}
-      <div className="grid gap-4 rounded-md border p-3 sm:grid-cols-2">
-        <div className="grid gap-2">
-          <Label htmlFor="cm-temperature">Temperature（0-2，留空 = 0.8）</Label>
-          <Input
-            id="cm-temperature"
-            type="number"
-            min={0}
-            max={2}
-            step={0.1}
-            value={state.temperature}
-            onChange={(e) => up("temperature", e.target.value)}
-            placeholder="0.8"
-          />
-        </div>
-        <div className="grid gap-2">
-          <Label htmlFor="cm-maxTokens">Max Tokens（留空 = 不限制）</Label>
-          <Input
-            id="cm-maxTokens"
-            type="number"
-            min={0}
-            value={state.maxTokens}
-            onChange={(e) => up("maxTokens", e.target.value)}
-            placeholder="不限制"
-          />
-        </div>
+      <div className="grid gap-4 rounded-md border p-3 grid-cols-1 sm:grid-cols-2">
+        <FormField
+          control={form.control}
+          name="temperature"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Temperature（0-2，留空 = 0.8）</FormLabel>
+              <FormControl>
+                <Input type="number" min={0} max={2} step={0.1} {...field} placeholder="0.8" />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="maxTokens"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Max Tokens（留空 = 不限制）</FormLabel>
+              <FormControl>
+                <Input type="number" min={0} {...field} placeholder="不限制" />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-4">
-        <div className="grid gap-2">
-          <Label htmlFor="cm-maxConcurrent">最大并发</Label>
-          <Input
-            id="cm-maxConcurrent"
-            type="number"
-            min={1}
-            max={9999}
-            value={state.maxConcurrent}
-            onChange={(e) => up("maxConcurrent", Number(e.target.value))}
-          />
-        </div>
-        <div className="grid gap-2">
-          <Label htmlFor="cm-maxRetries">最大重试</Label>
-          <Input
-            id="cm-maxRetries"
-            type="number"
-            min={0}
-            value={state.maxRetries}
-            onChange={(e) => up("maxRetries", Number(e.target.value))}
-          />
-        </div>
-        <div className="grid gap-2">
-          <Label htmlFor="cm-apiTimeout">请求超时(秒)</Label>
-          <Input
-            id="cm-apiTimeout"
-            type="number"
-            min={1}
-            value={state.apiTimeout}
-            onChange={(e) => up("apiTimeout", Number(e.target.value))}
-          />
-        </div>
-        <div className="grid gap-2">
-          <Label htmlFor="cm-taskTimeout">任务总超时(秒)</Label>
-          <Input
-            id="cm-taskTimeout"
-            type="number"
-            min={0}
-            value={state.taskTimeout}
-            onChange={(e) => up("taskTimeout", Number(e.target.value))}
-          />
-        </div>
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <FormField
+          control={form.control}
+          name="maxConcurrent"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>最大并发</FormLabel>
+              <FormControl>
+                <Input
+                  type="number"
+                  min={1}
+                  max={9999}
+                  {...intField(field)}
+                />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="maxRetries"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>最大重试</FormLabel>
+              <FormControl>
+                <Input type="number" min={0} {...intField(field)} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="apiTimeout"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>请求超时(秒)</FormLabel>
+              <FormControl>
+                <Input type="number" min={1} {...intField(field)} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="taskTimeout"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>任务总超时(秒)</FormLabel>
+              <FormControl>
+                <Input type="number" min={0} {...intField(field)} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
       </div>
     </>
   )

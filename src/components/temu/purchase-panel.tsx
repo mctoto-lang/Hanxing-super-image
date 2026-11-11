@@ -42,6 +42,7 @@ import {
   type TemuPurchaseOrderRow,
 } from "@/server/actions/temu-fulfillment"
 import { addShipStagingAction, getShipInventoryRefAction } from "@/server/actions/temu-ship"
+import { getPriorityShipLinksAction } from "@/server/actions/temu"
 import { AutoApplyDialog, AutoJoinDialog, type AutoStockStore } from "./auto-stock-dialogs"
 import { ProductNameCell, EmptyHint } from "@/components/temu/products-table"
 import { TruncTip } from "@/components/temu/trunc-tip"
@@ -129,10 +130,23 @@ export function TemuPurchasePanel({
   const [partialErrors, setPartialErrors] = React.useState<Array<{ store: string; error: string }>>([])
   /** 库存参考（批次4）：货号 → 库存合计 + 已创建未装箱（充足/不足徽章参考） */
   const [invRef, setInvRef] = React.useState<Record<string, { totalQty: number; pendingUnpacked: number }>>({})
+  /** 优先发货链接集合（商品信息页设置菜单打的本地标记）：标记列按 productSkcId 匹配 */
+  const [prioritySkcs, setPrioritySkcs] = React.useState<Set<string>>(new Set())
   const [loading, startLoading] = React.useTransition()
   const [canceling, setCanceling] = React.useState<Array<{ sn: string; storeId: string }> | null>(null)
   const [joining, setJoining] = React.useState<{ sn: string; storeId: string } | null>(null)
   const [joiningPending, setJoiningPending] = React.useState(false)
+
+  // 优先发货标记与企业店铺视图无关（集合含全部店），进面板拉一次
+  React.useEffect(() => {
+    let cancelled = false
+    void getPriorityShipLinksAction().then((r) => {
+      if (!cancelled) setPrioritySkcs(new Set(r.skcIds))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   React.useEffect(() => {
     const codes = [...new Set(rows.map((r) => r.productSn).filter((c): c is string => Boolean(c)))]
@@ -321,9 +335,9 @@ export function TemuPurchasePanel({
                   <TableHead className="w-28">子单号</TableHead>
                   <TableHead className="w-36">建议 / 下单 / 发货</TableHead>
                   <TableHead className="w-32">库存参考</TableHead>
-                  <TableHead className="w-24 text-center">备货类型</TableHead>
-                  <TableHead className="w-28 text-center">状态</TableHead>
-                  <TableHead className="w-24 text-center">标记</TableHead>
+                  <TableHead className="w-24">备货类型</TableHead>
+                  <TableHead className="w-28">状态</TableHead>
+                  <TableHead className="w-24">标记</TableHead>
                   {/* 单店筛选下店铺列冗余，隐藏让表格更紧凑 */}
                   {!store && <TableHead className="w-24">店铺</TableHead>}
                   <TableHead className="w-40">最晚发货</TableHead>
@@ -380,7 +394,7 @@ export function TemuPurchasePanel({
                       <TableCell className="text-xs">
                         {(() => {
                           const ref = r.productSn ? invRef[r.productSn] : undefined
-                          if (!ref) return <EmptyHint center />
+                          if (!ref) return <EmptyHint />
                           const toDeliver = Math.max(0, (r.purchaseTotal ?? 0) - (r.deliverTotal ?? 0))
                           const okStock = ref.totalQty >= toDeliver && toDeliver > 0
                           const lack = toDeliver > 0 && ref.totalQty < toDeliver
@@ -410,18 +424,18 @@ export function TemuPurchasePanel({
                           )
                         })()}
                       </TableCell>
-                      <TableCell className="text-center">
+                      <TableCell>
                         {r.stockingType === 1 ? (
                           <Badge className="rounded-[4px] bg-violet-500/15 text-violet-700 dark:text-violet-400">海外备货</Badge>
                         ) : (
                           <Badge className="rounded-[4px] bg-blue-500/15 text-blue-700 dark:text-blue-400">常规备货</Badge>
                         )}
                       </TableCell>
-                      <TableCell className="text-center">
+                      <TableCell>
                         <StatusBadge status={r.status} label={r.statusLabel} />
                       </TableCell>
-                      <TableCell className="text-center">
-                        <div className="flex flex-wrap justify-center gap-1">
+                      <TableCell>
+                        <div className="flex flex-wrap gap-1">
                           {r.urgencyType === 1 && (
                             <Badge className="gap-0.5 rounded-[4px] bg-red-500/15 text-red-700 dark:text-red-400">
                               <Flame className="size-3" /> 紧急
@@ -435,6 +449,11 @@ export function TemuPurchasePanel({
                           )}
                           {r.todayCanDeliver && (
                             <Badge className="rounded-[4px] bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">今日可发</Badge>
+                          )}
+                          {r.productSkcId != null && prioritySkcs.has(String(r.productSkcId)) && (
+                            <Badge className="gap-0.5 rounded-[4px] bg-cyan-500/15 text-cyan-700 dark:text-cyan-400">
+                              <Zap className="size-3" /> 优先发货
+                            </Badge>
                           )}
                         </div>
                       </TableCell>
@@ -454,11 +473,11 @@ export function TemuPurchasePanel({
                             {fmtTs(r.expectLatestDeliverTime)}
                           </span>
                         ) : (
-                          <EmptyHint center />
+                          <EmptyHint />
                         )}
                       </TableCell>
                       <TableCell>
-                        <div className="flex flex-wrap justify-end gap-1">
+                        <div className="flex flex-wrap justify-start gap-1">
                           {canJoinStage(r) && (
                             <Tooltip>
                               <TooltipTrigger

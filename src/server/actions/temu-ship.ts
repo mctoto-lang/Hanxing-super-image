@@ -1,7 +1,7 @@
 "use server"
 
 import { createHash } from "node:crypto"
-import { and, asc, desc, eq, gte, inArray, isNotNull, lt, ne, sql } from "drizzle-orm"
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import {
   temuStores,
@@ -12,6 +12,7 @@ import {
   temuLogisticsConfig,
   inventoryProducts,
   inventoryStocks,
+  inventoryMovements,
   type TemuShipReceiveAddress,
 } from "@/db/schema"
 import type { ModuleName } from "@/db/schema/_shared"
@@ -25,12 +26,16 @@ import {
   type TemuCallContext,
 } from "@/lib/temu-api/client"
 import { getTemuCallContext, upsertShipOrderRows } from "@/server/services/temu-sync"
+import { SHIP_ORDER_STATUS } from "@/lib/temu-api/workbench-labels"
 import { invalidateTemuCache, temuCached } from "@/server/services/temu-cache"
 import {
   assertShipmentStock,
+  assertShipmentStockAggregated,
   deductShipmentInventory,
   getMainWarehouseId,
+  loadProductMapBySnKey,
   normalizeSn,
+  requireInventory,
 } from "@/server/services/inventory-core"
 import { temuDayStr, temuStartOfToday, temuStartOfWeek } from "@/server/services/temu-time"
 import {
@@ -157,8 +162,9 @@ async function loadMallAddressLabels(store: StoreRow): Promise<Map<number, strin
   }
 }
 
-/** shiporderv2 按单号回查 → 本地落库（写操作成功后即时刷新 / 列表 fresh 实时核对；sns ≤50）。
- *  返回官方实际返回的单号集合——缺席的单=官方侧已移除/删除。 */
+/** shiporderv2 按单号回查 → 本地落库（写操作成功后即时刷新 / 列表 fresh 实时核对；
+ *  sns ≤20——官方单次名单上限，超出报 3000000）。返回官方实际返回的单号集合——
+ *  缺席的单=官方侧已移除/删除。 */
 async function upsertFromOfficial(
   storeId: string,
   ctx: TemuCallContext,
@@ -194,6 +200,57 @@ async function upsertLatestPage(
   const rows = asList((r.result as { list?: unknown } | null)?.list)
   if (rows.length > 0) await upsertShipOrderRows(storeId, new Date(), rows)
   return { fetched: rows.length }
+}
+
+/** fresh 实时拉取单店（发货页列表 / 库存「TEMU发货单同步」共用）：
+ *  ① 裸查最新一页落库（新建单/待装箱单由此进入本地库；本地无行也执行，空表才拉得到新单）
+ *  ② 按传入单号回查官方回写；官方已不存在的单（超时移除等）本地置为已取消，收敛「死单」。
+ *  rowMetaBySn 供缺席收敛判定（官方索引延迟保护：创建未满 30 分钟不判死，下一轮同步/刷新
+ *  收敛真状态；只有待装箱(0)/待收货(1)可能被官方超时移除，已收货(2)/已入库(3)等历史单
+ *  缺席多因超出官方保留期，缺席≠已取消不得改写）。裸查被节流（4000000）时跳过不阻断
+ *  核对；其余错误上抛由调用方降级为本地数据。 */
+async function freshPullStore(
+  storeId: string,
+  ctx: TemuCallContext,
+  sns: string[],
+  rowMetaBySn: Map<string, { status: number; born: Date }>,
+): Promise<{ fetched: number; missing: number }> {
+  let fetched = 0
+  // ① 最新一页（shiporderv2 翻页节流 4000000 实测多发）
+  try {
+    fetched += (await upsertLatestPage(storeId, ctx)).fetched
+  } catch (err) {
+    if (!(err instanceof TemuApiError && err.errorCode === 4000000)) throw err
+  }
+  // ② 单号核对（sns 为空=本地空表，只裸查不核对；官方单次名单上限 20——超出报
+  // 3000000「发货单号数量范围需要在1~20之间」（2026-11-10 库存侧实测），分批回查）
+  if (sns.length === 0) return { fetched, missing: 0 }
+  const present = new Set<string>()
+  for (let i = 0; i < sns.length; i += 20) {
+    const verified = await upsertFromOfficial(storeId, ctx, sns.slice(i, i + 20))
+    fetched += verified.fetched
+    for (const sn of verified.presentSns) present.add(sn)
+  }
+  const missing = sns.filter((sn) => !present.has(sn))
+  const nowMs = Date.now()
+  const killable = missing.filter((sn) => {
+    const meta = rowMetaBySn.get(sn)
+    if (meta?.status !== 0 && meta?.status !== 1) return false
+    return nowMs - meta.born.getTime() > 30 * 60_000
+  })
+  if (killable.length > 0) {
+    await db
+      .update(temuShipOrders)
+      .set({ status: 5 })
+      .where(
+        and(
+          eq(temuShipOrders.storeId, storeId),
+          inArray(temuShipOrders.deliveryOrderSn, killable),
+          inArray(temuShipOrders.status, [0, 1]),
+        ),
+      )
+  }
+  return { fetched, missing: killable.length }
 }
 
 /** 装箱发货成功后的库存扣减（批次4 实装）：
@@ -377,9 +434,8 @@ export async function getTemuShipOrdersAction(input: unknown) {
   }
 
   // fresh 实时拉取（进入列表/手动刷新即拉实时单，不再等 15 分钟同步）：
-  // ① 裸查最新一页落库（新建单/待装箱单由此进入本地库；本地无行也执行，空表视图才拉得到新单）
-  // ② 按当前页单号回查官方回写；官方已不存在的单（超时移除等）本地置为已取消，收敛「死单」；
-  // 官方调用失败降级返回本地数据。
+  // 最新一页落库 + 当前页单号核对收敛官方已移除单（freshPullStore 与库存发货单同步
+  // 共用）；官方调用失败降级返回本地数据。
   let freshStats: { fetched: number; missing: number } | undefined
   let freshWarning: string | undefined
   if (q.fresh) {
@@ -389,48 +445,17 @@ export async function getTemuShipOrdersAction(input: unknown) {
       if ("error" in built) {
         freshWarning = `实时拉取已跳过（${built.error}），当前为本地同步数据`
       } else {
-        let fetched = 0
-        // ① 最新一页（shiporderv2 翻页节流 4000000 实测多发：裸查被节流时跳过，不阻断后续核对）
-        try {
-          fetched += (await upsertLatestPage(guard.store.id, built)).fetched
-        } catch (err) {
-          if (!(err instanceof TemuApiError && err.errorCode === 4000000)) throw err
-        }
-        // ② 当前页单号核对
-        if (first.rows.length > 0) {
-          const sns = first.rows.map((r) => r.order.deliveryOrderSn)
-          const verified = await upsertFromOfficial(guard.store.id, built, sns)
-          fetched += verified.fetched
-          const present = new Set(verified.presentSns)
-          const missing = sns.filter((sn) => !present.has(sn))
-          // 官方索引延迟保护：创建未满 30 分钟的单不因回查缺席判「已取消」
-          //（新建待装箱单按单号回查可能滞后数分钟；下一轮同步/刷新会收敛真状态）
-          const nowMs = Date.now()
-          const rowBySn = new Map(first.rows.map((x) => [x.order.deliveryOrderSn, x.order]))
-          // 只有待装箱(0)/待收货(1)可能被官方超时移除；已收货(2)/已入库(3)/已退货(4)
-          // 的历史单按单号回查缺席多因超出官方保留期，缺席≠已取消，不得改写
-          const killable = missing.filter((sn) => {
-            const row = rowBySn.get(sn)
-            if (row?.status !== 0 && row?.status !== 1) return false
-            const born = row.deliveryOrderCreateTime?.getTime() ?? row.capturedAt.getTime()
-            return nowMs - born > 30 * 60_000
-          })
-          if (killable.length > 0) {
-            await db
-              .update(temuShipOrders)
-              .set({ status: 5 })
-              .where(
-                and(
-                  eq(temuShipOrders.storeId, guard.store.id),
-                  inArray(temuShipOrders.deliveryOrderSn, killable),
-                  inArray(temuShipOrders.status, [0, 1]),
-                ),
-              )
-          }
-          freshStats = { fetched, missing: killable.length }
-        } else {
-          freshStats = { fetched, missing: 0 }
-        }
+        freshStats = await freshPullStore(
+          guard.store.id,
+          built,
+          first.rows.map((r) => r.order.deliveryOrderSn),
+          new Map(
+            first.rows.map((x) => [
+              x.order.deliveryOrderSn,
+              { status: x.order.status, born: x.order.deliveryOrderCreateTime ?? x.order.capturedAt },
+            ] as const),
+          ),
+        )
       }
     } catch (err) {
       freshWarning = `实时拉取失败（${await toWorkbenchError(guard.store.id, err)}），已返回本地数据`
@@ -2274,4 +2299,397 @@ export async function updateLogisticsConfigAction(input: {
   } catch (err) {
     return { ok: false as const, error: err instanceof Error ? err.message : "保存失败" }
   }
+}
+
+/* ─── TEMU 发货单同步（库存出入 tab；官方后台发的单不走本系统 packing.send，
+       无 ship_deduct 流水——此入口供人工核对后一键补扣，2026-11-09） ─── */
+
+export interface TemuSyncShipOrderRow {
+  deliveryOrderSn: string
+  storeId: string
+  /** 归属店铺名（跨店同单号去重后留存的店） */
+  storeName: string | null
+  subPurchaseOrderSn: string | null
+  productSkcId: number | null
+  skcExtCode: string | null
+  /** 商品名（确认弹窗汇总展示用） */
+  productName: string | null
+  /** 主图（发货单快照 kwcdn 优先，temu_product 转存/主图兜底） */
+  mainImageUrl: string | null
+  mainImageCosUrl: string | null
+  /** 发货数量（SKC 件） */
+  deliverSkcNum: number | null
+  /** 收货仓库 */
+  subWarehouseName: string | null
+  /** 发货仓库（卖家发货地址 id；官方后台直发存量单可能为空） */
+  deliveryAddressId: number | null
+  /** 发货仓库标签（mall.address 按店映射；查不到降级「地址 {id}」） */
+  deliveryAddressLabel: string | null
+  /** 物流公司 / 运单号 */
+  expressCompany: string | null
+  expressDeliverySn: string | null
+  /** 货号当前库存合计（归一化匹配档案；未建档 0） */
+  totalQty: number
+  status: number
+  statusLabel: string
+  deliverTime: string | null
+  receiveTime: string | null
+  /** 工厂直发单不参与库存扣减（货从工厂直发 TEMU），列表恒排除 */
+  factoryDirect: boolean
+  /** 已有 ship_deduct 流水（幂等键 refId=单号） */
+  synced: boolean
+}
+
+/** 本企业已扣减（ship_deduct）的发货单号集合 */
+async function loadDeductedSnSet(enterpriseId: string): Promise<Set<string>> {
+  const rows = await db
+    .select({ refId: inventoryMovements.refId })
+    .from(inventoryMovements)
+    .where(
+      and(
+        eq(inventoryMovements.enterpriseId, enterpriseId),
+        eq(inventoryMovements.type, "ship_deduct"),
+        eq(inventoryMovements.refType, "ship_order"),
+      ),
+    )
+  return new Set(rows.map((r) => r.refId).filter((v): v is string => !!v))
+}
+
+/**
+ * TEMU 发货单同步列表（库存出入 tab 子视图）：本企业各店本地发货单快照，
+ * 已发货（deliverTime 非空）、非工厂直发，按发货日期（北京日界，fromDay/toDay
+ * 为 yyyy-MM-dd 含两端）筛选，标注是否已扣减并附带货号当前库存合计（扣减后
+ * 预览=totalQty−数量）。行附店铺名与发货仓库标签（mall.address 按店 30s 缓存，
+ * 查不到降级「地址 {id}」）；返回 warehouses=当前筛选结果中出现过的发货地址选项。
+ * fresh=true（进入子视图/点刷新）时各店实时拉取官方最新单（freshPullStore，
+ * 与发货页列表共用：最新一页落库 + 基准单号核对收敛官方已移除单），失败降级本地数据。
+ */
+export async function getTemuSyncShipOrdersAction(input: {
+  fromDay?: string
+  toDay?: string
+  /** 发货出库筛选：pending=待出库（待仓库收货 [1]，默认）/ done=已出库已收货（[2,3,6]）/
+   *  all=全部已发货（[1,2,3,6]，排除 0 未发货/4 退货/5 取消——无扣减意义） */
+  statusGroup?: "pending" | "done" | "all"
+  onlyUnsynced?: boolean
+  /** 发货仓库筛选（卖家发货地址 id；空=全部仓库） */
+  warehouseId?: number
+  /** 实时拉取官方最新单（进入子视图/手动刷新；筛选变化不带） */
+  fresh?: boolean
+}): Promise<
+  | {
+      ok: true
+      rows: TemuSyncShipOrderRow[]
+      total: number
+      /** 发货仓库下拉选项（当前筛选结果中出现过的地址，label zh-CN 排序） */
+      warehouses: Array<{ id: number; label: string }>
+      /** fresh 实时拉取统计（两次官方调用返回行数合计 / 收敛为已取消的单数） */
+      freshStats?: { fetched: number; missing: number }
+      /** fresh 部分店铺失败/跳过提示（全店成功无此字段） */
+      freshWarning?: string
+    }
+  | { ok: false; error: string }
+> {
+  const g = await requireInventory()
+  if (!g.ok) return { ok: false, error: g.error }
+  const { enterpriseId } = g
+
+  // 整行取回（StoreRow）：storeName 直接 select、发货仓库标签加载需要店铺上下文
+  const storeRows = await db
+    .select()
+    .from(temuStores)
+    .where(eq(temuStores.enterpriseId, enterpriseId))
+  if (storeRows.length === 0) return { ok: true, rows: [], total: 0, warehouses: [] }
+  const ids = storeRows.map((s) => s.id)
+
+  const statusList =
+    input.statusGroup === "done"
+      ? [2, 3, 6]
+      : input.statusGroup === "all"
+        ? [1, 2, 3, 6]
+        : [1] // 默认待出库（待仓库收货）：已发出、仓库未确认——正是库存该扣未扣的窗口
+  const conds = [
+    inArray(temuShipOrders.storeId, ids),
+    inArray(temuShipOrders.status, statusList),
+    isNotNull(temuShipOrders.deliverTime),
+    // 工厂直发不参与库存体系（官方同步进来的存量单 factoryDirect 为 null，视同常规单）
+    or(isNull(temuShipOrders.factoryDirect), eq(temuShipOrders.factoryDirect, false)),
+  ]
+  if (input.fromDay && /^\d{4}-\d{2}-\d{2}$/.test(input.fromDay)) {
+    conds.push(gte(temuShipOrders.deliverTime, new Date(`${input.fromDay}T00:00:00+08:00`)))
+  }
+  if (input.toDay && /^\d{4}-\d{2}-\d{2}$/.test(input.toDay)) {
+    const end = new Date(new Date(`${input.toDay}T00:00:00+08:00`).getTime() + 86400_000)
+    conds.push(lt(temuShipOrders.deliverTime, end))
+  }
+  // 跨店去重（同 loadTemuShipStats 口径）：官方 shiporderv2 同主体跨店可见，同一物理
+  // 发货单会在多店各落一行（本地唯一键=店+单号）——保留 captured_at 最新一行
+  // （最新鲜快照；同刻平手取 store_id 最小），子查询限定本次店铺集合防跨企业单号碰撞；
+  // 单店唯一键天然无重复，不加
+  if (ids.length > 1) {
+    conds.push(
+      sql`not exists (
+        select 1 from temu_ship_order x
+        where x.delivery_order_sn = ${temuShipOrders.deliveryOrderSn}
+          and ${inArray(sql`x.store_id`, ids)}
+          and (
+            x.captured_at > ${temuShipOrders.capturedAt}
+            or (x.captured_at = ${temuShipOrders.capturedAt} and x.store_id < ${temuShipOrders.storeId})
+          )
+      )`,
+    )
+  }
+
+  const fetchRows = () =>
+    db
+      .select({
+        order: temuShipOrders,
+        storeName: temuStores.name,
+        productName: temuProducts.productName,
+        mainImageCosUrl: temuProducts.mainImageCosUrl,
+        mainImageUrl: temuProducts.mainImageUrl,
+      })
+      .from(temuShipOrders)
+      .leftJoin(temuStores, eq(temuStores.id, temuShipOrders.storeId))
+      .leftJoin(
+        temuProducts,
+        and(
+          eq(temuProducts.storeId, temuShipOrders.storeId),
+          sql`cast(${temuShipOrders.productSkcId} as varchar) = ${temuProducts.productSkcId}`,
+        ),
+      )
+      .where(and(...conds))
+      .orderBy(desc(temuShipOrders.deliverTime))
+      .limit(500)
+
+  // fresh 实时拉取（口径同发货页列表）：各店并行 ①裸查最新一页落库 ②基准单号核对
+  // 收敛官方已移除单（freshPullStore 共用；各店独立 3qps 限速桶，并行不互挤）。
+  // 未录入 token 的店静默跳过（本就无官方数据可拉）；其余失败进 freshWarning 降级本地。
+  let freshStats: { fetched: number; missing: number } | undefined
+  let freshWarning: string | undefined
+  if (input.fresh) {
+    const baseline = await fetchRows()
+    // 按店分组基准单号（跨店去重后归属行；deliverTime 最新 ≤50——官方单次回查上限）
+    const snsByStore = new Map<string, string[]>()
+    const rowMetaBySn = new Map<string, { status: number; born: Date }>()
+    for (const r of baseline) {
+      const list = snsByStore.get(r.order.storeId) ?? []
+      if (list.length < 50) list.push(r.order.deliveryOrderSn)
+      snsByStore.set(r.order.storeId, list)
+      rowMetaBySn.set(r.order.deliveryOrderSn, {
+        status: r.order.status,
+        born: r.order.deliveryOrderCreateTime ?? r.order.capturedAt,
+      })
+    }
+    const pullable = storeRows.filter((s) => !!s.accessTokenEncrypted)
+    const problems: string[] = []
+    let fetched = 0
+    let missing = 0
+    await Promise.all(
+      pullable.map(async (store) => {
+        try {
+          const built = await getTemuCallContext(store)
+          if ("error" in built) {
+            problems.push(`${store.name}（${built.error}）`)
+            return
+          }
+          const r = await freshPullStore(store.id, built, snsByStore.get(store.id) ?? [], rowMetaBySn)
+          fetched += r.fetched
+          missing += r.missing
+        } catch (err) {
+          problems.push(`${store.name}（${await toWorkbenchError(store.id, err)}）`)
+        }
+      }),
+    )
+    freshStats = { fetched, missing }
+    if (problems.length > 0) {
+      freshWarning =
+        problems.length === pullable.length
+          ? `实时拉取失败/跳过：${problems.join("、")}，已返回本地数据`
+          : `实时拉取部分失败：${problems.join("、")}（其余店铺已实时核对）`
+    }
+  }
+
+  const rows = await fetchRows()
+
+  // 货号当前库存合计（同 getShipInventoryRefAction 口径：归一化匹配档案 + 全仓 sum）
+  const [productMap, stockRows] = await Promise.all([
+    loadProductMapBySnKey(enterpriseId),
+    db
+      .select({
+        productId: inventoryStocks.productId,
+        qty: sql<number>`coalesce(sum(${inventoryStocks.qty}), 0)::int`,
+      })
+      .from(inventoryStocks)
+      .where(eq(inventoryStocks.enterpriseId, enterpriseId))
+      .groupBy(inventoryStocks.productId),
+  ])
+  const stockByProduct = new Map(stockRows.map((r) => [r.productId, r.qty]))
+  const totalQtyOf = (extCode: string | null): number => {
+    if (!extCode) return 0
+    const product = productMap.get(normalizeSn(extCode))
+    return product ? (stockByProduct.get(product.id) ?? 0) : 0
+  }
+
+  const deducted = await loadDeductedSnSet(enterpriseId)
+  // 发货仓库标签：按结果中出现的店铺拉 mall.address 映射（30s 缓存、失败空表降级），
+  // 再跨店合并全局映射——同主体地址 id 全局唯一，一店标签缺失时另一店可补
+  const storeById = new Map(storeRows.map((s) => [s.id, s]))
+  const labelMaps = new Map(
+    await Promise.all(
+      [...new Set(rows.map((r) => r.order.storeId))].map(async (sid) => {
+        const store = storeById.get(sid)
+        return [
+          sid,
+          store ? await loadMallAddressLabels(store) : new Map<number, string>(),
+        ] as const
+      }),
+    ),
+  )
+  const mergedLabels = new Map<number, string>()
+  for (const m of labelMaps.values()) {
+    for (const [id, label] of m) if (!mergedLabels.has(id)) mergedLabels.set(id, label)
+  }
+  let mapped: TemuSyncShipOrderRow[] = rows.map((r) => ({
+    deliveryOrderSn: r.order.deliveryOrderSn,
+    storeId: r.order.storeId,
+    storeName: r.storeName,
+    subPurchaseOrderSn: r.order.subPurchaseOrderSn,
+    productSkcId: r.order.productSkcId ?? null,
+    skcExtCode: r.order.skcExtCode,
+    productName: r.productName,
+    mainImageUrl: r.order.productSkcPicture ?? r.mainImageUrl ?? null,
+    mainImageCosUrl: r.mainImageCosUrl ?? null,
+    deliverSkcNum: r.order.deliverSkcNum,
+    subWarehouseName: r.order.subWarehouseName ?? null,
+    deliveryAddressId: r.order.deliveryAddressId ?? null,
+    deliveryAddressLabel:
+      r.order.deliveryAddressId != null
+        ? (labelMaps.get(r.order.storeId)?.get(r.order.deliveryAddressId) ??
+          mergedLabels.get(r.order.deliveryAddressId) ??
+          `地址 ${r.order.deliveryAddressId}`)
+        : null,
+    expressCompany: r.order.expressCompany ?? null,
+    expressDeliverySn: r.order.expressDeliverySn ?? null,
+    totalQty: totalQtyOf(r.order.skcExtCode),
+    status: r.order.status,
+    statusLabel: SHIP_ORDER_STATUS[r.order.status] ?? `状态 ${r.order.status}`,
+    deliverTime: r.order.deliverTime?.toISOString() ?? null,
+    receiveTime: r.order.receiveTime?.toISOString() ?? null,
+    factoryDirect: r.order.factoryDirect ?? false,
+    synced: deducted.has(r.order.deliveryOrderSn),
+  }))
+  if (input.onlyUnsynced) mapped = mapped.filter((r) => !r.synced)
+  // 发货仓库筛选选项：当前筛选结果（日期/状态/仅未同步）中出现过的地址，先于仓库
+  // 过滤计算——选项不随已选仓库收缩；标签优先取跨店合并映射，全 miss 降级「地址 {id}」
+  const addrIds = new Set<number>()
+  for (const r of mapped) {
+    if (r.deliveryAddressId != null) addrIds.add(r.deliveryAddressId)
+  }
+  const warehouses = [...addrIds]
+    .map((id) => ({ id, label: mergedLabels.get(id) ?? `地址 ${id}` }))
+    .sort((a, b) => a.label.localeCompare(b.label, "zh-CN"))
+  if (input.warehouseId != null) {
+    mapped = mapped.filter((r) => r.deliveryAddressId === input.warehouseId)
+  }
+  const total = mapped.length
+  return {
+    ok: true,
+    rows: mapped,
+    total,
+    warehouses,
+    ...(freshStats ? { freshStats } : {}),
+    ...(freshWarning ? { freshWarning } : {}),
+  }
+}
+
+/** 同步扣减（人工核对后触发）：全店待扣单货号需求按归一化码合并成总量预检缺口
+ *  （跨店同货号合计缺口也拦截；全过才扣，避免部分成功）→
+ *  deductShipmentInventory（幂等 per 单号：事务内查重+单号咨询锁串行化，
+ *  流水 reason=后台发货人工核对） */
+export async function syncTemuShipDeductAction(input: {
+  orders: Array<{ storeId: string; sn: string }>
+}): Promise<
+  | { ok: true; deducted: number }
+  | { ok: false; error: string; shortages?: Array<{ productCode: string; needed: number; available: number }> }
+> {
+  const g = await requireInventory()
+  if (!g.ok) return { ok: false, error: g.error }
+  const { enterpriseId, ctx } = g
+
+  const orders = (input.orders ?? []).filter((o) => o?.storeId && o?.sn).slice(0, 100)
+  if (orders.length === 0) return { ok: false, error: "未选择要同步的发货单" }
+
+  // 店铺归属校验（防跨企业越权）
+  const ownStores = await db
+    .select({ id: temuStores.id })
+    .from(temuStores)
+    .where(eq(temuStores.enterpriseId, enterpriseId))
+  const ownIds = new Set(ownStores.map((s) => s.id))
+  // 按单号去重：同一物理发货单可能被多店同步各落一行（前端列表已跨店去重，此处
+  // 防御性兜底）——重复计入会把同单数量算两份，预检误报库存不足
+  const seenSn = new Set<string>()
+  const byStore = new Map<string, string[]>()
+  for (const o of orders) {
+    if (!ownIds.has(o.storeId)) return { ok: false, error: "存在无权操作的店铺发货单" }
+    if (seenSn.has(o.sn)) continue
+    seenSn.add(o.sn)
+    const list = byStore.get(o.storeId) ?? []
+    list.push(o.sn)
+    byStore.set(o.storeId, list)
+  }
+
+  const warehouseId = await getMainWarehouseId(enterpriseId)
+  if (!warehouseId) return { ok: false, error: "库存未初始化（无主仓），无法扣减" }
+
+  // 已扣单剔除（幂等；预检与扣减都只对未扣单）
+  const deducted = await loadDeductedSnSet(enterpriseId)
+
+  // 全店合计预检：各店待扣单的货号需求按归一化码合并成总量后与主仓统一比较
+  // （库存档案与库存行是企业级，两店发同一货号映射同一 stock 行——逐店独立预检
+  //  各自通过与同一库存比较会漏掉跨店合计缺口，扣减阶段才失败产生部分扣减）；
+  //  任一货号不足即整体不动，返回缺口明细
+  const toDeduct: Array<{ storeId: string; sns: string[] }> = []
+  for (const [storeId, sns0] of byStore) {
+    const sns = [...new Set(sns0)].filter((sn) => !deducted.has(sn))
+    if (sns.length === 0) continue
+    toDeduct.push({ storeId, sns })
+  }
+  const allShortages: Array<{ productCode: string; needed: number; available: number }> = []
+  if (toDeduct.length > 0) {
+    const check = await db.transaction((tx) =>
+      assertShipmentStockAggregated(tx, enterpriseId, toDeduct, warehouseId),
+    )
+    if (!check.ok) allShortages.push(...check.shortages)
+  }
+  if (allShortages.length > 0) {
+    const detail = allShortages
+      .slice(0, 5)
+      .map((s) => `${s.productCode}（需 ${s.needed}，库存 ${s.available}）`)
+      .join("、")
+    return {
+      ok: false,
+      error: `库存不足，未执行扣减：${detail}${allShortages.length > 5 ? ` 等 ${allShortages.length} 项` : ""}。可先补录入库或改为手动出库调整。`,
+      shortages: allShortages,
+    }
+  }
+  if (toDeduct.length === 0) return { ok: true, deducted: 0 }
+
+  let deductedCount = 0
+  const errors: string[] = []
+  for (const { storeId, sns } of toDeduct) {
+    const r = await deductShipmentInventory(
+      enterpriseId,
+      storeId,
+      sns,
+      warehouseId,
+      ctx.user.id,
+      "TEMU 后台发货人工核对扣减",
+    )
+    if (r.error) errors.push(r.error)
+    deductedCount += r.deducted
+  }
+  if (errors.length > 0) {
+    return { ok: false, error: `部分失败（已扣 ${deductedCount} 张）：${errors.join("；")}` }
+  }
+  return { ok: true, deducted: deductedCount }
 }

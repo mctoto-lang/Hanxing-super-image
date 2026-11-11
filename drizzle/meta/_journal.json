@@ -659,6 +659,27 @@
       "when": 1794624000000,
       "tag": "0093_temu_logistics_config",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1794710400000,
+      "tag": "0094_temu_priority_and_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1794796800000,
+      "tag": "0095_result_image_sizes",
+      "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1794883200000,
+      "tag": "0096_inventory_ship_deduct_uq",
+      "breakpoints": true
     }
   ]
 }

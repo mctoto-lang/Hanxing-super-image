@@ -221,6 +221,7 @@ export default function LandingPage() {
         id="home"
         className="relative isolate min-h-screen w-full overflow-hidden"
       >
+        {/* eslint-disable-next-line @next/next/no-img-element -- 落地页惯例用原生 <img>（supabase 外域全屏背景图） */}
         <img
           src={BACKGROUND_IMAGE_URL}
           alt=""

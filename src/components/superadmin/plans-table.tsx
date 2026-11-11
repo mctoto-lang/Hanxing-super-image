@@ -10,6 +10,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { PlanBadge } from "@/components/shared/plan-badge"
+import { TableEmpty } from "@/components/shared/table-empty"
 import { PlanEditButton } from "@/components/superadmin/plan-form-dialog"
 import { PlanToggleButton } from "@/components/superadmin/plan-toggle-button"
 import { DragHandle, useDragSort } from "@/hooks/use-drag-sort"
@@ -42,21 +43,17 @@ export function PlansTable({ items }: { items: PlanTableRow[] }) {
         <TableRow>
           <TableHead className="w-8" aria-label="拖动排序" />
           <TableHead>套餐 / 勋章</TableHead>
-          <TableHead className="text-right">每周期积分</TableHead>
-          <TableHead className="text-right">周期</TableHead>
-          <TableHead className="text-right">人数上限</TableHead>
-          <TableHead className="text-right">使用企业</TableHead>
+          <TableHead>每周期积分</TableHead>
+          <TableHead>周期</TableHead>
+          <TableHead>人数上限</TableHead>
+          <TableHead>使用企业</TableHead>
           <TableHead>状态</TableHead>
-          <TableHead className="text-right">操作</TableHead>
+          <TableHead>操作</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {ordered.length === 0 ? (
-          <TableRow>
-            <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
-              暂无套餐，点击右上角新建
-            </TableCell>
-          </TableRow>
+          <TableEmpty colSpan={8} noun="套餐" />
         ) : (
           ordered.map((p) => (
             <TableRow key={p.id} {...rowProps(p.id)}>
@@ -73,16 +70,16 @@ export function PlansTable({ items }: { items: PlanTableRow[] }) {
                   />
                 </div>
               </TableCell>
-              <TableCell className="text-right tabular-nums">
+              <TableCell className="tabular-nums">
                 {p.creditsPerCycle.toLocaleString("zh-CN")}
               </TableCell>
-              <TableCell className="text-right tabular-nums">
+              <TableCell className="tabular-nums">
                 {p.cycleDays} 天
               </TableCell>
-              <TableCell className="text-right tabular-nums">
+              <TableCell className="tabular-nums">
                 {p.maxMembers ? `${p.maxMembers} 人` : "不限"}
               </TableCell>
-              <TableCell className="text-right tabular-nums">
+              <TableCell className="tabular-nums">
                 {p.enterpriseCount}
               </TableCell>
               <TableCell>
@@ -90,8 +87,8 @@ export function PlansTable({ items }: { items: PlanTableRow[] }) {
                   {p.isActive ? "启用" : "已停用"}
                 </Badge>
               </TableCell>
-              <TableCell className="text-right">
-                <div className="flex justify-end gap-1">
+              <TableCell>
+                <div className="flex gap-1">
                   <PlanEditButton
                     plan={{
                       id: p.id,

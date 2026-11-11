@@ -1,12 +1,13 @@
 "use client"
 
-import { useRef, useState } from "react"
+import * as React from "react"
 import { useRouter } from "next/navigation"
 import { Pencil, Plus, Power } from "lucide-react"
 import { toast } from "sonner"
+import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
+import { useForm } from "react-hook-form"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Checkbox } from "@/components/ui/checkbox"
 import { MorphingInfinity } from "@/components/ui/morphing-infinity"
@@ -23,7 +24,16 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form"
 import { TemplateVarChips } from "@/components/superadmin/template-var-chips"
+import { directionFormSchema } from "@/lib/forms/config-schemas"
 import {
   createDirectionAction,
   toggleDirectionActiveAction,
@@ -81,15 +91,29 @@ const VARIANT_CONF: Record<
   },
 }
 
+interface DirectionFormValues {
+  name: string
+  description?: string
+  promptTemplate: string
+  scope: ProductDirectionScope
+  supportsCount: boolean
+  maxCount: number
+  isHidden: boolean
+  isHero: boolean
+}
+
 function DirectionForm({
   row,
   onDone,
+  open,
   defaultScope,
   variant = "product",
   promptOnly = false,
 }: {
   row: DirectionRow | null
   onDone: () => void
+  /** 父级弹窗开合（open 时重置为行数据 defaults） */
+  open: boolean
   /** 新增时预选的二级分类（取所在 tab；单选，可改） */
   defaultScope?: ProductDirectionScope
   /** 配置中心归属（weartry 时作用域固定、不显示商品专属的平台/主图类控件） */
@@ -99,198 +123,312 @@ function DirectionForm({
 }) {
   const conf = VARIANT_CONF[variant]
   const router = useRouter()
-  const [submitting, setSubmitting] = useState(false)
-  const [name, setName] = useState(row?.name ?? "")
-  const [description, setDescription] = useState(row?.description ?? "")
-  const [promptTemplate, setPromptTemplate] = useState(row?.promptTemplate ?? "")
-  const [scope, setScope] = useState<ProductDirectionScope>(
-    (row?.appliesTo?.[0] as ProductDirectionScope) ??
-      defaultScope ??
-      conf.scopes[0]!,
-  )
-  const [supportsCount, setSupportsCount] = useState(row?.supportsCount ?? false)
-  const [maxCount, setMaxCount] = useState(row?.maxCount ?? 1)
-  const [isHidden, setIsHidden] = useState(row?.isHidden ?? false)
-  const [isHero, setIsHero] = useState(row?.isHero ?? false)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const [serverError, setServerError] = React.useState<string | null>(null)
+  const textareaRef = React.useRef<HTMLTextAreaElement | null>(null)
 
-  const submit = async () => {
-    setSubmitting(true)
-    try {
-      let res: { ok: boolean; error: string | null }
-      if (row && promptOnly) {
-        res = await updateDirectionAction(row.id, { promptTemplate })
-      } else {
-        const base = {
-          name,
-          description: description || undefined,
-          promptTemplate,
-          scope,
-          supportsCount,
-          maxCount,
-          isHidden,
-          isHero,
-        }
-        res = row
-          ? await updateDirectionAction(row.id, base)
-          : await createDirectionAction(base)
-      }
-      if (!res.ok) {
-        toast.error(res.error ?? "保存失败")
-        return
-      }
-      toast.success(
-        row
-          ? promptOnly
-            ? "提示词模板已更新"
-            : "方向已更新"
-          : "方向已创建（key 按名称拼音自动生成）",
-      )
-      onDone()
-      router.refresh()
-    } finally {
-      setSubmitting(false)
+  const defaults = React.useMemo<DirectionFormValues>(
+    () => ({
+      name: row?.name ?? "",
+      description: row?.description ?? "",
+      promptTemplate: row?.promptTemplate ?? "",
+      scope:
+        (row?.appliesTo?.[0] as ProductDirectionScope) ??
+        defaultScope ??
+        conf.scopes[0]!,
+      supportsCount: row?.supportsCount ?? false,
+      maxCount: row?.maxCount ?? 1,
+      isHidden: row?.isHidden ?? false,
+      isHero: row?.isHero ?? false,
+    }),
+    [row, defaultScope, conf],
+  )
+
+  const form = useForm<DirectionFormValues>({
+    resolver: standardSchemaResolver(directionFormSchema),
+    defaultValues: defaults,
+  })
+  const pending = form.formState.isSubmitting
+
+  React.useEffect(() => {
+    if (open) {
+      form.reset(defaults)
+      setServerError(null)
     }
+  }, [open, form, defaults])
+
+  async function onSubmit(values: DirectionFormValues) {
+    setServerError(null)
+    let res: { ok: boolean; error: string | null }
+    if (row && promptOnly) {
+      res = await updateDirectionAction(row.id, {
+        promptTemplate: values.promptTemplate,
+      })
+    } else {
+      const base = {
+        name: values.name,
+        description: values.description || undefined,
+        promptTemplate: values.promptTemplate,
+        scope: values.scope,
+        supportsCount: values.supportsCount,
+        maxCount: values.maxCount,
+        isHidden: values.isHidden,
+        isHero: values.isHero,
+      }
+      res = row
+        ? await updateDirectionAction(row.id, base)
+        : await createDirectionAction(base)
+    }
+    if (!res.ok) {
+      setServerError(res.error ?? "保存失败")
+      return
+    }
+    toast.success(
+      row
+        ? promptOnly
+          ? "提示词模板已更新"
+          : "方向已更新"
+        : "方向已创建（key 按名称拼音自动生成）",
+    )
+    onDone()
+    router.refresh()
   }
 
   return (
-    <div className="space-y-3">
-      <div className="space-y-1.5">
-        <Label>方向名称</Label>
-        {promptOnly ? (
-          <p className="rounded-md border bg-muted/50 px-3 py-2 text-sm">
-            {row?.name}
-          </p>
-        ) : (
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="白底图" />
-        )}
-      </div>
-      <div className="space-y-1.5">
-        <Label>描述（卡片副文案）</Label>
-        {promptOnly ? (
-          <p className="rounded-md border bg-muted/50 px-3 py-2 text-sm text-muted-foreground">
-            {row?.description || "—"}
-          </p>
-        ) : (
-          <Input
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="纯白背景主图，平台核心展示位"
+    <Form {...form}>
+      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+        <FormField
+          control={form.control}
+          name="name"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>方向名称</FormLabel>
+              {promptOnly ? (
+                <p className="rounded-md border bg-muted/50 px-3 py-2 text-sm">
+                  {row?.name}
+                </p>
+              ) : (
+                <FormControl>
+                  <Input {...field} placeholder="白底图" />
+                </FormControl>
+              )}
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="description"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>描述（卡片副文案）</FormLabel>
+              {promptOnly ? (
+                <p className="rounded-md border bg-muted/50 px-3 py-2 text-sm text-muted-foreground">
+                  {row?.description || "—"}
+                </p>
+              ) : (
+                <FormControl>
+                  <Input
+                    {...field}
+                    placeholder="纯白背景主图，平台核心展示位"
+                  />
+                </FormControl>
+              )}
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        {variant === "product" && !promptOnly && (
+          <FormField
+            control={form.control}
+            name="isHero"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>方向类别</FormLabel>
+                <Select
+                  value={field.value ? "hero" : "normal"}
+                  onValueChange={(v) => field.onChange(v === "hero")}
+                  items={[
+                    { value: "normal", label: NORMAL_LABEL },
+                    { value: "hero", label: HERO_LABEL },
+                  ]}
+                >
+                  <FormControl>
+                    <SelectTrigger className="w-full">
+                      <SelectValue>
+                        {field.value ? HERO_LABEL : NORMAL_LABEL}
+                      </SelectValue>
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    <SelectItem value="normal">{NORMAL_LABEL}</SelectItem>
+                    <SelectItem value="hero">{HERO_LABEL}</SelectItem>
+                  </SelectContent>
+                </Select>
+                {field.value && (
+                  <p className="text-xs text-primary">
+                    生图时将自动注入所选平台的主图规范（如 Amazon：纯白背景、商品占比
+                    85%+、无水印与道具）
+                  </p>
+                )}
+                <FormMessage />
+              </FormItem>
+            )}
           />
         )}
-      </div>
-      {variant === "product" && !promptOnly && (
-        <div className="space-y-1.5">
-          <Label>方向类别</Label>
-          <Select
-            value={isHero ? "hero" : "normal"}
-            onValueChange={(v) => setIsHero(v === "hero")}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue>{isHero ? HERO_LABEL : NORMAL_LABEL}</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="normal">{NORMAL_LABEL}</SelectItem>
-              <SelectItem value="hero">{HERO_LABEL}</SelectItem>
-            </SelectContent>
-          </Select>
-          {isHero && (
-            <p className="text-xs text-primary">
-              生图时将自动注入所选平台的主图规范（如 Amazon：纯白背景、商品占比
-              85%+、无水印与道具）
-            </p>
+        <FormField
+          control={form.control}
+          name="promptTemplate"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>提示词模板</FormLabel>
+              <FormControl>
+                <Textarea
+                  rows={5}
+                  placeholder={
+                    "纯白背景电商主图：{{productName}} 完整居中呈现… 变量芯片点击插入"
+                  }
+                  ref={(el: HTMLTextAreaElement | null) => {
+                    textareaRef.current = el
+                    field.ref(el)
+                  }}
+                  value={field.value}
+                  onChange={(e) => field.onChange(e.target.value)}
+                />
+              </FormControl>
+              <TemplateVarChips
+                vars={conf.vars}
+                template={field.value}
+                textareaRef={textareaRef}
+                onTemplateChange={(next) => field.onChange(next)}
+              />
+              <p className="text-xs text-muted-foreground">
+                {variant === "weartry"
+                  ? "模板即服装组图最终生图 prompt：未引用的变量不注入（严格模式）；可用变量见上方芯片"
+                  : "模板即最终生图 prompt：未引用的变量不注入（严格模式），补充要求需引用 {{additionalPrompt}} 才生效；{{platformSegment}} 为主图类自动含平台主图规范，{{platformGeneralSegment}}/{{platformHeroSegment}} 为原始字段值"}
+              </p>
+              <FormMessage />
+            </FormItem>
           )}
-        </div>
-      )}
-      <div className="space-y-1.5">
-        <Label>提示词模板</Label>
-        <Textarea
-          ref={textareaRef}
-          value={promptTemplate}
-          onChange={(e) => setPromptTemplate(e.target.value)}
-          rows={5}
-          placeholder={'纯白背景电商主图：{{productName}} 完整居中呈现… 变量芯片点击插入'}
         />
-        <TemplateVarChips
-          vars={conf.vars}
-          template={promptTemplate}
-          textareaRef={textareaRef}
-          onTemplateChange={setPromptTemplate}
-        />
-        <p className="text-xs text-muted-foreground">
-          {variant === "weartry"
-            ? "模板即服装组图最终生图 prompt：未引用的变量不注入（严格模式）；可用变量见上方芯片"
-            : "模板即最终生图 prompt：未引用的变量不注入（严格模式），补充要求需引用 {{additionalPrompt}} 才生效；{{platformSegment}} 为主图类自动含平台主图规范，{{platformGeneralSegment}}/{{platformHeroSegment}} 为原始字段值"}
-        </p>
-      </div>
-      {conf.scopes.length > 1 && !promptOnly && (
-        <div className="space-y-1.5">
-          <Label>二级分类（适用子功能）</Label>
-          <Select
-            value={scope}
-            onValueChange={(v) => setScope(v as ProductDirectionScope)}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue>{conf.scopeLabel(scope)}</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {conf.scopes.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {conf.scopeLabel(s)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-xs text-muted-foreground">
-            单选：每个方向只归属一个分类，三个分类的配置完全独立互不影响
-          </p>
-        </div>
-      )}
-      {!promptOnly && (
-        <div className="grid grid-cols-2 gap-3">
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox
-              checked={supportsCount}
-              onCheckedChange={(v) => setSupportsCount(Boolean(v))}
+        {conf.scopes.length > 1 && !promptOnly && (
+          <FormField
+            control={form.control}
+            name="scope"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>二级分类（适用子功能）</FormLabel>
+                <Select
+                  value={field.value}
+                  onValueChange={(v) => field.onChange(v as ProductDirectionScope)}
+                  items={conf.scopes.map((s) => ({
+                    value: s,
+                    label: conf.scopeLabel(s),
+                  }))}
+                >
+                  <FormControl>
+                    <SelectTrigger className="w-full">
+                      <SelectValue>{conf.scopeLabel(field.value)}</SelectValue>
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    {conf.scopes.map((s) => (
+                      <SelectItem key={s} value={s}>
+                        {conf.scopeLabel(s)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  单选：每个方向只归属一个分类，三个分类的配置完全独立互不影响
+                </p>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        )}
+        {!promptOnly && (
+          <div className="grid grid-cols-2 gap-4">
+            <FormField
+              control={form.control}
+              name="supportsCount"
+              render={({ field }) => (
+                <FormItem className="flex items-center gap-2">
+                  <FormControl>
+                    <Checkbox
+                      checked={field.value}
+                      onCheckedChange={(v) => field.onChange(Boolean(v))}
+                    />
+                  </FormControl>
+                  <FormLabel className="text-sm font-normal">
+                    支持数量调节
+                  </FormLabel>
+                  <FormMessage />
+                </FormItem>
+              )}
             />
-            支持数量调节
-          </label>
-          <div className="space-y-1.5">
-            <Label>数量上限</Label>
-            <Input
-              type="number"
-              min={1}
-              max={4}
-              value={maxCount}
-              onChange={(e) => setMaxCount(Number(e.target.value) || 1)}
+            <FormField
+              control={form.control}
+              name="maxCount"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>数量上限</FormLabel>
+                  <FormControl>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={4}
+                      {...field}
+                      value={field.value ?? ""}
+                      onChange={(e) =>
+                        field.onChange(
+                          e.target.value === "" ? undefined : Number(e.target.value),
+                        )
+                      }
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
             />
           </div>
+        )}
+        {!promptOnly && (
+          <FormField
+            control={form.control}
+            name="isHidden"
+            render={({ field }) => (
+              <FormItem className="gap-1">
+                <label className="flex items-center gap-2 text-sm">
+                  <FormControl>
+                    <Checkbox
+                      checked={field.value}
+                      onCheckedChange={(v) => field.onChange(Boolean(v))}
+                    />
+                  </FormControl>
+                  前端隐藏
+                </label>
+                <p className="text-xs text-muted-foreground">
+                  隐藏后不出现在套图「自定义配置」手动列表；智能匹配与「其他」AI 补充仍可选中该方向
+                </p>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        )}
+        {serverError ? (
+          <p className="text-sm text-destructive">{serverError}</p>
+        ) : null}
+        <div className="flex justify-end gap-2 pt-2">
+          <Button type="button" variant="outline" onClick={onDone}>
+            取消
+          </Button>
+          <Button type="submit" disabled={pending}>
+            {pending && <MorphingInfinity className="mr-1 size-4" />}
+            {pending ? "保存中…" : "保存"}
+          </Button>
         </div>
-      )}
-      {!promptOnly && (
-        <div className="space-y-1.5">
-          <label className="flex items-center gap-2 text-sm">
-            <Checkbox
-              checked={isHidden}
-              onCheckedChange={(v) => setIsHidden(Boolean(v))}
-            />
-            前端隐藏
-          </label>
-          <p className="text-xs text-muted-foreground">
-            隐藏后不出现在套图「自定义配置」手动列表；智能匹配与「其他」AI 补充仍可选中该方向
-          </p>
-        </div>
-      )}
-      <div className="flex justify-end gap-2 pt-2">
-        <Button variant="outline" onClick={onDone}>
-          取消
-        </Button>
-        <Button onClick={submit} disabled={submitting}>
-          {submitting && <MorphingInfinity className="mr-1 size-4" />}
-          保存
-        </Button>
-      </div>
-    </div>
+      </form>
+    </Form>
   )
 }
 
@@ -308,7 +446,7 @@ export function DirectionFormDialog({
   title?: string
   description?: string
 } = {}) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = React.useState(false)
   return (
     <>
       <Button onClick={() => setOpen(true)}>
@@ -316,11 +454,12 @@ export function DirectionFormDialog({
         {triggerLabel}
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-[520px]">
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
           <DirectionForm
             row={null}
+            open={open}
             onDone={() => setOpen(false)}
             defaultScope={defaultScope}
             variant={variant}
@@ -339,7 +478,7 @@ export function DirectionEditButton({
   row: DirectionRow
   variant?: DirectionConfigVariant
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = React.useState(false)
   const promptOnly =
     variant === "product" && (row.appliesTo ?? []).includes("refine")
   return (
@@ -348,7 +487,7 @@ export function DirectionEditButton({
         <Pencil className="size-3.5" />
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-[520px]">
           <DialogTitle>编辑方向：{row.name}</DialogTitle>
           <DialogDescription>
             {promptOnly
@@ -361,6 +500,7 @@ export function DirectionEditButton({
           </DialogDescription>
           <DirectionForm
             row={row}
+            open={open}
             onDone={() => setOpen(false)}
             variant={variant}
             promptOnly={promptOnly}
@@ -380,7 +520,7 @@ export function DirectionToggleActiveButton({
   isActive: boolean
 }) {
   const router = useRouter()
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = React.useState(false)
   return (
     <Button
       variant="ghost"

@@ -28,8 +28,12 @@ export const temuListQuerySchema = z.object({
   /** 店铺筛选（空字符串 = 全部店铺） */
   store: z.string().uuid().optional(),
   q: z.string().max(100).optional(),
-  /** 在售筛选（商品信息页：on=在售 skcStatus=11，off=不在售） */
-  sale: z.enum(["on", "off"]).optional(),
+  /** 搜索字段（商品页共享搜索条）：缺省/all=五字段混合 ilike；sn=货号、name=商品名、
+   *  skc=SKC 单列精确 ilike */
+  qf: z.enum(["all", "sn", "name", "skc"]).optional(),
+  /** 在售筛选（商品信息页：on=在售 skcStatus=11，off=不在售；hot=热销 salesv2
+   *  hotTag、stagnant=滞销 企业级阈值窗口，服务端 loadTemuProducts 分支） */
+  sale: z.enum(["on", "off", "hot", "stagnant"]).optional(),
   page: z.coerce.number().int().min(1).max(500).default(1),
   /** 广告窗口天数（广告推广页 ?range=；action 内收敛为 7|30） */
   range: z.coerce.number().int().min(1).max(90).optional(),
@@ -673,6 +677,31 @@ export const temuPublishTemplateUpdateSchema = temuPublishTemplateSchema.extend(
  *  调用方（向导官方校验/尺寸图）先物化为存储 URL 再调用） */
 export const temuPublishImageSchema = z.object({
   imageUrl: z.string().url().max(1000),
+})
+
+/** 轮播图源单项：官方 2M 上限按解码后字节（temu-publish uploadImageToStore 同口径），
+ *  base64 后 2MiB ≈ 2_796_227 字符——data: 项放宽到 2_800_000 字符，普通 URL 维持 2_000_000 */
+const CAROUSEL_IMAGE_SOURCE = z
+  .string()
+  .min(1)
+  .superRefine((s, ctx) => {
+    if (s.length > (s.startsWith("data:") ? 2_800_000 : 2_000_000)) {
+      ctx.addIssue({
+        code: "custom",
+        message: s.startsWith("data:") ? "图片超过 2M 上限（官方 2000021）" : "图源 URL 超长",
+      })
+    }
+  })
+
+/** 换图片（商品信息页设置菜单）：轮播图集整组提交（≥5 张，第一张为主图位；
+ *  官方非服饰轮播最少 5 张口径同发品。图源支持 http(s) URL 或 data:，服务端转官方图床） */
+export const temuProductCarouselSchema = z.object({
+  storeId: z.string().uuid(),
+  productId: z.string().min(1).max(32),
+  imageUrls: z
+    .array(CAROUSEL_IMAGE_SOURCE)
+    .min(5, "轮播图至少 5 张（官方非服饰类目口径）")
+    .max(30),
 })
 
 /** 发品（模板 + 店铺 + 覆盖默认层） */

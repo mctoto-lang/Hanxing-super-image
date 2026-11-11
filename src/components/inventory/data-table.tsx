@@ -32,8 +32,7 @@ import { TableSkeletonRows } from "@/components/temu/table-skeleton"
  * 模板口径：三段式（工具栏在卡片外/表格独立 rounded-lg border 卡片/分页条在
  * 卡片下方）、行底横线 + 列竖线可选（columnDividers，TEMU 六表同款类名模板）、
  * 表头 sticky bg-muted、text-sm、单元格 px-3 py-2.5、勾选行 data-state=selected
- * 高亮、模板分页条。列经 meta.align 可右对齐/居中（居中用于勾选框、徽章列；
- * 库存域其余口径：全列左对齐）。
+ * 高亮、模板分页条。数字列经 meta.align 可选右对齐（库存域现口径：全列左对齐）。
  * 注意：必须用裸 <table>——ui Table 自带 overflow-x-auto 包裹 div 会成为最近
  * 滚动祖先且高度随内容撑开，th 的 sticky top-0 永远不触发（TEMU 表同结论）。
  * 内置：列排序（点击表头）、前端筛选/分页，
@@ -45,9 +44,8 @@ export type { ColumnDef }
 declare module "@tanstack/react-table" {
   // eslint-disable-next-line @typescript-eslint/no-empty-object-type
   interface ColumnMeta<TData extends RowData, TValue> {
-    /** 对齐：right=数字列右对齐（tabular-nums 由调用方自带）；
-        center=勾选框/徽章/图标等居中列 */
-    align?: "left" | "center" | "right"
+    /** 数字列右对齐（tabular-nums 由调用方在 cell 内自带） */
+    align?: "left" | "right"
   }
 }
 
@@ -111,6 +109,9 @@ export function DataTable<TData>({
   const sentinelRef = React.useRef<HTMLDivElement>(null)
   const scrollRef = React.useRef<HTMLDivElement>(null)
 
+  // TanStack Table 的 useReactTable 返回无法安全记忆化的函数，React Compiler 会
+  // （也只能）跳过记忆化本组件——库级限制，非本组件可修
+  // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
     data,
     columns,
@@ -139,6 +140,9 @@ export function DataTable<TData>({
   // clamp 过 scrollTop，旧位置只能取自上一轮记录的 posRef
   const prevDataRef = React.useRef(data)
   const posRef = React.useRef(0)
+  // 刻意不传依赖数组（每渲染跑，缘由见上注释）；setVisibleCount 仅在 data 真变化
+  // 的分支被调用且经 prevDataRef 幂等——追加的那次重渲染走记录分支即返回，不构成更新链
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   React.useLayoutEffect(() => {
     const el = scrollRef.current
     if (!infinite || !el) return
@@ -223,10 +227,6 @@ export function DataTable<TData>({
                         "sticky top-0 z-10 h-11 bg-muted px-3 font-normal",
                         canSort && "cursor-pointer select-none",
                         align === "right" && "text-right",
-                        // 勾选框列：基类 [&:has([role=checkbox])]:pr-0 只去右内边距，
-                        // 左 12px 残留会把勾选框顶到右缘——补对称 pl-0 才真居中
-                        align === "center" &&
-                          "text-center [&:has([role=checkbox])]:pl-0",
                       )}
                       onClick={
                         canSort ? header.column.getToggleSortingHandler() : undefined
@@ -238,7 +238,6 @@ export function DataTable<TData>({
                         className={cn(
                           "flex h-full items-center gap-1",
                           align === "right" && "justify-end",
-                          align === "center" && "justify-center",
                         )}
                       >
                         {header.isPlaceholder
@@ -279,8 +278,6 @@ export function DataTable<TData>({
                         className={cn(
                           "px-3 py-2.5",
                           cell.column.columnDef.meta?.align === "right" && "text-right",
-                          cell.column.columnDef.meta?.align === "center" &&
-                            "text-center [&:has([role=checkbox])]:pl-0",
                         )}
                       >
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}

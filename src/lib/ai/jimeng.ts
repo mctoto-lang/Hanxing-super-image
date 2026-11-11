@@ -14,6 +14,7 @@ import {
   buildJimengRequestBody,
   sizeToRatio,
 } from "@/lib/ai/image-model-config"
+import type { SavedImage } from "@/lib/storage/image-dim"
 
 export interface JimengModel {
   name: string
@@ -37,7 +38,7 @@ export interface JimengTask {
 export type DownloadAndUploadFn = (
   imageUrl: string,
   imageIndex: number,
-) => Promise<string>
+) => Promise<SavedImage>
 
 /** 单次即梦 API 请求的张数上限（上游约束） */
 const JIMENG_MAX_PER_REQUEST = 4
@@ -110,7 +111,7 @@ export async function callJimengApi(opts: {
   apiKey: string
   downloadAndUpload: DownloadAndUploadFn
   signal?: AbortSignal
-}): Promise<string[]> {
+}): Promise<SavedImage[]> {
   const { model, task, extraConfig, apiKey, downloadAndUpload, signal } = opts
   const endpoint = model.apiEndpoint.replace(/\/+$/, "")
   const referenceImages = task.referenceImages ?? []
@@ -180,7 +181,7 @@ export async function callJimengApi(opts: {
   const urls = urlGroups.flat()
 
   // 转存所有返回的图片
-  const result: string[] = []
+  const result: SavedImage[] = []
   for (let i = 0; i < urls.length; i++) {
     result.push(await downloadAndUpload(urls[i]!, i))
   }

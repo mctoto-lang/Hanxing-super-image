@@ -21,6 +21,9 @@ import {
   parsePageParam,
   parseQueryParam,
 } from "@/components/shared/table-pagination"
+import { TableEmpty } from "@/components/shared/table-empty"
+import { StatCard } from "@/components/shared/stat-card"
+import { formatDateTime } from "@/lib/datetime"
 import { AdminListFilters } from "@/components/admin/admin-list-filters"
 import {
   CREDIT_MODULE_OPTIONS,
@@ -89,36 +92,15 @@ export default async function AdminCreditsPage({
   return (
     <div className="space-y-4">
       <div className="grid gap-4 sm:grid-cols-3">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              企业积分池余额
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="text-2xl font-bold tabular-nums">
-            {ctx.enterprise?.creditsBalance.toLocaleString("zh-CN")}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              我的个人配额
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="text-2xl font-bold tabular-nums">
-            {ctx.user.creditsBalance.toLocaleString("zh-CN")}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              本页成员消费合计
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="text-2xl font-bold tabular-nums">
-            {consumedByUsers.toLocaleString("zh-CN")}
-          </CardContent>
-        </Card>
+        <StatCard label="企业积分池余额">
+          {ctx.enterprise?.creditsBalance.toLocaleString("zh-CN")}
+        </StatCard>
+        <StatCard label="我的个人配额">
+          {ctx.user.creditsBalance.toLocaleString("zh-CN")}
+        </StatCard>
+        <StatCard label="本页成员消费合计">
+          {consumedByUsers.toLocaleString("zh-CN")}
+        </StatCard>
       </div>
 
       <Card>
@@ -143,7 +125,7 @@ export default async function AdminCreditsPage({
                 <TableHead>模块</TableHead>
                 <TableHead>明细</TableHead>
                 <TableHead>类型</TableHead>
-                <TableHead className="text-right">积分消耗</TableHead>
+                <TableHead>积分消耗</TableHead>
                 <TableHead>时间</TableHead>
               </TableRow>
             </TableHeader>
@@ -165,7 +147,7 @@ export default async function AdminCreditsPage({
                     </Badge>
                   </TableCell>
                   <TableCell
-                    className={`text-right font-medium tabular-nums ${
+                    className={`font-medium tabular-nums ${
                       t.amount > 0 ? "text-emerald-500" : "text-destructive"
                     }`}
                   >
@@ -173,19 +155,16 @@ export default async function AdminCreditsPage({
                     {t.amount.toLocaleString("zh-CN")}
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
-                    {new Date(t.createdAt).toLocaleString("zh-CN")}
+                    {formatDateTime(t.createdAt)}
                   </TableCell>
                 </TableRow>
               ))}
               {transactions.length === 0 ? (
-                <TableRow>
-                  <TableCell
-                    colSpan={6}
-                    className="text-center text-muted-foreground"
-                  >
-                    暂无流水记录
-                  </TableCell>
-                </TableRow>
+                <TableEmpty
+                  colSpan={6}
+                  noun="流水记录"
+                  filtered={!!(q || moduleFilter || from || to)}
+                />
               ) : null}
             </TableBody>
           </Table>

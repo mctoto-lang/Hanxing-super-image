@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gte, inArray, sql } from "drizzle-orm"
+import { createHash } from "node:crypto"
 import { db } from "@/db/client"
 import {
   inventoryMovementTypeEnum,
@@ -549,10 +550,67 @@ export async function assertShipmentStock(
 }
 
 /**
+ * 多店合计库存预检（后台发货人工同步扣减用）：各店待扣单的货号需求按归一化码
+ * 合并成总量后与所选仓统一比较。库存档案与库存行是企业级——两店发同一归一化
+ * 货号会映射到同一 product/stock 行，逐店独立预检（assertShipmentStock）各自
+ * 与同一库存比较会漏掉跨店合计缺口，到扣减阶段才失败产生部分扣减。
+ * 口径同 assertShipmentStock：未建档货号跳过；事务内行锁读。
+ */
+export async function assertShipmentStockAggregated(
+  tx: InventoryTx,
+  enterpriseId: string,
+  orders: Array<{ storeId: string; sns: string[] }>,
+  warehouseId: string,
+): Promise<
+  { ok: true } | { ok: false; shortages: Array<{ productCode: string; needed: number; available: number }> }
+> {
+  const productMap = await loadProductMapBySnKey(enterpriseId)
+  // 各店待扣单需求按归一化货号合并成总量（跨店同货号累计）
+  const needByCode = new Map<string, number>()
+  for (const { storeId, sns } of orders) {
+    const items = await loadShipmentItems(storeId, sns)
+    for (const item of items) {
+      if (!productMap.has(item.snKey)) continue // 未建档货号跳过
+      needByCode.set(item.snKey, (needByCode.get(item.snKey) ?? 0) + item.qty)
+    }
+  }
+  const shortages: Array<{ productCode: string; needed: number; available: number }> = []
+  for (const [snKey, needed] of needByCode) {
+    const product = productMap.get(snKey)!
+    const available = await getStockQtyForUpdate(tx, product.id, warehouseId)
+    if (available < needed) shortages.push({ productCode: product.code, needed, available })
+  }
+  return shortages.length > 0 ? { ok: false, shortages } : { ok: true }
+}
+
+/** ship_deduct 幂等咨询锁键：`企业|单号` SHA-1 前 8 字节作有符号 64 位整数
+ *  （十进制串）——pg_advisory_xact_lock 单 bigint 键空间，全域碰撞概率可忽略 */
+function shipDeductLockKey(enterpriseId: string, sn: string): string {
+  return createHash("sha1")
+    .update(`ship_deduct:${enterpriseId}:${sn}`)
+    .digest()
+    .readBigInt64BE(0)
+    .toString()
+}
+
+/** ship_deduct 幂等唯一索引（inv_mv_ship_deduct_uq，0096）冲突判定（23505+索引名） */
+function isShipDeductUniqueViolation(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { code?: unknown }).code === "23505" &&
+    String((err as Error).message).includes("inv_mv_ship_deduct_uq")
+  )
+}
+
+/**
  * 装箱成功后扣减（shipmentShippedHook 实装）：
  * 按货号聚合逐项扣所选仓 + 「发货扣减」流水（refId=发货单号）；
- * 幂等：已存在 ship_deduct 流水的单号跳过（回查重放不双扣）；
- * 未建档货号跳过。返回扣减条数（0=全部跳过也视为成功）。
+ * 幂等：已存在 ship_deduct 流水的单号跳过（回查重放不双扣）。查重在扣减事务内、
+ * 按单号取事务级咨询锁串行化——人工同步入口（syncTemuShipDeductAction）可并发
+ * 重复提交同单（双开标签页/两用户），事务外查重存在「两次查重都通过→先后双扣」
+ * 窗口（inventory_movement 对 refId 原无唯一约束）；0096 部分唯一索引为数据库
+ * 级兜底。未建档货号跳过。返回扣减条数（0=全部跳过也视为成功）。
  */
 export async function deductShipmentInventory(
   enterpriseId: string,
@@ -560,33 +618,40 @@ export async function deductShipmentInventory(
   deliveryOrderSns: string[],
   warehouseId: string,
   userId: string | null,
+  /** 流水备注（默认「TEMU 装箱发货扣减」；后台发货人工核对同步用不同文案） */
+  reason = "TEMU 装箱发货扣减",
 ): Promise<{ deducted: number; error?: string }> {
   const items = await loadShipmentItems(storeId, deliveryOrderSns)
   if (items.length === 0) return { deducted: 0 }
 
   const productMap = await loadProductMapBySnKey(enterpriseId)
 
-  // 幂等：这些单号已扣过则整单跳过
-  const existing = await db
-    .select({ refId: inventoryMovements.refId })
-    .from(inventoryMovements)
-    .where(
-      and(
-        eq(inventoryMovements.enterpriseId, enterpriseId),
-        eq(inventoryMovements.type, "ship_deduct"),
-        _inArray(inventoryMovements.refType, ["ship_order"]),
-        _inArray(
-          inventoryMovements.refId,
-          deliveryOrderSns,
-        ),
-      ),
-    )
-  const deductedSns = new Set(existing.map((e) => e.refId))
-  const todo = items.filter((i) => !deductedSns.has(i.deliveryOrderSn) && productMap.has(i.snKey))
-  if (todo.length === 0) return { deducted: 0 }
-
   try {
-    await db.transaction(async (tx) => {
+    return await db.transaction(async (tx) => {
+      // 单号级事务咨询锁（按单号排序取，防并发多单交叉死锁）：并发重复提交同单
+      // 在此串行化，后到者等先到方提交后在下方查重看到其流水，整单跳过
+      const sns = [...new Set(items.map((i) => i.deliveryOrderSn))].sort()
+      for (const sn of sns) {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(${shipDeductLockKey(enterpriseId, sn)}::bigint)`,
+        )
+      }
+      // 幂等：这些单号已扣过则整单跳过（锁内权威查重）
+      const existing = await tx
+        .select({ refId: inventoryMovements.refId })
+        .from(inventoryMovements)
+        .where(
+          and(
+            eq(inventoryMovements.enterpriseId, enterpriseId),
+            eq(inventoryMovements.type, "ship_deduct"),
+            _inArray(inventoryMovements.refType, ["ship_order"]),
+            _inArray(inventoryMovements.refId, sns),
+          ),
+        )
+      const deductedSns = new Set(existing.map((e) => e.refId))
+      const todo = items.filter((i) => !deductedSns.has(i.deliveryOrderSn) && productMap.has(i.snKey))
+      if (todo.length === 0) return { deducted: 0 }
+
       // 需求量按 (货号×单号) 逐单扣：每单调用一次（流水 refId=单号）；
       // 同货号多单顺序扣减，第二单不足时 InsufficientStockError 上抛
       for (const item of todo) {
@@ -599,20 +664,28 @@ export async function deductShipmentInventory(
             qtyChange: -item.qty,
             refType: "ship_order",
             refId: item.deliveryOrderSn,
-            reason: "TEMU 装箱发货扣减",
+            reason,
             createdBy: userId,
           },
         ])
       }
+      return { deducted: todo.length }
     })
   } catch (err) {
     if (err instanceof InsufficientStockError) {
       // 理论不可达（装箱前已硬阻断）；并发漏网时不上抛——官方已发货，记 warning 语义
       return { deducted: 0, error: "库存不足未能扣减（并发变动），请人工核对流水" }
     }
+    if (isShipDeductUniqueViolation(err)) {
+      // 咨询锁漏网（理论上仅未来绕过本函数的新写入路径）：0096 唯一索引兜底拦截，
+      // 本事务已整体回滚无部分扣减；重试即自动跳过已扣单
+      return {
+        deducted: 0,
+        error: "该发货单已存在扣减流水（并发提交冲突），请重试；已扣单会自动跳过",
+      }
+    }
     throw err
   }
-  return { deducted: todo.length }
 }
 
 /** 主仓 id（默认发货仓；企业无仓时返回 null=库存未初始化，联动降级跳过） */

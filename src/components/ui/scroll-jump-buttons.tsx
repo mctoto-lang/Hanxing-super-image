@@ -55,7 +55,8 @@ export function ScrollJumpButtons({
   containerRef,
   threshold = 240,
   holdDelayMs = 300,
-  holdSpeedPxPerS = 80,
+  // 长按匀速滚动（2026-11-09 由 80 提到 320：长表按住滑到底太慢，4 倍手感合适）
+  holdSpeedPxPerS = 320,
   className,
 }: ScrollJumpButtonsProps) {
   const rootRef = React.useRef<HTMLDivElement>(null)

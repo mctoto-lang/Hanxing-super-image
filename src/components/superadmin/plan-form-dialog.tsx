@@ -8,18 +8,31 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form"
 import { toast } from "sonner"
 import { useRouter } from "next/navigation"
+import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
+import { useForm, useWatch } from "react-hook-form"
+import type { z } from "zod"
 import { cn } from "@/lib/utils"
+import { planFormSchema } from "@/lib/forms/schemas"
 import {
   BADGE_ICON_KEYS,
+  normalizeBadgeIconKey,
   type BadgeIconKey,
 } from "@/lib/plans/badge"
 import { BADGE_ICON_MAP, PlanBadge } from "@/components/shared/plan-badge"
@@ -54,13 +67,20 @@ export interface PlanFormValues {
   isActive?: boolean
 }
 
-const DEFAULT_VALUES: PlanFormValues = {
-  name: "",
-  iconKey: "medal",
-  color: "#8b5cf6",
-  creditsPerCycle: 10000,
-  cycleDays: 30,
-  maxMembers: null,
+/** schema 的 maxMembers 带 transform（""/null → null）：input/output 分型 */
+type PlanFormInput = z.input<typeof planFormSchema>
+type PlanFormOutput = z.output<typeof planFormSchema>
+
+function toDefaults(plan?: PlanFormValues): PlanFormInput {
+  return {
+    name: plan?.name ?? "",
+    iconKey: plan ? normalizeBadgeIconKey(plan.iconKey) : "medal",
+    color: plan?.color ?? "#8b5cf6",
+    creditsPerCycle: plan?.creditsPerCycle ?? 10000,
+    cycleDays: plan?.cycleDays ?? 30,
+    maxMembers: plan?.maxMembers ?? null,
+    isActive: plan?.isActive ?? true,
+  }
 }
 
 /**
@@ -79,47 +99,53 @@ export function PlanFormDialog({
 }) {
   const isEdit = !!plan
   const [open, setOpen] = React.useState(false)
-  const [pending, setPending] = React.useState(false)
+  const [serverError, setServerError] = React.useState<string | null>(null)
   const router = useRouter()
 
-  const [values, setValues] = React.useState<PlanFormValues>(
-    plan ?? DEFAULT_VALUES,
-  )
+  const form = useForm<PlanFormInput, unknown, PlanFormOutput>({
+    resolver: standardSchemaResolver(planFormSchema),
+    defaultValues: toDefaults(plan),
+  })
+  const pending = form.formState.isSubmitting
+
+  // 预览随表单实时联动（useWatch：hook 订阅，React Compiler 可记忆化）
+  const iconKey = useWatch({ control: form.control, name: "iconKey" })
+  const color = useWatch({ control: form.control, name: "color" })
+  const name = useWatch({ control: form.control, name: "name" })
+
   // 每次打开重置为最新 props（编辑场景列表刷新后数据可能变化）
   React.useEffect(() => {
-    if (open) setValues(plan ?? DEFAULT_VALUES)
-  }, [open, plan])
-
-  const set = <K extends keyof PlanFormValues>(key: K, v: PlanFormValues[K]) =>
-    setValues((prev) => ({ ...prev, [key]: v }))
-
-  async function handleSubmit() {
-    setPending(true)
-    try {
-      const input = {
-        name: values.name.trim(),
-        iconKey: values.iconKey,
-        color: values.color,
-        creditsPerCycle: Number(values.creditsPerCycle),
-        cycleDays: Number(values.cycleDays),
-        maxMembers:
-          values.maxMembers == null || Number.isNaN(Number(values.maxMembers))
-            ? null
-            : Number(values.maxMembers),
-      }
-      const res = isEdit
-        ? await updateSubscriptionPlanAction({ id: plan!.id, ...input })
-        : await createSubscriptionPlanAction(input)
-      if (res.ok) {
-        toast.success(isEdit ? "套餐已更新" : "套餐已创建")
-        setOpen(false)
-        router.refresh()
-      } else {
-        toast.error(res.error ?? "保存失败")
-      }
-    } finally {
-      setPending(false)
+    if (open) {
+      form.reset(toDefaults(plan))
+      setServerError(null)
     }
+  }, [open, form, plan])
+
+  async function onSubmit(values: PlanFormOutput) {
+    setServerError(null)
+    const input = {
+      name: values.name,
+      iconKey: values.iconKey,
+      color: values.color,
+      creditsPerCycle: values.creditsPerCycle,
+      cycleDays: values.cycleDays,
+      maxMembers: values.maxMembers ?? null,
+    }
+    const res = isEdit
+      ? await updateSubscriptionPlanAction({
+          id: plan!.id,
+          ...input,
+          isActive: values.isActive ?? true,
+        })
+      : await createSubscriptionPlanAction(input)
+    if (res.ok) {
+      toast.success(isEdit ? "套餐已更新" : "套餐已创建")
+      setOpen(false)
+      router.refresh()
+      return
+    }
+    // 服务端兜底错误：统一条内联展示，不再 toast
+    setServerError(res.error ?? "保存失败")
   }
 
   return (
@@ -142,175 +168,233 @@ export function PlanFormDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
-          {/* 实时预览 */}
-          <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-4 py-3">
-            <span className="text-xs text-muted-foreground">勋章预览</span>
-            <PlanBadge
-              iconKey={values.iconKey}
-              color={values.color}
-              name={values.name.trim() || "套餐名"}
-              size="md"
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            {/* 实时预览 */}
+            <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-4 py-3">
+              <span className="text-xs text-muted-foreground">勋章预览</span>
+              <PlanBadge
+                iconKey={iconKey}
+                color={color}
+                name={name.trim() || "套餐名"}
+                size="md"
+              />
+              <PlanBadge
+                iconKey={iconKey}
+                color={color}
+                name={name.trim() || "套餐名"}
+                size="sm"
+              />
+            </div>
+
+            <FormField
+              control={form.control}
+              name="name"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>套餐名称</FormLabel>
+                  <FormControl>
+                    <Input {...field} placeholder="如 Lite / Pro / Max" maxLength={50} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
             />
-            <PlanBadge
-              iconKey={values.iconKey}
-              color={values.color}
-              name={values.name.trim() || "套餐名"}
-              size="sm"
+
+            <FormField
+              control={form.control}
+              name="iconKey"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>勋章图标</FormLabel>
+                  <FormControl>
+                    <div className="grid grid-cols-6 gap-2">
+                      {BADGE_ICON_KEYS.map((key: BadgeIconKey) => {
+                        const Icon = BADGE_ICON_MAP[key]
+                        const active = field.value === key
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            title={key}
+                            onClick={() => field.onChange(key)}
+                            className={cn(
+                              "flex aspect-square items-center justify-center rounded-md border transition-colors",
+                              active
+                                ? "border-primary bg-primary/10 text-primary"
+                                : "text-muted-foreground hover:bg-accent",
+                            )}
+                          >
+                            <Icon className="size-5" />
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
             />
-          </div>
 
-          <div className="grid gap-2">
-            <Label htmlFor="plan-name">套餐名称</Label>
-            <Input
-              id="plan-name"
-              value={values.name}
-              onChange={(e) => set("name", e.target.value)}
-              placeholder="如 Lite / Pro / Max"
-              maxLength={50}
+            <FormField
+              control={form.control}
+              name="color"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>勋章颜色</FormLabel>
+                  <FormControl>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {PRESET_COLORS.map((c) => (
+                        <button
+                          key={c}
+                          type="button"
+                          title={c}
+                          onClick={() => field.onChange(c)}
+                          className={cn(
+                            "flex size-7 items-center justify-center rounded-md border transition-transform hover:scale-110",
+                            field.value.toUpperCase() === c.toUpperCase() &&
+                              "ring-2 ring-primary ring-offset-1",
+                          )}
+                          style={{ backgroundColor: c }}
+                        >
+                          {field.value.toUpperCase() === c.toUpperCase() ? (
+                            <BadgeCheck className="size-4 text-white/90" />
+                          ) : null}
+                        </button>
+                      ))}
+                      <Input
+                        value={field.value}
+                        onChange={(e) => field.onChange(e.target.value)}
+                        className="ml-1 w-28 font-mono text-xs"
+                        placeholder="#RRGGBB"
+                        maxLength={7}
+                      />
+                    </div>
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
             />
-          </div>
 
-          <div className="grid gap-2">
-            <Label>勋章图标</Label>
-            <div className="grid grid-cols-6 gap-2">
-              {BADGE_ICON_KEYS.map((key: BadgeIconKey) => {
-                const Icon = BADGE_ICON_MAP[key]
-                const active = values.iconKey === key
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    title={key}
-                    onClick={() => set("iconKey", key)}
-                    className={cn(
-                      "flex aspect-square items-center justify-center rounded-md border transition-colors",
-                      active
-                        ? "border-primary bg-primary/10 text-primary"
-                        : "text-muted-foreground hover:bg-accent",
-                    )}
-                  >
-                    <Icon className="size-5" />
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-
-          <div className="grid gap-2">
-            <Label htmlFor="plan-color">勋章颜色</Label>
-            <div className="flex flex-wrap items-center gap-2">
-              {PRESET_COLORS.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  title={c}
-                  onClick={() => set("color", c)}
-                  className={cn(
-                    "flex size-7 items-center justify-center rounded-md border transition-transform hover:scale-110",
-                    values.color.toUpperCase() === c.toUpperCase() &&
-                      "ring-2 ring-primary ring-offset-1",
-                  )}
-                  style={{ backgroundColor: c }}
-                >
-                  {values.color.toUpperCase() === c.toUpperCase() ? (
-                    <BadgeCheck className="size-4 text-white/90" />
-                  ) : null}
-                </button>
-              ))}
-              <Input
-                id="plan-color"
-                value={values.color}
-                onChange={(e) => set("color", e.target.value)}
-                className="ml-1 w-28 font-mono text-xs"
-                placeholder="#RRGGBB"
-                maxLength={7}
+            <div className="grid grid-cols-2 gap-4">
+              <FormField
+                control={form.control}
+                name="creditsPerCycle"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>每周期积分额度</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={1_000_000}
+                        {...field}
+                        value={field.value ?? ""}
+                        onChange={(e) =>
+                          field.onChange(
+                            e.target.value === "" ? undefined : Number(e.target.value),
+                          )
+                        }
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="cycleDays"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>周期天数</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={3650}
+                        {...field}
+                        value={field.value ?? ""}
+                        onChange={(e) =>
+                          field.onChange(
+                            e.target.value === "" ? undefined : Number(e.target.value),
+                          )
+                        }
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="maxMembers"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>人数上限（可选）</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={10_000}
+                        {...field}
+                        value={field.value ?? ""}
+                        onChange={(e) =>
+                          field.onChange(
+                            e.target.value === "" ? null : Number(e.target.value),
+                          )
+                        }
+                        placeholder="不限"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
               />
             </div>
-          </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div className="grid gap-2">
-              <Label htmlFor="plan-credits">每周期积分额度</Label>
-              <Input
-                id="plan-credits"
-                type="number"
-                min={1}
-                max={1_000_000}
-                value={values.creditsPerCycle}
-                onChange={(e) => set("creditsPerCycle", Number(e.target.value))}
+            {isEdit ? (
+              <FormField
+                control={form.control}
+                name="isActive"
+                render={({ field }) => (
+                  <FormItem className="flex items-center justify-between rounded-lg border px-4 py-3">
+                    <div className="text-sm">
+                      启用套餐
+                      <span className="ml-2 text-xs text-muted-foreground">
+                        停用后不可新分配，存量订阅履约至到期
+                      </span>
+                    </div>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={(v) => field.onChange(v === true)}
+                        disabled={pending}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
               />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="plan-cycle">周期天数</Label>
-              <Input
-                id="plan-cycle"
-                type="number"
-                min={1}
-                max={3650}
-                value={values.cycleDays}
-                onChange={(e) => set("cycleDays", Number(e.target.value))}
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="plan-members">人数上限（可选）</Label>
-              <Input
-                id="plan-members"
-                type="number"
-                min={1}
-                max={10_000}
-                value={values.maxMembers ?? ""}
-                onChange={(e) =>
-                  set(
-                    "maxMembers",
-                    e.target.value === "" ? null : Number(e.target.value),
-                  )
-                }
-                placeholder="不限"
-              />
-            </div>
-          </div>
+            ) : null}
 
-          {isEdit ? (
-            <div className="flex items-center justify-between rounded-lg border px-4 py-3">
-              <div className="text-sm">
-                启用套餐
-                <span className="ml-2 text-xs text-muted-foreground">
-                  停用后不可新分配，存量订阅履约至到期
-                </span>
-              </div>
-              <Switch
-                checked={values.isActive ?? true}
-                onCheckedChange={(v) => set("isActive", v)}
+            {serverError ? (
+              <p className="text-sm text-destructive">{serverError}</p>
+            ) : null}
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setOpen(false)}
                 disabled={pending}
-              />
-            </div>
-          ) : null}
-
-          <div className="flex justify-end gap-2 pt-1">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setOpen(false)}
-              disabled={pending}
-            >
-              取消
-            </Button>
-            <Button
-              type="button"
-              onClick={handleSubmit}
-              disabled={
-                pending ||
-                !values.name.trim() ||
-                !/^#[0-9a-fA-F]{6}$/.test(values.color) ||
-                Number(values.creditsPerCycle) < 1 ||
-                Number(values.cycleDays) < 1
-              }
-            >
-              {pending ? "保存中..." : isEdit ? "保存修改" : "创建套餐"}
-            </Button>
-          </div>
-        </div>
+              >
+                取消
+              </Button>
+              <Button type="submit" disabled={pending}>
+                {pending ? "保存中…" : isEdit ? "保存修改" : "创建套餐"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </Form>
       </DialogContent>
     </Dialog>
   )

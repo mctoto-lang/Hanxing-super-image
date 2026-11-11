@@ -151,5 +151,10 @@ export async function callImageApi(opts: {
   // 少于请求数时缺的张按失败处理（succeededIndexes 覆盖不到即计失败）
   return urls
     .slice(0, jimengIndexes.length)
-    .map((url, i) => ({ index: jimengIndexes[i]!, url }))
+    .map((saved, i) => ({
+      index: jimengIndexes[i]!,
+      url: saved.url,
+      width: saved.width,
+      height: saved.height,
+    }))
 }

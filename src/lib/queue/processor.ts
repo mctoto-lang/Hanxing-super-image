@@ -751,12 +751,14 @@ async function processOneTask(
     return
   }
 
-  // 合并历史成功图片（重试补张时保留已成功的）
-  const { succeededIndexes, resultImages } = mergeImageResults(
-    taskRow.succeededIndexes ?? [],
-    taskRow.resultImages ?? [],
-    imageResults,
-  )
+  // 合并历史成功图片（重试补张时保留已成功的）；尺寸与 URL 按位置对齐
+  const { succeededIndexes, resultImages, resultImageSizes } =
+    mergeImageResults(
+      taskRow.succeededIndexes ?? [],
+      taskRow.resultImages ?? [],
+      taskRow.resultImageSizes ?? null,
+      imageResults,
+    )
   const totalCount = taskRow.imageCount
   // 上游可能一次返回多于请求数的图（如即梦固定出 4 张）；多出的不视为失败，
   // 否则 failedCount 为负会误走"部分失败"重试分支
@@ -780,6 +782,7 @@ async function processOneTask(
         status: "completed",
         resultImages,
         succeededIndexes,
+        resultImageSizes,
         errorMessage: null,
         completedAt: new Date(),
       })
@@ -824,7 +827,7 @@ async function processOneTask(
   if (succeededIndexes.length > 0) {
     await db
       .update(generationTasks)
-      .set({ resultImages, succeededIndexes })
+      .set({ resultImages, succeededIndexes, resultImageSizes })
       .where(eq(generationTasks.id, task.taskId))
   }
 

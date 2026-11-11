@@ -38,7 +38,7 @@ export function PlatformsConfigTable({
             <TableHead className="hidden md:table-cell">主图规范提示词</TableHead>
             <TableHead className="hidden md:table-cell">通用偏好提示词</TableHead>
             <TableHead>状态</TableHead>
-            <TableHead className="text-right">操作</TableHead>
+            <TableHead>操作</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -70,8 +70,8 @@ export function PlatformsConfigTable({
                     {p.isActive ? "启用" : "停用"}
                   </Badge>
                 </TableCell>
-                <TableCell className="text-right">
-                  <div className="flex items-center justify-end gap-1">
+                <TableCell>
+                  <div className="flex items-center gap-1">
                     <PlatformEditButton row={p} />
                     <PlatformToggleActiveButton id={p.id} isActive={p.isActive} />
                   </div>

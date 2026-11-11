@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm"
 import {
   boolean,
   date,
@@ -204,6 +205,13 @@ export const inventoryMovements = pgTable(
     index("inv_mv_ent_time").on(t.enterpriseId, t.createdAt),
     index("inv_mv_product").on(t.productId, t.createdAt),
     index("inv_mv_ref").on(t.refType, t.refId),
+    // ship_deduct 幂等数据库级兜底（0096）：同企业同发货单同货号仅一条扣减流水。
+    // 部分唯一索引——只约束 ship_deduct+ship_order（生产单分批入库/直发一单多次等
+    // 同 refId 多条流水合法，不受限）。常规路径由扣减事务内「单号咨询锁+查重」
+    // 拦截，索引仅并发漏网兜底。
+    uniqueIndex("inv_mv_ship_deduct_uq")
+      .on(t.enterpriseId, t.refId, t.productId)
+      .where(sql`${t.type} = 'ship_deduct' and ${t.refType} = 'ship_order'`),
   ],
 )
 

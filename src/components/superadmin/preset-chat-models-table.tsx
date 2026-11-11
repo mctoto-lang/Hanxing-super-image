@@ -9,6 +9,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { TableEmpty } from "@/components/shared/table-empty"
 import {
   ChatModelEditButton,
   ChatModelToggleActiveButton,
@@ -54,7 +55,7 @@ export function PresetChatModelsTable({
           <TableHead>参数</TableHead>
           <TableHead>并发 / 重试 / 超时</TableHead>
           <TableHead>状态</TableHead>
-          <TableHead className="text-right">操作</TableHead>
+          <TableHead>操作</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -102,8 +103,8 @@ export function PresetChatModelsTable({
                 <Badge variant="outline">停用</Badge>
               )}
             </TableCell>
-            <TableCell className="text-right">
-              <div className="flex justify-end gap-1">
+            <TableCell>
+              <div className="flex gap-1">
                 <ChatModelEditButton model={m} />
                 <ChatModelToggleActiveButton model={m} />
               </div>
@@ -111,11 +112,7 @@ export function PresetChatModelsTable({
           </TableRow>
         ))}
         {ordered.length === 0 ? (
-          <TableRow>
-            <TableCell colSpan={9} className="text-center text-muted-foreground">
-              暂无平台预置对话模型，点击右上角新建
-            </TableCell>
-          </TableRow>
+          <TableEmpty colSpan={9} noun="平台预置对话模型" />
         ) : null}
       </TableBody>
     </Table>

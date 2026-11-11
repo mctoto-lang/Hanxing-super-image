@@ -52,6 +52,12 @@ export const generationTasks = pgTable(
     /** 提交时的单张计费单价（部分失败按张退款用；旧行为 null → 回退模型现价） */
     costPerImage: integer("cost_per_image"),
     resultImages: jsonb("result_images").$type<string[]>(),
+    /** 转存时探测的像素尺寸（与 resultImages 按位置一一对应；
+     *  null=未探测到（本桶复用/未知格式/存量未回填），供过期占位与
+     *  加载前骨架使用真实比例） */
+    resultImageSizes: jsonb("result_image_sizes").$type<
+      ({ width: number; height: number } | null)[]
+    >(),
     /** 已成功生成的图片序号（与 resultImages 按位置一一对应；部分失败重试仅补缺失序号） */
     succeededIndexes: jsonb("succeeded_indexes").$type<number[]>(),
     referenceImages: jsonb("reference_images").$type<string[]>(),

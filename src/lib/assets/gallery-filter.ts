@@ -12,6 +12,8 @@ export interface GalleryItem {
   taskId: string
   prompt: string
   images: string[]
+  /** 与 images 按位置对齐的转存探测尺寸（null=未探测到；旧任务可能整列缺省） */
+  imageSizes?: ({ width: number; height: number } | null)[] | null
   modelDisplayName: string
   /** 对应 generation_task.source（create/workspace/product/weartry/mockup/agent，与 SOURCE_FILTERS 一致） */
   source: string
@@ -32,6 +34,8 @@ export interface GalleryCard {
   flatIndex: number
   url: string
   item: GalleryItem
+  /** 该图的转存探测尺寸（过期占位/加载前骨架用真实比例；null 回退方形） */
+  size?: { width: number; height: number } | null
 }
 
 /** 分类筛选项（value 对应 generation_task.source） */

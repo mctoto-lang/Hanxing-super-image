@@ -19,7 +19,8 @@ import { headers } from "next/headers"
  *   1. zod 校验入参；
  *   2. IP 维度登录限流（每 IP 15 分钟 10 次失败锁定）；
  *   3. 调用 Auth.js signIn（Credentials Provider 内部校验密码）；
- *   4. 落 login_logs 审计表（成功/失败）。
+ *   4. 落 login_logs 审计表（成功/失败）；
+ *   5. 成功后回写 users.lastLoginAt（「最近登录」列数据源）。
  */
 export async function loginAction(input: LoginInput) {
   const parsed = loginSchema.safeParse(input)
@@ -53,6 +54,15 @@ export async function loginAction(input: LoginInput) {
     })
     // 成功：记录审计、重置限流计数；按角色返回落地页（超管 → /platform）
     await writeLoginLog({ username, ip, userAgent: h.get("user-agent") ?? "", success: true })
+    // 回写最近登录时间（失败不阻断登录主流程）
+    try {
+      await db
+        .update(users)
+        .set({ lastLoginAt: new Date() })
+        .where(eq(users.username, username))
+    } catch {
+      // ignore
+    }
     await loginRateLimiter.reset(ipKey)
     await loginRateLimiter.reset(userKey)
     let redirectTo = postLoginPath(false)

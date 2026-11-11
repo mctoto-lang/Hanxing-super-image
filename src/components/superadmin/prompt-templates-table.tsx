@@ -39,7 +39,7 @@ function GroupTable({
             <TableHead>场景（scene）</TableHead>
             <TableHead className="hidden md:table-cell">模板内容</TableHead>
             <TableHead>状态</TableHead>
-            <TableHead className="text-right">操作</TableHead>
+            <TableHead>操作</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -68,8 +68,8 @@ function GroupTable({
                     {t.isActive ? "启用" : "停用"}
                   </Badge>
                 </TableCell>
-                <TableCell className="text-right">
-                  <div className="flex items-center justify-end gap-1">
+                <TableCell>
+                  <div className="flex items-center gap-1">
                     <PromptTemplateEditButton row={t} variant={variant} />
                     <PromptTemplateToggleActiveButton id={t.id} isActive={t.isActive} />
                   </div>

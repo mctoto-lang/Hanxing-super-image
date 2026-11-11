@@ -1,7 +1,6 @@
 "use client"
 
 import * as React from "react"
-import { useActionState } from "react"
 import { Gauge } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -14,9 +13,20 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form"
 import { toast } from "sonner"
 import { useRouter } from "next/navigation"
+import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
+import { useForm } from "react-hook-form"
+import type { z } from "zod"
+import { enterpriseConcurrencyFormSchema } from "@/lib/forms/schemas"
 import { updateEnterpriseConcurrencyAction } from "@/server/actions/platform"
 
 /**
@@ -26,6 +36,8 @@ import { updateEnterpriseConcurrencyAction } from "@/server/actions/platform"
  * - 对话并发：AI 对话同时在途流数上限（超出返回「已达并发上限」）
  * 两项均 1-9999；与模型级「最大并发」、权限组并发叠加生效（取最小）。
  */
+type ConcurrencyFormValues = z.infer<typeof enterpriseConcurrencyFormSchema>
+
 export function EnterpriseConcurrencyDialog({
   enterpriseId,
   enterpriseName,
@@ -38,26 +50,38 @@ export function EnterpriseConcurrencyDialog({
   chatMaxConcurrent: number
 }) {
   const [open, setOpen] = React.useState(false)
+  const [serverError, setServerError] = React.useState<string | null>(null)
   const router = useRouter()
 
-  const [state, formAction, pending] = useActionState(
-    async (_prev: unknown, formData: FormData) => {
-      const res = await updateEnterpriseConcurrencyAction({
-        enterpriseId,
-        maxConcurrent: Number(formData.get("maxConcurrent") ?? 5),
-        chatMaxConcurrent: Number(formData.get("chatMaxConcurrent") ?? 5),
-      })
-      if (res.ok) {
-        toast.success("并发配置已更新")
-        setOpen(false)
-        router.refresh()
-        return null
-      }
-      toast.error(res.error ?? "更新失败")
-      return { error: res.error }
-    },
-    null,
-  )
+  const form = useForm<ConcurrencyFormValues>({
+    resolver: standardSchemaResolver(enterpriseConcurrencyFormSchema),
+    defaultValues: { maxConcurrent, chatMaxConcurrent },
+  })
+  const pending = form.formState.isSubmitting
+
+  React.useEffect(() => {
+    if (open) {
+      form.reset({ maxConcurrent, chatMaxConcurrent })
+      setServerError(null)
+    }
+  }, [open, form, maxConcurrent, chatMaxConcurrent])
+
+  async function onSubmit(values: ConcurrencyFormValues) {
+    setServerError(null)
+    const res = await updateEnterpriseConcurrencyAction({
+      enterpriseId,
+      maxConcurrent: values.maxConcurrent,
+      chatMaxConcurrent: values.chatMaxConcurrent,
+    })
+    if (res.ok) {
+      toast.success("并发配置已更新")
+      setOpen(false)
+      router.refresh()
+      return
+    }
+    // 服务端兜底错误：统一条内联展示，不再 toast
+    setServerError(res.error ?? "更新失败")
+  }
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -67,46 +91,77 @@ export function EnterpriseConcurrencyDialog({
           <DialogTitle>企业并发设置</DialogTitle>
           <DialogDescription>「{enterpriseName}」的企业级并发上限</DialogDescription>
         </DialogHeader>
-        <form action={formAction} className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="conc-image">生图并发上限</Label>
-              <Input
-                id="conc-image"
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <FormField
+                control={form.control}
                 name="maxConcurrent"
-                type="number"
-                min={1}
-                max={9999}
-                defaultValue={maxConcurrent}
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>生图并发上限</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={9999}
+                        {...field}
+                        value={field.value ?? ""}
+                        onChange={(e) =>
+                          field.onChange(
+                            e.target.value === "" ? undefined : Number(e.target.value),
+                          )
+                        }
+                      />
+                    </FormControl>
+                    <p className="text-xs text-muted-foreground">
+                      企业内生图任务的同时处理上限
+                    </p>
+                    <FormMessage />
+                  </FormItem>
+                )}
               />
-              <p className="text-xs text-muted-foreground">
-                企业内生图任务的同时处理上限
-              </p>
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="conc-chat">对话并发上限</Label>
-              <Input
-                id="conc-chat"
+              <FormField
+                control={form.control}
                 name="chatMaxConcurrent"
-                type="number"
-                min={1}
-                max={9999}
-                defaultValue={chatMaxConcurrent}
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>对话并发上限</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={9999}
+                        {...field}
+                        value={field.value ?? ""}
+                        onChange={(e) =>
+                          field.onChange(
+                            e.target.value === "" ? undefined : Number(e.target.value),
+                          )
+                        }
+                      />
+                    </FormControl>
+                    <p className="text-xs text-muted-foreground">
+                      企业内 AI 对话的同时在途流数
+                    </p>
+                    <FormMessage />
+                  </FormItem>
+                )}
               />
-              <p className="text-xs text-muted-foreground">
-                企业内 AI 对话的同时在途流数
-              </p>
             </div>
-          </div>
-          {state?.error ? (
-            <p role="alert" className="text-sm text-destructive">{state.error}</p>
-          ) : null}
-          <DialogFooter>
-            <Button type="submit" disabled={pending}>
-              {pending ? "更新中..." : "保存"}
-            </Button>
-          </DialogFooter>
-        </form>
+            {serverError ? (
+              <p className="text-sm text-destructive">{serverError}</p>
+            ) : null}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+                取消
+              </Button>
+              <Button type="submit" disabled={pending}>
+                {pending ? "更新中…" : "保存"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </Form>
       </DialogContent>
     </Dialog>
   )

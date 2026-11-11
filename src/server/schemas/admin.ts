@@ -28,6 +28,35 @@ export const assignGroupSchema = z.object({
   groupId: z.string().uuid(),
 })
 
+/** 禁用/启用成员（禁用后无法登录，业务操作即时降权） */
+export const setMemberStatusSchema = z.object({
+  userId: z.string().uuid(),
+  status: z.enum(["active", "disabled"]),
+})
+
+/** 管理员重置成员密码（本人走个人设置，不可用此入口） */
+export const resetMemberPasswordSchema = z.object({
+  userId: z.string().uuid(),
+  newPassword: z.string().min(6, "密码至少 6 字符").max(128),
+})
+
+/** 管理员编辑成员昵称/邮箱（用户名不可改） */
+export const updateMemberProfileSchema = z.object({
+  userId: z.string().uuid(),
+  name: z.string().max(100).optional(),
+  email: z.string().email("邮箱格式错误").optional().or(z.literal("")),
+})
+
+/** 权限组成员整组转移（删除组前须先清空成员） */
+export const moveGroupMembersSchema = z
+  .object({
+    fromGroupId: z.string().uuid(),
+    toGroupId: z.string().uuid(),
+  })
+  .refine((d) => d.fromGroupId !== d.toGroupId, {
+    message: "目标组不能与当前组相同",
+  })
+
 export const permissionGroupSchema = z.object({
   name: z.string().min(2, "组名至少 2 字符").max(100),
   description: z.string().max(500).optional(),

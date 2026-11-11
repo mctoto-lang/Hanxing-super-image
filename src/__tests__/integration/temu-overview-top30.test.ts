@@ -10,7 +10,7 @@ import { temuDayStr } from "@/server/services/temu-time"
 import { getTemuSalesTopBySnAction } from "@/server/actions/temu"
 
 /**
- * TOP20 按货号聚合主图口径回归：组主图 =「该口径销量最高的有图 SKC」的图
+ * TOP30 按货号聚合主图口径回归：组主图 =「该口径销量最高的有图 SKC」的图
  * （原 max(url) 按字典序任意选图，非最高销量链接）。纯本地库，无官方请求。
  */
 
@@ -33,8 +33,8 @@ beforeAll(async () => {
   const [ent] = await db
     .insert(enterprises)
     .values({
-      name: "temu top20 测试企业",
-      slug: `t20-${randomUUID().slice(0, 8)}`,
+      name: "temu top30 测试企业",
+      slug: `t30-${randomUUID().slice(0, 8)}`,
       creditsBalance: 0,
       enabledModules: [...MODULE_NAMES],
     })
@@ -45,9 +45,9 @@ beforeAll(async () => {
     .insert(users)
     .values({
       enterpriseId: entId,
-      username: `t20-${randomUUID().slice(0, 8)}`,
-      email: `t20-${randomUUID().slice(0, 8)}@test.local`,
-      name: "top20 管理员",
+      username: `t30-${randomUUID().slice(0, 8)}`,
+      email: `t30-${randomUUID().slice(0, 8)}@test.local`,
+      name: "top30 管理员",
       passwordHash: "x",
       enterpriseRole: "owner",
     })
@@ -59,7 +59,7 @@ beforeAll(async () => {
     .insert(temuStores)
     .values({
       enterpriseId: entId,
-      name: "top20 测试店铺",
+      name: "top30 测试店铺",
       accessTokenEncrypted: encrypt("t20-test-token"),
       tokenState: "active",
       mallType: "full",
@@ -88,11 +88,13 @@ beforeAll(async () => {
 }, 60_000)
 
 afterAll(async () => {
+  // users.enterpriseId 为 set null 不级联，需先删成员
+  await db.delete(users).where(eq(users.enterpriseId, entId))
   await db.delete(enterprises).where(eq(enterprises.id, entId))
   vi.unstubAllGlobals()
 })
 
-describe("TOP20 按货号聚合主图", () => {
+describe("TOP30 按货号聚合主图", () => {
   it(
     "各口径主图 = 该口径销量最高 SKC 的图；榜首无图顺延次位有图 SKC",
     { timeout: 30_000 },

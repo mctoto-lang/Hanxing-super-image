@@ -221,6 +221,8 @@ async function uploadExternalAsset(
 interface FinalizeOk {
   status: "completed"
   resultImages: string[]
+  /** 与 resultImages 按位置对齐的像素尺寸（转存时探测；失败 null） */
+  resultImageSizes?: ({ width: number; height: number } | null)[]
 }
 interface FinalizeErr {
   status: "failed"
@@ -237,6 +239,9 @@ export async function finalizeMockupTask(
       ? {
           status: "completed" as const,
           resultImages: outcome.resultImages,
+          ...(outcome.resultImageSizes
+            ? { resultImageSizes: outcome.resultImageSizes }
+            : {}),
           completedAt: new Date(),
         }
       : {
@@ -488,7 +493,7 @@ export async function applyExternalJob(
           : info?.outputFormat === "jpeg"
             ? "jpg"
             : "png"
-      const url = await (await getStorage()).saveFromBuffer(
+      const saved = await (await getStorage()).saveFromBuffer(
         bytes,
         enterpriseId,
         ext,
@@ -496,7 +501,12 @@ export async function applyExternalJob(
       )
       await finalizeMockupTask(taskId, {
         status: "completed",
-        resultImages: [url],
+        resultImages: [saved.url],
+        resultImageSizes: [
+          saved.width != null && saved.height != null
+            ? { width: saved.width, height: saved.height }
+            : null,
+        ],
       })
       await writeMockupApiLog(enterpriseId, taskId, "SUCCEEDED")
       return { terminal: true, status: "completed" }

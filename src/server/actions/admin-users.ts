@@ -16,6 +16,9 @@ import {
   createMemberSchema,
   changeRoleSchema,
   assignGroupSchema,
+  setMemberStatusSchema,
+  resetMemberPasswordSchema,
+  updateMemberProfileSchema,
 } from "@/server/schemas/admin"
 import {
   allocateCreditsToUser,
@@ -190,6 +193,135 @@ export async function assignGroupAction(input: {
   await db
     .update(users)
     .set({ groupId: d.groupId, updatedAt: new Date() })
+    .where(eq(users.id, d.userId))
+
+  revalidatePath("/admin/users")
+  return { ok: true as const, error: null }
+}
+
+/**
+ * 禁用/启用成员（owner 不可操作，不能操作自己）。
+ *
+ * 禁用后：登录即时被拒（auth config），已登录会话在 JWT 周期复核时
+ * 即时降权；历史数据保留，重新启用即恢复。
+ */
+export async function setMemberStatusAction(input: {
+  userId: string
+  status: "active" | "disabled"
+}) {
+  const ctx = await requireEnterpriseAdmin()
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  const parsed = setMemberStatusSchema.safeParse(input)
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
+  }
+  const d = parsed.data
+  if (d.userId === ctx.user.id) {
+    return { ok: false as const, error: "不能禁用/启用自己" }
+  }
+
+  const [target] = await db
+    .select({
+      id: users.id,
+      enterpriseRole: users.enterpriseRole,
+      isSuperAdmin: users.isSuperAdmin,
+    })
+    .from(users)
+    .where(and(eq(users.id, d.userId), eq(users.enterpriseId, enterpriseId)))
+    .limit(1)
+  if (!target) return { ok: false as const, error: "成员不存在" }
+  if (target.isSuperAdmin) return { ok: false as const, error: "不能操作平台超管" }
+  if (target.enterpriseRole === "owner") {
+    return { ok: false as const, error: "企业管理员（owner）需由平台超管处理" }
+  }
+
+  await db
+    .update(users)
+    .set({ status: d.status, updatedAt: new Date() })
+    .where(eq(users.id, d.userId))
+
+  revalidatePath("/admin/users")
+  return { ok: true as const, error: null }
+}
+
+/**
+ * 管理员重置成员密码。
+ *
+ * 允许重置本企业其他非 owner 成员；不能重置自己（走个人设置）。
+ * owner 需由平台超管处理（resetPlatformUserPasswordAction），
+ * 口径同 setMemberStatusAction——避免 admin 借重置密码接管 owner 账号。
+ */
+export async function resetMemberPasswordAction(input: {
+  userId: string
+  newPassword: string
+}) {
+  const ctx = await requireEnterpriseAdmin()
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  const parsed = resetMemberPasswordSchema.safeParse(input)
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
+  }
+  const d = parsed.data
+  if (d.userId === ctx.user.id) {
+    return {
+      ok: false as const,
+      error: "不能在此重置自己的密码，请前往个人设置修改",
+    }
+  }
+
+  const [target] = await db
+    .select({
+      id: users.id,
+      enterpriseRole: users.enterpriseRole,
+      isSuperAdmin: users.isSuperAdmin,
+    })
+    .from(users)
+    .where(and(eq(users.id, d.userId), eq(users.enterpriseId, enterpriseId)))
+    .limit(1)
+  if (!target) return { ok: false as const, error: "成员不存在" }
+  if (target.isSuperAdmin) return { ok: false as const, error: "不能操作平台超管" }
+  if (target.enterpriseRole === "owner") {
+    return { ok: false as const, error: "企业管理员（owner）需由平台超管处理" }
+  }
+
+  const hash = await hashPassword(d.newPassword)
+  await db
+    .update(users)
+    .set({ passwordHash: hash, updatedAt: new Date() })
+    .where(eq(users.id, d.userId))
+
+  revalidatePath("/admin/users")
+  return { ok: true as const, error: null }
+}
+
+/** 编辑成员昵称/邮箱（用户名不可改） */
+export async function updateMemberProfileAction(input: {
+  userId: string
+  name?: string
+  email?: string
+}) {
+  const ctx = await requireEnterpriseAdmin()
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  const parsed = updateMemberProfileSchema.safeParse(input)
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
+  }
+  const d = parsed.data
+
+  const [target] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.id, d.userId), eq(users.enterpriseId, enterpriseId)))
+    .limit(1)
+  if (!target) return { ok: false as const, error: "成员不存在" }
+
+  await db
+    .update(users)
+    .set({
+      ...(d.name !== undefined ? { name: d.name.trim() || null } : {}),
+      ...(d.email !== undefined ? { email: d.email || null } : {}),
+      updatedAt: new Date(),
+    })
     .where(eq(users.id, d.userId))
 
   revalidatePath("/admin/users")

@@ -269,6 +269,14 @@ export async function aiAssistSellingPointsAction(input: {
   const platform = await resolvePlatform(d.platform)
   if (!lang || !platform) return { ok: false, error: "平台或语言不可用" }
 
+  // 参考图归属校验（与生图链路口径一致：只允许本企业上传的图片，
+  // 防止借 AI 分析读取他企业图片内容）
+  const refErr = await validateReferenceImageUrls(
+    d.referenceImages,
+    scope.enterpriseId,
+  )
+  if (refErr) return { ok: false, error: refErr }
+
   if (await aiActionRateLimiter.consume(scope.enterpriseId, ctx.user.id)) {
     return { ok: false, error: "操作过于频繁，请稍后再试" }
   }
@@ -332,6 +340,13 @@ export async function smartMatchStructureAction(input: {
   const lang = await resolveLanguage(d.language)
   const platform = await resolvePlatform(d.platform)
   if (!lang || !platform) return { ok: false, error: "平台或语言不可用" }
+
+  // 参考图归属校验（同 aiAssistSellingPointsAction，与生图链路口径一致）
+  const refErr = await validateReferenceImageUrls(
+    d.referenceImages,
+    scope.enterpriseId,
+  )
+  if (refErr) return { ok: false, error: refErr }
 
   if (await aiActionRateLimiter.consume(scope.enterpriseId, ctx.user.id)) {
     return { ok: false, error: "操作过于频繁，请稍后再试" }
@@ -458,6 +473,13 @@ async function runCardPromptGeneration(opts: {
   const lang = await resolveLanguage(d.language)
   const platform = await resolvePlatform(d.platform)
   if (!lang || !platform) return { ok: false, error: "平台或语言不可用" }
+
+  // 参考图归属校验（同 aiAssistSellingPointsAction，与生图链路口径一致）
+  const refErr = await validateReferenceImageUrls(
+    d.referenceImages,
+    opts.enterpriseId,
+  )
+  if (refErr) return { ok: false, error: refErr }
 
   if (await aiActionRateLimiter.consume(opts.enterpriseId, opts.userId)) {
     return { ok: false, error: "操作过于频繁，请稍后再试" }

@@ -3,7 +3,7 @@
 import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm"
 import { z } from "zod"
 import { db } from "@/db/client"
-import { temuProducts, temuSalesOverviews, temuStores } from "@/db/schema"
+import { temuProducts, temuSalesOverviews, temuSkuMaps, temuStores } from "@/db/schema"
 import type { ModuleName } from "@/db/schema/_shared"
 import {
   requireEnterpriseContext,
@@ -557,14 +557,92 @@ export interface TemuQcInspectionRow {
   thumbUrl: string | null
   /** 文档口径列表行不带质检结果值；官方若返回则透传（1-合格 2-不合格） */
   skuQcResult: number | null
+  /** 货号（本地反查 temu_products.product_sn；质检接口只回 ID 族，未命中 null） */
+  productSn: string | null
 }
 
-/** 质检列表入参（skuQcResult/pageNo 畸形值在进官方接口前先收口为友好错误） */
+/** 质检列表货号本地反查（按行序号）：优先 SKC 直查 temu_products（口径同
+ *  temu-return loadSkcMeta），skc 缺失/未命中的行退 sku_map（skuId→skcId）
+ *  两跳再查；页大小 20，批查开销可忽略。 */
+async function loadQcProductSnByRow(
+  storeId: string,
+  rows: Array<{ productSkcId: string | null; productSkuId: string | null }>,
+): Promise<Map<number, string>> {
+  const byRow = new Map<number, string>()
+  const querySnBySkc = async (skcIds: string[]): Promise<Map<string, string>> => {
+    const map = new Map<string, string>()
+    if (skcIds.length === 0) return map
+    const found = await db
+      .select({ productSkcId: temuProducts.productSkcId, productSn: temuProducts.productSn })
+      .from(temuProducts)
+      .where(and(eq(temuProducts.storeId, storeId), inArray(temuProducts.productSkcId, skcIds)))
+    for (const r of found) if (r.productSn) map.set(r.productSkcId, r.productSn)
+    return map
+  }
+  // 第一跳：有 skcId 的行直查
+  const skcIds = [...new Set(rows.map((r) => r.productSkcId).filter((v): v is string => !!v))]
+  const snBySkc = await querySnBySkc(skcIds)
+  const unresolved: number[] = []
+  rows.forEach((r, i) => {
+    const sn = r.productSkcId ? snBySkc.get(r.productSkcId) : undefined
+    if (sn) byRow.set(i, sn)
+    else if (r.productSkuId) unresolved.push(i)
+  })
+  // 第二跳：skc 缺失/未命中 → sku_map（skuId→skcId）→ temu_products
+  if (unresolved.length > 0) {
+    const skuIds = [...new Set(unresolved.map((i) => rows[i]!.productSkuId!))]
+    const mapRows = await db
+      .select({ skuId: temuSkuMaps.skuId, skcId: temuSkuMaps.skcId })
+      .from(temuSkuMaps)
+      .where(and(eq(temuSkuMaps.storeId, storeId), inArray(temuSkuMaps.skuId, skuIds)))
+    const skcBySku = new Map(mapRows.map((m) => [m.skuId, m.skcId]))
+    const secondSkcIds = [
+      ...new Set(mapRows.map((m) => m.skcId).filter((id) => !snBySkc.has(id))),
+    ]
+    const snBySkc2 = await querySnBySkc(secondSkcIds)
+    for (const i of unresolved) {
+      const skc = skcBySku.get(rows[i]!.productSkuId!)
+      const sn = skc ? snBySkc2.get(skc) ?? snBySkc.get(skc) : undefined
+      if (sn) byRow.set(i, sn)
+    }
+  }
+  return byRow
+}
+
+/** 逗号/空白分隔多值 → 去空去重数组（数量与格式合法性由 schema 收口报错，绝不静默截断/丢弃） */
+const splitSearchList = (v?: string): string[] =>
+  [...new Set((v ?? "").split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean))]
+
+/** 质检列表入参（skuQcResult/pageNo/搜索串畸形值在进官方接口前先收口为友好错误） */
 const temuQcListQuerySchema = z.object({
   store: z.string().uuid(),
   /** 1-合格 2-不合格；缺省=全部 */
   skuQcResult: z.union([z.literal(1), z.literal(2)]).optional(),
   pageNo: z.coerce.number().int().min(1).max(500).default(1),
+  /** 搜索：采购单号（官方 purchaseNo[]，逗号分隔多值） */
+  purchaseNo: z.string().max(200).optional(),
+  /** 搜索：SKU ID（官方 skuIdList[]，逗号分隔多值） */
+  skuId: z.string().max(200).optional(),
+  /** 搜索：SKC ID（官方 skcIdList[]，逗号分隔多值） */
+  skcId: z.string().max(200).optional(),
+}).superRefine((val, ctx) => {
+  // 搜索串口径：token >50 或 ID 族含非纯数字时直接报错——静默丢弃过滤条件会让列表退化成未过滤全量
+  for (const [key, label, idOnly] of [
+    ["purchaseNo", "采购单号", false],
+    ["skuId", "SKU ID", true],
+    ["skcId", "SKC ID", true],
+  ] as const) {
+    const tokens = splitSearchList(val[key])
+    if (tokens.length > 50) {
+      ctx.addIssue({ code: "custom", path: [key], message: `${label}一次最多 50 个（当前 ${tokens.length} 个）` })
+      continue
+    }
+    if (!idOnly) continue
+    const bad = tokens.find((t) => !/^\d+$/.test(t) || !Number.isSafeInteger(Number(t)))
+    if (bad) {
+      ctx.addIssue({ code: "custom", path: [key], message: `${label}仅支持数字 ID（如 123），无法识别「${bad}」` })
+    }
+  }
 })
 
 /** 质检列表（30s 缓存；默认筛选不合格由 UI 传 skuQcResult=2） */
@@ -573,6 +651,10 @@ export async function getTemuQualityInspectionsAction(input: {
   /** 1-合格 2-不合格；缺省=全部 */
   skuQcResult?: 1 | 2
   pageNo?: number
+  /** 搜索：采购单号/SKU ID/SKC ID（逗号分隔多值，官方数组入参） */
+  purchaseNo?: string
+  skuId?: string
+  skcId?: string
 }): Promise<{ ok: true; rows: TemuQcInspectionRow[]; total: number } | { ok: false; error: string }> {
   const parsed = temuQcListQuerySchema.safeParse(input)
   if (!parsed.success) {
@@ -581,9 +663,15 @@ export async function getTemuQualityInspectionsAction(input: {
   const guard = await requireTemuStore(parsed.data.store, null)
   if (!guard.ok) return guard
   const { store } = guard
-  const { skuQcResult, pageNo } = parsed.data
+  const { skuQcResult, pageNo, purchaseNo, skuId, skcId } = parsed.data
+  const purchaseNos = splitSearchList(purchaseNo)
+  // schema 已保证 ID token 全为纯数字（安全整数），此处无需再过滤
+  const skuIds = splitSearchList(skuId).map(Number)
+  const skcIds = splitSearchList(skcId).map(Number)
   // 缓存键带 enterpriseId 前缀：写路径按企业前缀整体失效（同 stockable 键）
-  return temuCached(`${store.enterpriseId}:qc-list:${store.id}:${skuQcResult ?? "all"}:${pageNo}`, async () => {
+  return temuCached(
+    `${store.enterpriseId}:qc-list:${store.id}:${skuQcResult ?? "all"}:${pageNo}:${purchaseNos.join(",")}:${skuIds.join(",")}:${skcIds.join(",")}`,
+    async () => {
     const built = await getTemuCallContext(store)
     if ("error" in built) return { ok: false as const, error: built.error }
     try {
@@ -592,10 +680,13 @@ export async function getTemuQualityInspectionsAction(input: {
         {
           pageInfo: { pageNo, pageSize: 20 },
           ...(skuQcResult ? { skuQcResult } : {}),
+          ...(purchaseNos.length ? { purchaseNo: purchaseNos } : {}),
+          ...(skuIds.length ? { skuIdList: skuIds } : {}),
+          ...(skcIds.length ? { skcIdList: skcIds } : {}),
         },
         built,
       )
-      const rows: TemuQcInspectionRow[] = asList(envelope.result?.skuList).map((it) => ({
+      const rows: Omit<TemuQcInspectionRow, "productSn">[] = asList(envelope.result?.skuList).map((it) => ({
         qcBillId: num(it.qcBillId),
         productSkuId: idStr(it.productSkuId, 32),
         productSkcId: idStr(it.productSkcId, 32),
@@ -608,7 +699,13 @@ export async function getTemuQualityInspectionsAction(input: {
         thumbUrl: str(it.thumbUrl, 500),
         skuQcResult: num(it.skuQcResult) ?? num(it.qcResult),
       }))
-      return { ok: true as const, rows, total: num(envelope.result?.total) ?? rows.length }
+      // 货号本地反查（质检接口只回 ID 族；随 30s 缓存一并缓存，页 20 行开销可忽略）
+      const snByRow = await loadQcProductSnByRow(store.id, rows)
+      const withSn: TemuQcInspectionRow[] = rows.map((r, i) => ({
+        ...r,
+        productSn: snByRow.get(i) ?? null,
+      }))
+      return { ok: true as const, rows: withSn, total: num(envelope.result?.total) ?? rows.length }
     } catch (err) {
       return { ok: false as const, error: await toWorkbenchError(store.id, err) }
     }

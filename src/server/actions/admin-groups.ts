@@ -1,6 +1,6 @@
 "use server"
 
-import { and, eq, sql } from "drizzle-orm"
+import { and, eq, inArray, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import { permissionGroups, users } from "@/db/schema"
 import {
@@ -8,6 +8,7 @@ import {
   getCurrentEnterpriseScope,
 } from "@/lib/auth/session"
 import { permissionGroupSchema } from "@/server/schemas/admin"
+import { moveGroupMembersSchema } from "@/server/schemas/admin"
 import { revalidatePath } from "next/cache"
 
 /**
@@ -49,7 +50,7 @@ export async function listGroupsAction(opts: ListPageParams = {}) {
       })
       .from(permissionGroups)
       .where(where)
-      .orderBy(permissionGroups.createdAt)
+      .orderBy(permissionGroups.createdAt, permissionGroups.id)
       .limit(pageSize)
       .offset(offset),
     db
@@ -59,6 +60,26 @@ export async function listGroupsAction(opts: ListPageParams = {}) {
   ])
 
   return { items, total, page, pageSize }
+}
+
+/**
+ * 列出本企业全部权限组（不分页，供下拉选择器用）。
+ *
+ * listGroupsAction 单页上限 50；组多于 50 时按 total 翻页拉全量再聚合，
+ * 避免目标组下拉静默截断（组本身有分页管理页，此处只取 id/name 等字段）。
+ */
+export async function listAllGroupsAction() {
+  const first = await listGroupsAction({ page: 1, pageSize: 50 })
+  const totalPages = Math.ceil(first.total / first.pageSize)
+  const rest =
+    totalPages > 1
+      ? await Promise.all(
+          Array.from({ length: totalPages - 1 }, (_, i) =>
+            listGroupsAction({ page: i + 2, pageSize: first.pageSize }),
+          ),
+        )
+      : []
+  return rest.reduce((acc, r) => acc.concat(r.items), [...first.items])
 }
 
 /** 创建权限组 */
@@ -196,4 +217,80 @@ export async function deleteGroupAction(groupId: string) {
   await db.delete(permissionGroups).where(eq(permissionGroups.id, groupId))
   revalidatePath("/admin/groups")
   return { ok: true as const, error: null }
+}
+
+/** 查看组内成员（组必须属于本企业；上限 200 条，仅用于弹窗展示） */
+export async function listGroupMembersAction(groupId: string) {
+  const ctx = await requireEnterpriseAdmin()
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+
+  const [group] = await db
+    .select({ id: permissionGroups.id })
+    .from(permissionGroups)
+    .where(
+      and(
+        eq(permissionGroups.id, groupId),
+        eq(permissionGroups.enterpriseId, enterpriseId),
+      ),
+    )
+    .limit(1)
+  if (!group) return { ok: false as const, error: "权限组不存在" }
+
+  const members = await db
+    .select({
+      id: users.id,
+      username: users.username,
+      name: users.name,
+      enterpriseRole: users.enterpriseRole,
+      status: users.status,
+    })
+    .from(users)
+    .where(eq(users.groupId, groupId))
+    .orderBy(users.createdAt)
+    .limit(200)
+
+  return { ok: true as const, error: null, members }
+}
+
+/**
+ * 整组转移成员到目标组（删除组前须先清空成员）。
+ *
+ * from/to 均须属于本企业且不相同；转移后 from 组成员数为 0，
+ * 可直接删除。空组转移幂等成功（moved=0）。
+ */
+export async function moveGroupMembersAction(input: {
+  fromGroupId: string
+  toGroupId: string
+}) {
+  const ctx = await requireEnterpriseAdmin()
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  const parsed = moveGroupMembersSchema.safeParse(input)
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
+  }
+  const d = parsed.data
+
+  const groups = await db
+    .select({ id: permissionGroups.id })
+    .from(permissionGroups)
+    .where(
+      and(
+        eq(permissionGroups.enterpriseId, enterpriseId),
+        inArray(permissionGroups.id, [d.fromGroupId, d.toGroupId]),
+      ),
+    )
+  const ids = new Set(groups.map((g) => g.id))
+  if (!ids.has(d.fromGroupId) || !ids.has(d.toGroupId)) {
+    return { ok: false as const, error: "权限组不存在" }
+  }
+
+  const moved = await db
+    .update(users)
+    .set({ groupId: d.toGroupId, updatedAt: new Date() })
+    .where(eq(users.groupId, d.fromGroupId))
+    .returning({ id: users.id })
+
+  revalidatePath("/admin/groups")
+  revalidatePath("/admin/users")
+  return { ok: true as const, error: null, moved: moved.length }
 }

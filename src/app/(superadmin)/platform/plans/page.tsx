@@ -7,6 +7,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { PageHeader } from "@/components/shared/page-header"
 import { PlanFormDialog } from "@/components/superadmin/plan-form-dialog"
 import { PlansTable } from "@/components/superadmin/plans-table"
 
@@ -25,16 +26,12 @@ export default async function SubscriptionPlansPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold">订阅套餐</h1>
-          <p className="text-sm text-muted-foreground">
-            配置企业套餐的勋章样式与每周期积分额度；分配入口在「企业管理」· 共{" "}
-            {items.length} 个套餐
-          </p>
-        </div>
+      <PageHeader
+        title="订阅套餐"
+        description={`配置企业套餐的勋章样式与每周期积分额度；分配入口在「企业管理」· 共 ${items.length} 个套餐`}
+      >
         <PlanFormDialog />
-      </div>
+      </PageHeader>
 
       <Card>
         <CardHeader>

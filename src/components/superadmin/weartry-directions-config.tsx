@@ -60,7 +60,7 @@ export function WeartryDirectionsConfig({
               <TableHead className="hidden md:table-cell">提示词模板</TableHead>
               <TableHead>数量</TableHead>
               <TableHead>状态</TableHead>
-              <TableHead className="text-right">操作</TableHead>
+              <TableHead>操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -109,8 +109,8 @@ export function WeartryDirectionsConfig({
                       )}
                     </div>
                   </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex items-center justify-end gap-1">
+                  <TableCell>
+                    <div className="flex items-center gap-1">
                       <DirectionEditButton row={d} variant="weartry" />
                       <DirectionToggleActiveButton id={d.id} isActive={d.isActive} />
                     </div>
