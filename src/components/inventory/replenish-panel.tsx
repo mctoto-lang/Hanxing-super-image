@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { AlertTriangle, Loader2, PackagePlus } from "lucide-react"
+import { AlertTriangle, PackagePlus } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -265,7 +266,7 @@ export function ReplenishPanel() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-base font-normal">
           补货建议
-          {loading ? <Loader2 className="size-3.5 animate-spin text-muted-foreground" /> : null}
+          {loading ? <DashRing className="size-3.5 text-muted-foreground" /> : null}
           <span className="text-sm font-normal text-muted-foreground">
             （仅「持续生产」货号 · 已选 {selected.size} 行）
           </span>
@@ -360,7 +361,7 @@ export function ReplenishPanel() {
                 })
               }
             >
-              {creating && <Loader2 className="size-3.5 animate-spin" />}
+              {creating && <DashRing className="size-3.5" />}
               生成
             </Button>
           </DialogFooter>

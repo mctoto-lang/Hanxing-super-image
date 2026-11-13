@@ -3,7 +3,8 @@
 import * as React from "react"
 import { toast } from "sonner"
 import type { DateRange } from "react-day-picker"
-import { ArrowLeftRight, Loader2 } from "lucide-react"
+import { ArrowLeftRight } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { Button } from "@/components/ui/button"
 import {
   Select,
@@ -217,7 +218,7 @@ export function MovementPanel() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-base font-normal">
             库存出入
-            {loading ? <Loader2 className="size-3.5 animate-spin text-muted-foreground" /> : null}
+            {loading ? <DashRing className="size-3.5 text-muted-foreground" /> : null}
             <span className="text-sm font-normal text-muted-foreground">
               （{summary.products} 个货号 · 入 {summary.inQty} · 出 {summary.outQty}）
             </span>

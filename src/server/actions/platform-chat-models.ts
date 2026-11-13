@@ -19,7 +19,7 @@ import { revalidatePath } from "next/cache"
  *   受各企业 visiblePresetChatModels 白名单过滤，空 = 全部可见）。
  * - API Key 落库前 AES-256-GCM 加密；编辑时留空 = 不修改。
  * - 停用 = is_active=false，保留模板关联与历史任务外键完整性。
- * - 新建预置后自动追加进所有已启用白名单的企业（与生图预置模型同构）。
+ * - 新建预置后自动追加进所有已启用白名单的企业（与生图模型同构）。
  * - temperature/maxTokens 落 extraConfig（工作台内部 AI 用）；
  *   maxContext/maxOutput/厘级价格/思考强度为 /chat 交互对话专用。
  */

@@ -1,13 +1,13 @@
 "use client"
 
 import * as React from "react"
+import { DashRing } from "@/components/ui/dash-ring"
 import {
   Eye,
   EyeOff,
   FileImage,
   FileUp,
   Layers,
-  Loader2,
   Pencil,
   Plus,
   RefreshCw,
@@ -198,7 +198,7 @@ function GroupFormDialog({
 
         <DialogFooter>
           <Button disabled={saving} onClick={() => void handleSave()}>
-            {saving ? <Loader2 className="size-4 animate-spin" /> : null}
+            {saving ? <DashRing className="size-4" /> : null}
             保存
           </Button>
         </DialogFooter>
@@ -505,7 +505,7 @@ export function TemplateManageDialog({
                 <div className="min-h-0 flex-1 overflow-y-auto pr-1 scrollbar-hide">
                   {groupsLoading && groups.length === 0 ? (
                     <div className="flex h-24 items-center justify-center text-sm text-muted-foreground">
-                      <Loader2 className="mr-2 size-4 animate-spin" /> 加载中…
+                      <DashRing className="mr-2 size-4" /> 加载中…
                     </div>
                   ) : visibleGroups.length === 0 ? (
                     <div className="rounded-lg border border-dashed p-3 text-center text-sm text-muted-foreground">
@@ -643,7 +643,7 @@ export function TemplateManageDialog({
                       onClick={() => psdInputRef.current?.click()}
                     >
                       {uploadingPsd ? (
-                        <Loader2 className="size-3.5 animate-spin" />
+                        <DashRing className="size-3.5" />
                       ) : (
                         <FileUp className="size-3.5" />
                       )}
@@ -663,7 +663,7 @@ export function TemplateManageDialog({
                 <div className="min-h-0 flex-1 overflow-y-auto pr-1 scrollbar-hide">
                   {templatesLoading && templates.length === 0 ? (
                     <div className="flex h-24 items-center justify-center text-sm text-muted-foreground">
-                      <Loader2 className="mr-2 size-4 animate-spin" /> 加载中…
+                      <DashRing className="mr-2 size-4" /> 加载中…
                     </div>
                   ) : visibleTemplates.length === 0 ? (
                     <div className="rounded-lg border border-dashed p-3 text-center text-sm text-muted-foreground">
@@ -763,7 +763,7 @@ export function TemplateManageDialog({
               onClick={() => void handleDeleteTemplate()}
             >
               {deletingTemplateBusy ? (
-                <Loader2 className="size-4 animate-spin" />
+                <DashRing className="size-4" />
               ) : null}
               删除
             </Button>

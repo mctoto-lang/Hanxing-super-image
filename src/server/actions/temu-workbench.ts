@@ -381,6 +381,8 @@ export interface TemuAdjustOrderRow {
 export async function getTemuAdjustOrdersAction(input: {
   store: string
   status: string
+  searchField?: string
+  searchKeyword?: string
 }): Promise<{ ok: true; rows: TemuAdjustOrderRow[] } | { ok: false; error: string }> {
   const q = temuAdjustOrderQuerySchema.parse(input)
   const guard = await requireTemuStore(q.store, null)
@@ -389,23 +391,48 @@ export async function getTemuAdjustOrdersAction(input: {
   if (store.mallType === "semi") {
     return { ok: false, error: "半托店铺调价走 semi 接口，暂未接入" }
   }
-  return temuCached(`${store.enterpriseId}:adjust:${store.id}:${q.status}`, () =>
-    loadAdjustOrders(store, ADJUST_STATUS_CODE[q.status]),
+  const search =
+    q.searchKeyword && q.searchField ? { field: q.searchField, keyword: q.searchKeyword } : null
+  // 过滤条件拼入缓存 key：同 status 不同关键词结果集不同，不能共享
+  const searchKey = search ? `:${search.field}:${search.keyword}` : ""
+  return temuCached(`${store.enterpriseId}:adjust:${store.id}:${q.status}${searchKey}`, () =>
+    loadAdjustOrders(store, ADJUST_STATUS_CODE[q.status], search),
   )
+}
+
+/** 服务端过滤入参映射（2026-11-12 探针实证：sn/ext/name 三参数均生效，productName 为模糊包含） */
+function adjustSearchParams(
+  search: { field: string; keyword: string } | null,
+): Record<string, unknown> {
+  if (!search || search.field === "all") return {}
+  const kw = search.keyword.trim()
+  if (!kw) return {}
+  switch (search.field) {
+    case "sn":
+      return { priceOrderSn: [kw] }
+    case "ext":
+      return { extCodes: [kw], extCodeType: 1 }
+    case "name":
+      return { productName: kw }
+    default:
+      return {}
+  }
 }
 
 async function loadAdjustOrders(
   store: StoreRow,
   status: number,
+  search: { field: string; keyword: string } | null = null,
 ): Promise<{ ok: true; rows: TemuAdjustOrderRow[] } | { ok: false; error: string }> {
   const built = buildCallContext(store, await getTemuCallContext(store))
   if (!built.ok) return built
+  const filter = adjustSearchParams(search)
   const rows: TemuAdjustOrderRow[] = []
   try {
     for (let pageNo = 1; pageNo <= 4; pageNo += 1) {
       const envelope = await callTemuApi<{ list?: unknown }>(
         "bg.full.adjust.price.page.query",
-        { status, pageNo, pageSize: 50 },
+        { status, pageNo, pageSize: 50, ...filter },
         built.ctx,
       )
       const list = asList(envelope.result?.list)

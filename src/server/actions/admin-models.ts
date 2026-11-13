@@ -18,15 +18,15 @@ import { nextSortOrder } from "@/server/services/sort-order"
  * 模型配置管理 Server Actions（手册 §4.3、§5.6、M3）
  *
  * - 企业管理员可 CRUD 本企业私有模型（enterpriseId = 本企业）。
- * - 平台预置模型（enterpriseId = NULL）只读展示，不可由企业管理员修改。
+ * - 平台生图模型（enterpriseId = NULL）只读展示，不可由企业管理员修改。
  * - API Key 落库前 AES-256-GCM 加密；编辑时留空=不修改。
  * - 删除=软删除（is_active=false），保留历史任务外键完整性。
  */
 
 /**
- * 列出平台预置模型（按企业 visiblePresetModels 过滤）+ 本企业私有模型（不含解密 Key）
+ * 列出平台生图模型（按企业 visiblePresetModels 过滤）+ 本企业私有模型（不含解密 Key）
  *
- * - 平台预置模型（enterpriseId=NULL）：仅当企业 visiblePresetModels 为空时全部可见，
+ * - 平台生图模型（enterpriseId=NULL）：仅当企业 visiblePresetModels 为空时全部可见，
  *   否则只返回白名单内的（需求 2c）。
  * - 企业私有模型：本企业全部。
  *
@@ -79,7 +79,7 @@ export async function listModelsAction(
     )
     .orderBy(asc(models.sortOrder), asc(models.createdAt))
 
-  // 平台预置模型按企业白名单过滤（空 = 全部可见）
+  // 平台生图模型按企业白名单过滤（空 = 全部可见）
   const visiblePreset =
     (ctx.enterprise?.visiblePresetModels as string[] | null) ?? []
   const filtered = rows.filter((m) => {
@@ -135,7 +135,7 @@ export async function createModelAction(input: Record<string, unknown>) {
   }
 
   try {
-    // 追加到列表末尾（用户侧各模型列表按 sortOrder 排序，企业新建默认 0 会跳到预置模型之前）
+    // 追加到列表末尾（用户侧各模型列表按 sortOrder 排序，企业新建默认 0 会跳到生图模型之前）
     const sortOrder = await nextSortOrder(models)
     await db.insert(models).values({
       enterpriseId, // 企业私有模型
@@ -188,7 +188,7 @@ export async function createModelAction(input: Record<string, unknown>) {
   return { ok: true as const, error: null }
 }
 
-/** 更新本企业私有模型（平台预置模型不可改） */
+/** 更新本企业私有模型（平台生图模型不可改） */
 export async function updateModelAction(
   modelId: string,
   input: Record<string, unknown>,
@@ -216,7 +216,7 @@ export async function updateModelAction(
     )
     .limit(1)
   if (!existing) {
-    return { ok: false, error: "模型不存在或无权修改（平台预置模型不可改）" }
+    return { ok: false, error: "模型不存在或无权修改（平台生图模型不可改）" }
   }
 
   const apiFormat = d.apiFormat ?? existing.apiFormat
@@ -311,7 +311,7 @@ export async function toggleModelActiveAction(
     )
     .limit(1)
   if (!existing) {
-    return { ok: false, error: "模型不存在或无权修改（平台预置模型不可改）" }
+    return { ok: false, error: "模型不存在或无权修改（平台生图模型不可改）" }
   }
 
   await db

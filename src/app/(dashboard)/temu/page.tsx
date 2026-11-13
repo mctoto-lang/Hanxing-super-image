@@ -23,6 +23,7 @@ import {
   getTemuCategoryShareAction,
   getTemuSalesTopAction,
   getTemuSalesTopBySnAction,
+  listTemuAppsBriefAction,
   type TemuOverview,
 } from "@/server/actions/temu"
 import { getTemuShipStatsAction } from "@/server/actions/temu-ship"
@@ -57,6 +58,8 @@ import {
   TemuProductsSaleFilter,
 } from "@/components/temu"
 import { TemuPublishPanel } from "@/components/temu/publish/publish-panel"
+import { TemuAppSelect } from "@/components/temu/app-select"
+import { TemuDemoBanner } from "@/components/temu/demo-banner"
 import { ScrollJumpButtons } from "@/components/ui/scroll-jump-buttons"
 
 export const dynamic = "force-dynamic"
@@ -121,6 +124,7 @@ export default async function TemuPage({
     page: pick("page") || 1,
     range: pick("range") || undefined,
     sort: pick("sort") || undefined,
+    app: pick("app") || undefined,
   })
 
   const isAdmin = ctx.user.enterpriseRole === "owner" || ctx.user.enterpriseRole === "admin"
@@ -143,21 +147,27 @@ export default async function TemuPage({
     )
   }
 
-  const overview = await getTemuOverviewAction(query.store)
+  const apps = await listTemuAppsBriefAction()
+  // 应用参数归属校验：非本企业应用（脏 URL）回落「全部主体」
+  const validApp = apps.some((a) => a.id === query.app) ? query.app : undefined
+  const overview = await getTemuOverviewAction(query.store, validApp)
 
   const tabHref = (tab: string) => {
     const p = new URLSearchParams()
     p.set("tab", tab)
     if (query.store) p.set("store", query.store)
+    if (validApp) p.set("app", validApp)
     return `/temu?${p.toString()}`
   }
 
   // 店铺下拉只列启用店铺；核价调价/广告/备货/质检/发货/退货工作台按店铺 token 调接口，
   // 未选店时默认第一个启用店铺；备货支持全部店铺（扇出合并）——不默认选店；
   // 发品 tab 只列可发布店（全托+token 有效）且必须选具体店
-  const enabledStores = overview.stores.filter((s) => s.enabled)
+  // 应用（主体）维度过滤：店铺下拉/默认店/发品可发布店都在应用范围内取
+  const inApp = (s: { appId: string | null }) => !validApp || s.appId === validApp
+  const enabledStores = overview.stores.filter((s) => s.enabled && inApp(s))
   const publishableStores = overview.stores.filter(
-    (s) => s.enabled && s.tokenState === "active" && s.mallType === "full",
+    (s) => s.enabled && s.tokenState === "active" && s.mallType === "full" && inApp(s),
   )
   const isPublishTab = activeTab === "publish"
   const workbenchDefaultStore =
@@ -197,25 +207,37 @@ export default async function TemuPage({
         </div>
         {/* 核价/质检/广告/发布/退货工作台按单店 token 调官方接口，不提供「全部店铺」；
             概览/商品信息为本地聚合、备货为逐店扇出合并——支持全店 */}
-        <TemuStoreSelect
-          tab={activeTab}
-          current={effectiveStore}
-          allowAll={
-            activeTab === "overview" || activeTab === "products" || activeTab === "purchase"
-          }
-          stores={(isPublishTab ? publishableStores : enabledStores).map((s) => ({
-            id: s.id,
-            name: s.name,
-          }))}
-        />
+        <div className="flex items-center gap-2">
+          {/* 多主体切换（应用 ≤1 时隐藏；「全部主体」不筛选） */}
+          {apps.length > 1 && (
+            <TemuAppSelect tab={activeTab} current={validApp} apps={apps} />
+          )}
+          <TemuStoreSelect
+            tab={activeTab}
+            current={effectiveStore}
+            allowAll={
+              activeTab === "overview" || activeTab === "products" || activeTab === "purchase"
+            }
+            app={validApp}
+            stores={(isPublishTab ? publishableStores : enabledStores).map((s) => ({
+              id: s.id,
+              name: s.isDemo ? `${s.name}（演示）` : s.name,
+            }))}
+          />
+        </div>
       </div>
+
+      {/* 演示模式提示条（未配置 TEMU 应用：官方沙箱数据） */}
+      {overview.demoMode && <TemuDemoBanner />}
 
       {/* tab 内容高度链容器：商品信息页靠它实现表格内部滚动（外层滚动条隐藏） */}
       <div className="flex min-h-0 flex-1 flex-col">
         {activeTab === "overview" && (
-          <OverviewTab overview={overview} storeId={query.store} />
+          <OverviewTab overview={overview} storeId={query.store} appId={validApp} />
         )}
-        {activeTab === "products" && <ProductsTab query={query} saleAll={saleRaw === "all"} />}
+        {activeTab === "products" && (
+          <ProductsTab query={{ ...query, app: validApp }} saleAll={saleRaw === "all"} />
+        )}
         {activeTab === "publish" && (
           <TemuPublishPanel
             store={
@@ -224,7 +246,12 @@ export default async function TemuPage({
           />
         )}
         {activeTab === "ads" && (
-          <AdsTab storeId={query.store} range={query.range} workbenchStore={effectiveStore} />
+          <AdsTab
+            storeId={query.store}
+            range={query.range}
+            workbenchStore={effectiveStore}
+            appId={validApp}
+          />
         )}
         {activeTab === "price" && <TemuPriceReviewPanel store={effectiveStore} />}
         {activeTab === "purchase" && (
@@ -239,7 +266,11 @@ export default async function TemuPage({
             </div>
             <TemuPurchasePanel
               store={effectiveStore}
-              stores={enabledStores.map((s) => ({ id: s.id, name: s.name }))}
+              stores={enabledStores.map((s) => ({
+                id: s.id,
+                name: s.isDemo ? `${s.name}（演示）` : s.name,
+              }))}
+              app={validApp}
             />
           </div>
         )}
@@ -251,7 +282,13 @@ export default async function TemuPage({
             storeName={enabledStores.find((s) => s.id === effectiveStore)?.name}
           />
         )}
-        {activeTab === "stores" && <TemuStoreManager stores={overview.stores} />}
+        {activeTab === "stores" && (
+          <TemuStoreManager
+            stores={overview.stores}
+            apps={apps}
+            demoMode={overview.demoMode}
+          />
+        )}
       </div>
     </div>
   )
@@ -269,16 +306,18 @@ function fmtMetric(value: number | null, unit: "count" | "yuan") {
 async function OverviewTab({
   overview,
   storeId,
+  appId,
 }: {
   overview: TemuOverview
   storeId?: string
+  appId?: string
 }) {
   // overview 复用页面级已查结果（店铺选择栏也要用），不在此重复执行整组聚合查询
   const [categoryShare, salesTop, salesTopBySn, shipStats] = await Promise.all([
-    getTemuCategoryShareAction(storeId),
-    getTemuSalesTopAction(storeId),
-    getTemuSalesTopBySnAction(storeId),
-    getTemuShipStatsAction(storeId ?? null, null),
+    getTemuCategoryShareAction(storeId, appId),
+    getTemuSalesTopAction(storeId, appId),
+    getTemuSalesTopBySnAction(storeId, appId),
+    getTemuShipStatsAction(storeId ?? null, null, appId),
   ])
   const c = overview.cards
   const lead = (delta: number | null) =>
@@ -338,7 +377,12 @@ async function OverviewTab({
       {/* Row5 发货统计三卡：今日发货占比环形图 + 本周发货包裹/货物数量（发货仓库可筛选）。
           key=storeId：切店是 soft navigation，组件树位置不变时 client state 不会重置——
           不加 key 会停留在前一店铺的预取数据（useState(initial) 不随 props 更新） */}
-      <TemuShipStatsCards key={storeId ?? "all"} initial={shipStats} storeId={storeId} />
+      <TemuShipStatsCards
+        key={`${storeId ?? "all"}|${appId ?? "all"}`}
+        initial={shipStats}
+        storeId={storeId}
+        appId={appId}
+      />
     </div>
   )
 }
@@ -349,14 +393,14 @@ async function ProductsTab({
   query,
   saleAll,
 }: {
-  query: { store?: string; q?: string; qf?: string; page: number; sale?: 'on' | 'off' | 'hot' | 'stagnant'; sort?: string }
+  query: { store?: string; q?: string; qf?: string; page: number; sale?: 'on' | 'off' | 'hot' | 'stagnant'; sort?: string; app?: string }
   /** URL 显式携带 sale=all（全部状态）：query.sale 为 undefined，与「URL 无
    *  sale 参数的缺省在售」两种语义靠该标志区分，切排序/搜索时才不丢筛选 */
   saleAll: boolean
 }) {
   // 首屏 20 条 + 对应销量/库存/趋势序列；后续页由 ProductsInfiniteTable 下滑自动加载
-  const { rows, salesInfo } = await getTemuProductsPageAction(query.store, query.q, query.sale, 1, query.sort, query.qf)
-  const total = await getTemuProductsAction(query.store, query.q, 1, query.sale, query.sort, query.qf).then((r) => r.total)
+  const { rows, salesInfo } = await getTemuProductsPageAction(query.store, query.q, query.sale, 1, query.sort, query.qf, query.app)
+  const total = await getTemuProductsAction(query.store, query.q, 1, query.sale, query.sort, query.qf, query.app).then((r) => r.total)
   return (
     // h-full 高度链（根容器固定高 → tab 包装层 flex-1）：CardContent 为内部滚动区
     // （scrollbar-hide 隐藏滚动条），表体滚动/表头吸顶，无限下滑加载
@@ -380,12 +424,13 @@ async function ProductsTab({
           {/* key 随筛选变：组件内部 useState(initialRows) 不随 props 重置，
               筛选/搜索/排序/切店后必须重建才载入新数据（否则停留旧列表直到手动刷新） */}
           <ProductsInfiniteTable
-            key={`${query.store ?? "all"}|${query.q ?? ""}|${query.qf ?? ""}|${query.sale ?? ""}|${query.sort ?? "listed"}`}
+            key={`${query.store ?? "all"}|${query.app ?? "all"}|${query.q ?? ""}|${query.qf ?? ""}|${query.sale ?? ""}|${query.sort ?? "listed"}`}
             store={query.store}
             q={query.q}
             qf={query.qf}
             sale={query.sale}
             sort={query.sort}
+            app={query.app}
             initialRows={rows}
             initialSalesInfo={salesInfo}
           />
@@ -404,12 +449,14 @@ async function AdsTab({
   storeId,
   range,
   workbenchStore,
+  appId,
 }: {
   storeId?: string
   range?: number
   workbenchStore?: string
+  appId?: string
 }) {
-  const { rows, cards: syncedCards, range: r } = await getTemuAdsAction(storeId, range)
+  const { rows, cards: syncedCards, range: r } = await getTemuAdsAction(storeId, range, appId)
   // 同步窗口无数据时用注册表 detail.query 实时汇总兜底——创建广告后立即出数，
   // 不等 15 分钟同步落库（与前端工作台共用 30s 缓存，不产生额外官方调用）
   const plansRes = workbenchStore ? await getTemuAdPlansAction({ store: workbenchStore }) : null

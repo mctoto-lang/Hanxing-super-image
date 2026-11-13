@@ -3,7 +3,7 @@ import type { Metadata } from "next"
 import LandingPage from "@/components/marketing/landing-page"
 
 export const metadata: Metadata = {
-  title: "瀚星 Super Image — 企业级 AI 图片工作台",
+  title: "StarChart 瀚星星图 — 企业级 AI 图片工作台",
 }
 
 /**

@@ -1,7 +1,8 @@
 "use client"
 
 import * as React from "react"
-import { FileUp, Loader2, Trash2, Type } from "lucide-react"
+import { FileUp, Trash2, Type } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -369,7 +370,7 @@ export function BindingEditorDialog({
             onClick={() => fontInputRef.current?.click()}
           >
             {uploadingFont ? (
-              <Loader2 className="size-3.5 animate-spin" />
+              <DashRing className="size-3.5" />
             ) : (
               <FileUp className="size-3.5" />
             )}
@@ -543,7 +544,7 @@ export function BindingEditorDialog({
             disabled={saving || !templateId}
             onClick={() => void handleSave()}
           >
-            {saving ? <Loader2 className="size-4 animate-spin" /> : null}
+            {saving ? <DashRing className="size-4" /> : null}
             保存并发布
           </Button>
         </DialogFooter>

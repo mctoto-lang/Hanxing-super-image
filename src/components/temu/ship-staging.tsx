@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { Loader2, Package, Plus, RefreshCw, Trash2, X, Zap } from "lucide-react"
+import { Package, Plus, RefreshCw, Trash2, X, Zap } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import {
   Table,
   TableBody,
@@ -1207,7 +1208,7 @@ export function ShipStaging({
                 </p>
                 <div className="flex flex-nowrap items-center gap-2">
                   <Button size="sm" className="h-8 text-xs" disabled={!groupsValid || loading} onClick={createShipOrders}>
-                    {loading ? <Loader2 className="size-3.5 animate-spin" /> : null} 确认创建
+                    {loading ? <DashRing className="size-3.5" /> : null} 确认创建
                   </Button>
                   <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setMode("list")}>
                     取消
@@ -1277,7 +1278,7 @@ export function ShipStaging({
           <div className="ml-auto flex items-center gap-2">
             {viewSwitch}
             <Button variant="outline" size="sm" className="h-8 text-xs" onClick={loadStaging} disabled={loading}>
-              {loading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />} 刷新
+              {loading ? <DashRing className="size-3.5" /> : <RefreshCw className="size-3.5" />} 刷新
             </Button>
           </div>
         </div>

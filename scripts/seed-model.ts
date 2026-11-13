@@ -35,7 +35,7 @@ void (async () => {
     const [model] = await db
       .insert(models)
       .values({
-        enterpriseId: null, // 平台预置模型，所有企业可见
+        enterpriseId: null, // 平台生图模型，所有企业可见
         name,
         displayName: "GPT 图片（测试）",
         description: "高质量写实风格，适合人物与场景",

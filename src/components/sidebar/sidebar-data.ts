@@ -75,7 +75,7 @@ const PLATFORM_NAV: { title: string; url: string }[] = [
   { title: "订阅套餐", url: "/platform/plans" },
   { title: "平台用户", url: "/platform/users" },
   { title: "平台日志", url: "/platform/logs" },
-  { title: "预置模型", url: "/platform/models" },
+  { title: "生图模型", url: "/platform/models" },
   { title: "对话模型", url: "/platform/chat-models" },
   { title: "商品图片配置", url: "/platform/product-config" },
   { title: "穿戴图片管理", url: "/platform/weartry-config" },

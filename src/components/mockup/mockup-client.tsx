@@ -1,11 +1,11 @@
 "use client"
 
 import * as React from "react"
+import { DashRing } from "@/components/ui/dash-ring"
 import {
   Boxes,
   History,
   LayoutGrid,
-  Loader2,
   Play,
   Plus,
   RefreshCw,
@@ -608,7 +608,7 @@ export function MockupClient({
                 onClick={() => void history.handleRefresh()}
               >
                 {history.loading ? (
-                  <Loader2 className="size-4 animate-spin" />
+                  <DashRing className="size-4" />
                 ) : (
                   <RefreshCw className="size-4" />
                 )}
@@ -754,7 +754,7 @@ export function MockupClient({
                       <span className="relative flex items-center gap-1.5">
                         {inProgress ? (
                           <>
-                            <Loader2 className="size-3.5 animate-spin" />
+                            <DashRing className="size-3.5" />
                             <span className="tabular-nums">{pct}%</span>
                           </>
                         ) : (

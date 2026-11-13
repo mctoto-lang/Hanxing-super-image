@@ -4,7 +4,7 @@ import { eq, inArray, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import { enterprises, permissionGroups, users } from "@/db/schema"
 import { MODULE_NAMES } from "@/db/schema/_shared"
-import { temuShipOrders, temuShipPackages, temuStores, temuProducts, temuSalesOverviews } from "@/db/schema/temu"
+import { temuShipOrders, temuShipPackages, temuStores, temuProducts, temuSalesOverviews, temuApps } from "@/db/schema/temu"
 import { encrypt } from "@/lib/crypto"
 import {
   getTemuShipOrdersAction,
@@ -150,6 +150,11 @@ beforeAll(async () => {
     })
     .returning()
   entId = ent!.id
+  // 多应用模型（0097）：凭证按「店铺→应用」取——夹具企业配一个应用
+  // （店铺不挂靠时单应用宽容回落命中）
+  await db
+    .insert(temuApps)
+    .values({ enterpriseId: entId, name: "测试应用", appKey: "test-app", appSecretEncrypted: "enc:v1:t" })
 
   const [group] = await db
     .insert(permissionGroups)

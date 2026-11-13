@@ -48,7 +48,7 @@ import { PlanAssignDialog } from "@/components/superadmin/plan-assign-dialog"
 import { EnterpriseConcurrencyDialog } from "@/components/superadmin/enterprise-concurrency-dialog"
 import { ModulesDialog } from "@/components/superadmin/modules-dialog"
 import { MockupConfigDialog } from "@/components/superadmin/mockup-config-dialog"
-import { TemuAppConfigDialog } from "@/components/superadmin/temu-app-config-dialog"
+import { TemuAppManageDialog } from "@/components/superadmin/temu-app-manage-dialog"
 import { EnterpriseModelConfigDialog } from "@/components/superadmin/enterprise-model-config-dialog"
 
 export const dynamic = "force-dynamic"
@@ -415,7 +415,7 @@ export default async function EnterpriseDetailPage({
               enterpriseId={detail.id}
               enterpriseName={detail.name}
             />
-            <TemuAppConfigDialog
+            <TemuAppManageDialog
               enterpriseId={detail.id}
               enterpriseName={detail.name}
             />

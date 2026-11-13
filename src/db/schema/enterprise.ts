@@ -24,7 +24,7 @@ import {
  * - 模块开关（enabledModules，超管配置，D22）；
  * - 企业级并发上限（maxConcurrent）；
  * - allowCustomModels：是否允许企业自建私有模型（超管开关）；
- * - visiblePresetModels：该企业可见的平台预置模型 id 白名单（空 = 全部预置可见）；
+ * - visiblePresetModels：该企业可见的平台生图模型 id 白名单（空 = 全部预置可见）；
  * - visiblePresetChatModels：同上，作用于对话模型（chat_api_config 平台预置）。
  */
 export const enterprises = pgTable("enterprise", {
@@ -48,7 +48,7 @@ export const enterprises = pgTable("enterprise", {
   visiblePresetModels: jsonb("visible_preset_models")
     .$type<string[]>()
     .default([])
-    .notNull(), // 平台预置模型 id 白名单（空 = 全部预置可见）
+    .notNull(), // 平台生图模型 id 白名单（空 = 全部预置可见）
   visiblePresetChatModels: jsonb("visible_preset_chat_models")
     .$type<string[]>()
     .default([])

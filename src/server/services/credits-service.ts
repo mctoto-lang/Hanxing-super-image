@@ -8,6 +8,7 @@ import {
   users,
   creditTxTypeEnum,
 } from "@/db/schema"
+import { createRewardNotice } from "@/server/services/reward-notice-service"
 
 type CreditTxType = (typeof creditTxTypeEnum.enumValues)[number]
 
@@ -134,7 +135,7 @@ export async function rechargeCredits(
   const { enterpriseId, amount, userId, remark } = input
   if (amount <= 0) throw new Error("充值金额必须为正数")
 
-  return await db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     const [updated] = await tx
       .update(enterprises)
       .set({
@@ -157,6 +158,16 @@ export async function rechargeCredits(
 
     return { balanceAfter: updated.balance }
   })
+
+  // 充值到账礼物通知（企业全员，best-effort，不影响计费结果）
+  await createRewardNotice({
+    enterpriseId,
+    type: "recharge",
+    operatorId: userId ?? null,
+    payload: { amount, remark: remark ?? "平台充值" },
+  })
+
+  return result
 }
 
 /**
@@ -229,7 +240,7 @@ export async function allocateCreditsToUser(input: {
   } = input
   if (amount <= 0) throw new Error("分配金额必须为正数")
 
-  return await db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     // 1. 锁企业池 + 扣减
     const [ent] = await tx
       .select({ balance: enterprises.creditsBalance })
@@ -287,6 +298,17 @@ export async function allocateCreditsToUser(input: {
       userBalanceAfter: userUpdated!.balance,
     }
   })
+
+  // 分配到账礼物通知（仅被分配成员，best-effort，不影响计费结果）
+  await createRewardNotice({
+    enterpriseId,
+    type: "member_allocation",
+    targetUserId,
+    operatorId: operatorUserId,
+    payload: { amount, remark },
+  })
+
+  return result
 }
 
 /**

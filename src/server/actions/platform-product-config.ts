@@ -291,7 +291,7 @@ export interface ProductChatModelOption {
   name: string
 }
 
-/** 读当前指定 + 活跃平台预置模型候选（指定行失效时 active=false，前端提示回退中） */
+/** 读当前指定 + 活跃平台预置对话模型候选（指定行失效时 active=false，前端提示回退中） */
 export async function getProductChatModelSettingAction(): Promise<{
   chatApiConfigId: string | null
   active: boolean
@@ -322,7 +322,7 @@ export async function getProductChatModelSettingAction(): Promise<{
   }
 }
 
-/** 保存指定（null=清除）；id 必须是活跃的平台预置模型 */
+/** 保存指定（null=清除）；id 必须是活跃的平台预置对话模型 */
 export async function saveProductChatModelSettingAction(
   chatApiConfigId: string | null,
 ) {

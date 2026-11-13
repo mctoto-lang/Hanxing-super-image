@@ -19,7 +19,6 @@ import {
   Coins,
   Download,
   ImageIcon,
-  Loader2,
   MessagesSquare,
   MinusCircle,
   UserRoundCheck,
@@ -28,6 +27,7 @@ import {
 } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { DashRing } from "@/components/ui/dash-ring"
 import {
   Dialog,
   DialogContent,
@@ -126,7 +126,7 @@ const AGENT_STATE_META: Record<
   {
     label: string
     badgeClass: string
-    icon: LucideIcon
+    icon: LucideIcon | typeof DashRing
     spin?: boolean
     avatarStatus: string
     ring: string
@@ -142,8 +142,7 @@ const AGENT_STATE_META: Record<
   running: {
     label: "工作中",
     badgeClass: "bg-amber-500/15 text-amber-600 dark:text-amber-300",
-    icon: Loader2,
-    spin: true,
+    icon: DashRing,
     avatarStatus: "running",
     ring: "border-amber-500/40 ring-1 ring-amber-500/50",
   },
@@ -404,7 +403,7 @@ export function WorkspaceAgentDialog({
               </span>
             ) : (
               <span className="flex items-center gap-1 text-muted-foreground">
-                <Loader2 className="size-3 animate-spin" />
+                <DashRing className="size-3" />
                 生成中
               </span>
             )}

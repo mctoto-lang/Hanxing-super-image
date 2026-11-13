@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { Clock3, Flame, Loader2, PackageX, RefreshCw, Send, Truck, Zap } from "lucide-react"
+import { Ban, Clock3, Flame, PackageX, RefreshCw, Send, Truck, Zap } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import {
   TableBody,
   TableCell,
@@ -42,9 +43,10 @@ import {
   type TemuPurchaseOrderRow,
 } from "@/server/actions/temu-fulfillment"
 import { addShipStagingAction, getShipInventoryRefAction } from "@/server/actions/temu-ship"
-import { getPriorityShipLinksAction } from "@/server/actions/temu"
+import { getPriorityShipLinksAction, getStopReplenishLinksAction } from "@/server/actions/temu"
 import { AutoApplyDialog, AutoJoinDialog, type AutoStockStore } from "./auto-stock-dialogs"
 import { ProductNameCell, EmptyHint } from "@/components/temu/products-table"
+import { TemuSearchBar, type SearchBarField } from "@/components/temu/search-bar"
 import { TruncTip } from "@/components/temu/trunc-tip"
 import { TableSkeletonRows } from "@/components/temu/table-skeleton"
 import {
@@ -74,6 +76,14 @@ const STATUS_OPTIONS = [
 const STOCKING_TYPE_OPTIONS = [
   { value: "0", label: "常规备货" },
   { value: "1", label: "海外备货" },
+]
+
+/** 共享搜索条可搜索项（官方 purchaseorderv2.get 无关键词入参，客户端过滤已加载行） */
+const PURCHASE_SEARCH_FIELDS: SearchBarField[] = [
+  { value: "all", label: "全部", placeholder: "子单号 / 货号 / 商品名" },
+  { value: "sn", label: "子单号", placeholder: "输入备货单子单号" },
+  { value: "ext", label: "货号", placeholder: "输入货号" },
+  { value: "name", label: "商品名", placeholder: "输入商品名关键词" },
 ]
 
 /** 可取消状态：待接单/已接单待发货（官方业务门槛，实测送货后报 100000002） */
@@ -113,10 +123,13 @@ function StatusBadge({ status, label }: { status: number; label: string }) {
 export function TemuPurchasePanel({
   store,
   stores,
+  app,
 }: {
   store?: string
   /** 企业内启用店铺（全部店铺视图下自动申报弹窗逐店扇出用，page 侧透传） */
   stores?: AutoStockStore[]
+  /** 应用（主体）过滤：全部店铺视图按应用切分（page 侧透传） */
+  app?: string
 }) {
   /** 自动备货弹窗：apply=自动申报备货（在售链接探测上限批量申报）/
    *  create=自动创建备货（待接单单按量创建）；单店直查，全部店铺扇出（行级店铺归属） */
@@ -132,16 +145,28 @@ export function TemuPurchasePanel({
   const [invRef, setInvRef] = React.useState<Record<string, { totalQty: number; pendingUnpacked: number }>>({})
   /** 优先发货链接集合（商品信息页设置菜单打的本地标记）：标记列按 productSkcId 匹配 */
   const [prioritySkcs, setPrioritySkcs] = React.useState<Set<string>>(new Set())
+  /** 停止补货链接集合（商品信息页设置菜单打的本地标记）：标记列徽章 + 自动操作弹窗排除 */
+  const [stoppedSkcs, setStoppedSkcs] = React.useState<Set<string>>(new Set())
+  /** 共享搜索条（按钮/回车触发提交；空关键词=清除筛选）——draft 两态防逐键过滤 */
+  const [searchField, setSearchField] = React.useState(PURCHASE_SEARCH_FIELDS[0]!.value)
+  const [searchKeyword, setSearchKeyword] = React.useState("")
+  const [appliedSearch, setAppliedSearch] = React.useState<{ field: string; keyword: string }>({
+    field: PURCHASE_SEARCH_FIELDS[0]!.value,
+    keyword: "",
+  })
   const [loading, startLoading] = React.useTransition()
   const [canceling, setCanceling] = React.useState<Array<{ sn: string; storeId: string }> | null>(null)
   const [joining, setJoining] = React.useState<{ sn: string; storeId: string } | null>(null)
   const [joiningPending, setJoiningPending] = React.useState(false)
 
-  // 优先发货标记与企业店铺视图无关（集合含全部店），进面板拉一次
+  // 优先发货/停止补货标记与企业店铺视图无关（集合含全部店），进面板各拉一次
   React.useEffect(() => {
     let cancelled = false
     void getPriorityShipLinksAction().then((r) => {
       if (!cancelled) setPrioritySkcs(new Set(r.skcIds))
+    })
+    void getStopReplenishLinksAction().then((r) => {
+      if (!cancelled) setStoppedSkcs(new Set(r.skcIds))
     })
     return () => {
       cancelled = true
@@ -171,7 +196,10 @@ export function TemuPurchasePanel({
 
   const load = React.useCallback(() => {
     startLoading(async () => {
-      const r = await getTemuPurchaseOrdersAction({ status, ...(store ? { store } : {}) })
+      const r = await getTemuPurchaseOrdersAction({
+        status,
+        ...(store ? { store } : app ? { app } : {}),
+      })
       if (r.ok) {
         setRows(r.rows)
         setTotal(r.total)
@@ -183,12 +211,27 @@ export function TemuPurchasePanel({
         setError(r.error)
       }
     })
-  }, [store, status])
+  }, [store, status, app])
 
   React.useEffect(load, [load])
 
-  /** 备货类型筛选只作用于展示（拉取仍按状态预设整页取） */
-  const visibleRows = rows.filter((r) => String(r.stockingType) === stockType)
+  /** 备货类型 + 共享搜索条筛选只作用于展示（拉取仍按状态预设整页取；
+   *  不区分大小写包含匹配，空关键词=全部） */
+  const searchKw = appliedSearch.keyword.trim().toLowerCase()
+  const visibleRows = rows.filter(
+    (r) =>
+      String(r.stockingType) === stockType &&
+      (!searchKw ||
+        (appliedSearch.field === "sn"
+          ? r.subPurchaseOrderSn.toLowerCase().includes(searchKw)
+          : appliedSearch.field === "ext"
+            ? (r.productSn ?? "").toLowerCase().includes(searchKw)
+            : appliedSearch.field === "name"
+              ? (r.productName ?? "").toLowerCase().includes(searchKw)
+              : r.subPurchaseOrderSn.toLowerCase().includes(searchKw) ||
+                (r.productSn ?? "").toLowerCase().includes(searchKw) ||
+                (r.productName ?? "").toLowerCase().includes(searchKw))),
+  )
 
   const doJoinStage = async (storeId: string, sn: string) => {
     setJoiningPending(true)
@@ -281,6 +324,19 @@ export function TemuPurchasePanel({
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            <TemuSearchBar
+              fields={PURCHASE_SEARCH_FIELDS}
+              field={searchField}
+              onFieldChange={setSearchField}
+              keyword={searchKeyword}
+              onKeywordChange={setSearchKeyword}
+              onSearch={(f, kw) => {
+                setSearchField(f)
+                setAppliedSearch({ field: f, keyword: kw })
+              }}
+              searching={loading}
+              className="w-72"
+            />
             <Select value={stockType} onValueChange={(v) => v && setStockType(v)}>
               <SelectTrigger className="h-8 w-28 text-xs" aria-label="备货类型筛选">
                 <SelectValue>
@@ -308,7 +364,7 @@ export function TemuPurchasePanel({
               </SelectContent>
             </Select>
             <Button variant="outline" size="sm" className="h-8 text-xs" onClick={load} disabled={loading} aria-label="刷新备货单">
-              {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+              {loading ? <DashRing className="size-4" /> : <RefreshCw className="size-4" />}
               刷新
             </Button>
           </div>
@@ -346,14 +402,16 @@ export function TemuPurchasePanel({
               </TableHeader>
               <TableBody>
                 {loading && rows.length === 0 && <TableSkeletonRows cols={store ? 11 : 12} />}
-                {/* 空态按 visibleRows 判（备货类型为客户端过滤）：rows 非空但全被
-                    类型筛掉时提示切换，避免表体整块空白无提示 */}
+                {/* 空态按 visibleRows 判（备货类型/搜索均为客户端过滤）：rows 非空但
+                    全被筛掉时提示切换/清词，避免表体整块空白无提示 */}
                 {!loading && visibleRows.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={store ? 11 : 12} className="h-20 text-center text-muted-foreground">
-                      {rows.length === 0
-                        ? "当前筛选下暂无备货单"
-                        : `当前筛选下暂无备货单（已加载 ${rows.length} 单均为${stockType === "1" ? "常规" : "海外"}备货，可切换备货类型）`}
+                      {searchKw
+                        ? "未找到匹配的备货单，可清除关键词后重试"
+                        : rows.length === 0
+                          ? "当前筛选下暂无备货单"
+                          : `当前筛选下暂无备货单（已加载 ${rows.length} 单均为${stockType === "1" ? "常规" : "海外"}备货，可切换备货类型）`}
                     </TableCell>
                   </TableRow>
                 )}
@@ -453,6 +511,11 @@ export function TemuPurchasePanel({
                           {r.productSkcId != null && prioritySkcs.has(String(r.productSkcId)) && (
                             <Badge className="gap-0.5 rounded-[4px] bg-cyan-500/15 text-cyan-700 dark:text-cyan-400">
                               <Zap className="size-3" /> 优先发货
+                            </Badge>
+                          )}
+                          {r.productSkcId != null && stoppedSkcs.has(String(r.productSkcId)) && (
+                            <Badge className="gap-0.5 rounded-[4px] bg-red-500/15 text-red-700 dark:text-red-400">
+                              <Ban className="size-3" /> 停止补货
                             </Badge>
                           )}
                         </div>
@@ -586,7 +649,7 @@ function ConfirmCancel({
               onConfirm()
             }}
           >
-            {pending && <Loader2 className="animate-spin" />}
+            {pending && <DashRing className="size-4" />}
             确认取消
           </Button>
         </DialogFooter>

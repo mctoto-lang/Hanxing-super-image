@@ -20,19 +20,19 @@ import {
 import { revalidatePath } from "next/cache"
 
 /**
- * 平台预置模型管理 Server Actions（需求 2）
+ * 平台生图模型管理 Server Actions（需求 2）
  *
- * - 仅超管可操作；管理 enterpriseId = NULL 的平台预置模型（全企业可见）。
+ * - 仅超管可操作；管理 enterpriseId = NULL 的平台生图模型（全企业可见）。
  * - API Key 落库前 AES-256-GCM 加密；编辑时留空 = 不修改。
  * - 删除 = 软删除（is_active=false），保留历史任务外键完整性。
  * - costPerImage 由超管在此定义，企业用户生图按此扣个人配额。
  */
 
 /**
- * 把平台预置模型 id 幂等地追加到所有「白名单模式」企业（visiblePresetModels 非空）。
+ * 把平台生图模型 id 幂等地追加到所有「白名单模式」企业（visiblePresetModels 非空）。
  *
  * 企业白名单语义（需求 2c）：空 = 全部预置可见（无需同步）；
- * 非空 = 仅枚举的 id 可见，新建预置模型必须显式追加，否则会被企业端过滤层③
+ * 非空 = 仅枚举的 id 可见，新建生图模型必须显式追加，否则会被企业端过滤层③
  * （listAvailableModelsAction 的 visiblePresetModels 判断）拦截。
  */
 async function syncPresetModelToWhitelists(modelId: string) {
@@ -83,7 +83,7 @@ export interface PresetModelRow {
 }
 
 /**
- * 列出全部平台预置模型（enterpriseId=NULL，不含解密 Key，分页）。
+ * 列出全部平台生图模型（enterpriseId=NULL，不含解密 Key，分页）。
  * 默认 pageSize=100 兼顾「企业模型配置」弹窗的全量下拉场景。
  */
 export async function listPresetModelsAction(
@@ -147,7 +147,7 @@ export async function listPresetModelsAction(
   }
 }
 
-/** 创建平台预置模型（enterpriseId=NULL，全企业可见） */
+/** 创建平台生图模型（enterpriseId=NULL，全企业可见） */
 export async function createPresetModelAction(
   input: Record<string, unknown>,
 ): Promise<{ ok: true; error: null } | { ok: false; error: string }> {
@@ -177,7 +177,7 @@ export async function createPresetModelAction(
     const [created] = await db
       .insert(models)
       .values({
-        enterpriseId: null, // 平台预置模型
+        enterpriseId: null, // 平台生图模型
         name: d.name,
         displayName: d.displayName,
         apiEndpoint: d.apiEndpoint,
@@ -214,7 +214,7 @@ export async function createPresetModelAction(
       })
       .returning()
 
-    // 自动把新预置模型开放给所有「白名单模式」企业，否则这些企业端看不到
+    // 自动把新生图模型开放给所有「白名单模式」企业，否则这些企业端看不到
     await syncPresetModelToWhitelists(created!.id)
   } catch (err) {
     return {
@@ -231,7 +231,7 @@ export async function createPresetModelAction(
   return { ok: true, error: null }
 }
 
-/** 更新平台预置模型 */
+/** 更新平台生图模型 */
 export async function updatePresetModelAction(
   modelId: string,
   input: Record<string, unknown>,
@@ -243,14 +243,14 @@ export async function updatePresetModelAction(
   }
   const d = parsed.data
 
-  // 必须是平台预置模型（enterpriseId=NULL）
+  // 必须是平台生图模型（enterpriseId=NULL）
   const [existing] = await db
     .select()
     .from(models)
     .where(and(eq(models.id, modelId), isNull(models.enterpriseId)))
     .limit(1)
   if (!existing) {
-    return { ok: false, error: "平台预置模型不存在" }
+    return { ok: false, error: "平台生图模型不存在" }
   }
 
   const apiFormat = d.apiFormat ?? existing.apiFormat
@@ -322,7 +322,7 @@ export async function updatePresetModelAction(
   return { ok: true, error: null }
 }
 
-/** 启停平台预置模型（软删除/恢复） */
+/** 启停平台生图模型（软删除/恢复） */
 export async function togglePresetModelActiveAction(
   modelId: string,
   isActive: boolean,
@@ -335,7 +335,7 @@ export async function togglePresetModelActiveAction(
     .where(and(eq(models.id, modelId), isNull(models.enterpriseId)))
     .limit(1)
   if (!existing) {
-    return { ok: false, error: "平台预置模型不存在" }
+    return { ok: false, error: "平台生图模型不存在" }
   }
 
   await db.update(models).set({ isActive }).where(eq(models.id, modelId))
@@ -344,7 +344,7 @@ export async function togglePresetModelActiveAction(
   return { ok: true, error: null }
 }
 
-/** 拖拽排序：按新顺序重写平台预置模型 sortOrder（用户端模型列表同步生效） */
+/** 拖拽排序：按新顺序重写平台生图模型 sortOrder（用户端模型列表同步生效） */
 export async function reorderPresetModelsAction(
   ids: string[],
 ): Promise<{ ok: true; error: null } | { ok: false; error: string }> {
@@ -357,7 +357,7 @@ export async function reorderPresetModelsAction(
     .from(models)
     .where(and(inArray(models.id, ids), isNull(models.enterpriseId)))
   if (rows.length !== new Set(ids).size) {
-    return { ok: false, error: "仅可调整平台预置模型的顺序" }
+    return { ok: false, error: "仅可调整平台生图模型的顺序" }
   }
   try {
     await redistributeSortOrder(models, ids)

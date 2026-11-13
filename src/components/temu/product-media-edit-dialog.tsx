@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { ImagePlus, Loader2, Plus, Trash2 } from "lucide-react"
+import { ImagePlus, Plus, Trash2 } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -114,16 +115,14 @@ export function ProductMediaEditDialog({
       <DialogContent className="sm:max-w-[560px]">
         <DialogHeader>
           <DialogTitle>换图片</DialogTitle>
-          <DialogDescription className="space-y-1">
-            {/* DialogDescription 自身渲染 <p>，内部块用 div 防 p 嵌套 hydration 错 */}
-            <div>
-              {row?.productName ? `${row.productName.slice(0, 40)}${row.productName.length > 40 ? "…" : ""} · ` : ""}
-              轮播图整组提交（第一张为主图位，至少 5 张）。
-            </div>
-            <div className="text-xs">
-              官方无素材回显接口，本表单以本次填写为准；未填写的图片位将不在新轮播中。图片须 1:1、≥800×800、≤2M、JPG/PNG。
-            </div>
+          <DialogDescription>
+            {row?.productName ? `${row.productName.slice(0, 40)}${row.productName.length > 40 ? "…" : ""} · ` : ""}
+            轮播图整组提交（第一张为主图位，至少 5 张）。
           </DialogDescription>
+          {/* DialogDescription 渲染 <p>，块级提示须放外部防 p>div 嵌套 hydration 错 */}
+          <div className="text-xs text-muted-foreground">
+            官方无素材回显接口，本表单以本次填写为准；未填写的图片位将不在新轮播中。图片须 1:1、≥800×800、≤2M、JPG/PNG。
+          </div>
         </DialogHeader>
 
         <div className="grid grid-cols-5 gap-2">
@@ -136,7 +135,7 @@ export function ProductMediaEditDialog({
                 ) : (
                   <div className="flex size-full items-center justify-center text-muted-foreground">
                     {uploadingIdx === i ? (
-                      <Loader2 className="size-4 animate-spin" />
+                      <DashRing className="size-4" />
                     ) : (
                       <ImagePlus className="size-4" />
                     )}
@@ -206,7 +205,7 @@ export function ProductMediaEditDialog({
             取消
           </Button>
           <Button onClick={() => void submit()} disabled={!canSubmit}>
-            {submitting ? <Loader2 className="size-4 animate-spin" /> : null}
+            {submitting ? <DashRing className="size-4" /> : null}
             提交官方
           </Button>
         </DialogFooter>

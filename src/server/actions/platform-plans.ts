@@ -138,7 +138,7 @@ export async function toggleSubscriptionPlanAction(input: unknown) {
 
 /** 给企业分配（或重分配）套餐：重置周期锚点并立即发放首期 */
 export async function assignEnterprisePlanAction(input: unknown) {
-  await requireSuperAdmin()
+  const ctx = await requireSuperAdmin()
   const parsed = assignEnterprisePlanSchema.safeParse(input)
   if (!parsed.success) {
     return { ok: false as const, error: parsed.error.issues[0]?.message ?? "参数错误" }
@@ -149,6 +149,7 @@ export async function assignEnterprisePlanAction(input: unknown) {
       enterpriseId: d.enterpriseId,
       planId: d.planId,
       expiresAt: new Date(d.expiresAt),
+      operatorId: ctx.user.id,
     })
     revalidatePath("/platform/enterprises")
     revalidatePath("/platform/plans")
@@ -168,7 +169,7 @@ export async function assignEnterprisePlanAction(input: unknown) {
 
 /** 套餐续期（未过期仅延长时间；已断档则重算周期并发放首期） */
 export async function renewEnterprisePlanAction(input: unknown) {
-  await requireSuperAdmin()
+  const ctx = await requireSuperAdmin()
   const parsed = renewEnterprisePlanSchema.safeParse(input)
   if (!parsed.success) {
     return { ok: false as const, error: parsed.error.issues[0]?.message ?? "参数错误" }
@@ -178,6 +179,7 @@ export async function renewEnterprisePlanAction(input: unknown) {
     const { planName, restarted, grants } = await renewEnterprisePlan({
       enterpriseId: d.enterpriseId,
       expiresAt: new Date(d.expiresAt),
+      operatorId: ctx.user.id,
     })
     revalidatePath("/platform/enterprises")
     return {

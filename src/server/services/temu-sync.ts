@@ -12,6 +12,7 @@ import {
   temuShipPackages,
   temuSkuMaps,
   temuStores,
+  temuApps,
   type TemuSyncStatus,
 } from "@/db/schema"
 import { decrypt } from "@/lib/crypto"
@@ -22,7 +23,7 @@ import {
   TemuApiError,
   type TemuCallContext,
 } from "@/lib/temu-api/client"
-import { getTemuAppCredential } from "@/lib/temu-api/app-config"
+import { getDemoCredential, getTemuAppCredential } from "@/lib/temu-api/app-config"
 import { getStorage } from "@/lib/storage"
 import { invalidateTemuCache } from "@/server/services/temu-cache"
 import { temuDayOfTs, temuDayStr } from "@/server/services/temu-time"
@@ -766,12 +767,57 @@ export interface StoreSyncOutcome {
  * ≥334ms，worker 与 Web 叠加不再超官方 3qps/店；Redis 不可用降级为
  * 进程内桶，瞬时突发由 client 对 4000000 的延迟重试兜底，见 docs §5.1）。
  */
+/**
+ * 店铺 → 应用凭证解析（demo 之外共用）：
+ * - 店铺挂了应用 → 按应用取；应用未配置/停用 → error
+ * - 店铺未挂应用（0097 前历史店铺）：企业恰有一个应用时宽容回落该应用
+ *   （单主体企业无需纠结归属）；多应用企业必须先明确归属
+ */
+async function resolveStoreAppCredential(
+  store: Pick<typeof temuStores.$inferSelect, "appId" | "enterpriseId">,
+): Promise<{ appKey: string; appSecret: string } | { error: string }> {
+  let appId = store.appId
+  if (!appId) {
+    // 直查 temu_app（不走 app-config.listTemuApps：多数调用方测试整模块 mock
+    // 了 app-config，fallback 查库保持本函数自包含）
+    const apps = await db
+      .select({ id: temuApps.id })
+      .from(temuApps)
+      .where(eq(temuApps.enterpriseId, store.enterpriseId))
+    if (apps.length === 1) appId = apps[0]!.id
+    else {
+      return {
+        error: "该店铺未关联 TEMU 应用（应用可能已被删除），请在店铺管理重新归属",
+      }
+    }
+  }
+  const app = await getTemuAppCredential(appId)
+  if (!app) {
+    return { error: "所属 TEMU 应用未配置凭证或已停用（超管 → 企业管理 → TEMU应用）" }
+  }
+  return { appKey: app.appKey, appSecret: app.appSecret }
+}
+
 export async function getTemuCallContext(
-  store: Pick<typeof temuStores.$inferSelect, "id" | "enterpriseId" | "accessTokenEncrypted">,
+  store: Pick<
+    typeof temuStores.$inferSelect,
+    "id" | "enterpriseId" | "appId" | "isDemo" | "accessTokenEncrypted"
+  >,
 ): Promise<TemuCallContext | { error: string }> {
+  // 演示店铺：直接用官方沙箱账号（app+token 配套同区），不读店铺密文与应用表
+  if (store.isDemo) {
+    const demo = getDemoCredential()
+    return {
+      appKey: demo.appKey,
+      appSecret: demo.appSecret,
+      accessToken: demo.accessToken,
+      rateKey: store.id,
+      qps: 3,
+    }
+  }
   if (!store.accessTokenEncrypted) return { error: "未录入 access_token" }
-  const app = await getTemuAppCredential(store.enterpriseId)
-  if (!app) return { error: "该企业未配置 TEMU 应用凭证（超管 → 企业管理 → TEMU应用）" }
+  const app = await resolveStoreAppCredential(store)
+  if ("error" in app) return { error: app.error }
   let accessToken: string
   try {
     accessToken = decrypt(store.accessTokenEncrypted)
@@ -1087,7 +1133,10 @@ export async function syncStore(storeId: string): Promise<StoreSyncOutcome> {
   const [store] = await db.select().from(temuStores).where(eq(temuStores.id, storeId)).limit(1)
   if (!store) return { storeId, skipped: "店铺不存在" }
   if (!store.enabled) return { storeId, skipped: "店铺已停用" }
-  if (!store.accessTokenEncrypted) return { storeId, skipped: "未录入 access_token" }
+  if (store.isDemo) return { storeId, skipped: "演示店铺为内置虚拟数据，不参与同步" }
+  if (!store.accessTokenEncrypted) {
+    return { storeId, skipped: "未录入 access_token" }
+  }
 
   const built = await getTemuCallContext(store)
   if ("error" in built) return { storeId, skipped: built.error }
@@ -1171,10 +1220,11 @@ export async function verifyStoreToken(
 ): Promise<{ ok: boolean; error?: string; mallType?: "full" | "semi"; mallId?: string }> {
   const [store] = await db.select().from(temuStores).where(eq(temuStores.id, storeId)).limit(1)
   if (!store) return { ok: false, error: "店铺不存在" }
+  if (store.isDemo) return { ok: false, error: "演示店铺不支持录入 token（配置 TEMU 应用后创建真实店铺）" }
   if (!store.accessTokenEncrypted) return { ok: false, error: "未录入 access_token" }
 
-  const app = await getTemuAppCredential(store.enterpriseId)
-  if (!app) return { ok: false, error: "该企业未配置 TEMU 应用凭证（超管 → 企业管理 → TEMU应用）" }
+  const app = await resolveStoreAppCredential(store)
+  if ("error" in app) return { ok: false, error: app.error }
 
   let accessToken: string
   try {

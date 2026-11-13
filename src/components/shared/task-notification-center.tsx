@@ -61,7 +61,7 @@ function notifySystemNotification(task: TrackedTask, onOpen: () => void) {
     return
   }
   try {
-    const n = new Notification("瀚星 Super Image", {
+    const n = new Notification("StarChart 瀚星星图", {
       body: "图片生成完成，点击查看",
       tag: task.taskId,
     })

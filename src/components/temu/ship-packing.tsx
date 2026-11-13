@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { Loader2, RefreshCw } from "lucide-react"
+import { RefreshCw } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -801,7 +802,7 @@ export function PackingDialog({
                   onClick={() => fetchLogistics(volume, Math.max(1, Math.round(Number(weightKg) || 1)), addressId)}
                   disabled={loading || rows.length === 0}
                 >
-                  {loading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />} 重新比价
+                  {loading ? <DashRing className="size-3.5" /> : <RefreshCw className="size-3.5" />} 重新比价
                 </Button>
               </div>
               {logistics?.ok && (

@@ -40,7 +40,7 @@ type FaqCategory = keyof typeof FAQ_CATEGORIES
 const FAQ_DATA: Record<FaqCategory, FaqEntry[]> = {
   account: [
     {
-      question: "如何注册使用瀚星 Super Image？",
+      question: "如何注册使用 StarChart 瀚星星图？",
       answer:
         "平台面向企业用户提供服务，开通企业空间后，由企业管理员通过邮箱邀请成员加入，使用邮箱验证码即可登录，无需安装客户端。",
     },

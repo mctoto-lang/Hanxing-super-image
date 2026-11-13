@@ -25,7 +25,7 @@ const NONE = "__none__"
 /**
  * 商品主图 AI 对话模型指定（超管）
  *
- * 指定后全局强制：所有企业的商品主图 AI 帮写/智能匹配一律使用该平台预置模型；
+ * 指定后全局强制：所有企业的商品主图 AI 帮写/智能匹配一律使用该平台预置对话模型；
  * 未指定、或指定行已停用/删除时回退：企业私有 → 平台预置。
  */
 export function ProductChatModelSetting({
@@ -34,7 +34,7 @@ export function ProductChatModelSetting({
   options,
 }: {
   chatApiConfigId: string | null
-  /** 指定行当前是否仍为活跃的平台预置模型（false=已停用/删除，回退中） */
+  /** 指定行当前是否仍为活跃的平台预置对话模型（false=已停用/删除，回退中） */
   active: boolean
   options: ProductChatModelOption[]
 }) {

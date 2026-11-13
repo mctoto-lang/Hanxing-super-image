@@ -52,7 +52,7 @@ import { SizePresetsEditor } from "@/components/model-form/size-presets-editor"
 import { BadgeField } from "@/components/model-form/badge-field"
 
 /**
- * 平台预置模型表单（需求 2a）
+ * 平台生图模型表单（需求 2a）
  *
  * 字段与企业管理员 ModelFormDialog 一致，但调用超管 Action（enterpriseId=NULL）。
  * 统一设计语言（范式：recharge-dialog）：useForm + standardSchemaResolver
@@ -278,7 +278,7 @@ export function PresetModelFormDialog({
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[640px]">
         <DialogHeader>
           <DialogTitle>
-            {isEdit ? "编辑平台预置模型" : "新建平台预置模型"}
+            {isEdit ? "编辑平台生图模型" : "新建平台生图模型"}
           </DialogTitle>
         </DialogHeader>
         <Form {...form}>

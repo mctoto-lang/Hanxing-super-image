@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { ImageDown, Loader2 } from "lucide-react"
+import { ImageDown } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { toPng } from "html-to-image"
 
 import { Button } from "@/components/ui/button"
@@ -196,7 +197,7 @@ export function ReceiveSheetDialog({
           </Button>
           <Button onClick={download} disabled={pending || loadingImages}>
             {pending || loadingImages ? (
-              <Loader2 className="size-3.5 animate-spin" />
+              <DashRing className="size-3.5" />
             ) : (
               <ImageDown className="size-3.5" />
             )}

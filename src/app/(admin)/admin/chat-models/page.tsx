@@ -22,6 +22,15 @@ import {
 } from "@/components/shared/table-pagination"
 import { TableEmpty } from "@/components/shared/table-empty"
 import { StatCard } from "@/components/shared/stat-card"
+import { EmptyHint } from "@/components/temu/empty-hint"
+import { ModelBadge } from "@/components/model-badge"
+import { toImageSrc } from "@/lib/utils"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import {
   AdminChatModelFormDialog,
   AdminChatModelEditButton,
@@ -90,11 +99,13 @@ export default async function AdminChatModelsPage({
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-14">图标</TableHead>
                 <TableHead>显示名</TableHead>
                 <TableHead>来源</TableHead>
                 <TableHead>接口</TableHead>
                 <TableHead>价格（积分/百万tokens）</TableHead>
-                <TableHead>参数</TableHead>
+                <TableHead>运行参数</TableHead>
+                <TableHead>勋章</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>操作</TableHead>
               </TableRow>
@@ -105,8 +116,35 @@ export default async function AdminChatModelsPage({
                 const readOnly = isPreset || !allowCustom
                 return (
                   <TableRow key={m.id}>
+                    <TableCell>
+                      {m.iconUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={toImageSrc(m.iconUrl)}
+                          alt=""
+                          className="size-8 rounded-md bg-muted/40 object-contain"
+                        />
+                      ) : (
+                        <div className="flex size-8 items-center justify-center rounded-md bg-muted/40 text-xs font-medium text-muted-foreground">
+                          {m.displayName?.slice(0, 1) ?? "?"}
+                        </div>
+                      )}
+                    </TableCell>
                     <TableCell className="font-medium">
-                      {m.displayName}
+                      {m.description?.trim() ? (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger className="cursor-default text-left">
+                              {m.displayName}
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-64">
+                              {m.description}
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      ) : (
+                        m.displayName
+                      )}
                     </TableCell>
                     <TableCell>
                       {isPreset ? (
@@ -116,26 +154,48 @@ export default async function AdminChatModelsPage({
                       )}
                     </TableCell>
                     <TableCell className="text-sm">
-                      {CHAT_FORMAT_LABEL[m.formatType] ?? m.formatType}
-                      {m.supportsThinking ? (
-                        <Badge variant="outline" className="ml-1.5 text-[10px]">思考</Badge>
-                      ) : null}
-                      <div className="max-w-52 truncate text-xs text-muted-foreground">
-                        {m.apiEndpoint}
-                      </div>
+                      {/* 平台预置不暴露接口信息（口径同生图模型页） */}
+                      {isPreset ? (
+                        <EmptyHint />
+                      ) : (
+                        <>
+                          {CHAT_FORMAT_LABEL[m.formatType] ?? m.formatType}
+                          {m.supportsThinking ? (
+                            <Badge variant="outline" className="ml-1.5 text-[10px]">思考</Badge>
+                          ) : null}
+                          <div className="max-w-52 truncate text-xs text-muted-foreground">
+                            {m.apiEndpoint}
+                          </div>
+                        </>
+                      )}
                     </TableCell>
                     <TableCell className="text-sm tabular-nums text-muted-foreground">
                       {m.inputPriceCenticredits <= 0 && m.outputPriceCenticredits <= 0
                         ? "免费"
                         : `${(m.inputPriceCenticredits / 100).toFixed(2)} / ${(m.outputPriceCenticredits / 100).toFixed(2)}`}
                     </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {m.extraConfig?.temperature !== undefined
-                        ? `T=${m.extraConfig.temperature}`
-                        : "T=默认"}
-                      {m.extraConfig?.maxTokens
-                        ? ` · ${m.extraConfig.maxTokens} tokens`
-                        : ""}
+                    <TableCell className="text-xs tabular-nums">
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger className="cursor-default">
+                            {m.maxConcurrent} / {m.maxRetries} / {m.apiTimeout}s
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            并发 {m.maxConcurrent} · 重试 {m.maxRetries} · 接口超时{" "}
+                            {m.apiTimeout}s
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </TableCell>
+                    <TableCell>
+                      {m.badgeText?.trim() ? (
+                        <ModelBadge
+                          text={m.badgeText.trim()}
+                          color={m.badgeColor}
+                        />
+                      ) : (
+                        <EmptyHint />
+                      )}
                     </TableCell>
                     <TableCell>
                       {m.isActive ? (
@@ -160,7 +220,7 @@ export default async function AdminChatModelsPage({
                 )
               })}
               {chatModels.length === 0 ? (
-                <TableEmpty colSpan={6} noun="对话模型" />
+                <TableEmpty colSpan={9} noun="对话模型" />
               ) : null}
             </TableBody>
           </Table>

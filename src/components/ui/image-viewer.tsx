@@ -13,6 +13,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { toast } from "sonner"
 import {
   Dialog,
@@ -591,7 +592,12 @@ export function ImageViewer({
                     <span>
                       {naturalSize
                         ? `${naturalSize.w} × ${naturalSize.h} px`
-                        : "加载中…"}
+                        : (
+                          <span className="inline-flex items-center gap-1.5">
+                            <DashRing className="size-3.5" />
+                            加载中…
+                          </span>
+                        )}
                     </span>
                   </div>
                   <div className="flex gap-2">

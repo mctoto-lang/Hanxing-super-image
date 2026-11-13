@@ -65,7 +65,7 @@ function toggleValue(current: string[], m: string, on: boolean): string[] {
  * 企业级模型配置（需求 2b）
  *
  * - allowCustomModels：是否允许企业自建私有模型
- * - visiblePresetModels：勾选该企业可见的平台预置模型（空 = 全部可见）
+ * - visiblePresetModels：勾选该企业可见的平台生图模型（空 = 全部可见）
  * - visiblePresetChatModels：同上，作用于平台预置对话模型
  *
  * 语义：当 visible 列表为空（不勾任何），表示「全部预置可见」；
@@ -118,7 +118,7 @@ export function EnterpriseModelConfigDialog({
   })
   const pending = form.formState.isSubmitting
 
-  // 「全部可见」当且仅当未勾选任何预置模型（实时随勾选联动；useWatch 供 React Compiler 记忆化）
+  // 「全部可见」当且仅当未勾选任何生图模型（实时随勾选联动；useWatch 供 React Compiler 记忆化）
   const imageModels = useWatch({ control: form.control, name: "imageModels" })
   const chatModels = useWatch({ control: form.control, name: "chatModels" })
   const isAllVisible = imageModels.length === 0
@@ -167,7 +167,7 @@ export function EnterpriseModelConfigDialog({
         <DialogHeader>
           <DialogTitle>企业模型配置</DialogTitle>
           <DialogDescription>
-            「{enterpriseName}」 · 自定义模型开关与可见平台预置模型
+            「{enterpriseName}」 · 自定义模型开关与可见平台生图模型
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -183,7 +183,7 @@ export function EnterpriseModelConfigDialog({
                       允许企业自建私有模型
                     </FormLabel>
                     <div className="text-xs text-muted-foreground">
-                      关闭后，企业管理员只能使用平台预置模型，无法新建/编辑私有模型
+                      关闭后，企业管理员只能使用平台生图模型，无法新建/编辑私有模型
                     </div>
                   </div>
                   <FormControl>
@@ -197,7 +197,7 @@ export function EnterpriseModelConfigDialog({
               )}
             />
 
-            {/* 可见平台预置模型勾选 */}
+            {/* 可见平台生图模型勾选 */}
             <FormField
               control={form.control}
               name="imageModels"
@@ -206,10 +206,10 @@ export function EnterpriseModelConfigDialog({
                   <div className="flex items-center justify-between">
                     <div>
                       <FormLabel className="text-sm font-medium">
-                        可见的平台预置模型
+                        可见的平台生图模型
                       </FormLabel>
                       <div className="text-xs text-muted-foreground">
-                        不勾选任何项 = 全部预置模型可见
+                        不勾选任何项 = 全部生图模型可见
                       </div>
                     </div>
                     <Badge variant={isAllVisible ? "default" : "outline"}>
@@ -218,7 +218,7 @@ export function EnterpriseModelConfigDialog({
                   </div>
                   {presetModels.length === 0 ? (
                     <div className="py-4 text-center text-xs text-muted-foreground">
-                      暂无平台预置模型，请先到「平台预置模型」页创建
+                      暂无平台生图模型，请先到「平台生图模型」页创建
                     </div>
                   ) : (
                     <ScrollArea className="h-48 rounded-md border">

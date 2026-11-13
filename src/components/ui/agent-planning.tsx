@@ -23,10 +23,10 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  Loader2,
-} from "lucide-react"
+  } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { DashRing } from "@/components/ui/dash-ring"
 
 export type PlanStepStatus = "pending" | "active" | "success" | "error"
 
@@ -165,7 +165,7 @@ export function AgentPlanning({
               {headerIcon != null ? (
                 headerIcon
               ) : hasActive ? (
-                <Loader2 className="h-4 w-4 animate-spin text-blue-600 dark:text-blue-400" />
+                <DashRing className="h-4 w-4 text-blue-600 dark:text-blue-400" />
               ) : allSuccess ? (
                 <Check className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
               ) : (
@@ -232,7 +232,7 @@ export function AgentPlanning({
                             {step.status === "success" ? (
                               <Check className="h-3.5 w-3.5" />
                             ) : step.status === "active" ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              <DashRing className="h-3.5 w-3.5" />
                             ) : (
                               step.icon || (
                                 <div className="h-1.5 w-1.5 rounded-full bg-current" />

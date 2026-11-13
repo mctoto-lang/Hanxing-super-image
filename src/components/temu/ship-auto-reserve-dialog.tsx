@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { toast } from "sonner"
 import {
   ArrowDown,
@@ -8,7 +9,6 @@ import {
   Ban,
   ChevronDown,
   ChevronUp,
-  Loader2,
   Plus,
   RefreshCw,
   Zap,
@@ -450,7 +450,7 @@ export function AutoReserveDialog({
                   fetchLogistics(volume, Math.max(1, Math.round(Number(weightKg) || 1)), addressId)
                 }}
               >
-                {loading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />} 重新比价
+                {loading ? <DashRing className="size-3.5" /> : <RefreshCw className="size-3.5" />} 重新比价
               </Button>
             </div>
 
@@ -619,7 +619,7 @@ export function AutoReserveDialog({
                 </div>
                 <div className="flex justify-end">
                   <Button size="sm" className="h-7 text-xs" disabled={savingPref} onClick={savePrefs}>
-                    {savingPref ? <Loader2 className="size-3.5 animate-spin" /> : null} 保存偏好（企业级）
+                    {savingPref ? <DashRing className="size-3.5" /> : null} 保存偏好（企业级）
                   </Button>
                 </div>
               </div>

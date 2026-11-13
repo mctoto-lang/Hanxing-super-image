@@ -1,10 +1,10 @@
 "use client"
 
 import * as React from "react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { toast } from "sonner"
 import {
   ArrowLeftRight,
-  Loader2,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -511,7 +511,7 @@ export function StockOverviewPanel({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-base">
           库存总览
-          {loading ? <Loader2 className="size-3.5 animate-spin text-muted-foreground" /> : null}
+          {loading ? <DashRing className="size-3.5 text-muted-foreground" /> : null}
           <span className="text-sm font-normal text-muted-foreground">
             （{data.length} 个货号）
           </span>
@@ -702,7 +702,7 @@ export function StockOverviewPanel({
               取消
             </Button>
             <Button size="sm" onClick={saveThreshold} disabled={thresholdPending}>
-              {thresholdPending ? <Loader2 className="size-3.5 animate-spin" /> : null}
+              {thresholdPending ? <DashRing className="size-3.5" /> : null}
               保存
             </Button>
           </DialogFooter>

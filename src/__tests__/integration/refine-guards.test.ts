@@ -23,7 +23,7 @@ import { reorderPresetModelsAction } from "@/server/actions/platform-models"
  *
  * 固定项三处守卫（platform-product）：refine 不可新增 / 不可改名字段 /
  * 不可停用（反向启用放行自愈）/ 不可拖拽。
- * reorder 校验：尺寸规范跨平台分组拒绝；平台预置模型重排拒绝企业私有 id。
+ * reorder 校验：尺寸规范跨平台分组拒绝；平台生图模型重排拒绝企业私有 id。
  * 登录态经 mock auth() 注入超管夹具用户；revalidatePath mock 为空操作。
  */
 const mockSession = vi.hoisted(() => ({ userId: null as string | null }))
@@ -125,7 +125,7 @@ beforeAll(async () => {
       {
         enterpriseId: null,
         name: `guard-preset-${randomUUID().slice(0, 8)}`,
-        displayName: "平台预置模型",
+        displayName: "平台生图模型",
         apiEndpoint: "https://preset.example.com/v1",
         apiKeyEncrypted: "dummy",
         sortOrder: 0,
@@ -140,7 +140,7 @@ beforeAll(async () => {
       },
     ])
     .returning({ id: models.id, displayName: models.displayName })
-  presetModelId = modelRows.find((m) => m.displayName === "平台预置模型")!.id
+  presetModelId = modelRows.find((m) => m.displayName === "平台生图模型")!.id
   entModelId = modelRows.find((m) => m.displayName === "企业私有模型")!.id
 
   const specs = await db
@@ -264,12 +264,12 @@ describe("reorder 归属/分组校验", () => {
     expect(r.ok).toBe(true)
   })
 
-  it("平台预置模型重排拒绝企业私有 id；纯预置重排按新顺序落库", async () => {
+  it("平台生图模型重排拒绝企业私有 id；纯预置重排按新顺序落库", async () => {
     const mixed = await reorderPresetModelsAction([presetModelId, entModelId])
     expect(mixed.ok).toBe(false)
-    expect(mixed.error).toContain("平台预置")
+    expect(mixed.error).toContain("平台生图模型")
 
-    // 先给预置模型独立的排序值域，避免与夹具外的平台预置行互相影响
+    // 先给生图模型独立的排序值域，避免与夹具外的平台预置行互相影响
     await db
       .update(models)
       .set({ sortOrder: 9000 })

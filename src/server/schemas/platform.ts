@@ -76,11 +76,11 @@ export const updateEnterpriseConcurrencySchema = z.object({
     .max(9999, "对话并发不能超过 9999"),
 })
 
-/** 企业级模型配置（需求 2b）：是否允许自建私有模型 + 可见平台预置模型白名单 */
+/** 企业级模型配置（需求 2b）：是否允许自建私有模型 + 可见平台生图模型白名单 */
 export const updateEnterpriseModelConfigSchema = z.object({
   enterpriseId: z.string().uuid("请选择企业"),
   allowCustomModels: z.boolean(),
-  /** 空 = 全部预置模型可见 */
+  /** 空 = 全部生图模型可见 */
   visiblePresetModels: z.array(z.string().uuid()),
   /** 空 = 全部预置对话模型可见 */
   visiblePresetChatModels: z.array(z.string().uuid()),

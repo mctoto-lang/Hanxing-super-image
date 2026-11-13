@@ -15,6 +15,7 @@ import { auth } from "@/lib/auth/config"
  */
 const PUBLIC_PATHS = [
   "/", // 营销首页：未登录可浏览；已登录由页面按角色重定向进工作台
+  "/changelog", // 公开更新日志页（AI 功能发布与新模型接入动态）
   "/login",
   "/api/auth", // Auth.js 入口
   "/api/health",

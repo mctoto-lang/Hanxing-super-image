@@ -1,12 +1,12 @@
 "use client"
 
 import * as React from "react"
+import { DashRing } from "@/components/ui/dash-ring"
 import {
   AlertTriangle,
   Download,
   LayoutGrid,
-  Loader2,
-} from "lucide-react"
+  } from "lucide-react"
 import { toast } from "sonner"
 import {
   Dialog,
@@ -148,7 +148,7 @@ export function MockupHistoryPanel({
                       )}
                       {c.processing ? (
                         <span className="absolute inset-0 flex items-center justify-center bg-background/50">
-                          <Loader2 className="size-8 animate-spin text-foreground/70" />
+                          <DashRing className="size-8 text-foreground/70" />
                         </span>
                       ) : null}
                       <span className="absolute top-2 right-2 rounded-full bg-black/60 px-2 py-0.5 text-xs font-medium text-white backdrop-blur-sm">
@@ -194,7 +194,7 @@ export function MockupHistoryPanel({
                         />
                       ) : (
                         <div className="flex size-full items-center justify-center text-muted-foreground">
-                          <Loader2 className="size-8 animate-spin" />
+                          <DashRing className="size-8" />
                         </div>
                       )}
                       <span className="absolute top-2 right-2 rounded-full bg-black/60 px-2 py-0.5 text-xs font-medium text-white backdrop-blur-sm">
@@ -366,7 +366,7 @@ function CardDetailDialog({
                 onClick={() => void handleZip()}
               >
                 {zipping ? (
-                  <Loader2 className="mr-1 size-3.5 animate-spin" />
+                  <DashRing className="mr-1 size-3.5" />
                 ) : (
                   <Download className="mr-1 size-3.5" />
                 )}
@@ -582,7 +582,7 @@ function BatchDetailDialog({
 
           {loading && !detail ? (
             <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
-              <Loader2 className="mr-2 size-4 animate-spin" /> 批次加载中…
+              <DashRing className="mr-2 size-4" /> 批次加载中…
             </div>
           ) : detail ? (
             <div className="flex flex-col gap-4">
@@ -608,7 +608,7 @@ function BatchDetailDialog({
                   onClick={() => void handleZip()}
                 >
                   {zipping ? (
-                    <Loader2 className="mr-1 size-3.5 animate-spin" />
+                    <DashRing className="mr-1 size-3.5" />
                   ) : (
                     <Download className="mr-1 size-3.5" />
                   )}
@@ -687,7 +687,7 @@ function BatchDetailDialog({
                                   onClick={() => void handleRetry(t.taskId)}
                                 >
                                   {busyTaskId === t.taskId ? (
-                                    <Loader2 className="mr-1 size-3 animate-spin" />
+                                    <DashRing className="mr-1 size-3" />
                                   ) : null}
                                   {busyTaskId === t.taskId ? "重试中…" : "重试"}
                                 </Button>

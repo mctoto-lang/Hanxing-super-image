@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { toast } from "sonner"
-import { FilePlus2, Library, Loader2, RefreshCw } from "lucide-react"
+import { FilePlus2, Library, RefreshCw } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import Link from "next/link"
 import {
   deletePublishTemplateAction,
@@ -81,7 +82,7 @@ export function TemuTemplateManager({ canManage }: { canManage: boolean }) {
           <CardTitle className="text-base">刊登模板（{templates.length}）</CardTitle>
           <div className="flex gap-2">
             <Button variant="outline" onClick={() => void refresh()} disabled={loading}>
-              {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+              {loading ? <DashRing className="size-4" /> : <RefreshCw className="size-4" />}
               刷新
             </Button>
             {canManage && (

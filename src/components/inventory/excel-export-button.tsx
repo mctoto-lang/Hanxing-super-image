@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { Download, Loader2 } from "lucide-react"
+import { Download } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { Button } from "@/components/ui/button"
 import {
   exportInventoryOverviewExcelAction,
@@ -55,7 +56,7 @@ export function ExcelExportButton({
         })
       }
     >
-      {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
+      {pending ? <DashRing className="size-3.5" /> : <Download className="size-3.5" />}
       {label}
     </Button>
   )

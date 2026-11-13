@@ -55,7 +55,7 @@ export function LoginForm({
               <div className="flex flex-col items-center text-center">
                 <h1 className="text-2xl font-bold">欢迎回来</h1>
                 <p className="text-balance text-muted-foreground">
-                  登录瀚星 Super Image 企业工作台
+                  登录 StarChart 瀚星星图 企业工作台
                 </p>
               </div>
               <div className="grid gap-2">
@@ -126,7 +126,7 @@ export function LoginForm({
             {/* eslint-disable-next-line @next/next/no-img-element -- COS 外域图，容器有渐变兜底，不走 next/image 服务端优化 */}
             <img
               src={toImageSrc(BRAND_IMAGE_URL, { width: 800 })}
-              alt="瀚星 Super Image 品牌视觉"
+              alt="StarChart 瀚星星图 品牌视觉"
               className="absolute inset-0 h-full w-full object-cover"
               draggable={false}
             />

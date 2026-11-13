@@ -3,7 +3,8 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import { Area, AreaChart, CartesianGrid, XAxis } from "recharts"
-import { ChevronDown, ChevronRight, ImagePlus, Loader2, Settings, SlidersHorizontal, TrendingUp, Type, Zap } from "lucide-react"
+import { Ban, ChevronDown, ChevronRight, ImagePlus, Settings, SlidersHorizontal, TrendingUp, Video, Zap } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { toast } from "sonner"
 import {
   ChartContainer,
@@ -22,6 +23,7 @@ import { TEMU_TABLE_HEADER_CLASS } from "@/components/temu/table-header-style"
 import { EmptyHint } from "@/components/temu/empty-hint"
 import { TruncTip } from "@/components/temu/trunc-tip"
 import { ProductMediaEditDialog } from "@/components/temu/product-media-edit-dialog"
+import { ProductVideoEditDialog } from "@/components/temu/product-video-edit-dialog"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ZoomableImage } from "@/components/ui/zoomable-image"
@@ -68,6 +70,9 @@ import {
   getPriorityShipLinksAction,
   setPriorityShipAction,
   unsetPriorityShipAction,
+  getStopReplenishLinksAction,
+  setStopReplenishAction,
+  unsetStopReplenishAction,
   getTemuSettingsAction,
   updateTemuStagnantSettingsAction,
   type TemuProductRow,
@@ -306,7 +311,7 @@ function StagnantThresholdButton() {
               取消
             </Button>
             <Button onClick={() => void save()} disabled={saving}>
-              {saving ? <Loader2 className="size-4 animate-spin" /> : null}
+              {saving ? <DashRing className="size-4" /> : null}
               保存
             </Button>
           </DialogFooter>
@@ -651,21 +656,28 @@ function ProductDetailPanel({
 }
 
 /** SKU 明细展开子表：尺码/货号/申报价/今日·7日·30日·总销量（salesv2 priceDetail）。
- *  「缺货数量」右侧「设置」列：链接级操作菜单（换图片/换标题/优先发货）——
+ *  「缺货数量」右侧「设置」列：链接级操作菜单（换图片/换视频/优先发货/停止补货；换标题
+ *  需本土店授权，docs §8.12 四/五轮探针，已按要求移出入口）——
  *  操作作用于该 SKU 所属链接（SKC），任一尺码行入口等价 */
 function SkuDetailSubtable({
   skus,
   row,
   isPriority,
   onTogglePriority,
+  isStopped,
+  onToggleStopped,
   onEditImages,
+  onEditVideo,
 }: {
   skus: TemuSkuDetailRow[]
   /** 所属链接主行（productId/货号/商品名快照源） */
   row: TemuProductRow
   isPriority: boolean
   onTogglePriority: () => void
+  isStopped: boolean
+  onToggleStopped: () => void
   onEditImages: () => void
+  onEditVideo: () => void
 }) {
   // 空值图标居中与主表同口径（数值列数字保持左对齐、仅空值图标居中）
   const num = (v: unknown) =>
@@ -718,14 +730,18 @@ function SkuDetailSubtable({
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" className="min-w-44">
                   <DropdownMenuItem onClick={onEditImages} disabled={!hasProductId}>
-                    <ImagePlus className="size-3.5" /> 换图片{!hasProductId ? "（缺 SPU 编号）" : ""}
+                    <ImagePlus className="size-3.5 text-sky-500" /> 换图片{!hasProductId ? "（缺 SPU 编号）" : ""}
                   </DropdownMenuItem>
-                  {/* 官方无改标题接口（docs §8.12 探针：edit.task 参数黑盒）——置灰保留入口 */}
-                  <DropdownMenuItem disabled>
-                    <Type className="size-3.5" /> 换标题（官方未开放）
+                  {/* 换视频：sign→galerie 直传→result.get{vid}→edit.pictures.submit 视频位
+                      （2026-11-12 探针全通，docs §8.12）——主图轮播视频位/详情视频位 */}
+                  <DropdownMenuItem onClick={onEditVideo} disabled={!hasProductId}>
+                    <Video className="size-3.5 text-violet-500" /> 换视频{!hasProductId ? "（缺 SPU 编号）" : ""}
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={onTogglePriority}>
-                    <Zap className="size-3.5" /> {isPriority ? "取消优先发货" : "设为优先发货"}
+                    <Zap className="size-3.5 text-amber-500" /> {isPriority ? "取消优先发货" : "设为优先发货"}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={onToggleStopped}>
+                    <Ban className="size-3.5 text-rose-500" /> {isStopped ? "取消停止补货" : "设为停止补货"}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -743,6 +759,7 @@ export function ProductsInfiniteTable({
   qf,
   sale,
   sort,
+  app,
   initialRows,
   initialSalesInfo,
 }: {
@@ -751,6 +768,8 @@ export function ProductsInfiniteTable({
   qf?: string
   sale?: TemuSaleFilter
   sort?: string
+  /** 应用（主体）过滤（全部店铺视图按应用切分） */
+  app?: string
   initialRows: TemuProductRow[]
   initialSalesInfo: TemuProductSalesInfo
 }) {
@@ -766,13 +785,20 @@ export function ProductsInfiniteTable({
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set())
   /** 优先发货链接集合（temu_priority_link 本地标记；进页拉一次，set/unset 后本地增删） */
   const [prioritySkcs, setPrioritySkcs] = React.useState<Set<string>>(new Set())
+  /** 停止补货链接集合（temu_stop_replenish_link 本地标记；同优先发货口径） */
+  const [stoppedSkcs, setStoppedSkcs] = React.useState<Set<string>>(new Set())
   /** 换图片弹窗目标行（null=关） */
   const [editImagesRow, setEditImagesRow] = React.useState<TemuProductRow | null>(null)
+  /** 换视频弹窗目标行（null=关） */
+  const [editVideoRow, setEditVideoRow] = React.useState<TemuProductRow | null>(null)
 
   React.useEffect(() => {
     let cancelled = false
     void getPriorityShipLinksAction(store).then((r) => {
       if (!cancelled) setPrioritySkcs(new Set(r.skcIds))
+    })
+    void getStopReplenishLinksAction(store).then((r) => {
+      if (!cancelled) setStoppedSkcs(new Set(r.skcIds))
     })
     return () => {
       cancelled = true
@@ -797,6 +823,33 @@ export function ProductsInfiniteTable({
         return next
       })
       toast.success(isPriority ? "已取消优先发货" : "已设为优先发货")
+    } else {
+      toast.error(res.error)
+    }
+  }
+
+  const toggleStopped = async (r: TemuProductRow) => {
+    const isStopped = stoppedSkcs.has(r.productSkcId)
+    const res = isStopped
+      ? await unsetStopReplenishAction({ storeId: r.storeId ?? "", productSkcId: r.productSkcId })
+      : await setStopReplenishAction({
+          storeId: r.storeId ?? "",
+          productSkcId: r.productSkcId,
+          productSn: r.productSn,
+          productName: r.productName,
+        })
+    if (res.ok) {
+      setStoppedSkcs((prev) => {
+        const next = new Set(prev)
+        if (isStopped) next.delete(r.productSkcId)
+        else next.add(r.productSkcId)
+        return next
+      })
+      toast.success(
+        isStopped
+          ? "已取消停止补货"
+          : "已设为停止补货：备货自动操作（申报/加入发货）将排除该链接",
+      )
     } else {
       toast.error(res.error)
     }
@@ -839,7 +892,7 @@ export function ProductsInfiniteTable({
     setLoading(true)
     try {
       const next = pageRef.current + 1
-      const r = await getTemuProductsPageAction(store, q, sale, next, sort, qf)
+      const r = await getTemuProductsPageAction(store, q, sale, next, sort, qf, app)
       setRows((prev) => {
         const seen = new Set(prev.map((x) => x.id))
         return prev.concat(r.rows.filter((x) => !seen.has(x.id)))
@@ -860,7 +913,7 @@ export function ProductsInfiniteTable({
       loadingRef.current = false
       setLoading(false)
     }
-  }, [store, q, qf, sale, sort])
+  }, [store, q, qf, sale, sort, app])
 
   React.useEffect(() => {
     const el = sentinelRef.current
@@ -1025,7 +1078,10 @@ export function ProductsInfiniteTable({
                         row={r}
                         isPriority={prioritySkcs.has(r.productSkcId)}
                         onTogglePriority={() => void togglePriority(r)}
+                        isStopped={stoppedSkcs.has(r.productSkcId)}
+                        onToggleStopped={() => void toggleStopped(r)}
                         onEditImages={() => setEditImagesRow(r)}
+                        onEditVideo={() => setEditVideoRow(r)}
                       />
                     )}
                   </TableCell>
@@ -1049,7 +1105,12 @@ export function ProductsInfiniteTable({
         {done && visibleCount >= rows.length
           ? `已全部加载 ${rows.length} 条`
           : loading
-            ? "加载中…"
+            ? (
+              <span className="inline-flex items-center gap-1.5">
+                <DashRing className="size-3.5" />
+                加载中…
+              </span>
+            )
             : ""}
       </div>
 
@@ -1061,6 +1122,16 @@ export function ProductsInfiniteTable({
         }}
         row={editImagesRow}
         storeId={editImagesRow?.storeId ?? store}
+      />
+
+      {/* 换视频弹窗（设置菜单入口；作用于所属链接 SPU） */}
+      <ProductVideoEditDialog
+        open={editVideoRow !== null}
+        onOpenChange={(v) => {
+          if (!v) setEditVideoRow(null)
+        }}
+        row={editVideoRow}
+        storeId={editVideoRow?.storeId ?? store}
       />
     </>
   )

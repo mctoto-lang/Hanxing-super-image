@@ -3,6 +3,7 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import { Medal } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, XAxis, YAxis } from "recharts"
 import {
   ChartContainer,
@@ -52,11 +53,14 @@ export function TemuStoreSelect({
   current,
   stores,
   allowAll = true,
+  app,
 }: {
   tab: string
   current?: string
   stores: { id: string; name: string }[]
   allowAll?: boolean
+  /** 应用（主体）筛选（URL ?app= 透传：切店时保持应用维度） */
+  app?: string
 }) {
   const router = useRouter()
   const items = [
@@ -70,6 +74,7 @@ export function TemuStoreSelect({
       onValueChange={(v) => {
         const p = new URLSearchParams({ tab })
         if (v && v !== ALL_STORES) p.set("store", v)
+        if (app) p.set("app", app)
         router.push(`/temu?${p.toString()}`)
       }}
     >
@@ -564,9 +569,12 @@ const SHIP_STATS_POLL_MS = 15 * 60_000
 export function TemuShipStatsCards({
   initial,
   storeId,
+  appId,
 }: {
   initial: TemuShipStats
   storeId?: string
+  /** 应用（主体）过滤（全部店铺统计按应用切分） */
+  appId?: string
 }) {
   const [stats, setStats] = React.useState(initial)
   const [warehouse, setWarehouse] = React.useState(ALL_WAREHOUSES)
@@ -590,13 +598,17 @@ export function TemuShipStatsCards({
     const w = warehouseRef.current
     startTransition(async () => {
       try {
-        const res = await getTemuShipStatsAction(storeId ?? null, w === ALL_WAREHOUSES ? null : w)
+        const res = await getTemuShipStatsAction(
+          storeId ?? null,
+          w === ALL_WAREHOUSES ? null : w,
+          appId,
+        )
         if (reqId === statsReqRef.current && res && Array.isArray(res.today)) setStats(res)
       } catch {
         // 地址标签拉取等偶发失败不阻断，保留现有数据
       }
     })
-  }, [storeId])
+  }, [storeId, appId])
 
   // 15 分钟自动重查本地库（对齐后台 api-ship-orders 同步周期）：页面开着
   // 数字随 worker 落库自动增量，不调官方 API；切回标签页且已过周期立即补一次，
@@ -697,7 +709,14 @@ export function TemuShipStatsCards({
         <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
           {total === 0 ? (
             <div className="flex h-[280px] items-center justify-center text-sm text-muted-foreground">
-              {pending ? "加载中…" : "今日暂无发货数据（数据随官方 API 定时同步更新）"}
+              {pending ? (
+                <span className="flex items-center gap-2">
+                  <DashRing className="size-4" />
+                  加载中…
+                </span>
+              ) : (
+                "今日暂无发货数据（数据随官方 API 定时同步更新）"
+              )}
             </div>
           ) : (
             <>

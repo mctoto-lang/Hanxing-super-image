@@ -1,7 +1,8 @@
 "use client"
 
 import * as React from "react"
-import { Loader2, Play } from "lucide-react"
+import { Play } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -66,7 +67,7 @@ export function RenderConfirmDialog({
             onClick={() => void handleConfirm()}
           >
             {confirming ? (
-              <Loader2 className="size-4 animate-spin" />
+              <DashRing className="size-4" />
             ) : (
               <Play className="size-4" />
             )}

@@ -1,8 +1,8 @@
 "use client"
 
 import * as React from "react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { toast } from "sonner"
-import { Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import {
@@ -238,7 +238,7 @@ export function MovementDialog({
             取消
           </Button>
           <Button onClick={submit} disabled={pending}>
-            {pending && <Loader2 className="size-3.5 animate-spin" />}
+            {pending && <DashRing className="size-3.5" />}
             确认{mode === "out" ? "出库" : "入库"}
           </Button>
         </DialogFooter>

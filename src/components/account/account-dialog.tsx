@@ -12,6 +12,7 @@ import {
   Users,
   Zap,
 } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { toast } from "sonner"
 import { useRouter } from "next/navigation"
 
@@ -669,7 +670,8 @@ function SubscriptionTab({
                 </div>
               ))}
               {loading ? (
-                <div className="py-2 text-center text-xs text-muted-foreground">
+                <div className="flex items-center justify-center gap-1.5 py-2 text-xs text-muted-foreground">
+                  <DashRing className="size-3.5" />
                   加载中…
                 </div>
               ) : null}

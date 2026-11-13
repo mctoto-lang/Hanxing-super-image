@@ -6,6 +6,7 @@ import {
   Activity,
   Building2,
   ChevronsUpDown,
+  History,
   Home,
   ShieldCheck,
 } from "lucide-react"
@@ -107,6 +108,10 @@ export function EnterpriseBadge({ enterprise }: EnterpriseBadgeProps) {
                   服务可用性
                 </DropdownMenuItem>
               )}
+              <DropdownMenuItem render={<Link href="/changelog" />}>
+                <History />
+                更新日志页
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </SidebarMenuItem>

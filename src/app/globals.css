@@ -200,6 +200,25 @@
   }
 }
 
+/* 礼物卡滑块提示文字 shimmer 流光（reward-card.tsx，灰阶渐变横扫） */
+@keyframes shimmer {
+  to {
+    background-position: -200% center;
+  }
+}
+.animate-shimmer {
+  background-size: 200% 100%;
+  animation: shimmer 2.5s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-shimmer {
+    animation: none;
+  }
+}
+
+/* 奖励礼物卡（Stripe 玻璃极光）极光光斑为内联渐变 + BorderBeam 组件，
+   无需自定义 keyframes；滑块流光沿用上方 animate-shimmer */
+
 /* AI 帮写按钮「书写中」图标：笔尖左右摆动模拟书写 */
 @keyframes pen-write {
   0%,

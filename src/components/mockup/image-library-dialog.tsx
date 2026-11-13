@@ -1,7 +1,8 @@
 "use client"
 
 import * as React from "react"
-import { Check, ListChecks, Loader2, RefreshCw } from "lucide-react"
+import { Check, ListChecks, RefreshCw } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import {
@@ -523,7 +524,7 @@ export function ImageLibraryDialog({
         <div className="max-h-[50vh] overflow-y-auto scrollbar-hide">
           {tab === "generated" && generatedLoading ? (
             <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-              <Loader2 className="mr-2 size-4 animate-spin" /> 加载中…
+              <DashRing className="mr-2 size-4" /> 加载中…
             </div>
           ) : baseList.length === 0 ? (
             <div className="flex h-32 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">

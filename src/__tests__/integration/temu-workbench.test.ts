@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm"
 import { db } from "@/db/client"
 import { enterprises, permissionGroups } from "@/db/schema"
 import { MODULE_NAMES } from "@/db/schema/_shared"
-import { temuStores, temuProducts, temuSkuMaps, temuAds } from "@/db/schema/temu"
+import { temuStores, temuProducts, temuSkuMaps, temuAds, temuApps } from "@/db/schema/temu"
 import { encrypt } from "@/lib/crypto"
 import {
   getTemuPriceReviewsAction,
@@ -129,6 +129,11 @@ beforeAll(async () => {
     })
     .returning()
   entId = ent!.id
+  // 多应用模型（0097）：凭证按「店铺→应用」取——夹具企业配一个应用
+  // （店铺不挂靠时单应用宽容回落命中）
+  await db
+    .insert(temuApps)
+    .values({ enterpriseId: entId, name: "测试应用", appKey: "test-app", appSecretEncrypted: "enc:v1:t" })
 
   const [noAdsGroup] = await db
     .insert(permissionGroups)
@@ -258,6 +263,49 @@ describe("调价单实时拉取", () => {
     expect(row.priceType).toBe(0)
     expect(row.skuItems[0]?.skuId).toBe("50001")
     expect(row.image).toContain("9001")
+  })
+
+  it("服务端过滤：sn/ext/name 分别映射官方入参（2026-11-12 探针口径）", async () => {
+    const cases: Array<[string, string, Record<string, unknown>]> = [
+      ["sn", "TP20261019001", { priceOrderSn: ["TP20261019001"] }],
+      ["ext", "SN-9001", { extCodes: ["SN-9001"], extCodeType: 1 }],
+      ["name", "连衣裙", { productName: "连衣裙" }],
+    ]
+    for (const [field, kw, expectParams] of cases) {
+      const fetchMock = mockWorkbenchFetch()
+      vi.stubGlobal("fetch", fetchMock)
+      const r = await getTemuAdjustOrdersAction({
+        store: storeId,
+        status: "pending",
+        searchField: field,
+        searchKeyword: kw,
+      })
+      expect(r.ok).toBe(true)
+      const reqBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as Record<
+        string,
+        unknown
+      >
+      expect(reqBody).toMatchObject({ status: 0, pageNo: 1, pageSize: 50, ...expectParams })
+    }
+  })
+
+  it("all 模式/空关键词不传过滤参数（前端客户端兜底）", async () => {
+    for (const input of [
+      { searchField: "all", searchKeyword: "任意词" },
+      { searchField: "sn", searchKeyword: "  " },
+    ]) {
+      const fetchMock = mockWorkbenchFetch()
+      vi.stubGlobal("fetch", fetchMock)
+      const r = await getTemuAdjustOrdersAction({ store: storeId, status: "pending", ...input })
+      expect(r.ok).toBe(true)
+      const reqBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as Record<
+        string,
+        unknown
+      >
+      expect(reqBody.priceOrderSn).toBeUndefined()
+      expect(reqBody.extCodes).toBeUndefined()
+      expect(reqBody.productName).toBeUndefined()
+    }
   })
 })
 

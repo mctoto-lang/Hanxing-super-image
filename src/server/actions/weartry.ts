@@ -344,7 +344,7 @@ async function loadWeartryModel(
     const visiblePreset =
       (ctx.enterprise?.visiblePresetModels as string[] | null) ?? []
     if (visiblePreset.length > 0 && !visiblePreset.includes(model.id)) {
-      return { error: "该平台预置模型未对本企业开放" }
+      return { error: "该平台生图模型未对本企业开放" }
     }
   }
   if (!model.supportsReferenceImage) {

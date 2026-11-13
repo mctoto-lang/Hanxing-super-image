@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
-import { ChevronRight, ImagePlus, Loader2, Search, SearchX, Trash2 } from "lucide-react"
+import { ChevronRight, ImagePlus, Search, SearchX, Trash2 } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import {
   createPublishTemplateAction,
   getTemuAttrTemplateAction,
@@ -492,7 +493,7 @@ export function TemplateWizard({
                   onKeyDown={(e) => e.key === "Enter" && void doSearch()}
                 />
                 <Button size="sm" className="h-8 text-xs" onClick={() => void doSearch()} disabled={searching}>
-                  {searching ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
+                  {searching ? <DashRing className="size-4" /> : <Search className="size-4" />}
                   搜索
                 </Button>
               </div>
@@ -547,7 +548,7 @@ export function TemplateWizard({
               <div className="grid max-h-64 grid-cols-2 gap-1.5 overflow-y-auto sm:grid-cols-3">
                 {childrenLoading ? (
                   <div className="col-span-full flex items-center justify-center py-6 text-sm text-muted-foreground">
-                    <Loader2 className="mr-2 size-4 animate-spin" /> 加载子类目…
+                    <DashRing className="mr-2 size-4" /> 加载子类目…
                   </div>
                 ) : (
                   children.map((c) => (
@@ -575,7 +576,7 @@ export function TemplateWizard({
               <p className="text-xs text-muted-foreground">类目：{chainNames}</p>
               {attrLoading ? (
                 <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
-                  <Loader2 className="mr-2 size-4 animate-spin" /> 拉取官方属性模板…
+                  <DashRing className="mr-2 size-4" /> 拉取官方属性模板…
                 </div>
               ) : attrError ? (
                 <p className="text-sm text-destructive">{attrError}</p>
@@ -683,7 +684,7 @@ export function TemplateWizard({
                     disabled={!dimensionImage || dimChecking}
                     onClick={() => void checkDimension()}
                   >
-                    {dimChecking ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                    {dimChecking ? <DashRing className="size-3.5" /> : null}
                     官方校验
                   </Button>
                 </div>
@@ -856,7 +857,7 @@ export function TemplateWizard({
                       disabled={guideUploading}
                       onClick={() => document.getElementById("temu-guide-pdf")?.click()}
                     >
-                      {guideUploading ? <Loader2 className="size-4 animate-spin" /> : null}
+                      {guideUploading ? <DashRing className="size-4" /> : null}
                       选择 PDF
                     </Button>
                     <span className="text-[11px] text-muted-foreground">类目必填时必须上传（2000148）；须包含英文内容（2000163）；PDF 源存模板、发品时按目标店铺上传（保存不请求 TEMU）</span>
@@ -1017,7 +1018,7 @@ export function TemplateWizard({
             </Button>
           ) : (
             <Button size="sm" disabled={saving || !step3Valid} onClick={() => void save()}>
-              {saving && <Loader2 className="size-4 animate-spin" />}
+              {saving && <DashRing className="size-4" />}
               {editing ? "保存修改" : "创建模板"}
             </Button>
           )}
@@ -1126,7 +1127,7 @@ function PackagingImageSlots({
                 onClick={() => setPicking(i)}
               >
                 {uploadingIdx === i ? (
-                  <Loader2 className="size-4 animate-spin" />
+                  <DashRing className="size-4" />
                 ) : (
                   <ImagePlus className="size-4" />
                 )}

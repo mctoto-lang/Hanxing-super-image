@@ -1,7 +1,8 @@
 "use client"
 
 import * as React from "react"
-import { ChevronDown, Loader2, Settings2 } from "lucide-react"
+import { ChevronDown, Settings2 } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox"
@@ -190,7 +191,7 @@ export function MockupGenerationConfigButton({
               <Label>图片模型</Label>
               {loading && models.length === 0 ? (
                 <div className="flex h-9 items-center text-sm text-muted-foreground">
-                  <Loader2 className="mr-2 size-4 animate-spin" /> 加载模型…
+                  <DashRing className="mr-2 size-4" /> 加载模型…
                 </div>
               ) : (
                 <Combobox

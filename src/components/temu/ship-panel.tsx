@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { Loader2, Printer, RefreshCw, TriangleAlert, Zap } from "lucide-react"
+import { Printer, RefreshCw, TriangleAlert, Zap } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import {
   TableBody,
   TableCell,
@@ -879,7 +880,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
           <div className="ml-auto flex items-center gap-2">
             {viewSwitch}
             <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => void load({ fresh: true })} disabled={loading}>
-              {loading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />} 刷新
+              {loading ? <DashRing className="size-3.5" /> : <RefreshCw className="size-3.5" />} 刷新
             </Button>
           </div>
         </div>
@@ -953,7 +954,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                       }
                     }}
                   >
-                    {loading ? <Loader2 className="size-3.5 animate-spin" /> : <Printer className="size-3.5" />} 批量打印商品打包标签
+                    {loading ? <DashRing className="size-3.5" /> : <Printer className="size-3.5" />} 批量打印商品打包标签
                   </Button>
                   <Button
                     variant="outline"
@@ -1358,7 +1359,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                 runBoxMarkPrint(sns, false)
               }}
             >
-              {loading ? <Loader2 className="size-4 animate-spin" /> : null}
+              {loading ? <DashRing className="size-4" /> : null}
               继续打印
             </Button>
           </DialogFooter>

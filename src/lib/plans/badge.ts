@@ -35,6 +35,30 @@ export function normalizeBadgeColor(color: string | null | undefined): string {
   return /^#[0-9a-fA-F]{6}$/.test(color ?? "") ? (color as string) : "#8b5cf6"
 }
 
+/** WCAG 相对亮度（0~1，入参须为 normalizeBadgeColor 产出的 #RRGGBB） */
+function relativeLuminance(hex: string): number {
+  const channel = (v: number) => {
+    const c = v / 255
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+  }
+  return (
+    0.2126 * channel(parseInt(hex.slice(1, 3), 16)) +
+    0.7152 * channel(parseInt(hex.slice(3, 5), 16)) +
+    0.0722 * channel(parseInt(hex.slice(5, 7), 16))
+  )
+}
+
+/**
+ * 勋章前景色自适应：按 WCAG 对比度取黑/白中更高的一方（持平取白），
+ * 颜色来自超管自由输入，浅色底配白字不可读，故实底下文字色随亮度切换。
+ */
+export function pickBadgeTextColor(bg: string): string {
+  const l = relativeLuminance(bg)
+  const whiteContrast = 1.05 / (l + 0.05)
+  const blackContrast = (l + 0.05) / 0.05
+  return whiteContrast >= blackContrast ? "#ffffff" : "#000000"
+}
+
 /** 侧边栏/弹窗展示用的套餐摘要（从订阅 join 套餐得到） */
 export interface PlanBadgeInfo {
   planId: string

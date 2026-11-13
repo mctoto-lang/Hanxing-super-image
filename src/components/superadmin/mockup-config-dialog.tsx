@@ -1,7 +1,8 @@
 "use client"
 
 import * as React from "react"
-import { Boxes, Loader2 } from "lucide-react"
+import { Boxes } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { toast } from "sonner"
 import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
 import { useForm } from "react-hook-form"
@@ -140,7 +141,7 @@ export function MockupConfigDialog({
 
         {loading ? (
           <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
-            <Loader2 className="mr-2 size-4 animate-spin" /> 加载中…
+            <DashRing className="mr-2 size-4" /> 加载中…
           </div>
         ) : (
           <Form {...form}>
@@ -273,7 +274,7 @@ export function MockupConfigDialog({
             disabled={pending || loading}
             onClick={() => void form.handleSubmit(onSubmit)()}
           >
-            {pending ? <Loader2 className="size-4 animate-spin" /> : null}
+            {pending ? <DashRing className="size-4" /> : null}
             {pending ? "保存中…" : "保存"}
           </Button>
         </DialogFooter>

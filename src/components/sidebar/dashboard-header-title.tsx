@@ -44,7 +44,7 @@ const ROUTE_TITLES: { prefix: string; title: string }[] = [
   { prefix: "/platform/enterprises", title: "企业管理" },
   { prefix: "/platform/plans", title: "订阅套餐" },
   { prefix: "/platform/users", title: "平台用户" },
-  { prefix: "/platform/models", title: "预置模型" },
+  { prefix: "/platform/models", title: "生图模型" },
   { prefix: "/platform/chat-models", title: "对话模型" },
   { prefix: "/platform/product-config", title: "商品图片配置" },
   // 旧路由已并入商品图片配置中心，保留映射避免重定向前标题回退

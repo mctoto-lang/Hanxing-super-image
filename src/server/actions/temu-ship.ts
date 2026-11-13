@@ -579,11 +579,13 @@ export interface TemuShipStats {
 export async function getTemuShipStatsAction(
   storeId?: string | null,
   warehouse?: string | null,
+  appId?: string,
 ): Promise<TemuShipStats> {
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
-  return temuCached(`${enterpriseId}:${storeId ?? "all"}:ship-stats:${warehouse ?? "all"}`, () =>
-    loadTemuShipStats(enterpriseId, storeId ?? undefined, warehouse ?? undefined),
+  return temuCached(
+    `${enterpriseId}:${storeId ?? "all"}:${appId ?? "all"}:ship-stats:${warehouse ?? "all"}`,
+    () => loadTemuShipStats(enterpriseId, storeId ?? undefined, warehouse ?? undefined, appId),
   )
 }
 
@@ -591,9 +593,11 @@ async function loadTemuShipStats(
   enterpriseId: string,
   storeId?: string,
   warehouse?: string,
+  appId?: string,
 ): Promise<TemuShipStats> {
   const storeConds = [eq(temuStores.enterpriseId, enterpriseId)]
   if (storeId) storeConds.push(eq(temuStores.id, storeId))
+  if (appId) storeConds.push(eq(temuStores.appId, appId))
   const stores = await db.select().from(temuStores).where(and(...storeConds))
   const storeIds = stores.map((s) => s.id)
   const empty: TemuShipStats = {
@@ -1532,6 +1536,8 @@ export async function getShipBarcodePrintUrlAction(input: unknown) {
         id: temuStores.id,
         name: temuStores.name,
         enterpriseId: temuStores.enterpriseId,
+        appId: temuStores.appId,
+        isDemo: temuStores.isDemo,
         accessTokenEncrypted: temuStores.accessTokenEncrypted,
       })
       .from(temuStores)
@@ -1790,9 +1796,10 @@ export async function sendPackingAction(input: unknown) {
   const userCtx = await requireUserContext()
   const userCtxId = userCtx.user.id
 
-  // 库存硬阻断（工厂直发/关闭库存联动时跳过）：单仓制固定主仓；未初始化库存的企业不联动
+  // 库存硬阻断（工厂直发/关闭库存联动时跳过）：单仓制固定主仓；未初始化库存的企业不联动；
+  //  演示店铺沙箱虚拟单不参与库存联动（校验/扣减均跳过，口径同发货单同步页排除演示店）
   const warehouseId: string | null = await getMainWarehouseId(store.enterpriseId)
-  if (!factoryDirect && !skipInventory && warehouseId) {
+  if (!factoryDirect && !skipInventory && !store.isDemo && warehouseId) {
     const check = await db.transaction((tx) =>
       assertShipmentStock(tx, store.enterpriseId, store.id, q.deliveryOrderSns, warehouseId!),
     )
@@ -1856,16 +1863,19 @@ export async function sendPackingAction(input: unknown) {
       str((r.result as { expressBatchSn?: unknown } | null)?.expressBatchSn, 64) ?? null
     let followUpWarning: string | undefined
     try {
-      // 库存扣减（直发单跳过扣减仅回写标记；skipInventory 跳过扣减不标直发；常规单扣减+流水）
-      await shipmentShippedHook({
-        storeId: store.id,
-        enterpriseId: store.enterpriseId,
-        userId: userCtxId,
-        deliveryOrderSns: q.deliveryOrderSns,
-        warehouseId,
-        factoryDirect,
-        skipInventory,
-      })
+      // 库存扣减（直发单跳过扣减仅回写标记；skipInventory 跳过扣减不标直发；常规单扣减+流水）；
+      //  演示店铺沙箱单不扣真实库存、不回写库存来源标记（校验已在上方一并跳过）
+      if (!store.isDemo) {
+        await shipmentShippedHook({
+          storeId: store.id,
+          enterpriseId: store.enterpriseId,
+          userId: userCtxId,
+          deliveryOrderSns: q.deliveryOrderSns,
+          warehouseId,
+          factoryDirect,
+          skipInventory,
+        })
+      }
       await upsertFromOfficial(store.id, built, q.deliveryOrderSns)
       invalidateTemuCache(store.enterpriseId)
     } catch (err) {
@@ -2393,11 +2403,12 @@ export async function getTemuSyncShipOrdersAction(input: {
   if (!g.ok) return { ok: false, error: g.error }
   const { enterpriseId } = g
 
-  // 整行取回（StoreRow）：storeName 直接 select、发货仓库标签加载需要店铺上下文
+  // 整行取回（StoreRow）：storeName 直接 select、发货仓库标签加载需要店铺上下文。
+  // 排除演示店铺（沙箱数据不进库存决策口径）
   const storeRows = await db
     .select()
     .from(temuStores)
-    .where(eq(temuStores.enterpriseId, enterpriseId))
+    .where(and(eq(temuStores.enterpriseId, enterpriseId), eq(temuStores.isDemo, false)))
   if (storeRows.length === 0) return { ok: true, rows: [], total: 0, warehouses: [] }
   const ids = storeRows.map((s) => s.id)
 

@@ -27,7 +27,7 @@ const FORMAT_LABEL: Record<string, string> = {
 }
 
 /**
- * 平台预置模型列表（行首手柄拖拽排序）。
+ * 平台生图模型列表（行首手柄拖拽排序）。
  *
  * 列表分页 20/页：拖拽仅作用于当前页子集，reorder 按值重分配
  * （redistributeSortOrder）不改跨页相对顺序。拖动顺序即用户端
@@ -115,7 +115,7 @@ export function PresetModelsTable({ models }: { models: PresetModelRow[] }) {
           </TableRow>
         ))}
         {ordered.length === 0 ? (
-          <TableEmpty colSpan={7} noun="平台预置模型" />
+          <TableEmpty colSpan={7} noun="平台生图模型" />
         ) : null}
       </TableBody>
     </Table>

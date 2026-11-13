@@ -94,7 +94,7 @@ export function AllocateCreditsDialog({
       <DialogTrigger
         render={
           <Button variant="outline" size="sm">
-            <Coins className="size-4" />
+            <Coins className="size-3.5" />
             分配积分
           </Button>
         }

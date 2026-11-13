@@ -1,4 +1,5 @@
 "use client";
+import { DashRing } from "@/components/ui/dash-ring"
 
 /**
  * BuildPipeline 3D 车间风格流水线图形（纯展示组件）
@@ -22,7 +23,6 @@ import {
   Download,
   GitBranch,
   List,
-  Loader2,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -79,7 +79,7 @@ const statusIcon = (status: StageStatus) =>
     : status === "failed" || status === "canceled"
       ? X
       : status === "running"
-        ? Loader2
+        ? DashRing
         : Circle;
 
 /** 整体状态：失败 > 取消 > 运行中 > 排队中 > 全跳过 > 已通过 */
@@ -366,7 +366,7 @@ export function BuildPipeline({
                     </span>
                     <strong>{stage.name}</strong>
                     <span className="bp-station-state">
-                      <StatusIcon size={10} aria-hidden="true" />
+                      <StatusIcon className="size-2.5" aria-hidden="true" />
                       {statusLabel[stage.status]}
                     </span>
                   </button>
@@ -394,7 +394,7 @@ export function BuildPipeline({
                       <small>{stage.logs.length} 条日志</small>
                     </span>
                     <span className="bp-list-status">
-                      <StatusIcon size={12} aria-hidden="true" />
+                      <StatusIcon className="size-3" aria-hidden="true" />
                       {statusLabel[stage.status]}
                     </span>
                   </button>

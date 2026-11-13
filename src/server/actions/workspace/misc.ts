@@ -144,7 +144,7 @@ export async function listWorkspaceModelsAction(): Promise<
   const accessible = rows.filter(
     (m) => m.enterpriseId === null || m.enterpriseId === scope.enterpriseId,
   )
-  // 平台预置模型按企业 visiblePresetModels 白名单过滤（需求 2c：空 = 全部可见）
+  // 平台生图模型按企业 visiblePresetModels 白名单过滤（需求 2c：空 = 全部可见）
   const visiblePreset =
     (ctx.enterprise?.visiblePresetModels as string[] | null) ?? []
   const filtered =

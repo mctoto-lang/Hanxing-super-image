@@ -3,7 +3,8 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { Loader2, Megaphone, Pause, Play, RefreshCw } from "lucide-react"
+import { Megaphone, Pause, Play, RefreshCw } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import {
   TableBody,
   TableCell,
@@ -44,6 +45,7 @@ import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import type { TemuAdsRow } from "@/server/actions/temu"
 import { temuImageSrc } from "@/lib/temu/image"
 import { EmptyHint } from "@/components/temu/products-table"
+import { TemuSearchBar, type SearchBarField } from "@/components/temu/search-bar"
 import { TruncTip } from "@/components/temu/trunc-tip"
 import { TableSkeletonRows } from "@/components/temu/table-skeleton"
 import {
@@ -71,6 +73,13 @@ const yuan = (fen: number | null | undefined) =>
 
 const num = (v: number | null | undefined) =>
   v == null ? "—" : v.toLocaleString("zh-CN")
+
+/** 共享搜索条可搜索项（双源合并行客户端过滤——官方报表/计划接口均无关键词入参） */
+const ADS_SEARCH_FIELDS: SearchBarField[] = [
+  { value: "all", label: "全部", placeholder: "货号 / 商品名 / 商品ID" },
+  { value: "sn", label: "货号", placeholder: "输入货号" },
+  { value: "name", label: "商品名", placeholder: "输入商品名关键词" },
+]
 
 /** 报表行与注册表行按 productId 对齐后的合并行 */
 interface MergedAdRow {
@@ -108,6 +117,13 @@ export function TemuAdsWorkbench({
   >(null)
   /** 修改请求进行中（下传确认弹窗禁用确认按钮，防连点重复提交官方写操作） */
   const [modifyPending, setModifyPending] = React.useState(false)
+  /** 共享搜索条（按钮/回车触发提交；空关键词=清除筛选）——draft 两态防逐键过滤 */
+  const [searchField, setSearchField] = React.useState(ADS_SEARCH_FIELDS[0]!.value)
+  const [searchKeyword, setSearchKeyword] = React.useState("")
+  const [appliedSearch, setAppliedSearch] = React.useState<{ field: string; keyword: string }>({
+    field: ADS_SEARCH_FIELDS[0]!.value,
+    keyword: "",
+  })
 
   const load = React.useCallback(() => {
     if (!store) return
@@ -158,6 +174,24 @@ export function TemuAdsWorkbench({
         (a.report?.adSpend ?? a.plan?.spendFen ?? 0),
     )
   }, [reportRows, plans])
+
+  // 客户端关键词过滤（不区分大小写包含匹配；空关键词=全部）
+  const visibleMerged = React.useMemo(() => {
+    const kw = appliedSearch.keyword.trim().toLowerCase()
+    if (!kw) return merged
+    return merged.filter((row) => {
+      const sn = row.productSn?.toLowerCase() ?? ""
+      const name = row.productName?.toLowerCase() ?? ""
+      switch (appliedSearch.field) {
+        case "sn":
+          return sn.includes(kw)
+        case "name":
+          return name.includes(kw)
+        default:
+          return sn.includes(kw) || name.includes(kw) || row.productId.toLowerCase().includes(kw)
+      }
+    })
+  }, [merged, appliedSearch])
 
   // 刷新 = 服务端重取报表/大盘卡（router.refresh）+ 注册表实时重拉
   const refreshAll = () => {
@@ -218,12 +252,25 @@ export function TemuAdsWorkbench({
     <TooltipProvider>
       <Card className="flex min-h-0 flex-1 flex-col">
       <CardHeader className="flex flex-wrap items-center justify-between gap-3 space-y-0">
-        <CardTitle className="text-base">商品推广报表（{merged.length}）</CardTitle>
-        {/* 创建广告 / 窗口下拉 / 刷新 同一行 */}
+        <CardTitle className="text-base">商品推广报表（{visibleMerged.length}）</CardTitle>
+        {/* 创建广告 / 搜索 / 窗口下拉 / 刷新 同一行 */}
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" className="h-8 text-xs" onClick={() => setCreating(true)}>
             <Megaphone className="size-3.5" /> 创建广告
           </Button>
+          <TemuSearchBar
+            fields={ADS_SEARCH_FIELDS}
+            field={searchField}
+            onFieldChange={setSearchField}
+            keyword={searchKeyword}
+            onKeywordChange={setSearchKeyword}
+            onSearch={(f, kw) => {
+              setSearchField(f)
+              setAppliedSearch({ field: f, keyword: kw })
+            }}
+            searching={loading}
+            className="w-72"
+          />
           <Select value={String(range)} onValueChange={(v) => v && router.push(rangeHref(v))}>
             {/* base-ui SelectValue 默认渲染原始 value（7/30），须传 children 显示中文 */}
             <SelectTrigger className="h-8 w-28 text-xs" aria-label="统计窗口切换">
@@ -242,7 +289,7 @@ export function TemuAdsWorkbench({
               disabled={loading}
               aria-label="刷新商品推广报表"
             >
-              {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+              {loading ? <DashRing className="size-4" /> : <RefreshCw className="size-4" />}
               刷新
             </Button>
           </div>
@@ -272,14 +319,16 @@ export function TemuAdsWorkbench({
               </TableHeader>
               <TableBody>
                 {loading && merged.length === 0 && <TableSkeletonRows cols={12} />}
-                {!loading && merged.length === 0 && (
+                {!loading && visibleMerged.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={12} className="h-20 text-center text-muted-foreground">
-                      暂无广告数据——通过「创建广告」经官方 API 创建后，投放数据将在此展示
+                      {appliedSearch.keyword.trim()
+                        ? "未找到匹配的广告商品，可清除关键词后重试"
+                        : "暂无广告数据——通过「创建广告」经官方 API 创建后，投放数据将在此展示"}
                     </TableCell>
                   </TableRow>
                 )}
-                {merged.map((row) => (
+                {visibleMerged.map((row) => (
                   <TableRow key={row.productId}>
                     <TableCell>
                       {row.mainImageUrl ? (
@@ -537,7 +586,10 @@ function CreateAdsDialog({
               {error ? (
                 <p className="py-6 text-center text-xs text-red-600 dark:text-red-400">{error}</p>
               ) : loading && products.length === 0 ? (
-                <p className="py-6 text-center text-xs text-muted-foreground">加载中…</p>
+                <p className="flex items-center justify-center gap-1.5 py-6 text-xs text-muted-foreground">
+                  <DashRing className="size-3.5" />
+                  加载中…
+                </p>
               ) : products.length === 0 ? (
                 <p className="py-6 text-center text-xs text-muted-foreground">
                   未找到可展示商品（店铺商品由定时同步维护）

@@ -50,7 +50,7 @@ export async function loadAgentChatModelPool(
     (m) => m.enterpriseId === null || m.enterpriseId === enterpriseId,
   )
 
-  // 平台预置模型按企业 visiblePresetChatModels 白名单过滤（空 = 全部可见）
+  // 平台预置对话模型按企业 visiblePresetChatModels 白名单过滤（空 = 全部可见）
   const whitelist =
     (ctx.enterprise?.visiblePresetChatModels as string[] | null) ?? []
   if (whitelist.length > 0) {

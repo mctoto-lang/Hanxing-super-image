@@ -9,6 +9,7 @@ import {
 } from "@/db/schema"
 import type { PlanBadgeInfo } from "@/lib/plans/badge"
 import { computeDuePeriods } from "@/lib/plans/cycle"
+import { createRewardNotice } from "@/server/services/reward-notice-service"
 
 /**
  * 企业订阅套餐服务
@@ -26,6 +27,10 @@ export interface GrantResult {
   periodEnd: Date
   creditsGranted: number
   balanceAfter: number | null
+  /** 套餐展示信息（礼物通知 payload 用；creditsGranted=0 的空转路径无） */
+  planName?: string
+  planIconKey?: string
+  planColor?: string
 }
 
 /**
@@ -137,14 +142,24 @@ async function grantNextDuePeriod(
       periodEnd: next.periodEnd,
       creditsGranted: plan.creditsPerCycle,
       balanceAfter: updated!.balance,
+      planName: plan.name,
+      planIconKey: plan.iconKey,
+      planColor: plan.color,
     }
   })
 }
 
-/** 发放某企业订阅的全部到期周期（逐期独立事务，锁粒度小） */
+/**
+ * 发放某企业订阅的全部到期周期（逐期独立事务，锁粒度小）。
+ *
+ * opts.notice：周期发放成功后给企业全员写 plan_grant 礼物通知（worker
+ * 巡检路径传 true）；assign/renew 调用方不传——它们有自己的套餐事件卡，
+ * 避免同一笔首期积分弹两张卡。
+ */
 export async function grantDueSubscription(
   enterpriseId: string,
   now: Date = new Date(),
+  opts?: { notice?: boolean },
 ): Promise<GrantResult[]> {
   const results: GrantResult[] = []
   // computeDuePeriods 已按 expiresAt 封顶，循环必然终止（cycleDays > 0）
@@ -153,6 +168,24 @@ export async function grantDueSubscription(
     if (!granted) break
     results.push(granted)
   }
+
+  if (opts?.notice) {
+    for (const r of results) {
+      if (r.creditsGranted <= 0) continue
+      await createRewardNotice({
+        enterpriseId,
+        type: "plan_grant",
+        payload: {
+          planName: r.planName,
+          planIconKey: r.planIconKey,
+          planColor: r.planColor,
+          credits: r.creditsGranted,
+          periodEnd: r.periodEnd.toISOString(),
+        },
+      })
+    }
+  }
+
   return results
 }
 
@@ -181,7 +214,9 @@ export async function grantAllDueSubscriptions(
 
   const out: Array<{ enterpriseId: string; results: GrantResult[] }> = []
   for (const r of rows) {
-    const results = await grantDueSubscription(r.enterpriseId, now)
+    const results = await grantDueSubscription(r.enterpriseId, now, {
+      notice: true,
+    })
     if (results.length > 0) out.push({ enterpriseId: r.enterpriseId, results })
   }
   return out
@@ -194,6 +229,8 @@ export async function assignEnterprisePlan(input: {
   enterpriseId: string
   planId: string
   expiresAt: Date
+  /** 触发操作的超管（礼物通知展示「由谁发放」用） */
+  operatorId?: string | null
 }): Promise<{ planName: string; firstGrant: GrantResult | null }> {
   const { enterpriseId, planId, expiresAt } = input
   const [plan] = await db
@@ -228,6 +265,19 @@ export async function assignEnterprisePlan(input: {
     })
 
   const results = await grantDueSubscription(enterpriseId, now)
+  // 套餐开通礼物通知（全员）：含本期实发积分，与首期发放同呼吸（best-effort）
+  await createRewardNotice({
+    enterpriseId,
+    type: "plan_assigned",
+    operatorId: input.operatorId ?? null,
+    payload: {
+      planName: plan.name,
+      planIconKey: plan.iconKey,
+      planColor: plan.color,
+      credits: results.reduce((s, r) => s + r.creditsGranted, 0),
+      expiresAt: expiresAt.toISOString(),
+    },
+  })
   return { planName: plan.name, firstGrant: results[0] ?? null }
 }
 
@@ -238,6 +288,8 @@ export async function assignEnterprisePlan(input: {
 export async function renewEnterprisePlan(input: {
   enterpriseId: string
   expiresAt: Date
+  /** 触发操作的超管（礼物通知展示「由谁发放」用） */
+  operatorId?: string | null
 }): Promise<{ planName: string; restarted: boolean; grants: GrantResult[] }> {
   const { enterpriseId, expiresAt } = input
   const [sub] = await db
@@ -268,6 +320,19 @@ export async function renewEnterprisePlan(input: {
       .where(eq(enterpriseSubscriptions.id, sub.id))
     // 停机期间可能已滚过周期边界，补发一次（无到期周期则空操作）
     const grants = await grantDueSubscription(enterpriseId, now)
+    await createRewardNotice({
+      enterpriseId,
+      type: "plan_renewed",
+      operatorId: input.operatorId ?? null,
+      payload: {
+        planName: plan.name,
+        planIconKey: plan.iconKey,
+        planColor: plan.color,
+        credits: grants.reduce((s, r) => s + r.creditsGranted, 0),
+        expiresAt: expiresAt.toISOString(),
+        restarted: false,
+      },
+    })
     return { planName: plan.name, restarted: false, grants }
   }
 
@@ -282,6 +347,19 @@ export async function renewEnterprisePlan(input: {
     })
     .where(eq(enterpriseSubscriptions.id, sub.id))
   const grants = await grantDueSubscription(enterpriseId, now)
+  await createRewardNotice({
+    enterpriseId,
+    type: "plan_renewed",
+    operatorId: input.operatorId ?? null,
+    payload: {
+      planName: plan.name,
+      planIconKey: plan.iconKey,
+      planColor: plan.color,
+      credits: grants.reduce((s, r) => s + r.creditsGranted, 0),
+      expiresAt: expiresAt.toISOString(),
+      restarted: true,
+    },
+  })
   return { planName: plan.name, restarted: true, grants }
 }
 

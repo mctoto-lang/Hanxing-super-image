@@ -1,6 +1,7 @@
 "use client"
 
-import { CheckCircle, Loader2, Upload } from "lucide-react"
+import { CheckCircle, Upload } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
@@ -46,7 +47,7 @@ export function UploadButton({
       )}
       {status === "uploading" && (
         <div className="z-[5] flex items-center justify-center">
-          <Loader2 className="mr-1 size-4 animate-spin" />
+          <DashRing className="mr-1 size-4" />
           {progress != null ? `${progress}%` : "上传中…"}
         </div>
       )}

@@ -1,7 +1,8 @@
 "use client"
 
 import * as React from "react"
-import { Layers, Loader2, Plus, Search } from "lucide-react"
+import { Layers, Plus, Search } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import {
@@ -174,7 +175,7 @@ export function CreateCardDialog({
             )
           ) : templatesLoading && templates.length === 0 ? (
             <div className="flex h-24 items-center justify-center text-sm text-muted-foreground">
-              <Loader2 className="mr-2 size-4 animate-spin" /> 加载中…
+              <DashRing className="mr-2 size-4" /> 加载中…
             </div>
           ) : filteredTemplates.length === 0 ? (
             <div className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
@@ -197,7 +198,7 @@ export function CreateCardDialog({
         <div className="flex justify-end">
           <Button disabled={creating || !selected} onClick={() => void handleCreate()}>
             {creating ? (
-              <Loader2 className="size-4 animate-spin" />
+              <DashRing className="size-4" />
             ) : (
               <Plus className="size-4" />
             )}

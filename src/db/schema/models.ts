@@ -58,7 +58,7 @@ export const models = pgTable(
     id: uuid("id").defaultRandom().primaryKey(),
     enterpriseId: uuid("enterprise_id").references(() => enterprises.id, {
       onDelete: "cascade",
-    }), // NULL = 平台预置模型
+    }), // NULL = 平台生图模型
     name: varchar("name", { length: 100 }).notNull(),
     displayName: varchar("display_name", { length: 200 }).notNull(),
     /** 模型描述：展示在自由创作模型卡片名称下方，可空 */

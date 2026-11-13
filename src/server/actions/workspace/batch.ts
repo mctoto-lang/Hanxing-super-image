@@ -165,11 +165,11 @@ export async function batchGenerateImageAction(
   } else if (model.enterpriseId !== null && model.enterpriseId !== enterpriseId) {
     modelError = "无权使用该模型"
   } else if (model.enterpriseId === null) {
-    // 平台预置模型按企业 visiblePresetModels 白名单校验（需求 2c）
+    // 平台生图模型按企业 visiblePresetModels 白名单校验（需求 2c）
     const visiblePreset =
       (ctx.enterprise?.visiblePresetModels as string[] | null) ?? []
     if (visiblePreset.length > 0 && !visiblePreset.includes(model.id)) {
-      modelError = "该平台预置模型未对本企业开放"
+      modelError = "该平台生图模型未对本企业开放"
     }
   }
   if (!modelError && input.apiId) modelError = checkModelAccess(ctx, input.apiId)

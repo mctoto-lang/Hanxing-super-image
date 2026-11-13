@@ -426,11 +426,11 @@ export async function generateAgentCardImageForAction(opts: {
       return { ok: false, error: "生成配置所选模型不在本企业可用范围内" }
     }
     if (m.enterpriseId === null) {
-      // 平台预置模型按企业 visiblePresetModels 白名单校验（同普通生图口径）
+      // 平台生图模型按企业 visiblePresetModels 白名单校验（同普通生图口径）
       const visiblePreset =
         (opts.ctx.enterprise?.visiblePresetModels as string[] | null) ?? []
       if (visiblePreset.length > 0 && !visiblePreset.includes(m.id)) {
-        return { ok: false, error: "该平台预置模型未对本企业开放" }
+        return { ok: false, error: "该平台生图模型未对本企业开放" }
       }
     }
     const accessErr = checkModelAccess(opts.ctx, override.modelId)

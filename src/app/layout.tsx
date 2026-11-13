@@ -21,7 +21,7 @@ const instrumentSerif = Instrument_Serif({
 });
 
 export const metadata: Metadata = {
-  title: "瀚星 Super Image",
+  title: "StarChart 瀚星星图",
   description: "企业级 AI 图片工作台",
 };
 

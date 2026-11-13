@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { toast } from "sonner"
-import { ImagePlus, Loader2, Trash2 } from "lucide-react"
+import { ImagePlus, Trash2 } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { ImageLibraryDialog } from "@/components/mockup/image-library-dialog"
 import { listMockupDesignAssetsAction } from "@/server/actions/mockup"
 import type { MockupLibraryImage } from "@/lib/mockup/types"
@@ -157,7 +158,7 @@ export function ImageUploadField({
           disabled={uploading || images.length >= max}
           onClick={() => setPickerOpen(true)}
         >
-          {uploading ? <Loader2 className="size-4 animate-spin" /> : <ImagePlus className="size-4" />}
+          {uploading ? <DashRing className="size-4" /> : <ImagePlus className="size-4" />}
           <span className="text-[10px]">{uploading ? "处理中" : "添加"}</span>
         </Button>
       </div>

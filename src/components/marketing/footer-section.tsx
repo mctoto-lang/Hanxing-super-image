@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState, type ComponentType, type MouseEvent } from "react"
+import Link from "next/link"
 import { cn } from "@/lib/utils"
 
 /** lucide-react 1.x 已移除全部品牌图标，此处内联 simple-icons 官方路径替代 */
@@ -75,7 +76,7 @@ const FOOTER_SECTIONS: FooterSectionData[] = [
     label: "资源",
     links: [
       { title: "使用教程", href: "#" },
-      { title: "更新日志", href: "#" },
+      { title: "更新日志", href: "/changelog" },
       { title: "常见问题", href: "#help" },
       { title: "开放 API", href: "#" },
     ],
@@ -145,7 +146,7 @@ export default function FooterSection({ logoUrl, onAnchorClick }: FooterSectionP
             style={{ backgroundImage: `url(${logoUrl})` }}
           />
           <p className="mt-8 text-sm text-white/60 md:mt-0">
-            © {new Date().getFullYear()} 瀚星 Super Image. 保留所有权利。
+            © {new Date().getFullYear()} StarChart 瀚星星图. 保留所有权利。
           </p>
         </div>
 
@@ -161,14 +162,25 @@ export default function FooterSection({ logoUrl, onAnchorClick }: FooterSectionP
                 <ul className="mt-4 space-y-2 text-sm text-white/60">
                   {section.links.map((link) => (
                     <li key={link.title}>
-                      <a
-                        href={link.href}
-                        onClick={link.href.startsWith("#") ? onAnchorClick : undefined}
-                        className="inline-flex items-center transition-colors duration-300 hover:text-white"
-                      >
-                        {link.icon && <link.icon className="me-1 size-4" />}
-                        {link.title}
-                      </a>
+                      {link.href.startsWith("#") ? (
+                        <a
+                          href={link.href}
+                          onClick={onAnchorClick}
+                          className="inline-flex items-center transition-colors duration-300 hover:text-white"
+                        >
+                          {link.icon && <link.icon className="me-1 size-4" />}
+                          {link.title}
+                        </a>
+                      ) : (
+                        /* 站内真实路由（如 /changelog）：客户端导航 */
+                        <Link
+                          href={link.href}
+                          className="inline-flex items-center transition-colors duration-300 hover:text-white"
+                        >
+                          {link.icon && <link.icon className="me-1 size-4" />}
+                          {link.title}
+                        </Link>
+                      )}
                     </li>
                   ))}
                 </ul>

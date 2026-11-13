@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Settings2 } from "lucide-react"
+import { Pencil } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -178,7 +178,7 @@ export function MemberEditDialog({
       <DialogTrigger
         render={
           <Button variant="outline" size="sm">
-            <Settings2 className="size-3.5" />
+            <Pencil className="size-3.5" />
             编辑
           </Button>
         }

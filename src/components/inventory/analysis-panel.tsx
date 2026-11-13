@@ -1,9 +1,9 @@
 "use client"
 
 import * as React from "react"
+import { DashRing } from "@/components/ui/dash-ring"
 import Link from "next/link"
 import { toast } from "sonner"
-import { Loader2 } from "lucide-react"
 import { AnalyticsBento } from "@/components/ui/analytics-bento"
 import {
   getInventoryAnalysisAction,
@@ -97,7 +97,7 @@ export function AnalysisPanel() {
       <div className="flex h-40 items-center justify-center gap-2 text-sm text-muted-foreground">
         {loading ? (
           <>
-            <Loader2 className="size-4 animate-spin" /> 加载中…
+            <DashRing className="size-4" /> 加载中…
           </>
         ) : (
           "暂无数据"

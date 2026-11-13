@@ -40,14 +40,17 @@ export const PLANS: Plan[] = [
   {
     name: "Lite",
     info: "小型团队入门之选",
-    price: { monthly: 1999, yearly: Math.round(1999 * 12 * 0.88) },
+    price: { monthly: 99, yearly: Math.round(99 * 12 * 0.88) },
     features: [
       { text: "支持 1-5 人协作使用" },
       {
-        text: "每月 1 万积分",
-        tooltip: "积分按月自动发放，用于图像生成与样机渲染",
+        text: "每月 9,900 基础积分 + 赠送 300",
+        tooltip: "月度合计 10,200 积分，按月自动发放，用于图像生成与样机渲染",
       },
-      { text: "最新 GPT / Gemini 图像生成模型" },
+      {
+        text: "GPT Image 2.6 / Nano banana 2.1 可用约 340 次",
+        tooltip: "基础模型按月度总积分折算，折合约 0.29 元/次",
+      },
       {
         text: "PS 样机渲染功能（消耗积分）",
         tooltip: "上传 PSD 样机源文件，AI 出图一键替换图层",
@@ -59,14 +62,39 @@ export const PLANS: Plan[] = [
   {
     name: "Pro",
     info: "成长型团队的首选",
-    price: { monthly: 3999, yearly: Math.round(3999 * 12 * 0.88) },
+    price: { monthly: 199, yearly: Math.round(199 * 12 * 0.88) },
     features: [
       { text: "支持 1-20 人协作使用" },
       {
-        text: "每月 5 万积分",
-        tooltip: "积分按月自动发放，用于图像生成与样机渲染",
+        text: "每月 19,900 基础积分 + 赠送 1,100",
+        tooltip: "月度合计 21,000 积分，按月自动发放，用于图像生成与样机渲染",
       },
-      { text: "最新 GPT / Gemini 图像生成模型" },
+      {
+        text: "GPT Image 2.6 / Nano banana 2.1 可用约 700 次",
+        tooltip: "基础模型按月度总积分折算，折合约 0.28 元/次",
+      },
+      {
+        text: "PS 样机渲染功能（消耗积分）",
+        tooltip: "上传 PSD 样机源文件，AI 出图一键替换图层",
+      },
+      { text: "7×24 小时技术支持" },
+    ],
+    btn: { text: "立即订阅", href: "/login" },
+  },
+  {
+    name: "Ultra",
+    info: "进阶团队的高性价比之选",
+    price: { monthly: 399, yearly: Math.round(399 * 12 * 0.88) },
+    features: [
+      { text: "支持 1-50 人协作使用" },
+      {
+        text: "每月 39,900 基础积分 + 赠送 3,000",
+        tooltip: "月度合计 42,900 积分，按月自动发放，用于图像生成与样机渲染",
+      },
+      {
+        text: "GPT Image 2.6 / Nano banana 2.1 可用约 1,430 次",
+        tooltip: "基础模型按月度总积分折算，折合约 0.28 元/次",
+      },
       {
         text: "PS 样机渲染功能（消耗积分）",
         tooltip: "上传 PSD 样机源文件，AI 出图一键替换图层",
@@ -79,14 +107,17 @@ export const PLANS: Plan[] = [
   {
     name: "Max",
     info: "大型组织的全能方案",
-    price: { monthly: 6999, yearly: Math.round(6999 * 12 * 0.88) },
+    price: { monthly: 599, yearly: Math.round(599 * 12 * 0.88) },
     features: [
-      { text: "支持 1-50 人协作使用" },
+      { text: "支持 1-100 人协作使用" },
       {
-        text: "每月 10 万积分",
-        tooltip: "积分按月自动发放，用于图像生成与样机渲染",
+        text: "每月 59,900 基础积分 + 赠送 5,980",
+        tooltip: "月度合计 65,880 积分，按月自动发放，用于图像生成与样机渲染",
       },
-      { text: "最新 GPT / Gemini 图像生成模型" },
+      {
+        text: "GPT Image 2.6 / Nano banana 2.1 可用约 2,196 次",
+        tooltip: "基础模型按月度总积分折算，折合约 0.27 元/次",
+      },
       {
         text: "PS 样机渲染功能（消耗积分）",
         tooltip: "上传 PSD 样机源文件，AI 出图一键替换图层",
@@ -130,7 +161,7 @@ export default function PricingSection({
         )}
       </div>
       <FrequencyToggle frequency={frequency} onChange={setFrequency} />
-      <div className="mx-auto grid w-full max-w-4xl grid-cols-1 gap-4 md:grid-cols-3">
+      <div className="mx-auto grid w-full max-w-6xl grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
         {plans.map((plan) => (
           <PricingCard key={plan.name} plan={plan} frequency={frequency} />
         ))}

@@ -1,4 +1,5 @@
 import { signTemuRequest } from "./sign"
+import { DEMO_APP_KEY, demoApiEnvelope } from "./demo-api"
 
 /**
  * TEMU 开放平台 API 客户端（网关路由 / 公共参数 / 错误码 / 频控 / 翻页）
@@ -468,6 +469,10 @@ export async function callTemuApi<T = unknown>(
   params: Record<string, unknown>,
   ctx: TemuCallContext,
 ): Promise<TemuEnvelope<T>> {
+  // 演示模式虚拟接口层：demo 凭证标记（is_demo 店铺）直接返回确定性虚拟响应，
+  // 不发网络、不限速、不落库（本地表数据由 ensureDemoStores 预先写入）
+  if (ctx.appKey === DEMO_APP_KEY) return demoApiEnvelope<T>(type, params)
+
   await takeRateToken(ctx.rateKey ?? ctx.accessToken, ctx.qps ?? 3)
 
   let attempt = 0

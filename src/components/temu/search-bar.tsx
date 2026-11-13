@@ -1,7 +1,8 @@
 "use client"
 
 import * as React from "react"
-import { Loader2, Search } from "lucide-react"
+import { Search } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import {
   Select,
   SelectContent,
@@ -40,6 +41,7 @@ export function TemuSearchBar({
   onSearch,
   searching = false,
   className,
+  maxLength,
 }: {
   fields: SearchBarField[]
   field: string
@@ -50,6 +52,8 @@ export function TemuSearchBar({
   onSearch: (field: string, keyword: string) => void
   searching?: boolean
   className?: string
+  /** 输入框原生 maxLength：服务端关键词 zod max(100) 的搜索条传 100，超长提交前在输入侧拦住 */
+  maxLength?: number
 }) {
   const current = fields.find((f) => f.value === field) ?? fields[0]
   const items = fields.map((f) => ({ value: f.value, label: f.label }))
@@ -85,6 +89,7 @@ export function TemuSearchBar({
         placeholder={current?.placeholder}
         aria-label="搜索关键词"
         className="h-7 px-2 text-xs"
+        maxLength={maxLength}
       />
       <InputGroupAddon align="inline-end" className="self-stretch py-0 pr-1">
         <InputGroupButton
@@ -95,7 +100,7 @@ export function TemuSearchBar({
           disabled={searching}
         >
           {searching ? (
-            <Loader2 className="size-3.5 animate-spin" />
+            <DashRing className="size-3.5" />
           ) : (
             <Search className="size-3.5" />
           )}

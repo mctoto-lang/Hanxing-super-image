@@ -34,14 +34,14 @@ export default async function PlatformModelsPage({
   return (
     <div className="space-y-4">
       <PageHeader
-        title="平台预置模型"
-        description="超管管理全企业共享的预置模型（enterpriseId 为空）；定义每张积分扣减；可在企业详情「模型配置」中按企业勾选可见模型"
+        title="平台生图模型"
+        description="超管管理全企业共享的生图模型（enterpriseId 为空）；定义每张积分扣减；可在企业详情「模型配置」中按企业勾选可见模型"
       >
         <PresetModelFormDialog />
       </PageHeader>
 
       <div className="grid gap-4 sm:grid-cols-3">
-        <StatCard label="预置模型总数">
+        <StatCard label="生图模型总数">
           {total.toLocaleString("zh-CN")}
         </StatCard>
         <StatCard label="启用中">
@@ -54,9 +54,9 @@ export default async function PlatformModelsPage({
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">预置模型列表</CardTitle>
+          <CardTitle className="text-base">生图模型列表</CardTitle>
           <CardDescription>
-            平台预置模型对所有企业可见（除非企业勾选了限定白名单）；API Key 加密落库
+            平台生图模型对所有企业可见（除非企业勾选了限定白名单）；API Key 加密落库
           </CardDescription>
         </CardHeader>
         <CardContent>

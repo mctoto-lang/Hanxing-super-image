@@ -1,8 +1,8 @@
 "use client"
 
 import * as React from "react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { toast } from "sonner"
-import { Loader2 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -181,7 +181,7 @@ export function DirectShipDialog({
               })
             }
           >
-            {pending && <Loader2 className="size-3.5 animate-spin" />}
+            {pending && <DashRing className="size-3.5" />}
             确认直发
           </Button>
         </DialogFooter>

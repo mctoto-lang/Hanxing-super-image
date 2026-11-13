@@ -43,6 +43,8 @@ import {
   temuImageCompressSchema,
   temuDimensionCheckSchema,
   temuProductCarouselSchema,
+  temuVideoResultQuerySchema,
+  temuProductVideoSchema,
 } from "@/server/schemas/temu"
 
 /**
@@ -1436,6 +1438,147 @@ export async function submitProductCarouselAction(
       return { ok: false, error: msg }
     }
     return { ok: true, carousel: finalUrls }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/* ─── 换视频（商品信息页设置菜单；视频上传链路 2026-11-12 探针全通，docs §8.12 修正） ─── */
+
+/**
+ * 查询视频转码结果（bg.goods.big.video.upload.result.get.global {vid}）。
+ * 探针口径：入参是 vid（文件直传返回值）——此前传 sign/goodsId 报 120000001 是旧结论
+ * 「链路不通」的根因；转码处理中返回 success=false 120000012 或 result 空对象，
+ * 前端轮询调用，未完成返回 video=null。
+ */
+export async function getTemuVideoResultAction(
+  input: unknown,
+): Promise<
+  { ok: true; video: { vid: string; coverUrl: string; videoUrl: string; width: number; height: number } | null }
+  | { ok: false; error: string }
+> {
+  let q: z.infer<typeof temuVideoResultQuerySchema>
+  try {
+    q = temuVideoResultQuerySchema.parse(input)
+  } catch (err) {
+    const issue = err instanceof z.ZodError ? err.issues[0]?.message : undefined
+    return { ok: false, error: issue ?? "参数错误" }
+  }
+  try {
+    const ctx0 = await requireEnterpriseContext()
+    if (!ctx0.canAccess("temu")) {
+      return { ok: false, error: `当前账号没有「${MODULE_LABELS.temu}」页面权限，无法执行该操作` }
+    }
+    const { enterpriseId } = getCurrentEnterpriseScope(ctx0)
+    const [store] = await db
+      .select()
+      .from(temuStores)
+      .where(and(eq(temuStores.id, q.store), eq(temuStores.enterpriseId, enterpriseId)))
+      .limit(1)
+    if (!store) return { ok: false, error: "店铺不存在或无权访问" }
+    if (!store.enabled) return { ok: false, error: "店铺已停用" }
+    const ctx = await getTemuCallContext(store)
+    if ("error" in ctx) return { ok: false, error: ctx.error }
+
+    let result: { vid?: unknown; coverUrl?: unknown; videoUrl?: unknown; width?: unknown; height?: unknown }
+    try {
+      const envelope = await callTemuApi<typeof result>(
+        "bg.goods.big.video.upload.result.get.global",
+        { vid: q.vid },
+        ctx,
+      )
+      result = envelope.result ?? {}
+    } catch (err) {
+      if (isTemuPermissionError(err)) {
+        return { ok: false, error: "店铺 token 未授权该查询接口（7000019），请在卖家中心核对接口授权" }
+      }
+      if (isTemuTokenExpired(err)) {
+        await db
+          .update(temuStores)
+          .set({ tokenState: "invalid", updatedAt: new Date() })
+          .where(eq(temuStores.id, q.store))
+        return { ok: false, error: "店铺 access_token 已过期，请重新授权录入" }
+      }
+      // 120000012 = 转码处理中（探针实证）：按未完成返回，前端继续轮询
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes("120000012")) return { ok: true, video: null }
+      return { ok: false, error: msg }
+    }
+    if (!result.videoUrl) return { ok: true, video: null }
+    return {
+      ok: true,
+      video: {
+        vid: String(result.vid ?? q.vid),
+        coverUrl: typeof result.coverUrl === "string" ? result.coverUrl : "",
+        videoUrl: String(result.videoUrl),
+        width: Number(result.width ?? 0) || 0,
+        height: Number(result.height ?? 0) || 0,
+      },
+    }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/**
+ * 换视频：挂载到主图轮播视频位或详情视频位（edit.pictures.submit
+ * productCarouseVideoReqList / productDetailVideoReqList，独立提交即生效——
+ * 2026-11-12 探针 --submit 实证）。video 为 result.get 转码结果原样回传。
+ * 官方质量口径：≤500MB、≤60s，建议 1:1 / 3:4 / 16:9（客户端预检，服务端不再校验）。
+ */
+export async function submitProductVideoAction(
+  input: unknown,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  let q: z.infer<typeof temuProductVideoSchema>
+  try {
+    q = temuProductVideoSchema.parse(input)
+  } catch (err) {
+    const issue = err instanceof z.ZodError ? err.issues[0]?.message : undefined
+    return { ok: false, error: issue ?? "参数错误" }
+  }
+  try {
+    const ctx0 = await requireEnterpriseContext()
+    if (!ctx0.canAccess("temu")) {
+      return { ok: false, error: `当前账号没有「${MODULE_LABELS.temu}」页面权限，无法执行该操作` }
+    }
+    const { enterpriseId } = getCurrentEnterpriseScope(ctx0)
+    const [store] = await db
+      .select()
+      .from(temuStores)
+      .where(and(eq(temuStores.id, q.storeId), eq(temuStores.enterpriseId, enterpriseId)))
+      .limit(1)
+    if (!store) return { ok: false, error: "店铺不存在或无权访问" }
+    if (!store.enabled) return { ok: false, error: "店铺已停用" }
+    const ctx = await getTemuCallContext(store)
+    if ("error" in ctx) return { ok: false, error: ctx.error }
+
+    try {
+      await callTemuApi(
+        "bg.glo.goods.edit.pictures.submit",
+        {
+          productId: q.productId,
+          [q.slot === "carousel" ? "productCarouseVideoReqList" : "productDetailVideoReqList"]: [q.video],
+        },
+        ctx,
+      )
+    } catch (err) {
+      if (isTemuPermissionError(err)) {
+        return { ok: false, error: "店铺 token 未授权该编辑接口（7000019），请在卖家中心核对接口授权" }
+      }
+      if (isTemuTokenExpired(err)) {
+        await db
+          .update(temuStores)
+          .set({ tokenState: "invalid", updatedAt: new Date() })
+          .where(eq(temuStores.id, q.storeId))
+        return { ok: false, error: "店铺 access_token 已过期，请重新授权录入" }
+      }
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes("996000024")) {
+        return { ok: false, error: "官方判定素材未发生变化（996000024），请更换视频后重试" }
+      }
+      return { ok: false, error: msg }
+    }
+    return { ok: true }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }

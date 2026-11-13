@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { Users } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { standardSchemaResolver } from "@hookform/resolvers/standard-schema"
 import { useForm } from "react-hook-form"
 import { Button } from "@/components/ui/button"
@@ -135,9 +136,10 @@ export function GroupMembersDialog({
         </DialogHeader>
         <div className="max-h-64 space-y-1.5 overflow-y-auto">
           {loading ? (
-            <p className="py-6 text-center text-sm text-muted-foreground">
+            <div className="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
+              <DashRing className="size-4" />
               加载中...
-            </p>
+            </div>
           ) : null}
           {!loading && members && members.length === 0 ? (
             <p className="py-6 text-center text-sm text-muted-foreground">

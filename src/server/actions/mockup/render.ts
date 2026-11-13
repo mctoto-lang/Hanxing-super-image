@@ -1235,7 +1235,7 @@ export async function submitMockupBackgroundAction(input: {
     const visiblePreset =
       (ctx.enterprise?.visiblePresetModels as string[] | null) ?? []
     if (visiblePreset.length > 0 && !visiblePreset.includes(model.id)) {
-      return { ok: false, error: "该平台预置模型未对本企业开放", taskId: null, cost: 0 }
+      return { ok: false, error: "该平台生图模型未对本企业开放", taskId: null, cost: 0 }
     }
   }
   const accessErr = checkModelAccess(ctx, d.modelId)

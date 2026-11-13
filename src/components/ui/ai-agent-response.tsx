@@ -20,6 +20,7 @@ import {
   Copy,
   CheckCheck,
 } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 
 /**
  * AI Agent Response 组件集（AI 对话 agent 轨迹展示）
@@ -776,10 +777,7 @@ function TracePillRow({
   const renderIcon = () => {
     if (isActive) {
       return (
-        <span
-          aria-hidden="true"
-          className="size-3.5 shrink-0 animate-spin rounded-full border-[1.5px] border-muted-foreground/30 border-t-foreground"
-        />
+        <DashRing aria-hidden="true" className="size-3.5 shrink-0" />
       )
     }
     if (node.status === "failed" || (node.exitCode !== undefined && node.exitCode > 0)) {

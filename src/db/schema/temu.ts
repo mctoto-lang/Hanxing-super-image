@@ -31,6 +31,38 @@ import { enterprises } from "./enterprise"
  * （temu_ship_order/package，同步源 api-ship-orders，2026-10-23）；订单/备货单未建表。
  */
 
+/**
+ * TEMU 应用（多主体模型，0097 起）：一个企业可配置多个官方开放平台自研应用
+ * （各主体一套 app_key/secret），店铺挂到应用下；调用凭证按「店铺 → 应用」取。
+ * app_secret 以 enc:v1: 前缀密文落库（复用 app-config 的加解密工具）。
+ */
+export const temuApps = pgTable(
+  "temu_app",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    enterpriseId: uuid("enterprise_id")
+      .notNull()
+      .references(() => enterprises.id, { onDelete: "cascade" }),
+    /** 应用/主体名称（展示用，如「主体A」「华侨主账号」） */
+    name: varchar("name", { length: 100 }).notNull(),
+    appKey: varchar("app_key", { length: 64 }).notNull().default(""),
+    /** AES-256-GCM 密文（enc:v1: 前缀），空串=未配置 */
+    appSecretEncrypted: text("app_secret_encrypted").notNull().default(""),
+    /** 测试模式：调用时该应用凭证改用官方文档测试账号（appKey/secret），店铺 token 仍读店铺行 */
+    testMode: boolean("test_mode").default(false).notNull(),
+    enabled: boolean("enabled").default(true).notNull(),
+    /** 面板展示顺序（小在前） */
+    sortOrder: integer("sort_order").default(0).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [index("gt_temu_app_ent").on(t.enterpriseId)],
+)
+
 /** 店铺（一个企业可配置多个 Temu 店铺；官方 API token 由企业管理员录入） */
 export const temuStores = pgTable(
   "temu_store",
@@ -39,6 +71,10 @@ export const temuStores = pgTable(
     enterpriseId: uuid("enterprise_id")
       .notNull()
       .references(() => enterprises.id, { onDelete: "cascade" }),
+    /** 所属 TEMU 应用（多主体模型；NULL=演示店铺，真实店铺创建时必填且限 20 店/应用） */
+    appId: uuid("app_id").references(() => temuApps.id),
+    /** 演示店铺（企业未配置 TEMU 应用时自动创建，走官方沙箱凭证；配置真实应用后自动清理） */
+    isDemo: boolean("is_demo").default(false).notNull(),
     name: varchar("name", { length: 100 }).notNull(),
     /** 官方 API 店铺级令牌（AES-256-GCM 密文；卖家中心授权页复制，自研应用 365 天有效） */
     accessTokenEncrypted: text("access_token_encrypted"),
@@ -69,7 +105,10 @@ export const temuStores = pgTable(
       .defaultNow()
       .notNull(),
   },
-  (t) => [index("gt_temu_store_ent").on(t.enterpriseId)],
+  (t) => [
+    index("gt_temu_store_ent").on(t.enterpriseId),
+    index("gt_temu_store_app").on(t.appId),
+  ],
 )
 
 /** 店铺同步结果（temu_store.lastSyncStatus 结构；skipped=true 表示该源不适用于店铺类型） */
@@ -847,6 +886,32 @@ export const temuPriorityLinks = pgTable(
   (t) => [
     uniqueIndex("gt_temu_priority_link_uq").on(t.enterpriseId, t.storeId, t.productSkcId),
     index("gt_temu_priority_link_skc").on(t.enterpriseId, t.productSkcId),
+  ],
+)
+
+/** 停止补货链接标记（商品信息页「设置 → 设为停止补货」；官方无对应接口，纯本地标记）。
+ *  备货页标记列红徽章；自动申报备货/批量加入发货两弹窗内该链接行置顶禁选，
+ *  主表手动操作（创建/取消）不受影响。迁移 0098。 */
+export const temuStopReplenishLinks = pgTable(
+  "temu_stop_replenish_link",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    enterpriseId: uuid("enterprise_id")
+      .notNull()
+      .references(() => enterprises.id, { onDelete: "cascade" }),
+    storeId: uuid("store_id")
+      .notNull()
+      .references(() => temuStores.id, { onDelete: "cascade" }),
+    productSkcId: varchar("product_skc_id", { length: 32 }).notNull(),
+    /** 货号（展示/对账冗余，标记时快照） */
+    productSn: varchar("product_sn", { length: 64 }),
+    productName: text("product_name"),
+    createdBy: uuid("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("gt_temu_stop_replenish_link_uq").on(t.enterpriseId, t.storeId, t.productSkcId),
+    index("gt_temu_stop_replenish_link_skc").on(t.enterpriseId, t.productSkcId),
   ],
 )
 

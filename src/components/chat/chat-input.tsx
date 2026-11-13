@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { useCallback, useEffect, useRef, useState } from "react"
-import { AtSign, Loader2, TriangleAlert, X } from "lucide-react"
+import { AtSign, TriangleAlert, X } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { toast } from "sonner"
 import {
   PromptInput,
@@ -369,7 +370,7 @@ export function ChatInput({
               />
               {a.status === "uploading" ? (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/40">
-                  <Loader2 className="size-4 animate-spin text-white" />
+                  <DashRing className="size-4 text-white" />
                 </div>
               ) : a.status === "error" ? (
                 <button

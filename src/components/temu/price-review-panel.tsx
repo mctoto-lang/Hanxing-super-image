@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { CheckCircle2, Loader2, RefreshCw, TrendingDown, TrendingUp, XCircle } from "lucide-react"
+import { CheckCircle2, RefreshCw, TrendingDown, TrendingUp, XCircle } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import {
   TableBody,
   TableCell,
@@ -55,6 +56,7 @@ import {
 import { BARGAIN_REASON_TYPES } from "@/lib/temu-api/workbench-labels"
 import { temuImageSrc } from "@/lib/temu/image"
 import { ProductNameCell, EmptyHint } from "@/components/temu/products-table"
+import { TemuSearchBar, type SearchBarField } from "@/components/temu/search-bar"
 import { formatDateTime as fmtTs } from "@/lib/datetime"
 
 /**
@@ -74,6 +76,23 @@ const ADJUST_STATUS_OPTIONS = [
   { value: "supplier", label: "待供应商确认" },
   { value: "success", label: "调价成功" },
   { value: "failed", label: "调价失败" },
+]
+
+/** 共享搜索条可搜索项：核价官方接口无关键词入参（客户端过滤已加载行）；
+ * 调价 sn/ext/name 已走服务端过滤（2026-11-12 探针实证 CN 版入参可用），
+ * all 模式官方无跨字段参数、客户端兜底 */
+const REVIEW_SEARCH_FIELDS: SearchBarField[] = [
+  { value: "all", label: "全部", placeholder: "订单号 / 货号 / 商品名" },
+  { value: "order", label: "订单号", placeholder: "输入核价单号" },
+  { value: "sn", label: "货号", placeholder: "输入货号" },
+  { value: "name", label: "商品名", placeholder: "输入商品名关键词" },
+]
+
+const ADJUST_SEARCH_FIELDS: SearchBarField[] = [
+  { value: "all", label: "全部", placeholder: "调价单号 / 货号 / 商品名" },
+  { value: "sn", label: "调价单号", placeholder: "输入调价单号" },
+  { value: "ext", label: "货号", placeholder: "输入货号" },
+  { value: "name", label: "商品名", placeholder: "输入商品名关键词" },
 ]
 
 const yuan = (fen: number | null | undefined) =>
@@ -228,6 +247,13 @@ function ReviewSection({
   const [rejecting, setRejecting] = React.useState<TemuPriceReviewRow | null>(null)
   /** 提交中的核价单号（请求未返回期间禁用按钮，防连点） */
   const [pendingOps, setPendingOps] = React.useState<Set<number>>(new Set())
+  /** 共享搜索条（按钮/回车触发提交；空关键词=清除筛选）——draft 两态防逐键过滤 */
+  const [searchField, setSearchField] = React.useState(REVIEW_SEARCH_FIELDS[0]!.value)
+  const [searchKeyword, setSearchKeyword] = React.useState("")
+  const [appliedSearch, setAppliedSearch] = React.useState<{ field: string; keyword: string }>({
+    field: REVIEW_SEARCH_FIELDS[0]!.value,
+    keyword: "",
+  })
 
   const load = React.useCallback(() => {
     if (!store) return
@@ -244,6 +270,29 @@ function ReviewSection({
   }, [store, status])
 
   React.useEffect(load, [load])
+
+  // 客户端关键词过滤（不区分大小写包含匹配；空关键词=全部）
+  const searchKw = appliedSearch.keyword.trim().toLowerCase()
+  const visibleRows = searchKw
+    ? rows.filter((r) => {
+        const sn = r.products[0]?.productSn?.toLowerCase() ?? ""
+        const name = r.products[0]?.productName?.toLowerCase() ?? ""
+        switch (appliedSearch.field) {
+          case "order":
+            return String(r.orderId).includes(searchKw)
+          case "sn":
+            return sn.includes(searchKw)
+          case "name":
+            return name.includes(searchKw)
+          default:
+            return (
+              String(r.orderId).includes(searchKw) ||
+              sn.includes(searchKw) ||
+              name.includes(searchKw)
+            )
+        }
+      })
+    : rows
 
   const onConfirm = async (row: TemuPriceReviewRow) => {
     setPendingOps((s) => new Set(s).add(row.orderId))
@@ -273,9 +322,22 @@ function ReviewSection({
     <Card className="flex min-h-0 flex-1 flex-col">
       {/* 与商品信息页同构：标题居左，状态筛选/刷新工具行居右 */}
       <CardHeader className="flex flex-wrap items-center justify-between gap-3 space-y-0">
-        <CardTitle className="text-base">核价单（{rows.length}）</CardTitle>
+        <CardTitle className="text-base">核价单（{visibleRows.length}）</CardTitle>
         <div className="flex flex-wrap items-center gap-2">
           <SectionSelect section={section} onSectionChange={onSectionChange} />
+          <TemuSearchBar
+            fields={REVIEW_SEARCH_FIELDS}
+            field={searchField}
+            onFieldChange={setSearchField}
+            keyword={searchKeyword}
+            onKeywordChange={setSearchKeyword}
+            onSearch={(f, kw) => {
+              setSearchField(f)
+              setAppliedSearch({ field: f, keyword: kw })
+            }}
+            searching={loading}
+            className="w-72"
+          />
           <Select value={status} onValueChange={(v) => v && setStatus(v)}>
             <SelectTrigger className="h-8 w-32 text-xs" aria-label="核价单状态筛选">
               <SelectValue>
@@ -291,7 +353,7 @@ function ReviewSection({
             </SelectContent>
           </Select>
           <Button variant="outline" size="sm" className="h-8 text-xs" onClick={load} disabled={loading} aria-label="刷新核价单">
-            {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+            {loading ? <DashRing className="size-4" /> : <RefreshCw className="size-4" />}
             刷新
           </Button>
         </div>
@@ -318,14 +380,14 @@ function ReviewSection({
             </TableHeader>
             <TableBody>
               {loading && rows.length === 0 && <TableSkeletonRows cols={9} />}
-              {!loading && rows.length === 0 && (
+              {!loading && visibleRows.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={9} className="h-20 text-center text-muted-foreground">
-                    该状态下暂无核价单
+                    {searchKw ? "未找到匹配的核价单，可清除关键词后重试" : "该状态下暂无核价单"}
                   </TableCell>
                 </TableRow>
               )}
-              {rows.map((r) => {
+              {visibleRows.map((r) => {
                 const frozen = pendingOps.has(r.orderId) || doneOps.has(r.orderId)
                 return (
                 <TableRow key={r.orderId}>
@@ -602,7 +664,7 @@ function RejectDialog({
             取消
           </Button>
           <Button onClick={submit} disabled={submitting}>
-            {submitting && <Loader2 className="animate-spin" />}提交新报价
+            {submitting && <DashRing className="size-4" />}提交新报价
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -634,10 +696,24 @@ function AdjustSection({
   const [approving, setApproving] = React.useState<TemuAdjustOrderRow | null>(null)
   /** approve 请求进行中（ConfirmDialog 确认按钮禁用，防连点重复提交） */
   const [approvingPending, setApprovingPending] = React.useState(false)
+  /** 共享搜索条（按钮/回车触发提交；空关键词=清除筛选）——draft 两态防逐键过滤 */
+  const [searchField, setSearchField] = React.useState(ADJUST_SEARCH_FIELDS[0]!.value)
+  const [searchKeyword, setSearchKeyword] = React.useState("")
+  const [appliedSearch, setAppliedSearch] = React.useState<{ field: string; keyword: string }>({
+    field: ADJUST_SEARCH_FIELDS[0]!.value,
+    keyword: "",
+  })
 
   const load = React.useCallback(() => {
     startLoading(async () => {
-      const r = await getTemuAdjustOrdersAction({ store, status })
+      // sn/ext/name 服务端过滤（官方接口入参，全量分页内命中，不受 200 行加载帽截断）；
+      // all 模式无对应入参不传，由下方客户端兜底过滤
+      const kw = appliedSearch.keyword.trim()
+      const serverSearch =
+        appliedSearch.field !== "all" && kw
+          ? { searchField: appliedSearch.field, searchKeyword: kw }
+          : undefined
+      const r = await getTemuAdjustOrdersAction({ store, status, ...serverSearch })
       if (r.ok) {
         setRows(r.rows)
         setError(null)
@@ -646,9 +722,21 @@ function AdjustSection({
         setError(r.error)
       }
     })
-  }, [store, status])
+  }, [store, status, appliedSearch])
 
   React.useEffect(load, [load])
+
+  // 「全部」模式官方无跨字段搜索入参：客户端兜底过滤已加载行（不区分大小写包含）
+  const searchKw = appliedSearch.keyword.trim().toLowerCase()
+  const visibleRows =
+    searchKw && appliedSearch.field === "all"
+      ? rows.filter((r) => {
+          const sn = r.priceOrderSn.toLowerCase()
+          const ext = r.skcExtCode?.toLowerCase() ?? ""
+          const name = r.productName?.toLowerCase() ?? ""
+          return sn.includes(searchKw) || ext.includes(searchKw) || name.includes(searchKw)
+        })
+      : rows
 
   /** 官方接口仅支持「通过」：逐行同意走 batch.review 传单个单号 */
   const approve = async (row: TemuAdjustOrderRow) => {
@@ -678,9 +766,23 @@ function AdjustSection({
     <Card className="flex min-h-0 flex-1 flex-col">
       {/* 与商品信息页同构：标题居左，单据类型/状态筛选/刷新工具行居右 */}
       <CardHeader className="flex flex-wrap items-center justify-between gap-3 space-y-0">
-        <CardTitle className="text-base">调价单（{rows.length}）</CardTitle>
+        <CardTitle className="text-base">调价单（{visibleRows.length}）</CardTitle>
         <div className="flex flex-wrap items-center gap-2">
           <SectionSelect section={section} onSectionChange={onSectionChange} />
+          <TemuSearchBar
+            fields={ADJUST_SEARCH_FIELDS}
+            field={searchField}
+            onFieldChange={setSearchField}
+            keyword={searchKeyword}
+            onKeywordChange={setSearchKeyword}
+            onSearch={(f, kw) => {
+              setSearchField(f)
+              setAppliedSearch({ field: f, keyword: kw })
+            }}
+            searching={loading}
+            className="w-72"
+            maxLength={100}
+          />
           <Select value={status} onValueChange={(v) => v && setStatus(v)}>
             <SelectTrigger className="h-8 w-32 text-xs" aria-label="调价单状态筛选">
               <SelectValue>
@@ -696,7 +798,7 @@ function AdjustSection({
             </SelectContent>
           </Select>
           <Button variant="outline" size="sm" className="h-8 text-xs" onClick={load} disabled={loading} aria-label="刷新调价单">
-            {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+            {loading ? <DashRing className="size-4" /> : <RefreshCw className="size-4" />}
             刷新
           </Button>
         </div>
@@ -725,17 +827,17 @@ function AdjustSection({
             </TableHeader>
             <TableBody>
               {loading && rows.length === 0 && <TableSkeletonRows cols={actionable ? 11 : 10} />}
-              {!loading && rows.length === 0 && (
+              {!loading && visibleRows.length === 0 && (
                 <TableRow>
                   <TableCell
                     colSpan={actionable ? 11 : 10}
                     className="h-20 text-center text-muted-foreground"
                   >
-                    该状态下暂无调价单
+                    {searchKw ? "未找到匹配的调价单，可清除关键词后重试" : "该状态下暂无调价单"}
                   </TableCell>
                 </TableRow>
               )}
-              {rows.map((r) => (
+              {visibleRows.map((r) => (
                 <TableRow key={r.priceOrderSn}>
                   <TableCell>
                     {r.image ? (

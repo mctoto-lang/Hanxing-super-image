@@ -48,22 +48,18 @@ export function MemberStatusDialog({
     <>
       {disabling ? (
         <Button
-          variant="ghost"
+          variant="outline"
           size="sm"
           className="text-destructive"
-          aria-label={`禁用成员 ${username}`}
           onClick={() => setOpen(true)}
         >
           <Ban className="size-3.5" />
+          禁用
         </Button>
       ) : (
-        <Button
-          variant="ghost"
-          size="sm"
-          aria-label={`启用成员 ${username}`}
-          onClick={() => setOpen(true)}
-        >
+        <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
           <CheckCircle2 className="size-3.5" />
+          启用
         </Button>
       )}
       <ConfirmDialog

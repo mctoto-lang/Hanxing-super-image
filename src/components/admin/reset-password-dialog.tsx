@@ -89,12 +89,9 @@ export function ResetPasswordDialog({
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger
         render={
-          <Button
-            variant="ghost"
-            size="sm"
-            aria-label={`重置成员 ${username} 的密码`}
-          >
+          <Button variant="outline" size="sm">
             <KeyRound className="size-3.5" />
+            重置密码
           </Button>
         }
       />

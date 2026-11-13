@@ -8,6 +8,7 @@ import { OnlineMembers } from "@/components/sidebar/online-members"
 import { AdBanner } from "@/components/banner/ad-banner"
 import { GrokBallCursor } from "@/components/grok-ball/grok-ball-cursor"
 import { TaskNotificationCenter } from "@/components/shared/task-notification-center"
+import { RewardPopup } from "@/components/shared/reward-popup"
 import { CommandPalette } from "@/components/shared/command-palette"
 import { getDisplayBanner } from "@/server/actions/platform-banners"
 import { getEnterprisePlanInfo } from "@/server/services/subscription-service"
@@ -66,6 +67,8 @@ export async function DashboardShell({
       <GrokBallCursor />
       {/* 全局任务通知：跨页轮询已提交的生成任务，完成时 toast / 系统通知 */}
       <TaskNotificationCenter />
+      {/* 奖励礼物弹窗：套餐/积分发放后全员（分配为定向）滑动开礼物卡片 */}
+      <RewardPopup />
       {/* 命令面板：Ctrl/⌘ + K 快速跳转 */}
       <CommandPalette items={paletteItems} />
       <SidebarProvider

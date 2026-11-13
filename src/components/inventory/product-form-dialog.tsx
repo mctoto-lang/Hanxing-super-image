@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { Loader2, Upload } from "lucide-react"
+import { Upload } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -216,7 +217,7 @@ export function ProductFormDialog({
                   onClick={() => fileRef.current?.click()}
                 >
                   {uploading ? (
-                    <Loader2 className="size-3.5 animate-spin" />
+                    <DashRing className="size-3.5" />
                   ) : (
                     <Upload className="size-3.5" />
                   )}
@@ -353,7 +354,7 @@ export function ProductFormDialog({
             取消
           </Button>
           <Button onClick={submit} disabled={pending || uploading}>
-            {pending && <Loader2 className="size-3.5 animate-spin" />}
+            {pending && <DashRing className="size-3.5" />}
             {isEdit ? "保存修改" : "建档"}
           </Button>
         </DialogFooter>

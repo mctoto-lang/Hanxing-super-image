@@ -1,13 +1,13 @@
 "use client"
 
 import * as React from "react"
+import { DashRing } from "@/components/ui/dash-ring"
 import {
   AlertCircle,
   ArrowLeft,
   FileSpreadsheet,
   History,
   Image as ImageIcon,
-  Loader2,
   Play,
   RefreshCw,
   RotateCcw,
@@ -631,7 +631,7 @@ export function MockupBatchClient({
                 onClick={() => void history.handleRefresh()}
               >
                 {history.loading ? (
-                  <Loader2 className="size-4 animate-spin" />
+                  <DashRing className="size-4" />
                 ) : (
                   <RefreshCw className="size-4" />
                 )}
@@ -704,7 +704,7 @@ export function MockupBatchClient({
                     onClick={() => void handleSubmit()}
                   >
                     {submitting || materialsPreparing ? (
-                      <Loader2 className="size-3.5 animate-spin" />
+                      <DashRing className="size-3.5" />
                     ) : (
                       <Play className="size-3.5" />
                     )}
@@ -792,7 +792,7 @@ export function MockupBatchClient({
                                             }`}
                                           >
                                             {it.status === "prewarming" ? (
-                                              <Loader2 className="size-4 animate-spin" />
+                                              <DashRing className="size-4" />
                                             ) : (
                                               <AlertCircle className="size-4" />
                                             )}
@@ -1026,11 +1026,11 @@ export function MockupBatchClient({
             <div className="space-y-3">
               {detailLoading ? (
                 <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-                  <Loader2 className="mr-2 size-4 animate-spin" /> 模板加载中…
+                  <DashRing className="mr-2 size-4" /> 模板加载中…
                 </div>
               ) : templatesLoading && templates.length === 0 ? (
                 <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-                  <Loader2 className="mr-2 size-4 animate-spin" /> 加载中…
+                  <DashRing className="mr-2 size-4" /> 加载中…
                 </div>
               ) : visibleTemplates.length === 0 ? (
                 <div className="flex h-40 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-sm text-muted-foreground">

@@ -1,9 +1,9 @@
 /**
- * 一次性修复：补齐「白名单模式」企业的预置模型 id。
+ * 一次性修复：补齐「白名单模式」企业的生图模型 id。
  *
  * 背景：企业 visiblePresetModels 非空时只看枚举的 id（白名单模式）；历史数据中
- * 新建的预置模型未被同步进白名单，导致企业端创作页看不到。本脚本幂等地把所有
- * 活跃平台预置模型 id 补进每个白名单模式企业。可重复执行，无副作用。
+ * 新建的生图模型未被同步进白名单，导致企业端创作页看不到。本脚本幂等地把所有
+ * 活跃平台生图模型 id 补进每个白名单模式企业。可重复执行，无副作用。
  *
  * 用法：npx tsx scripts/fix-preset-models-whitelist.ts
  *
@@ -23,18 +23,18 @@ void (async () => {
   const { and, eq, isNull, sql } = await import("drizzle-orm")
 
   async function main() {
-    // 1. 全部活跃平台预置模型 id
+    // 1. 全部活跃平台生图模型 id
     const presets = await db
       .select({ id: models.id, displayName: models.displayName })
       .from(models)
       .where(and(eq(models.isActive, true), isNull(models.enterpriseId)))
 
     if (presets.length === 0) {
-      console.log("✓ 无活跃平台预置模型，无需修复")
+      console.log("✓ 无活跃平台生图模型，无需修复")
       process.exit(0)
     }
     const presetIds = presets.map((p) => p.id)
-    console.log(`发现 ${presetIds.length} 个活跃平台预置模型`)
+    console.log(`发现 ${presetIds.length} 个活跃平台生图模型`)
 
     // 2. 所有「白名单模式」企业（visiblePresetModels 非空）
     const whitelisted = await db
@@ -63,7 +63,7 @@ void (async () => {
         .where(eq(enterprises.id, ent.id))
       totalFixed += missing.length
       affectedEnterprises += 1
-      console.log(`✓ 企业「${ent.name}」补齐 ${missing.length} 个预置模型`)
+      console.log(`✓ 企业「${ent.name}」补齐 ${missing.length} 个生图模型`)
     }
 
     console.log(

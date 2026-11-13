@@ -11,7 +11,7 @@ const envSchema = z.object({
     .enum(["development", "test", "production"])
     .default("development"),
 
-  NEXT_PUBLIC_APP_NAME: z.string().default("瀚星 Super Image"),
+  NEXT_PUBLIC_APP_NAME: z.string().default("StarChart 瀚星星图"),
   NEXT_PUBLIC_APP_URL: z
     .string()
     .url()

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from "vitest"
 import { randomUUID } from "node:crypto"
 import { and, eq } from "drizzle-orm"
 import { db } from "@/db/client"
-import { enterprises, permissionGroups, temuStores } from "@/db/schema"
+import {enterprises, permissionGroups, temuStores, temuApps } from "@/db/schema"
 import { MODULE_NAMES } from "@/db/schema/_shared"
 import {
   inventoryMovements,
@@ -22,7 +22,8 @@ import {
 
 /**
  * TEMU 装箱 × 库存联动回归（批次4）：硬阻断（官方调用前拦截）/ 按发货仓扣减+
- * 流水 refId=单号 / 工厂直发跳过 / 未建档货号跳过 / 参考查询（合计+未装箱）。
+ * 流水 refId=单号 / 工厂直发跳过 / 未建档货号跳过 / 演示店铺跳过联动 /
+ * 参考查询（合计+未装箱）。
  */
 
 const mockSession = vi.hoisted(() => ({ userId: null as string | null }))
@@ -35,26 +36,32 @@ vi.mock("@/server/services/temu-cache", () => ({
   temuCached: (_key: string, load: () => Promise<unknown>) => load(),
   invalidateTemuCache: () => {},
 }))
-vi.mock("@/lib/temu-api/app-config", () => ({
-  getTemuAppCredential: async () => ({
-    appKey: "test-app-key",
-    appSecret: "test-app-secret",
-    source: "test",
-  }),
-}))
+vi.mock("@/lib/temu-api/app-config", async () => {
+  // 演示店铺凭证标记取真实常量（callTemuApi 见 DEMO_APP_KEY 走虚拟拦截层）
+  const { DEMO_APP_KEY } = await import("@/lib/temu-api/demo-api")
+  return {
+    getTemuAppCredential: async () => ({
+      appKey: "test-app-key",
+      appSecret: "test-app-secret",
+      source: "test",
+    }),
+    getDemoCredential: () => ({ appKey: DEMO_APP_KEY, appSecret: "demo", accessToken: "demo-token" }),
+  }
+})
 
 let entId: string
 let userId: string
 let storeId: string
+let demoStoreId: string
 let mainWhId: string
 
 const snOf = (code: string) => `FHLINK${code}`
 
-async function insertShipRow(sn: string, extCode: string, deliverSkcNum: number) {
+async function insertShipRow(sn: string, extCode: string, deliverSkcNum: number, sid: string = storeId) {
   await db
     .insert(temuShipOrders)
     .values({
-      storeId,
+      storeId: sid,
       deliveryOrderSn: sn,
       subPurchaseOrderSn: `SUB${sn}`,
       skcExtCode: extCode,
@@ -118,6 +125,11 @@ beforeAll(async () => {
     })
     .returning()
   entId = ent!.id
+  // 多应用模型（0097）：凭证按「店铺→应用」取——夹具企业配一个应用
+  // （店铺不挂靠时单应用宽容回落命中）
+  await db
+    .insert(temuApps)
+    .values({ enterpriseId: entId, name: "测试应用", appKey: "test-app", appSecretEncrypted: "enc:v1:t" })
   const [group] = await db
     .insert(permissionGroups)
     .values({
@@ -152,6 +164,20 @@ beforeAll(async () => {
     })
     .returning()
   storeId = store!.id
+
+  // 演示店铺（isDemo：callTemuApi 走虚拟拦截层模拟成功，无须 token）
+  const [demoStore] = await db
+    .insert(temuStores)
+    .values({
+      enterpriseId: entId,
+      name: "联动演示店",
+      isDemo: true,
+      mallType: "full",
+      tokenState: "active",
+      enabled: true,
+    })
+    .returning()
+  demoStoreId = demoStore!.id
 
   await db
     .insert(inventoryWarehouses)
@@ -271,6 +297,48 @@ describe("装箱发货 × 库存联动", () => {
         and(eq(temuShipOrders.storeId, storeId), eq(temuShipOrders.deliveryOrderSn, snOf("DIRECT"))),
       )
     expect(order?.factoryDirect).toBe(true)
+    expect(order?.sourceWarehouseId).toBeNull()
+  })
+
+  it("演示店铺：沙箱虚拟单跳过库存校验与扣减（不污染真实库存）", async () => {
+    const [product] = await db
+      .select()
+      .from(inventoryProducts)
+      .where(and(eq(inventoryProducts.enterpriseId, entId), eq(inventoryProducts.productCode, "B9001")))
+    const before = await getMainStock(product!.id)
+
+    // 超库存虚拟单（B9001 需 999 远超主仓余额）：不受硬阻断，demo 层模拟发货成功
+    await insertShipRow(snOf("DEMOSHIP"), "B9001", 999, demoStoreId)
+    const r = await sendPackingAction({
+      store: demoStoreId,
+      deliveryOrderSns: [snOf("DEMOSHIP")],
+      ...SEND_PAYLOAD,
+    })
+    expect(r.ok).toBe(true)
+
+    // 真实库存与 ship_deduct 流水不被虚拟单污染；虚拟单不回写直发/发货仓标记
+    expect(await getMainStock(product!.id)).toBe(before)
+    const [mv] = await db
+      .select()
+      .from(inventoryMovements)
+      .where(
+        and(
+          eq(inventoryMovements.enterpriseId, entId),
+          eq(inventoryMovements.type, "ship_deduct"),
+          eq(inventoryMovements.refId, snOf("DEMOSHIP")),
+        ),
+      )
+    expect(mv).toBeUndefined()
+    const [order] = await db
+      .select()
+      .from(temuShipOrders)
+      .where(
+        and(
+          eq(temuShipOrders.storeId, demoStoreId),
+          eq(temuShipOrders.deliveryOrderSn, snOf("DEMOSHIP")),
+        ),
+      )
+    expect(order?.factoryDirect).toBeNull()
     expect(order?.sourceWarehouseId).toBeNull()
   })
 

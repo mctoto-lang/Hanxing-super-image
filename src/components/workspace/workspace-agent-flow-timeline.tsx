@@ -27,6 +27,7 @@
  *   恢复到 current stage。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { DashRing } from "@/components/ui/dash-ring"
 import {
   Check,
   ChevronDown,
@@ -34,7 +35,6 @@ import {
   CircleCheck,
   ImageIcon,
   ImageOff,
-  Loader2,
   Lock,
   Palette,
   RefreshCw,
@@ -731,7 +731,7 @@ export function WorkspaceAgentFlowTimeline({
                 </div>
               ) : d.exampleImageStatus === "pending" || d.exampleImageStatus === "generating" ? (
                 <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin opacity-70" />
+                  <DashRing className="h-4 w-4 opacity-70" />
                   <span className="text-[11px]">示例图生成中…</span>
                 </div>
               ) : (
@@ -870,7 +870,7 @@ export function WorkspaceAgentFlowTimeline({
               <CircleAlert className="h-3.5 w-3.5" />
             ) : planStatus === "active" ? (
               busy ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <DashRing className="h-3.5 w-3.5" />
               ) : (
                 <span className="text-[11px] font-semibold">{step + 1}</span>
               )
@@ -927,7 +927,7 @@ export function WorkspaceAgentFlowTimeline({
 
             <div className="flex shrink-0 items-center gap-3">
               {isCurrentStage && busy && (
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" />
+                <DashRing className="h-3.5 w-3.5 text-blue-500" />
               )}
               {!isLocked && (
                 <ChevronDown
@@ -1055,7 +1055,7 @@ export function WorkspaceAgentFlowTimeline({
                       disabled={configSaving || !selectedImageModelId || !selectedSizes}
                       onClick={() => void handleSaveImageConfig()}
                     >
-                      {configSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                      {configSaving ? <DashRing className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />}
                       保存模型与尺寸
                     </Button>
                   )}
@@ -1096,7 +1096,7 @@ export function WorkspaceAgentFlowTimeline({
                         : "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-300",
                   )}>
                     <div className="flex items-center gap-1.5 font-medium">
-                      {input.referenceStyleAnalysisStatus === "completed" ? <CircleCheck className="h-3.5 w-3.5" /> : input.referenceStyleAnalysisStatus === "failed" ? <CircleAlert className="h-3.5 w-3.5" /> : <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                      {input.referenceStyleAnalysisStatus === "completed" ? <CircleCheck className="h-3.5 w-3.5" /> : input.referenceStyleAnalysisStatus === "failed" ? <CircleAlert className="h-3.5 w-3.5" /> : <DashRing className="h-3.5 w-3.5" />}
                       {input.referenceStyleAnalysisStatus === "completed" ? "AI 已提取参考图风格" : input.referenceStyleAnalysisStatus === "failed" ? "参考图风格分析失败，可手动填写" : "正在分析参考图风格…"}
                     </div>
                     {input.referenceStyleAnalysis && <p className="mt-1 text-foreground/80">{input.referenceStyleAnalysis}</p>}
@@ -1163,7 +1163,7 @@ export function WorkspaceAgentFlowTimeline({
                   </>
                 ) : busy ? (
                   <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
-                    <Loader2 className="h-4 w-4 animate-spin text-violet-500" />
+                    <DashRing className="h-4 w-4 text-violet-500" />
                     正在生成 3 个候选主题，请稍候...
                   </div>
                 ) : (
@@ -1271,7 +1271,7 @@ export function WorkspaceAgentFlowTimeline({
                   </>
                 ) : busy ? (
                   <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
-                    <Loader2 className="h-4 w-4 animate-spin text-violet-500" />
+                    <DashRing className="h-4 w-4 text-violet-500" />
                     正在按
                     {imaginationLabelOf(input?.imaginationLevel)}
                     档位生成 3 个创作方向，请稍候...
@@ -1323,7 +1323,7 @@ export function WorkspaceAgentFlowTimeline({
                   </div>
                   {busy && (
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Loader2 className="h-4 w-4 animate-spin text-violet-500" />
+                      <DashRing className="h-4 w-4 text-violet-500" />
                       提示词撰写中，正在轮询进度...
                     </div>
                   )}
@@ -1406,7 +1406,7 @@ export function WorkspaceAgentFlowTimeline({
         )}
         {busy ? (
           <>
-            <Loader2 className="size-3.5 shrink-0 animate-spin text-violet-500" />
+            <DashRing className="size-3.5 shrink-0 text-violet-500" />
             服务端任务执行中，操作已暂时禁用，正在轮询进度...
           </>
         ) : loadError ? (
@@ -1422,7 +1422,7 @@ export function WorkspaceAgentFlowTimeline({
         </div>
       ) : payload == null && !loadError ? (
         <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin text-violet-500" />
+          <DashRing className="h-4 w-4 text-violet-500" />
           正在加载工作流进度...
         </div>
       ) : payload == null && loadError ? (
@@ -1496,7 +1496,7 @@ export function WorkspaceAgentFlowTimeline({
               onClick={handleConfirmRollback}
             >
               {acting ? (
-                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                <DashRing className="mr-1 h-3.5 w-3.5" />
               ) : (
                 <Undo2 className="mr-1 h-3.5 w-3.5" />
               )}

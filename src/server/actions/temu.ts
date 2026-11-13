@@ -6,6 +6,7 @@ import { z } from "zod"
 import { revalidatePath } from "next/cache"
 import { db } from "@/db/client"
 import {
+  temuApps,
   temuStores,
   temuMetricSnapshots,
   temuSalesOverviews,
@@ -21,6 +22,7 @@ import {
   temuShipOrders,
   temuShipPackages,
   temuPriorityLinks,
+  temuStopReplenishLinks,
   temuSettings,
   type TemuSyncStatus,
 } from "@/db/schema"
@@ -30,6 +32,7 @@ import {
   getCurrentEnterpriseScope,
 } from "@/lib/auth/session"
 import { encrypt } from "@/lib/crypto"
+import { MAX_STORES_PER_APP } from "@/lib/temu-api/app-config"
 import {
   createTemuStoreSchema,
   updateTemuStoreSchema,
@@ -38,6 +41,7 @@ import {
   deleteTemuStoreSchema,
 } from "@/server/schemas/temu"
 import { temuCached, invalidateTemuCache } from "@/server/services/temu-cache"
+import { ensureDemoStores } from "@/server/services/temu-demo"
 import { syncStore, verifyStoreToken } from "@/server/services/temu-sync"
 import { TEMU_TZ, temuDayStr, temuStartOfToday, temuYesterdayStr } from "@/server/services/temu-time"
 
@@ -65,6 +69,11 @@ export interface TemuStoreBrief {
   syncEnabled: boolean
   lastSyncAt: Date | null
   lastSyncStatus: TemuSyncStatus | null
+  /** 所属应用（多主体模型；null=演示店铺或未归属） */
+  appId: string | null
+  appName: string | null
+  /** 演示店铺（系统创建走官方沙箱，页面显示「演示」徽章） */
+  isDemo: boolean
 }
 
 /** 店铺列表查询（action 与 overview 内部共用：省去重复鉴权与二次查询） */
@@ -82,8 +91,12 @@ function listStores(enterpriseId: string): Promise<TemuStoreBrief[]> {
       syncEnabled: temuStores.syncEnabled,
       lastSyncAt: temuStores.lastSyncAt,
       lastSyncStatus: temuStores.lastSyncStatus,
+      appId: temuStores.appId,
+      appName: temuApps.name,
+      isDemo: temuStores.isDemo,
     })
     .from(temuStores)
+    .leftJoin(temuApps, eq(temuApps.id, temuStores.appId))
     .where(eq(temuStores.enterpriseId, enterpriseId))
     .orderBy(asc(temuStores.sortOrder), asc(temuStores.createdAt))
 }
@@ -148,6 +161,8 @@ export interface TemuOverview {
     thirtyDaySales: { value: number | null; delta: number | null }
     estSalesAmount: { value: number | null; delta: number | null }
   }
+  /** 演示模式（企业未配置 TEMU 应用：数据为内置虚拟数据，页面显示提示条） */
+  demoMode: boolean
 }
 
 /** 环比百分比（昨日缺失/为 0 时返回 null，前端显示"—"） */
@@ -156,16 +171,28 @@ function deltaPct(today: number | null, yesterday: number | null): number | null
   return Math.round(((today - yesterday) / yesterday) * 1000) / 10
 }
 
-export async function getTemuOverviewAction(storeId?: string): Promise<TemuOverview> {
+export async function getTemuOverviewAction(
+  storeId?: string,
+  appId?: string,
+): Promise<TemuOverview> {
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
-  return temuCached(`${enterpriseId}:${storeId ?? "all"}:overview`, () =>
-    loadTemuOverview(enterpriseId, storeId),
+  // 演示模式生命周期入口（/temu 页面每 tab 必调本 action）：未配置应用时幂等
+  // 创建演示店铺，出现真实应用时清理。ensure 内部 60s 进程级节流。
+  const demoMode = await ensureDemoStores(enterpriseId)
+  const overview = await temuCached(
+    `${enterpriseId}:${storeId ?? "all"}:${appId ?? "all"}:overview`,
+    () => loadTemuOverview(enterpriseId, storeId, appId),
   )
+  return { ...overview, demoMode }
 }
 
-async function loadTemuOverview(enterpriseId: string, storeId?: string): Promise<TemuOverview> {
-  const storeIds = await resolveStoreIds(enterpriseId, storeId)
+async function loadTemuOverview(
+  enterpriseId: string,
+  storeId?: string,
+  appId?: string,
+): Promise<TemuOverview> {
+  const storeIds = await resolveStoreIds(enterpriseId, storeId, appId)
   const stores = await listStores(enterpriseId)
   const empty: TemuOverview = {
     latest: {}, trend: [], productCount: 0, soldout: {}, stores,
@@ -175,6 +202,8 @@ async function loadTemuOverview(enterpriseId: string, storeId?: string): Promise
       thirtyDaySales: { value: null, delta: null },
       estSalesAmount: { value: null, delta: null },
     },
+    // 占位（getTemuOverviewAction 外层按演示模式判定覆盖）
+    demoMode: false,
   }
   if (storeIds.length === 0) return empty
 
@@ -325,6 +354,8 @@ async function loadTemuOverview(enterpriseId: string, storeId?: string): Promise
         delta: estYesterdayFen > 0 ? deltaPct(estTodayFen, estYesterdayFen) : null,
       },
     },
+    // 占位（getTemuOverviewAction 外层按演示模式判定覆盖）
+    demoMode: false,
   }
 }
 
@@ -399,6 +430,8 @@ export async function getTemuProductsAction(
   sort?: string,
   /** 搜索字段：缺省/all=五字段混合；sn=货号、name=商品名、skc=SKC 单列 ilike */
   qf?: string,
+  /** 应用（主体）过滤：与 storeId 取交集，全部店铺视图按应用切分 */
+  appId?: string,
 ): Promise<{ rows: TemuProductRow[]; total: number }> {
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
@@ -408,8 +441,8 @@ export async function getTemuProductsAction(
   const safeQ = q?.slice(0, 100)
   const safeQf = qf === "sn" || qf === "name" || qf === "skc" ? qf : "all"
   return temuCached(
-    `${enterpriseId}:products:${storeId ?? "all"}:${safeQ ?? ""}:${safeQf}:${sale ?? ""}:${sort ?? "listed"}:${safePage}`,
-    () => loadTemuProducts(enterpriseId, storeId, safeQ, safePage, sale, sort, safeQf),
+    `${enterpriseId}:products:${storeId ?? "all"}:${appId ?? "all"}:${safeQ ?? ""}:${safeQf}:${sale ?? ""}:${sort ?? "listed"}:${safePage}`,
+    () => loadTemuProducts(enterpriseId, storeId, safeQ, safePage, sale, sort, safeQf, appId),
   )
 }
 
@@ -421,8 +454,9 @@ async function loadTemuProducts(
   sale?: TemuSaleFilter,
   sort?: string,
   qf: string = "all",
+  appId?: string,
 ): Promise<{ rows: TemuProductRow[]; total: number }> {
-  const storeIds = await resolveStoreIds(enterpriseId, storeId)
+  const storeIds = await resolveStoreIds(enterpriseId, storeId, appId)
   if (storeIds.length === 0) return { rows: [], total: 0 }
 
   const PAGE_SIZE = 20
@@ -610,8 +644,9 @@ export async function getTemuProductsPageAction(
   page: number,
   sort?: string,
   qf?: string,
+  appId?: string,
 ): Promise<{ rows: TemuProductRow[]; salesInfo: TemuProductSalesInfo }> {
-  const { rows } = await getTemuProductsAction(storeId, q, page, sale, sort, qf)
+  const { rows } = await getTemuProductsAction(storeId, q, page, sale, sort, qf, appId)
   const salesInfo = await getTemuProductSalesInfoAction(
     storeId,
     rows.map((r) => r.productSkcId),
@@ -640,16 +675,20 @@ export interface TemuCategoryShare {
 }
 
 /** 售出类目占比：每 SKC 最新行按类目汇总销量（今日/7日/30日三口径，空类目归"未分类"） */
-export async function getTemuCategoryShareAction(storeId?: string): Promise<TemuCategoryShare[]> {
+export async function getTemuCategoryShareAction(storeId?: string, appId?: string): Promise<TemuCategoryShare[]> {
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
-  return temuCached(`${enterpriseId}:${storeId ?? "all"}:cat-share`, () =>
-    loadTemuCategoryShare(enterpriseId, storeId),
+  return temuCached(`${enterpriseId}:${storeId ?? "all"}:${appId ?? "all"}:cat-share`, () =>
+    loadTemuCategoryShare(enterpriseId, storeId, appId),
   )
 }
 
-async function loadTemuCategoryShare(enterpriseId: string, storeId?: string): Promise<TemuCategoryShare[]> {
-  const storeIds = await resolveStoreIds(enterpriseId, storeId)
+async function loadTemuCategoryShare(
+  enterpriseId: string,
+  storeId?: string,
+  appId?: string,
+): Promise<TemuCategoryShare[]> {
+  const storeIds = await resolveStoreIds(enterpriseId, storeId, appId)
   if (storeIds.length === 0) return []
   const latestSq = db
     .selectDistinctOn([temuSalesOverviews.storeId, temuSalesOverviews.skcId], {
@@ -707,16 +746,20 @@ export interface TemuSalesTopRow {
 
 /** 售出 TOP 榜：每 SKC 聚合后取 今日/近7日/近30日 三口径各自前 60 的并集
  *  （前端按口径重排取 10——只按单一口径预筛会漏其他口径的真实前十，已实测） */
-export async function getTemuSalesTopAction(storeId?: string): Promise<TemuSalesTopRow[]> {
+export async function getTemuSalesTopAction(storeId?: string, appId?: string): Promise<TemuSalesTopRow[]> {
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
-  return temuCached(`${enterpriseId}:${storeId ?? "all"}:sales-top`, () =>
-    loadTemuSalesTop(enterpriseId, storeId),
+  return temuCached(`${enterpriseId}:${storeId ?? "all"}:${appId ?? "all"}:sales-top`, () =>
+    loadTemuSalesTop(enterpriseId, storeId, appId),
   )
 }
 
-async function loadTemuSalesTop(enterpriseId: string, storeId?: string): Promise<TemuSalesTopRow[]> {
-  const storeIds = await resolveStoreIds(enterpriseId, storeId)
+async function loadTemuSalesTop(
+  enterpriseId: string,
+  storeId?: string,
+  appId?: string,
+): Promise<TemuSalesTopRow[]> {
+  const storeIds = await resolveStoreIds(enterpriseId, storeId, appId)
   if (storeIds.length === 0) return []
   const latestSq = db
     .selectDistinctOn([temuSalesOverviews.storeId, temuSalesOverviews.skcId], {
@@ -806,16 +849,20 @@ export interface TemuSalesTopBySnRow {
 
 /** 售出 TOP 榜（按货号）：概览页底部 TOP30 卡片用。同货号多 SKC 合并为一个
  *  货号，与 SKC 口径的 getTemuSalesTopAction（TOP10 条形图）并存互不影响 */
-export async function getTemuSalesTopBySnAction(storeId?: string): Promise<TemuSalesTopBySnRow[]> {
+export async function getTemuSalesTopBySnAction(storeId?: string, appId?: string): Promise<TemuSalesTopBySnRow[]> {
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
-  return temuCached(`${enterpriseId}:${storeId ?? "all"}:sales-top-sn`, () =>
-    loadTemuSalesTopBySn(enterpriseId, storeId),
+  return temuCached(`${enterpriseId}:${storeId ?? "all"}:${appId ?? "all"}:sales-top-sn`, () =>
+    loadTemuSalesTopBySn(enterpriseId, storeId, appId),
   )
 }
 
-async function loadTemuSalesTopBySn(enterpriseId: string, storeId?: string): Promise<TemuSalesTopBySnRow[]> {
-  const storeIds = await resolveStoreIds(enterpriseId, storeId)
+async function loadTemuSalesTopBySn(
+  enterpriseId: string,
+  storeId?: string,
+  appId?: string,
+): Promise<TemuSalesTopBySnRow[]> {
+  const storeIds = await resolveStoreIds(enterpriseId, storeId, appId)
   if (storeIds.length === 0) return []
   const latestSq = db
     .selectDistinctOn([temuSalesOverviews.storeId, temuSalesOverviews.skcId], {
@@ -1224,6 +1271,7 @@ export interface TemuAdsCards {
 export async function getTemuAdsAction(
   storeId?: string,
   range?: number,
+  appId?: string,
 ): Promise<{
   rows: TemuAdsRow[]
   cards: TemuAdsCards
@@ -1234,14 +1282,19 @@ export async function getTemuAdsAction(
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
   const days = range === 30 ? 30 : 7
-  return temuCached(`${enterpriseId}:${storeId ?? "all"}:ads:v2:${days}`, () =>
-    loadTemuAds(enterpriseId, storeId, days),
+  return temuCached(`${enterpriseId}:${storeId ?? "all"}:${appId ?? "all"}:ads:v2:${days}`, () =>
+    loadTemuAds(enterpriseId, storeId, days, appId),
   )
 }
 
-async function loadTemuAds(enterpriseId: string, storeId?: string, range = 7) {
+async function loadTemuAds(
+  enterpriseId: string,
+  storeId?: string,
+  range = 7,
+  appId?: string,
+) {
   const emptyCards: TemuAdsCards = { totalSpend: null, salesAmount: null, roas: null, costPerOrder: null }
-  const storeIds = await resolveStoreIds(enterpriseId, storeId)
+  const storeIds = await resolveStoreIds(enterpriseId, storeId, appId)
   if (storeIds.length === 0) {
     return { rows: [] as TemuAdsRow[], cards: emptyCards, range, dataThrough: null }
   }
@@ -1372,18 +1425,83 @@ async function loadTemuAds(enterpriseId: string, storeId?: string, range = 7) {
 
 // ---------- 店铺管理（企业管理员） ----------
 
+/** 企业侧应用简要列表（TEMU 页应用切换/店铺管理分组用；不含凭证） */
+export interface TemuAppBrief {
+  id: string
+  name: string
+  testMode: boolean
+  /** 应用下真实店铺数（n/20 上限展示） */
+  storeCount: number
+}
+
+/** 应用列表（企业隔离；TEMU 页全体可见者使用，仅 id/名称/店铺数） */
+export async function listTemuAppsBriefAction(): Promise<TemuAppBrief[]> {
+  const ctx = await requireEnterpriseContext()
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  const apps = await db
+    .select({
+      id: temuApps.id,
+      name: temuApps.name,
+      testMode: temuApps.testMode,
+    })
+    .from(temuApps)
+    .where(eq(temuApps.enterpriseId, enterpriseId))
+    .orderBy(asc(temuApps.sortOrder), asc(temuApps.createdAt))
+  const storeRows = await db
+    .select({ appId: temuStores.appId, n: count() })
+    .from(temuStores)
+    .where(and(eq(temuStores.enterpriseId, enterpriseId), eq(temuStores.isDemo, false)))
+    .groupBy(temuStores.appId)
+  const byApp = new Map(storeRows.map((r) => [r.appId, Number(r.n)]))
+  return apps.map((a) => ({ ...a, storeCount: byApp.get(a.id) ?? 0 }))
+}
+
+/** 店铺写操作前置：校验归属并拒绝演示店铺（演示店铺由系统管理） */
+async function requireRealStore(
+  enterpriseId: string,
+  id: string,
+): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  const [row] = await db
+    .select({ id: temuStores.id, isDemo: temuStores.isDemo })
+    .from(temuStores)
+    .where(and(eq(temuStores.id, id), eq(temuStores.enterpriseId, enterpriseId)))
+    .limit(1)
+  if (!row) return { ok: false, error: "店铺不存在" }
+  if (row.isDemo) {
+    return { ok: false, error: "演示店铺由系统管理（配置 TEMU 应用后自动移除），无需手动维护" }
+  }
+  return { ok: true, id: row.id }
+}
+
 export async function createTemuStoreAction(input: {
+  appId: string
   name: string
   mallId?: string
   mallName?: string
-}): Promise<{ ok: true; store: { id: string; name: string } }> {
+}): Promise<{ ok: boolean; error?: string; store?: { id: string; name: string } }> {
   const ctx = await requireEnterpriseAdmin()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
   const data = createTemuStoreSchema.parse(input)
+  // 应用归属校验
+  const [app] = await db
+    .select({ id: temuApps.id })
+    .from(temuApps)
+    .where(and(eq(temuApps.id, data.appId), eq(temuApps.enterpriseId, enterpriseId)))
+    .limit(1)
+  if (!app) return { ok: false, error: "所属应用不存在，请刷新后重试" }
+  // 单应用 20 店铺上限
+  const countRows = await db
+    .select({ n: count() })
+    .from(temuStores)
+    .where(and(eq(temuStores.appId, data.appId), eq(temuStores.isDemo, false)))
+  if (Number(countRows[0]?.n ?? 0) >= MAX_STORES_PER_APP) {
+    return { ok: false, error: `该应用下店铺已达上限（${MAX_STORES_PER_APP} 家），请先删除部分店铺或选择其他应用` }
+  }
   const [row] = await db
     .insert(temuStores)
     .values({
       enterpriseId,
+      appId: data.appId,
       name: data.name,
       mallId: data.mallId || null,
       mallName: data.mallName || null,
@@ -1410,6 +1528,8 @@ export async function setTemuStoreTokenAction(input: {
   if (!/^[0-9a-z]{32,128}$/i.test(accessToken)) {
     return { ok: false, error: "access_token 格式不正确（应为卖家中心复制的授权令牌）" }
   }
+  const guard = await requireRealStore(enterpriseId, id)
+  if (!guard.ok) return { ok: false, error: guard.error }
   const rows = await db
     .update(temuStores)
     .set({
@@ -1435,12 +1555,8 @@ export async function syncTemuStoreAction(
   const ctx = await requireEnterpriseAdmin()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
   const id = String(input.id || "")
-  const owned = await db
-    .select({ id: temuStores.id })
-    .from(temuStores)
-    .where(and(eq(temuStores.id, id), eq(temuStores.enterpriseId, enterpriseId)))
-    .limit(1)
-  if (owned.length === 0) throw new Error("店铺不存在")
+  const guard = await requireRealStore(enterpriseId, id)
+  if (!guard.ok) throw new Error(guard.error)
   const outcome = await syncStore(id)
   revalidatePath("/temu")
   return {
@@ -1455,6 +1571,8 @@ export async function toggleTemuStoreSyncAction(input: { id: string; syncEnabled
   const ctx = await requireEnterpriseAdmin()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
   const { id, syncEnabled } = toggleTemuStoreSyncSchema.parse(input)
+  const guard = await requireRealStore(enterpriseId, id)
+  if (!guard.ok) throw new Error(guard.error)
   const rows = await db
     .update(temuStores)
     .set({ syncEnabled, updatedAt: sql`now()` })
@@ -1477,6 +1595,8 @@ export async function updateTemuStoreAction(input: {
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
   const data = updateTemuStoreSchema.parse(input)
   const { id, ...patch } = data
+  const guard = await requireRealStore(enterpriseId, id)
+  if (!guard.ok) throw new Error(guard.error)
   const set: Record<string, unknown> = { updatedAt: sql`now()` }
   if (patch.name !== undefined) set.name = patch.name
   if (patch.mallId !== undefined) set.mallId = patch.mallId || null
@@ -1496,6 +1616,8 @@ export async function toggleTemuStoreAction(input: { id: string; enabled: boolea
   const ctx = await requireEnterpriseAdmin()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
   const { id, enabled } = toggleTemuStoreSchema.parse(input)
+  const guard = await requireRealStore(enterpriseId, id)
+  if (!guard.ok) throw new Error(guard.error)
   const rows = await db
     .update(temuStores)
     .set({ enabled, updatedAt: sql`now()` })
@@ -1511,6 +1633,8 @@ export async function deleteTemuStoreAction(input: { id: string }) {
   const ctx = await requireEnterpriseAdmin()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
   const { id } = deleteTemuStoreSchema.parse(input)
+  const guard = await requireRealStore(enterpriseId, id)
+  if (!guard.ok) throw new Error(guard.error)
   const rows = await db
     .delete(temuStores)
     .where(and(eq(temuStores.id, id), eq(temuStores.enterpriseId, enterpriseId)))
@@ -1529,12 +1653,8 @@ export async function clearTemuStoreDataAction(input: { id: string }) {
   const ctx = await requireEnterpriseAdmin()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
   const { id } = deleteTemuStoreSchema.parse(input)
-  const owned = await db
-    .select({ id: temuStores.id })
-    .from(temuStores)
-    .where(and(eq(temuStores.id, id), eq(temuStores.enterpriseId, enterpriseId)))
-    .limit(1)
-  if (owned.length === 0) throw new Error("店铺不存在")
+  const guard = await requireRealStore(enterpriseId, id)
+  if (!guard.ok) throw new Error(guard.error)
   const counts: Record<string, number> = {}
   await db.transaction(async (tx) => {
     counts["temu_metric_snapshot"] = (
@@ -1585,10 +1705,16 @@ export async function clearTemuStoreDataAction(input: { id: string }) {
 
 // ---------- 内部 ----------
 
-/** 企业 → 店铺 id 列表（store 过滤可选；店铺管理双层隔离的锚点） */
-async function resolveStoreIds(enterpriseId: string, storeId?: string): Promise<string[]> {
+/** 企业 → 店铺 id 列表（store/app 过滤可选；店铺管理双层隔离的锚点。
+ *  appId 与 enterpriseId 双条件取交集，跨企业 app id 交集为空不泄数据） */
+async function resolveStoreIds(
+  enterpriseId: string,
+  storeId?: string,
+  appId?: string,
+): Promise<string[]> {
   const conds = [eq(temuStores.enterpriseId, enterpriseId)]
   if (storeId) conds.push(eq(temuStores.id, storeId))
+  if (appId) conds.push(eq(temuStores.appId, appId))
   const rows = await db.select({ id: temuStores.id }).from(temuStores).where(and(...conds))
   return rows.map((r) => r.id)
 }
@@ -1674,6 +1800,98 @@ export async function unsetPriorityShipAction(input: {
         eq(temuPriorityLinks.enterpriseId, enterpriseId),
         eq(temuPriorityLinks.storeId, input.storeId),
         eq(temuPriorityLinks.productSkcId, skcId),
+      ),
+    )
+  revalidatePath("/temu")
+  return { ok: true }
+}
+
+// ---------- 停止补货链接标记（本地自建，迁移 0098；官方无对应接口） ----------
+
+/** 停止补货链接集合（商品信息页设置菜单/备货页标记列/自动操作双弹窗共用） */
+export async function getStopReplenishLinksAction(
+  storeId?: string,
+): Promise<{ skcIds: string[] }> {
+  const ctx = await requireEnterpriseContext()
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  const conds = [eq(temuStopReplenishLinks.enterpriseId, enterpriseId)]
+  if (storeId) conds.push(eq(temuStopReplenishLinks.storeId, storeId))
+  const rows = await db
+    .select({ skcId: temuStopReplenishLinks.productSkcId })
+    .from(temuStopReplenishLinks)
+    .where(and(...conds))
+  return { skcIds: rows.map((r) => r.skcId) }
+}
+
+/** 设为停止补货（幂等：唯一约束 (企业,店,SKC)，重复设置只更新快照字段）。
+ *  效果：备货页标记列红徽章；自动申报备货/批量加入发货弹窗内该链接行置顶禁选 */
+export async function setStopReplenishAction(input: {
+  storeId: string
+  productSkcId: string
+  productSn?: string | null
+  productName?: string | null
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const ctx = await requireEnterpriseContext()
+  // 操作类写操作例外口径（见文件头）：TEMU 页可见即可用，不要求企业管理员
+  if (!ctx.canAccess("temu")) {
+    return { ok: false, error: "当前账号没有「TEMU」页面权限，无法执行该操作" }
+  }
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  const skcId = String(input.productSkcId || "").trim().slice(0, 32)
+  if (!skcId) return { ok: false, error: "缺少 SKC 编号" }
+  // 店铺归属校验（防跨企业越权写标记）
+  const [store] = await db
+    .select({ id: temuStores.id })
+    .from(temuStores)
+    .where(and(eq(temuStores.id, input.storeId), eq(temuStores.enterpriseId, enterpriseId)))
+    .limit(1)
+  if (!store) return { ok: false, error: "店铺不存在或无权访问" }
+  await db
+    .insert(temuStopReplenishLinks)
+    .values({
+      enterpriseId,
+      storeId: input.storeId,
+      productSkcId: skcId,
+      productSn: input.productSn?.slice(0, 64) || null,
+      productName: input.productName || null,
+      createdBy: ctx.user.id,
+    })
+    .onConflictDoUpdate({
+      target: [
+        temuStopReplenishLinks.enterpriseId,
+        temuStopReplenishLinks.storeId,
+        temuStopReplenishLinks.productSkcId,
+      ],
+      set: {
+        productSn: input.productSn?.slice(0, 64) || null,
+        productName: input.productName || null,
+        createdBy: ctx.user.id,
+      },
+    })
+  revalidatePath("/temu")
+  return { ok: true }
+}
+
+/** 取消停止补货 */
+export async function unsetStopReplenishAction(input: {
+  storeId: string
+  productSkcId: string
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const ctx = await requireEnterpriseContext()
+  // 操作类写操作例外口径（见文件头）：TEMU 页可见即可用，不要求企业管理员
+  if (!ctx.canAccess("temu")) {
+    return { ok: false, error: "当前账号没有「TEMU」页面权限，无法执行该操作" }
+  }
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  const skcId = String(input.productSkcId || "").trim().slice(0, 32)
+  if (!skcId) return { ok: false, error: "缺少 SKC 编号" }
+  await db
+    .delete(temuStopReplenishLinks)
+    .where(
+      and(
+        eq(temuStopReplenishLinks.enterpriseId, enterpriseId),
+        eq(temuStopReplenishLinks.storeId, input.storeId),
+        eq(temuStopReplenishLinks.productSkcId, skcId),
       ),
     )
   revalidatePath("/temu")

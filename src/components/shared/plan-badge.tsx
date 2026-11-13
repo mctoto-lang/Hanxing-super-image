@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils"
 import {
   normalizeBadgeColor,
   normalizeBadgeIconKey,
+  pickBadgeTextColor,
   type BadgeIconKey,
 } from "@/lib/plans/badge"
 
@@ -63,7 +64,7 @@ export function BadgeIcon({
   )
 }
 
-/** 套餐勋章药丸：图标 + 可选套餐名 */
+/** 套餐勋章徽章（实底、方角 rounded-[4px]，与 TEMU 徽章口径一致）：图标 + 可选套餐名；文字色按底色亮度自适应黑/白 */
 export function PlanBadge({
   iconKey,
   color,
@@ -81,22 +82,23 @@ export function PlanBadge({
   className?: string
 }) {
   const c = normalizeBadgeColor(color)
+  const fg = pickBadgeTextColor(c) // 浅色底黑字 / 深色底白字，避免浅色底白字不可读
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center gap-1 rounded-full border font-medium whitespace-nowrap",
+        "inline-flex shrink-0 items-center gap-1 rounded-[4px] border font-medium whitespace-nowrap",
         size === "sm" ? "h-5 px-1.5 text-[10px]" : "h-7 px-2.5 text-xs",
         isExpired && "opacity-45 saturate-0",
         className,
       )}
       style={{
-        color: c,
-        backgroundColor: `${c}1f`, // 12% 透明度背景
-        borderColor: `${c}59`, // 35% 透明度描边
+        color: fg,
+        backgroundColor: c, // 品牌色纯实底
+        borderColor: c, // 描边同色无痕
       }}
       title={isExpired ? "套餐已过期" : undefined}
     >
-      <BadgeIcon iconKey={iconKey} color={c} className={size === "sm" ? "size-3" : "size-4"} />
+      <BadgeIcon iconKey={iconKey} color={fg} className={size === "sm" ? "size-3" : "size-4"} />
       {name ? <span>{name}</span> : null}
       {isExpired && name ? <span>已过期</span> : null}
     </span>

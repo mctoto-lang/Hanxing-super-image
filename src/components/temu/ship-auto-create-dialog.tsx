@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { Loader2, Package, Zap } from "lucide-react"
+import { Package, Zap } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -465,7 +466,7 @@ export function AutoCreateShipDialog({
             disabled={loading || creating || validSns.length === 0 || addressId == null}
             onClick={() => setConfirming(true)}
           >
-            {creating ? <Loader2 className="size-3.5 animate-spin" /> : <Zap className="size-3.5" />}
+            {creating ? <DashRing className="size-3.5" /> : <Zap className="size-3.5" />}
             自动创建（{validSns.length}）
           </Button>
         </DialogFooter>

@@ -1,7 +1,8 @@
 "use client"
 
 import * as React from "react"
-import { Loader2, RefreshCw } from "lucide-react"
+import { RefreshCw } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import {
   TableBody,
   TableCell,
@@ -161,7 +162,7 @@ export function TemuQualityPanel({ store }: { store?: string }) {
             </SelectContent>
           </Select>
           <Button variant="outline" size="sm" className="h-8 text-xs" onClick={load} disabled={loading} aria-label="刷新质检列表">
-            {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+            {loading ? <DashRing className="size-4" /> : <RefreshCw className="size-4" />}
             刷新
           </Button>
         </div>
@@ -316,7 +317,7 @@ function QcDetailDialog({
             <p className="py-6 text-center text-sm text-red-600 dark:text-red-400">{error}</p>
           ) : !detail ? (
             <p className="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" /> 加载中…
+              <DashRing className="size-4" /> 加载中…
             </p>
           ) : detail.histories.length === 0 ? (
             <p className="py-6 text-center text-sm text-muted-foreground">官方未返回质检明细</p>

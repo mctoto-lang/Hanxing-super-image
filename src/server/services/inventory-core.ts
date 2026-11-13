@@ -132,7 +132,7 @@ export async function loadDailySalesBySn(
   const storeRows = await db
     .select({ id: temuStores.id })
     .from(temuStores)
-    .where(eq(temuStores.enterpriseId, enterpriseId))
+    .where(and(eq(temuStores.enterpriseId, enterpriseId), eq(temuStores.isDemo, false)))
   if (storeRows.length === 0) {
     return {
       sum7Map: new Map(),
@@ -213,7 +213,7 @@ export async function loadTemuNetStockBySn(enterpriseId: string): Promise<Map<st
   const storeRows = await db
     .select({ id: temuStores.id })
     .from(temuStores)
-    .where(eq(temuStores.enterpriseId, enterpriseId))
+    .where(and(eq(temuStores.enterpriseId, enterpriseId), eq(temuStores.isDemo, false)))
   if (storeRows.length === 0) return new Map()
   const latest = await db
     .selectDistinctOn(

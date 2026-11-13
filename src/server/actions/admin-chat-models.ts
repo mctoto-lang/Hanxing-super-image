@@ -137,7 +137,7 @@ export async function createChatModelAction(
   }
 
   try {
-    // 追加到列表末尾（用户侧对话模型列表按 sortOrder 排序，企业新建默认 0 会跳到预置模型之前）
+    // 追加到列表末尾（用户侧对话模型列表按 sortOrder 排序，企业新建默认 0 会跳到预置对话模型之前）
     const sortOrder = await nextSortOrder(chatApiConfigs)
     await db.insert(chatApiConfigs).values({
       enterpriseId, // 企业私有对话模型

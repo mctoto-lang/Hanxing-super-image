@@ -2,7 +2,8 @@
 
 import { useState } from "react"
 import { toast } from "sonner"
-import { ImagePlus, Loader2, RefreshCw, Send, Trash2 } from "lucide-react"
+import { ImagePlus, RefreshCw, Send, Trash2 } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import type { TemuStoreBrief } from "@/server/actions/temu"
 import {
   publishFromTemplateAction,
@@ -159,7 +160,7 @@ export function PublishDialog({
             取消
           </Button>
           <Button size="sm" disabled={!valid || submitting} onClick={() => void submit()}>
-            {submitting ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+            {submitting ? <DashRing className="size-4" /> : <Send className="size-4" />}
             发布到 {store.name}
           </Button>
         </DialogFooter>
@@ -325,7 +326,7 @@ function CarouselSlots({
           disabled={busy || images.length >= 20}
           onClick={() => openPicker({ mode: "add" })}
         >
-          {busy ? <Loader2 className="size-4 animate-spin" /> : <ImagePlus className="size-4" />}
+          {busy ? <DashRing className="size-4" /> : <ImagePlus className="size-4" />}
           <span className="text-[10px]">{busy ? "处理中" : "添加"}</span>
         </Button>
         {Array.from({ length: placeholders }, (_, k) => (

@@ -3,7 +3,8 @@
 import * as React from "react"
 import { toast } from "sonner"
 import { format } from "date-fns"
-import { CalendarIcon, Loader2 } from "lucide-react"
+import { CalendarIcon } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { zhCN } from "react-day-picker/locale"
 
 import { Button } from "@/components/ui/button"
@@ -279,7 +280,7 @@ export function OrderFormDialog({
             取消
           </Button>
           <Button onClick={submit} disabled={pending}>
-            {pending && <Loader2 className="size-3.5 animate-spin" />}
+            {pending && <DashRing className="size-3.5" />}
             {editing ? "保存" : "建单"}
           </Button>
         </DialogFooter>

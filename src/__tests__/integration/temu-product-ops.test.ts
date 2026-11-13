@@ -15,6 +15,7 @@ import {
   inventoryWarehouses,
   inventoryMovements,
   temuShipOrders,
+  temuApps,
 } from "@/db/schema"
 import { MODULE_NAMES } from "@/db/schema/_shared"
 import { encrypt } from "@/lib/crypto"
@@ -26,6 +27,9 @@ import {
   getTemuSettingsAction,
   setPriorityShipAction,
   unsetPriorityShipAction,
+  getStopReplenishLinksAction,
+  setStopReplenishAction,
+  unsetStopReplenishAction,
   updateTemuStagnantSettingsAction,
 } from "@/server/actions/temu"
 import {
@@ -128,6 +132,11 @@ beforeAll(async () => {
     })
     .returning()
   entId = ent!.id
+  // 多应用模型（0097）：凭证按「店铺→应用」取——夹具企业配一个应用
+  // （店铺不挂靠时单应用宽容回落命中）
+  await db
+    .insert(temuApps)
+    .values({ enterpriseId: entId, name: "测试应用", appKey: "test-app", appSecretEncrypted: "enc:v1:t" })
   const [group] = await db
     .insert(permissionGroups)
     .values({
@@ -262,6 +271,70 @@ describe("优先发货链接标记", () => {
 function gtSkc(ids: string[]): string[] {
   return ids.map(String)
 }
+
+describe("停止补货链接标记（迁移 0098）", () => {
+  it(
+    "set/get/unset 闭环 + 幂等重设；跨企业店铺拒绝；与优先发货标记互不干扰",
+    { timeout: 30_000 },
+    async () => {
+      // 随机店铺 id（非本企业）拒绝写
+      const bad = await setStopReplenishAction({ storeId: randomUUID(), productSkcId: "STOPA" })
+      expect(bad.ok).toBe(false)
+
+      const s = await setStopReplenishAction({
+        storeId,
+        productSkcId: "STOPA",
+        productSn: "B9301",
+        productName: "停补款",
+      })
+      expect(s.ok).toBe(true)
+      // 幂等重设不炸（唯一约束 upsert，只更新快照字段）
+      const s2 = await setStopReplenishAction({ storeId, productSkcId: "STOPA", productSn: "B9301R" })
+      expect(s2.ok).toBe(true)
+
+      const got = await getStopReplenishLinksAction(storeId)
+      expect(gtSkc(got.skcIds)).toContain("STOPA")
+
+      // 与优先发货标记独立：stop 集合不含优先标记、priority 集合不含 stop 标记
+      const pri = await getPriorityShipLinksAction(storeId)
+      expect(gtSkc(pri.skcIds)).not.toContain("STOPA")
+
+      const u = await unsetStopReplenishAction({ storeId, productSkcId: "STOPA" })
+      expect(u.ok).toBe(true)
+      const got2 = await getStopReplenishLinksAction(storeId)
+      expect(gtSkc(got2.skcIds)).not.toContain("STOPA")
+
+      // 无 temu 权限拒绝写（宽口径同优先发货）
+      const [g2] = await db
+        .insert(permissionGroups)
+        .values({ enterpriseId: entId, name: `无 TEMU 权限组-${randomUUID().slice(0, 8)}`, allowedPages: ["settings"] })
+        .returning()
+      const [u2] = await db
+        .insert(users)
+        .values({
+          enterpriseId: entId,
+          groupId: g2!.id,
+          username: `stop-${randomUUID().slice(0, 8)}`,
+          email: `stop-${randomUUID().slice(0, 8)}@test.local`,
+          name: "无 TEMU 权限成员",
+          passwordHash: "x",
+          enterpriseRole: "member",
+        })
+        .returning()
+      mockSession.userId = u2!.id
+      const d1 = await setStopReplenishAction({ storeId, productSkcId: "STOPB" })
+      expect(d1.ok).toBe(false)
+      if (!d1.ok) expect(d1.error).toContain("TEMU")
+      const d2 = await unsetStopReplenishAction({ storeId, productSkcId: "STOPA" })
+      expect(d2.ok).toBe(false)
+      // 拒绝写不落库
+      const got3 = await getStopReplenishLinksAction(storeId)
+      expect(gtSkc(got3.skcIds)).not.toContain("STOPB")
+      // 还原 owner 会话
+      mockSession.userId = userId
+    },
+  )
+})
 
 describe("操作类写操作权限（TEMU 页可见即可用，2026-11-11 口径）", () => {
   it(

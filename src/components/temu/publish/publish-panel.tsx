@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useState } from "react"
 import { toast } from "sonner"
 import Link from "next/link"
-import { FilePlus2, Loader2, RefreshCw, Send } from "lucide-react"
+import { FilePlus2, RefreshCw, Send } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import type { TemuStoreBrief } from "@/server/actions/temu"
 import {
   listPublishRecordsAction,
@@ -101,7 +102,7 @@ export function TemuPublishPanel({
               </Button>
               <ViewSwitch value={view} onChange={setView} />
               <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => void refresh()} disabled={loading}>
-                {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                {loading ? <DashRing className="size-4" /> : <RefreshCw className="size-4" />}
                 刷新
               </Button>
             </div>
@@ -185,7 +186,7 @@ export function TemuPublishPanel({
             <div className="flex items-center gap-2">
               <ViewSwitch value={view} onChange={setView} />
               <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => void refresh()} disabled={loading}>
-                {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                {loading ? <DashRing className="size-4" /> : <RefreshCw className="size-4" />}
                 刷新
               </Button>
             </div>

@@ -3,7 +3,8 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { CircleAlert, CircleCheck, Filter, Loader2, Send, Truck, Zap } from "lucide-react"
+import { CircleAlert, CircleCheck, Filter, Send, Truck, Zap } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import {
   TableBody,
   TableCell,
@@ -48,6 +49,7 @@ import {
   type TemuPurchaseOrderRow,
 } from "@/server/actions/temu-fulfillment"
 import { addShipStagingAction, getShipInventoryRefAction } from "@/server/actions/temu-ship"
+import { getStopReplenishLinksAction } from "@/server/actions/temu"
 import { EmptyHint } from "@/components/temu/products-table"
 import { TruncTip } from "@/components/temu/trunc-tip"
 import { TableSkeletonRows } from "@/components/temu/table-skeleton"
@@ -56,13 +58,15 @@ import { temuImageSrc } from "@/lib/temu/image"
 
 /**
  * 自动操作双弹窗（备货 Tab 工具栏「自动操作」入口）：
- * - AutoApplyDialog 自动申报备货：在售链接按近7日销量降序（仅本地库存>0 入列）→
- *   大数值探测官方上限（错误文案解析）回填申报量并自动勾选 → 手改（≤上限，0 锁定）→
- *   筛选（上限<X 取消勾选）→ 批量申报（仅勾选行，逐块进度+可中止，状态列圆形图标逐行结果）
- * - AutoJoinDialog 批量加入发货：可加入发货台的备货单（已接单+官方可加入标记+常规备货+
- *   本地库存>0，默认全选）→ 一键加入发货台（逐块进度+可中止；2026-11-05 口径：不再
- *   自动创建发货单——发货数/包裹/发货仓库在发货台创建视图里可控）→ 全部完成后跳转「发货」页·发货台
+ * - AutoApplyDialog 自动申报备货：在售链接按近7日销量降序 → 大数值探测官方上限（错误
+ *   文案解析）回填申报量并自动勾选 → 手改（≤上限，0 锁定）→ 筛选（上限<X 取消勾选）→
+ *   批量申报（仅勾选行，逐块进度+可中止，状态列圆形图标逐行结果）
+ * - AutoJoinDialog 批量加入发货：可加入发货台的备货单（已接单+官方可加入标记+常规备货，
+ *   默认全选）→ 一键加入发货台（逐块进度+可中止；2026-11-05 口径：不再自动创建发货单
+ *   ——发货数/包裹/发货仓库在发货台创建视图里可控）→ 全部完成后跳转「发货」页·发货台
  * 两者均支持全部店铺视图：行级携带店铺归属，写操作按 storeId 分组逐店调用。
+ * 2026-11-12 口径：停止补货（商品信息页本地标记）与本地库存=0 的行不再隐藏——置顶显示、
+ * 不可勾选（可申报上限/库存核对列徽标提示原因，保证用户可见不可操作），主表手动操作不受影响。
  */
 
 /** 库存参考（货号 → 库存合计 + 已创建未装箱占用；服务端归一化货号匹配；
@@ -135,7 +139,7 @@ function StatusIconCell({
   /** 属于当前正在提交的块（旋转加载图标，逐块聚焦） */
   processing?: boolean
 }) {
-  if (processing) return <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="处理中" />
+  if (processing) return <DashRing className="size-3.5 text-muted-foreground" aria-label="处理中" />
   if (!status) return <span className="text-muted-foreground">—</span>
   if (status.ok)
     return (
@@ -194,6 +198,8 @@ export function AutoApplyDialog({
 }) {
   const [rows, setRows] = React.useState<StockRow[]>([])
   const [invMap, setInvMap] = React.useState<InvRef>({})
+  /** 停止补货链接集合（商品信息页设置菜单打的本地标记；集合含全部店）：行禁选+置顶 */
+  const [stoppedSkcs, setStoppedSkcs] = React.useState<Set<string>>(new Set())
   const [error, setError] = React.useState<string | null>(null)
   const [partialErrors, setPartialErrors] = React.useState<Array<{ store: string; error: string }>>([])
   const [loading, setLoading] = React.useState(true)
@@ -247,12 +253,9 @@ export function AutoApplyDialog({
         if (cancelled) return
         const ref = await loadInvRef(store, all.map((x) => x.productSn))
         if (cancelled) return
-        // 库存联动：本地库存>0 且有 SKU 明细的链接才入列
-        setRows(
-          all.filter(
-            (x) => x.skus.length > 0 && !!x.productSn && (ref[x.productSn]?.totalQty ?? 0) > 0,
-          ),
-        )
+        // 库存联动：有 SKU 明细且带货号的链接才入列（本地库存=0 与停止补货行不
+        // 隐藏——置顶禁选，可申报上限列徽标提示，保证用户可见不可操作）
+        setRows(all.filter((x) => x.skus.length > 0 && !!x.productSn))
         setInvMap(ref)
         setPartialErrors(partials)
       } finally {
@@ -265,6 +268,17 @@ export function AutoApplyDialog({
     }
   }, [store, stores])
 
+  // 停止补货标记与企业店铺视图无关（集合含全部店），进弹窗拉一次
+  React.useEffect(() => {
+    let cancelled = false
+    void getStopReplenishLinksAction().then((r) => {
+      if (!cancelled) setStoppedSkcs(new Set(r.skcIds))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   const kw = q.trim().toLowerCase()
   const visibleRows = kw
     ? rows.filter(
@@ -275,8 +289,25 @@ export function AutoApplyDialog({
       )
     : rows
 
-  /** 可勾选行（探测出上限 0 的行申报无意义，勾选框禁用） */
-  const checkableRows = visibleRows.filter((r) => limits[r.productSkcId]?.max !== 0)
+  /** 行禁选原因：停止补货（商品信息页本地标记）优先于本地库存=0；null=可选 */
+  const blockReason = (r: StockRow): "stopped" | "nostock" | null => {
+    if (stoppedSkcs.has(r.productSkcId)) return "stopped"
+    if ((invMap[r.productSn ?? ""]?.totalQty ?? 0) <= 0) return "nostock"
+    return null
+  }
+  const rankOf = (r: StockRow) => {
+    const b = blockReason(r)
+    return b === "stopped" ? 0 : b === "nostock" ? 1 : 2
+  }
+  // 展示排序：禁选行置顶（停止补货 → 已无库存），可选行维持销量降序（保证可见不可操作）
+  const orderedRows = [...visibleRows].sort((a, b) => rankOf(a) - rankOf(b))
+  /** 探测目标（禁选行不探测——不可申报也无须消耗官方调用） */
+  const probeTargets = orderedRows.filter((r) => blockReason(r) == null)
+
+  /** 可勾选行（停止补货/本地库存=0 禁选；探测出上限 0 的行申报无意义，同样禁用勾选） */
+  const checkableRows = visibleRows.filter(
+    (r) => blockReason(r) == null && limits[r.productSkcId]?.max !== 0,
+  )
   const allChecked = checkableRows.length > 0 && checkableRows.every((r) => selected.has(r.productSkcId))
   const someChecked = checkableRows.some((r) => selected.has(r.productSkcId))
 
@@ -290,19 +321,21 @@ export function AutoApplyDialog({
     })
   }
 
-  /** 逐链接探测（dryRun 只探测不申报；探测被官方意外接受时 action 内自动取消回滚） */
+  /** 逐链接探测（dryRun 只探测不申报；探测被官方意外接受时 action 内自动取消回滚）。
+   *  停止补货/本地库存=0 的禁选行跳过（不可申报，也无须消耗官方调用） */
   const probeAll = () => {
-    if (visibleRows.length === 0) return
+    if (probeTargets.length === 0) return
     abortedRef.current = false
     setProbing(true)
-    setProgress({ done: 0, total: visibleRows.length })
+    setProgress({ done: 0, total: probeTargets.length })
     setCursor(0)
     void (async () => {
       let done = 0
       const next: Record<string, ProbeLimit> = { ...limits }
-      for (let i = 0; i < visibleRows.length; i++) {
+      for (let i = 0; i < orderedRows.length; i++) {
         if (abortedRef.current) break
-        const row = visibleRows[i]!
+        const row = orderedRows[i]!
+        if (blockReason(row) != null) continue
         setCursor(i)
         try {
           const r = await autoStockingLinkAction({
@@ -355,13 +388,13 @@ export function AutoApplyDialog({
         }
         setLimits({ ...next })
         done++
-        setProgress({ done, total: visibleRows.length })
+        setProgress({ done, total: probeTargets.length })
       }
       setCursor(-1)
       setProbing(false)
       setProgress(null)
       if (abortedRef.current) {
-        toast.warning(`探测已中止：完成 ${done}/${visibleRows.length}，剩余未探测`, { duration: 8000 })
+        toast.warning(`探测已中止：完成 ${done}/${probeTargets.length}，剩余未探测`, { duration: 8000 })
       } else {
         toast.success(`探测完成：${done} 个链接`)
       }
@@ -396,8 +429,11 @@ export function AutoApplyDialog({
     return { valid: true, value: v }
   }
 
-  /** 批量申报目标 = 已勾选 且 数量有效 */
-  const applicable = visibleRows.filter((r) => selected.has(r.productSkcId) && qtyState(r)?.valid)
+  /** 批量申报目标 = 已勾选 且 数量有效；提交前硬过滤禁选行（同 AutoJoinDialog joinable
+   *  口径）——停止补货集合晚到时探测仍可能误勾选禁选行，此处兜底不被提交 */
+  const applicable = orderedRows.filter(
+    (r) => blockReason(r) == null && selected.has(r.productSkcId) && qtyState(r)?.valid,
+  )
 
   const runApply = () => {
     // 按店铺分组（全部店铺视图跨店合并）→ 每店 ≤5/块串行（块小让逐块聚焦可见；服务端
@@ -489,7 +525,8 @@ export function AutoApplyDialog({
         <DialogHeader>
           <DialogTitle>自动申报备货（{rows.length} 个在售链接）</DialogTitle>
           <DialogDescription>
-            按近7日销量降序，仅列本地库存&gt;0 的链接。探测 = 以超大数值调官方申报接口，从错误文案解析各 SKU
+            按近7日销量降序；停止补货与本地库存为 0 的链接置顶显示、不可勾选（可申报上限列徽标提示原因）。
+            探测 = 以超大数值调官方申报接口，从错误文案解析各 SKU
             可申报上限并回填、自动勾选；上限 0 = 当前不可申报（锁定不可改），修改量不得超过上限。批量申报仅提交勾选行，结果见「状态」列。
           </DialogDescription>
         </DialogHeader>
@@ -518,9 +555,9 @@ export function AutoApplyDialog({
             </>
           ) : (
             <>
-              <Button size="sm" className="h-8 text-xs" disabled={busy || loading || visibleRows.length === 0} onClick={probeAll}>
+              <Button size="sm" className="h-8 text-xs" disabled={busy || loading || probeTargets.length === 0} onClick={probeAll}>
                 <Zap className="size-4" />
-                获取可申报量（{visibleRows.length}）
+                获取可申报量（{probeTargets.length}）
               </Button>
               <Button
                 variant="outline"
@@ -566,15 +603,16 @@ export function AutoApplyDialog({
               {!loading && visibleRows.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={store ? 8 : 9} className="h-20 text-center text-muted-foreground">
-                    {error ?? "暂无符合条件的在售链接（需本地库存 > 0）"}
+                    {error ?? "暂无符合条件的在售链接"}
                   </TableCell>
                 </TableRow>
               )}
-              {visibleRows.map((r, i) => {
+              {orderedRows.map((r, i) => {
                 const lim = limits[r.productSkcId]
                 const qs = qtyState(r)
                 const over = qs != null && !qs.valid
                 const locked = !lim || lim.max == null || lim.max <= 0
+                const block = blockReason(r)
                 return (
                   <TableRow
                     key={r.productSkcId}
@@ -585,7 +623,7 @@ export function AutoApplyDialog({
                     <TableCell>
                       <Checkbox
                         checked={selected.has(r.productSkcId)}
-                        disabled={busy || lim?.max === 0}
+                        disabled={busy || block != null || lim?.max === 0}
                         onCheckedChange={() =>
                           setSelected((s) => {
                             const n = new Set(s)
@@ -615,6 +653,35 @@ export function AutoApplyDialog({
                     <TableCell className="tabular-nums">{invMap[r.productSn ?? ""]?.totalQty ?? <EmptyHint />}</TableCell>
                     <TableCell>
                       {(() => {
+                        // 禁选行徽标提示原因（置顶展示，保证用户可见不可操作）
+                        if (block === "stopped")
+                          return (
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger className="cursor-default">
+                                  <Badge className="rounded-[4px] bg-red-500/15 px-1 text-[10px] text-red-700 dark:text-red-400">
+                                    停止补货
+                                  </Badge>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  该链接已设为停止补货（商品信息页可取消），不可申报
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          )
+                        if (block === "nostock")
+                          return (
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger className="cursor-default">
+                                  <Badge className="rounded-[4px] bg-muted px-1 text-[10px] text-muted-foreground">
+                                    已无库存
+                                  </Badge>
+                                </TooltipTrigger>
+                                <TooltipContent>本地库存为 0，请先入库后再申报</TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          )
                         if (!lim)
                           return (
                             <Badge className="rounded-[4px] bg-muted px-1 text-[10px] text-muted-foreground">未探测</Badge>
@@ -810,6 +877,8 @@ export function AutoJoinDialog({
   const router = useRouter()
   const [rows, setRows] = React.useState<TemuPurchaseOrderRow[]>([])
   const [invMap, setInvMap] = React.useState<InvRef>({})
+  /** 停止补货链接集合（商品信息页设置菜单打的本地标记；集合含全部店）：行禁选+置顶 */
+  const [stoppedSkcs, setStoppedSkcs] = React.useState<Set<string>>(new Set())
   const [error, setError] = React.useState<string | null>(null)
   const [partialErrors, setPartialErrors] = React.useState<Array<{ store: string; error: string }>>([])
   const [loading, setLoading] = React.useState(true)
@@ -842,12 +911,14 @@ export function AutoJoinDialog({
         )
         const ref = await loadInvRef(store, candidates.map((x) => x.productSn))
         if (cancelled) return
-        // 库存联动：本地库存>0 的货号才入列
-        const filtered = candidates.filter((x) => !!x.productSn && (ref[x.productSn!]?.totalQty ?? 0) > 0)
+        // 库存联动：带货号的备货单入列（本地库存=0 与停止补货行不隐藏——置顶禁选，
+        // 库存核对列徽标提示，保证用户可见不可操作）
+        const filtered = candidates.filter((x) => !!x.productSn)
         setRows(filtered)
         setInvMap(ref)
         setPartialErrors(r.errors ?? [])
-        // 默认勾选排除库存不足行（同货号合并需求口径与 shortageOf 一致）；可手动勾选/全选
+        // 默认勾选排除库存不足行（同货号合并需求口径与 shortageOf 一致）；可手动勾选/全选。
+        // 停止补货集合异步晚到时初始勾选可能误含禁选行——joinable 提交前硬过滤兜底
         const demand = new Map<string, number>()
         for (const x of filtered)
           demand.set(x.productSn!, (demand.get(x.productSn!) ?? 0) + Math.max(0, x.purchaseTotal ?? 0))
@@ -868,12 +939,59 @@ export function AutoJoinDialog({
     }
   }, [store])
 
-  /** 同货号合并需求（本弹窗各单下单量 + 已创建未装箱占用）对库存的缺口 */
+  // 停止补货标记与企业店铺视图无关（集合含全部店），进弹窗拉一次
+  React.useEffect(() => {
+    let cancelled = false
+    void getStopReplenishLinksAction().then((r) => {
+      if (!cancelled) setStoppedSkcs(new Set(r.skcIds))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  /** 行禁选原因：停止补货（商品信息页本地标记）优先于本地库存=0；null=可选 */
+  const blockReason = (r: TemuPurchaseOrderRow): "stopped" | "nostock" | null => {
+    if (r.productSkcId != null && stoppedSkcs.has(r.productSkcId)) return "stopped"
+    if ((invMap[r.productSn ?? ""]?.totalQty ?? 0) <= 0) return "nostock"
+    return null
+  }
+  const rankOf = (r: TemuPurchaseOrderRow) => {
+    const b = blockReason(r)
+    return b === "stopped" ? 0 : b === "nostock" ? 1 : 2
+  }
+  // 展示排序：禁选行置顶（停止补货 → 已无库存），可选行维持原序（保证可见不可操作）
+  const orderedRows = [...rows].sort((a, b) => rankOf(a) - rankOf(b))
+  const checkableRows = rows.filter((r) => blockReason(r) == null)
+
+  // 初始默认勾选不读停止补货集合/禁选口径（行加载与其异步晚到无顺序保证）：禁选行
+  // 到位后修剪勾选集，消除「红徽章·不可加入 + 勾选态禁用」矛盾展示与 footer 计数
+  // 虚高（提交另有 joinable 硬过滤兜底，此处只管展示口径）
+  React.useEffect(() => {
+    setSelected((s) => {
+      if (s.size === 0) return s
+      const n = new Set(s)
+      let changed = false
+      for (const r of rows) {
+        if (n.has(r.subPurchaseOrderSn) && blockReason(r) != null) {
+          n.delete(r.subPurchaseOrderSn)
+          changed = true
+        }
+      }
+      return changed ? n : s
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, stoppedSkcs, invMap])
+
+  /** 同货号合并需求（本弹窗各单下单量 + 已创建未装箱占用）对库存的缺口——
+   *  只累计可选行（禁选行不会提交，计入会让同货号可选行误报库存不足） */
   const demandBySn = React.useMemo(() => {
     const m = new Map<string, number>()
-    for (const r of rows) m.set(r.productSn!, (m.get(r.productSn!) ?? 0) + Math.max(0, r.purchaseTotal ?? 0))
+    for (const r of checkableRows)
+      m.set(r.productSn!, (m.get(r.productSn!) ?? 0) + Math.max(0, r.purchaseTotal ?? 0))
     return m
-  }, [rows])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, invMap, stoppedSkcs])
 
   const shortageOf = (sn: string): number => {
     const ref = invMap[sn]
@@ -888,13 +1006,19 @@ export function AutoJoinDialog({
     [rows, invMap],
   )
 
-  const allChecked = rows.length > 0 && rows.every((r) => selected.has(r.subPurchaseOrderSn))
-  const someChecked = rows.some((r) => selected.has(r.subPurchaseOrderSn))
+  // 全选/半选只作用于可选行（停止补货/本地库存=0 置顶禁选）；joinable 提交前
+  // 硬过滤可选行——停止补货集合异步晚到时初始勾选可能误含禁选行，此处兜底
+  const allChecked = checkableRows.length > 0 && checkableRows.every((r) => selected.has(r.subPurchaseOrderSn))
+  const someChecked = checkableRows.some((r) => selected.has(r.subPurchaseOrderSn))
   // 部分勾选（半选「-」态）或全选时点击 = 取消全部（同 TEMU 主表/库存面板口径）
   const toggleAll = () =>
-    setSelected(() => (allChecked || someChecked ? new Set() : new Set(rows.map((r) => r.subPurchaseOrderSn))))
+    setSelected(() =>
+      allChecked || someChecked
+        ? new Set()
+        : new Set(checkableRows.map((r) => r.subPurchaseOrderSn)),
+    )
 
-  const joinable = rows.filter((r) => selected.has(r.subPurchaseOrderSn))
+  const joinable = checkableRows.filter((r) => selected.has(r.subPurchaseOrderSn))
 
   const runJoin = () => {
     // 按店铺分组 → 每店 ≤20/块串行加入发货台（官方 staging.add 单次上限 50，取 20
@@ -992,7 +1116,8 @@ export function AutoJoinDialog({
         <DialogHeader>
           <DialogTitle>批量加入发货（{rows.length} 个可加入单）</DialogTitle>
           <DialogDescription>
-            仅列已接单待发货、官方标记可加入发货台、常规备货且本地库存&gt;0 的备货单（默认全选；库存不足的行默认不勾选，可手动勾选）。一键加入发货台后自动前往「发货」页·发货台，
+            仅列已接单待发货、官方标记可加入发货台、常规备货的备货单（默认全选；库存不足的行默认不勾选，可手动勾选）。停止补货与本地库存为
+            0 的行置顶显示、不可勾选（库存核对列徽标提示原因）。一键加入发货台后自动前往「发货」页·发货台，
             在创建发货单视图里按收货仓分组创建（可调发货数/包裹/发货仓库）。海外备货请勿加入（顶部红色横幅警示）。
           </DialogDescription>
         </DialogHeader>
@@ -1041,15 +1166,16 @@ export function AutoJoinDialog({
               {!loading && rows.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={store ? 8 : 9} className="h-20 text-center text-muted-foreground">
-                    {error ?? "暂无可加入发货台的备货单（需已接单+可加入标记+常规备货+本地库存>0）"}
+                    {error ?? "暂无可加入发货台的备货单（需已接单+可加入标记+常规备货）"}
                   </TableCell>
                 </TableRow>
               )}
-              {rows.map((r) => {
+              {orderedRows.map((r) => {
                 const shortage = shortageOf(r.productSn!)
                 const snDemand = demandBySn.get(r.productSn!) ?? 0
                 const snOrders = rows.filter((x) => x.productSn === r.productSn).length
                 const snPending = invMap[r.productSn!]?.pendingUnpacked ?? 0
+                const block = blockReason(r)
                 return (
                   <TableRow
                     key={r.subPurchaseOrderSn}
@@ -1058,7 +1184,7 @@ export function AutoJoinDialog({
                     <TableCell>
                       <Checkbox
                         checked={selected.has(r.subPurchaseOrderSn)}
-                        disabled={applying}
+                        disabled={applying || block != null}
                         onCheckedChange={() =>
                           setSelected((s) => {
                             const n = new Set(s)
@@ -1093,7 +1219,32 @@ export function AutoJoinDialog({
                     </TableCell>
                     <TableCell className="tabular-nums">{invMap[r.productSn!]?.totalQty ?? <EmptyHint />}</TableCell>
                     <TableCell>
-                      {shortage > 0 ? (
+                      {/* 禁选行徽标提示原因（置顶展示，保证用户可见不可操作） */}
+                      {block === "stopped" ? (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger className="cursor-default">
+                              <Badge className="rounded-[4px] bg-red-500/15 px-1 text-[10px] text-red-700 dark:text-red-400">
+                                停止补货
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              该链接已设为停止补货（商品信息页可取消），不可加入发货
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      ) : block === "nostock" ? (
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger className="cursor-default">
+                              <Badge className="rounded-[4px] bg-muted px-1 text-[10px] text-muted-foreground">
+                                已无库存
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent>本地库存为 0，请先入库或补货</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      ) : shortage > 0 ? (
                         <TooltipProvider>
                           <Tooltip>
                             <TooltipTrigger className="cursor-default">

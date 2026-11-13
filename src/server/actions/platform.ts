@@ -28,6 +28,7 @@ import {
   permissionGroups,
   subscriptionPlans,
   systemSettings,
+  temuStores,
   users,
   type ModuleName,
   type SystemSettingValue,
@@ -35,12 +36,16 @@ import {
 import { requireSuperAdmin } from "@/lib/auth/session"
 import { encrypt, hashPassword } from "@/lib/crypto"
 import {
+  countAppStores,
   decryptTemuSecret,
   encryptTemuSecret,
+  getTemuApp,
   isMaskedTemuSecret,
-  loadTemuAppConfig,
+  listTemuApps,
   maskTemuSecret,
-  saveTemuAppConfig,
+  createTemuApp,
+  updateTemuApp,
+  deleteTemuApp,
 } from "@/lib/temu-api/app-config"
 import { listTransactions, rechargeCredits } from "@/server/services/credits-service"
 import {
@@ -554,7 +559,7 @@ export async function updateEnterpriseConcurrencyAction(input: {
  * 更新企业模型配置（需求 2b）
  *
  * - allowCustomModels：是否允许企业自建私有模型
- * - visiblePresetModels：可见的平台预置模型 id 白名单（空 = 全部可见）
+ * - visiblePresetModels：可见的平台生图模型 id 白名单（空 = 全部可见）
  * - visiblePresetChatModels：可见的平台预置对话模型 id 白名单（空 = 全部可见）
  */
 export async function updateEnterpriseModelConfigAction(input: {
@@ -1012,7 +1017,7 @@ function normalizeDashboardRange(range?: number): DashboardRange {
  *
  * 聚合：企业/用户/平台积分总量、生图总次数、已完成、今日（含昨日环比）、
  * 状态分布、企业生图 Top10、近 N 天趋势（任务数 + 完成数双序列）、
- * 平台预置模型使用 Top；增强项：今日活跃用户/今日失败率/平均生成耗时/
+ * 平台生图模型使用 Top；增强项：今日活跃用户/今日失败率/平均生成耗时/
  * 今日积分消耗/积分消耗趋势/24 小时时段分布/用户与企业增长曲线。
  */
 export interface PlatformStats {
@@ -1135,7 +1140,7 @@ export async function getPlatformStatsAction(
     .groupBy(sql`date_trunc('day', ${generationTasks.createdAt})`)
     .orderBy(sql`date_trunc('day', ${generationTasks.createdAt})`)
 
-  // 平台预置模型使用排行（Top 10）
+  // 平台生图模型使用排行（Top 10）
   const modelRanking = await db
     .select({
       modelId: generationTasks.modelId,
@@ -1595,66 +1600,127 @@ export async function saveMockupSettingAction(input: {
   return { ok: true, error: null }
 }
 
-/* ─── 企业级 TEMU 应用凭证（system_setting key=temu_api_app；每企业可对接各自的自研应用） ─── */
+/* ─── 企业级 TEMU 应用（多主体：每企业可配多个自研应用，店铺挂应用、单应用 20 店上限） ─── */
 
-/** TEMU 应用凭证表单值（secret 回显掩码） */
-export interface TemuAppSettingView {
+/** TEMU 应用列表视图（secret 回显掩码；storeCount 供 20 上限展示/删除前置提示） */
+export interface TemuAppView {
+  id: string
+  name: string
   appKey: string
   appSecret: string
   testMode: boolean
+  enabled: boolean
+  storeCount: number
 }
 
-export async function getTemuAppSettingAction(
-  enterpriseId: string,
-): Promise<TemuAppSettingView> {
+export async function listTemuAppsAction(enterpriseId: string): Promise<TemuAppView[]> {
   await requireSuperAdmin()
-  const config = await loadTemuAppConfig(enterpriseId)
-  return {
-    appKey: config.appKey,
-    appSecret: maskTemuSecret(decryptTemuSecret(config.appSecretEncrypted)),
-    testMode: config.testMode,
-  }
+  const apps = await listTemuApps(enterpriseId)
+  // 店铺数按应用聚合（一次查询；不含演示店铺）
+  const storeRows = await db
+    .select({ appId: temuStores.appId, n: count() })
+    .from(temuStores)
+    .where(and(eq(temuStores.enterpriseId, enterpriseId), eq(temuStores.isDemo, false)))
+    .groupBy(temuStores.appId)
+  const countByApp = new Map(storeRows.map((r) => [r.appId, Number(r.n)]))
+  return apps.map((a) => ({
+    id: a.id,
+    name: a.name,
+    appKey: a.appKey,
+    appSecret: maskTemuSecret(decryptTemuSecret(a.appSecretEncrypted)),
+    testMode: a.testMode,
+    enabled: a.enabled,
+    storeCount: countByApp.get(a.id) ?? 0,
+  }))
 }
 
-export async function saveTemuAppSettingAction(input: {
+/** 新建/编辑应用合一（appId 空=新建）；secret 掩码语义同旧配置（原样提交=不修改） */
+export async function saveTemuAppAction(input: {
   enterpriseId: string
+  appId?: string
+  name: string
   appKey: string
   appSecret: string
   testMode: boolean
-}): Promise<{ ok: boolean; error: string | null }> {
+}): Promise<{ ok: boolean; error: string | null; appId: string | null }> {
   await requireSuperAdmin()
 
   const enterpriseId = String(input.enterpriseId ?? "").trim()
   if (!/^[0-9a-f-]{36}$/i.test(enterpriseId)) {
-    return { ok: false, error: "企业 ID 非法" }
+    return { ok: false, error: "企业 ID 非法", appId: null }
   }
   const [ent] = await db
     .select({ id: enterprises.id })
     .from(enterprises)
     .where(eq(enterprises.id, enterpriseId))
     .limit(1)
-  if (!ent) return { ok: false, error: "企业不存在" }
+  if (!ent) return { ok: false, error: "企业不存在", appId: null }
 
-  const current = await loadTemuAppConfig(enterpriseId)
-  const appKey = input.appKey.trim()
+  const name = String(input.name ?? "").trim()
+  if (!name) return { ok: false, error: "请填写应用名称", appId: null }
+  if (name.length > 100) return { ok: false, error: "应用名称过长（≤100 字符）", appId: null }
+
+  // 编辑时校验应用归属该企业
+  let current = null
+  if (input.appId) {
+    const app = await getTemuApp(input.appId)
+    if (!app || app.enterpriseId !== enterpriseId) {
+      return { ok: false, error: "应用不存在或不属于该企业", appId: null }
+    }
+    current = app
+  }
+
+  const appKey = String(input.appKey ?? "").trim()
   // 掩码=保留现值；其余以输入为准（空串=清空）
-  const masked = isMaskedTemuSecret(input.appSecret)
+  const masked = isMaskedTemuSecret(String(input.appSecret ?? ""))
   const plainSecret = masked
-    ? decryptTemuSecret(current.appSecretEncrypted)
-    : input.appSecret.trim()
+    ? decryptTemuSecret(current?.appSecretEncrypted ?? "")
+    : String(input.appSecret ?? "").trim()
 
   if (!input.testMode && appKey && !plainSecret) {
-    return { ok: false, error: "已填写 app_key 但 app_secret 为空，请补全后再保存" }
+    return { ok: false, error: "已填写 app_key 但 app_secret 为空，请补全后再保存", appId: null }
   }
   if (!input.testMode && !appKey && plainSecret) {
-    return { ok: false, error: "已填写 app_secret 但 app_key 为空，请补全后再保存" }
+    return { ok: false, error: "已填写 app_secret 但 app_key 为空，请补全后再保存", appId: null }
+  }
+  if (!input.testMode && !appKey && !plainSecret && !current) {
+    return { ok: false, error: "请填写 app_key / app_secret（或开启测试模式）", appId: null }
   }
 
-  await saveTemuAppConfig(enterpriseId, {
-    appKey,
-    appSecretEncrypted: encryptTemuSecret(plainSecret),
-    testMode: input.testMode,
-  })
+  const secretEncrypted = encryptTemuSecret(plainSecret)
+  if (input.appId) {
+    await updateTemuApp(input.appId, { name, appKey, appSecretEncrypted: secretEncrypted, testMode: input.testMode })
+  } else {
+    const created = await createTemuApp(enterpriseId, {
+      name,
+      appKey,
+      appSecretEncrypted: secretEncrypted,
+      testMode: input.testMode,
+    })
+    input = { ...input, appId: created.id }
+  }
+  revalidatePath("/platform/enterprises")
+  return { ok: true, error: null, appId: input.appId ?? null }
+}
+
+/** 删除应用（有店铺时拒绝；外键兜底） */
+export async function deleteTemuAppAction(input: {
+  enterpriseId: string
+  appId: string
+}): Promise<{ ok: boolean; error: string | null }> {
+  await requireSuperAdmin()
+  const app = await getTemuApp(input.appId)
+  if (!app || app.enterpriseId !== input.enterpriseId) {
+    return { ok: false, error: "应用不存在或不属于该企业" }
+  }
+  const storeCount = await countAppStores(input.appId)
+  if (storeCount > 0) {
+    return {
+      ok: false,
+      error: `该应用下仍有 ${storeCount} 家店铺，请先在 TEMU 店铺管理中删除或转移这些店铺`,
+    }
+  }
+  await deleteTemuApp(input.appId)
   revalidatePath("/platform/enterprises")
   return { ok: true, error: null }
 }

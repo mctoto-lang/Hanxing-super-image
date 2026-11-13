@@ -1,4 +1,4 @@
-# 瀚星 Super Image
+# StarChart 瀚星星图
 
 企业级 AI 图片工作台 · 多租户 SaaS · Docker Compose 自托管
 

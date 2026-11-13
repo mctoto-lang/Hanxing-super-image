@@ -1,7 +1,8 @@
 "use client"
 
 import * as React from "react"
-import { Loader2, RefreshCw } from "lucide-react"
+import { RefreshCw } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import {
   TableBody,
   TableCell,
@@ -264,7 +265,7 @@ export function TemuReturnPanel({ store }: { store?: string }) {
             className="w-72"
           />
           <Button variant="outline" size="sm" className="h-8 text-xs" onClick={load} disabled={loading} aria-label="刷新退货列表">
-            {loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+            {loading ? <DashRing className="size-4" /> : <RefreshCw className="size-4" />}
             刷新
           </Button>
         </div>
@@ -450,7 +451,7 @@ function ReturnDetailDialog({
             <p className="py-6 text-center text-sm text-red-600 dark:text-red-400">{error}</p>
           ) : !rows ? (
             <p className="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" /> 加载中…
+              <DashRing className="size-4" /> 加载中…
             </p>
           ) : rows.length === 0 ? (
             <p className="py-6 text-center text-sm text-muted-foreground">官方未返回该包裹的 SKC 明细</p>

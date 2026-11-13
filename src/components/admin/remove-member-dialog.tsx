@@ -42,13 +42,13 @@ export function RemoveMemberDialog({
   return (
     <>
       <Button
-        variant="ghost"
+        variant="outline"
         size="sm"
         className="text-destructive"
-        aria-label={`删除成员 ${username}`}
         onClick={() => setOpen(true)}
       >
         <Trash2 className="size-3.5" />
+        删除
       </Button>
       <ConfirmDialog
         open={open}

@@ -1034,7 +1034,7 @@ export function ModelEditButton({ model }: { model: ModelRow }) {
   )
 }
 
-/** 启停按钮（仅企业私有模型可用，平台预置模型由父组件控制不渲染） */
+/** 启停按钮（仅企业私有模型可用，平台生图模型由父组件控制不渲染） */
 export function ModelToggleActiveButton({ model }: { model: ModelRow }) {
   const [pending, startTransition] = React.useTransition()
   const router = useRouter()

@@ -1,7 +1,8 @@
 "use client"
 
 import * as React from "react"
-import { AlertTriangle, History, Loader2 } from "lucide-react"
+import { AlertTriangle, History } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import {
   Dialog,
   DialogContent,
@@ -59,7 +60,7 @@ export function CardHistoryDialog({
         <div className="max-h-[65vh] space-y-3 overflow-y-auto">
           {loading ? (
             <div className="flex h-24 items-center justify-center text-sm text-muted-foreground">
-              <Loader2 className="mr-2 size-4 animate-spin" /> 加载中…
+              <DashRing className="mr-2 size-4" /> 加载中…
             </div>
           ) : batches.length === 0 ? (
             <div className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">

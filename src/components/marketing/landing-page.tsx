@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react
 import { ArrowRight, ArrowUpRight, Menu, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import StarfieldSection from "@/components/marketing/starfield-section"
+import BentoFeaturesSection from "@/components/marketing/bento-features-section"
+import LogoMarqueeSection from "@/components/marketing/logo-marquee-section"
 import PricingSection, { PLANS } from "@/components/marketing/pricing-section"
 import FaqSection from "@/components/marketing/faq-section"
 import TestimonialsSection from "@/components/marketing/testimonials-section"
@@ -248,7 +250,7 @@ export default function LandingPage() {
               </h1>
 
               <p className="animate-fade-slide-in-3 mx-auto mt-6 max-w-2xl text-base text-white/80 sm:text-lg">
-                瀚星 Super Image
+                StarChart 瀚星星图
                 汇聚前沿 AI 生成能力，让专业级图像创作触手可及。输入一句话，即可获得商用级画质，安全、高效、灵感无限。
               </p>
 
@@ -292,12 +294,18 @@ export default function LandingPage() {
       {/* 产品功能：超空间星空（星空画布 + 功能文案） */}
       <StarfieldSection />
 
-      {/* 订阅套餐：三档定价（月付/年付切换 + 热门流光卡） */}
+      {/* 核心能力：Bento 功能矩阵（产品功能第二页，AI 创作 × TEMU 运营） */}
+      <BentoFeaturesSection />
+
+      {/* Logo 墙：电商平台 × AI 模型双行反向跑马灯（彩色 logo + 名称，无标题） */}
+      <LogoMarqueeSection />
+
+      {/* 订阅套餐：四档定价（月付/年付切换 + 热门流光卡，Ultra 档高亮） */}
       <section id="pricing" className="bg-neutral-950 px-6 py-24">
         <PricingSection
           plans={PLANS}
           heading="订阅套餐"
-          description="按月或按年订阅，积分随套餐规模提升，随时升级降级，无隐藏费用。"
+          description="按月或按年订阅，积分随套餐规模提升并叠加赠送，随时升级降级，无隐藏费用。"
         />
       </section>
 
@@ -309,7 +317,7 @@ export default function LandingPage() {
       >
         <TestimonialsSection
           heading="用户评价"
-          description="来自设计、电商、内容创作团队的真实反馈，看看他们如何用瀚星 Super Image 提升创作效率。"
+          description="来自设计、电商、内容创作团队的真实反馈，看看他们如何用 StarChart 瀚星星图 提升创作效率。"
         />
       </section>
 

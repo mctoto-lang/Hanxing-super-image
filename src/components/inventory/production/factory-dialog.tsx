@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { Loader2, Pencil } from "lucide-react"
+import { Pencil } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -154,7 +155,7 @@ export function FactoryDialog({
               })
             }
           >
-            {pending && <Loader2 className="size-3.5 animate-spin" />}
+            {pending && <DashRing className="size-3.5" />}
             {editingId ? "保存" : "添加"}
           </Button>
         </DialogFooter>

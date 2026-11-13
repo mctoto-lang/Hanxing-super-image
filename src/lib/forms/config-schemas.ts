@@ -165,9 +165,10 @@ export const mockupSettingFormSchema = z.object({
   enabled: z.boolean(),
 })
 
-/** TEMU 应用配置（temu-app-config-dialog；appSecret 掩码回显原样提交=保留现值） */
+/** TEMU 应用配置（temu-app-manage-dialog；appSecret 掩码回显原样提交=保留现值） */
 export const temuAppSettingFormSchema = z
   .object({
+    name: z.string().trim().min(1, "请填写应用名称").max(100, "应用名称最多 100 字"),
     appKey: z.string().trim().max(100, "app_key 最多 100 字"),
     appSecret: z.string().max(200, "app_secret 最多 200 字"),
     testMode: z.boolean(),

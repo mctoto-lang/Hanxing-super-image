@@ -187,6 +187,8 @@ export interface TemuPurchaseOrderRow {
 export async function getTemuPurchaseOrdersAction(input: {
   store?: string
   status?: string
+  /** 应用（主体）过滤：全部店铺视图按应用切分（单店时 store 已收敛） */
+  app?: string
 }): Promise<
   | {
       ok: true
@@ -218,11 +220,13 @@ export async function getTemuPurchaseOrdersAction(input: {
     }
   }
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
-  return temuCached(`${enterpriseId}:purchase:all:${q.status}`, async () => {
+  return temuCached(`${enterpriseId}:purchase:all:${q.app ?? "all"}:${q.status}`, async () => {
+    const storeConds = [eq(temuStores.enterpriseId, enterpriseId), eq(temuStores.enabled, true)]
+    if (q.app) storeConds.push(eq(temuStores.appId, q.app))
     const storeRows = await db
       .select()
       .from(temuStores)
-      .where(and(eq(temuStores.enterpriseId, enterpriseId), eq(temuStores.enabled, true)))
+      .where(and(...storeConds))
       .orderBy(asc(temuStores.sortOrder), asc(temuStores.createdAt))
     const rows: TemuPurchaseOrderRow[] = []
     const errors: Array<{ store: string; error: string }> = []

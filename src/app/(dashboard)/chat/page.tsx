@@ -1,4 +1,5 @@
 import { Suspense } from "react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { requireEnterpriseContext } from "@/lib/auth/session"
 import {
   listChatModelsAction,
@@ -65,7 +66,8 @@ export default async function ChatPage({
     <div className="absolute inset-x-0 top-16 bottom-0">
       <Suspense
         fallback={
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+            <DashRing className="size-8" />
             加载中…
           </div>
         }

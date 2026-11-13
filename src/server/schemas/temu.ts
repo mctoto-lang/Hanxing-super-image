@@ -39,7 +39,9 @@ export const temuListQuerySchema = z.object({
   range: z.coerce.number().int().min(1).max(90).optional(),
   /** 商品排序：listed 上架时间新→旧（默认）/ today 今日销量 / last7 七日销量 /
    *  sn 货号 B 后数字自然序小→大（空值最上） */
-  sort: z.enum(["listed", "today", "last7", "sn"]).optional(),
+  sort: z.enum(["listed", "today", "last7", "sn"]).optional(),  /** 应用（主体）过滤（?app=；「全部主体」不传） */
+  app: z.string().uuid().optional(),
+
 })
 export type TemuListQuery = z.infer<typeof temuListQuerySchema>
 
@@ -395,6 +397,8 @@ export function refineShipPackageSum(order: {
 // ---------- 店铺管理（企业管理员） ----------
 
 export const createTemuStoreSchema = z.object({
+  /** 所属 TEMU 应用（多主体模型；action 侧校验应用归属企业 + 20 店铺上限） */
+  appId: z.string().uuid("请选择所属应用"),
   name: z.string().min(1, "请输入店铺名称").max(100),
   mallId: z.string().max(64).optional(),
   mallName: z.string().max(100).optional(),
@@ -474,6 +478,10 @@ export const temuAdjustOrderStatusSchema = z.enum(["pending", "supplier", "succe
 export const temuAdjustOrderQuerySchema = z.object({
   store: z.string().uuid(),
   status: temuAdjustOrderStatusSchema,
+  /** 服务端过滤（2026-11-12 探针实证 CN 版入参即可用）：sn→priceOrderSn、ext→extCodes+extCodeType=1、
+   * name→productName（模糊包含）；all+关键词不传参（前端客户端兜底过滤，官方无跨字段搜索） */
+  searchField: z.enum(["all", "sn", "ext", "name"]).optional(),
+  searchKeyword: z.string().trim().max(100).optional(),
 })
 
 export const temuAdjustApproveSchema = z.object({
@@ -704,6 +712,32 @@ export const temuProductCarouselSchema = z.object({
     .max(30),
 })
 
+/** 转码后的视频信息（result.get.global 返回结构，挂载提交按原样回传官方） */
+export const temuVideoInfoSchema = z.object({
+  vid: z.string().min(1).max(200),
+  coverUrl: z.string().max(1000),
+  videoUrl: z.string().max(1000),
+  width: z.number().int().min(0),
+  height: z.number().int().min(0),
+})
+
+/** 换视频：转码结果查询（bg.goods.big.video.upload.result.get.global {vid}；
+ *  转码未完成时 result 为空对象 → 返回 video=null 由前端继续轮询） */
+export const temuVideoResultQuerySchema = z.object({
+  store: z.string().uuid(),
+  vid: z.string().min(1).max(200),
+})
+
+/** 换视频：挂载提交（edit.pictures.submit 视频位；slot carousel=主图轮播视频
+ *  productCarouseVideoReqList / detail=详情视频 productDetailVideoReqList，
+ *  2026-11-12 探针实证独立提交即生效） */
+export const temuProductVideoSchema = z.object({
+  storeId: z.string().uuid(),
+  productId: z.string().min(1).max(32),
+  slot: z.enum(["carousel", "detail"]),
+  video: temuVideoInfoSchema,
+})
+
 /** 发品（模板 + 店铺 + 覆盖默认层） */
 export const temuPublishActionSchema = z.object({
   templateId: z.string().uuid(),
@@ -751,6 +785,8 @@ export const temuPurchaseQuerySchema = z.object({
   /** 缺省=全部店铺（逐店扇出查询合并，行级带 storeId/storeName） */
   store: z.string().uuid().optional(),
   status: temuPurchaseStatusSchema.default("todo"),
+  /** 应用（主体）过滤：全部店铺视图按应用切分 */
+  app: z.string().uuid().optional(),
 })
 
 /** 批量取消备货单（bg.purchaseorder.cancel：仅待接单等早期状态可取消） */

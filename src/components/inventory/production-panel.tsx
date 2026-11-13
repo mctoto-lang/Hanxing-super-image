@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { toast } from "sonner"
 import {
   Barcode,
@@ -9,7 +10,6 @@ import {
   CalendarClock,
   ImageDown,
   Inbox,
-  Loader2,
   MoreHorizontal,
   Package,
   Pencil,
@@ -466,7 +466,7 @@ export function ProductionPanel() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-base font-normal">
             生产单
-            {loading ? <Loader2 className="size-3.5 animate-spin text-muted-foreground" /> : null}
+            {loading ? <DashRing className="size-3.5 text-muted-foreground" /> : null}
             <span className="text-sm font-normal text-muted-foreground">（{data.length} 单）</span>
           </div>
           <div className="flex flex-wrap items-center gap-2">

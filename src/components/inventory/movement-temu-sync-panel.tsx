@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { CircleCheck, CircleDashed, Loader2, RefreshCw, Warehouse } from "lucide-react"
+import { CircleCheck, CircleDashed, RefreshCw, Warehouse } from "lucide-react"
+import { DashRing } from "@/components/ui/dash-ring"
 import { type DateRange } from "react-day-picker"
 import {
   TableBody,
@@ -278,7 +279,7 @@ export function MovementTemuSyncPanel({
             onClick={() => load({ fresh: true })}
             disabled={loading}
           >
-            {loading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+            {loading ? <DashRing className="size-3.5" /> : <RefreshCw className="size-3.5" />}
             刷新
           </Button>
           <Button
@@ -526,7 +527,7 @@ export function MovementTemuSyncPanel({
               取消
             </Button>
             <Button onClick={() => void doSync()} disabled={syncing}>
-              {syncing ? <Loader2 className="size-4 animate-spin" /> : null}
+              {syncing ? <DashRing className="size-4" /> : null}
               确认扣减
             </Button>
           </DialogFooter>

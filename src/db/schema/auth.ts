@@ -48,6 +48,8 @@ export const users = pgTable(
       .notNull(),
     status: userStatusEnum("status").default("active").notNull(),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+    /** 奖励礼物卡已读游标（最近一次收下/关闭的 reward_notice.created_at，迁移 0099） */
+    rewardLastSeenAt: timestamp("reward_last_seen_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
