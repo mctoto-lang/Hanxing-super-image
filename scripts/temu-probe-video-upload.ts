@@ -17,11 +17,18 @@ const GALERIE_SINGLE = "https://openapi-b-partner.temu.com/api/galerie/v1/store_
 
 const sleep = (ms: number) => new Promise((s) => setTimeout(s, ms))
 
+type ProbeJson = {
+  success?: boolean
+  errorCode?: unknown
+  errorMsg?: unknown
+  result?: Record<string, unknown>
+}
+
 async function gatewayCall(
   c: { appKey: string; appSecret: string; accessToken: string },
   type: string,
   data: Record<string, unknown>,
-): Promise<any> {
+): Promise<ProbeJson> {
   const { signTemuRequest } = await import("../src/lib/temu-api/sign")
   const body: Record<string, unknown> = {
     type,
@@ -91,12 +98,12 @@ async function main() {
   for (let i = 1; i <= 15; i += 1) {
     await sleep(i === 1 ? 4000 : 7000)
     const r = await gatewayCall(c, "bg.goods.big.video.upload.result.get.global", { vid })
-    const res3 = r?.result ?? {}
+    const res3: Record<string, unknown> = r?.result ?? {}
     console.log(
       `[③ result.get 第${i}次] success=${r?.success} errorCode=${r?.errorCode} result=${JSON.stringify(res3).slice(0, 260)}`,
     )
     if (r?.success && res3.videoUrl) {
-      video = res3
+      video = res3 as { videoUrl?: string; coverUrl?: string; width?: number; height?: number }
       break
     }
     // 120000012 = 转码/处理中（继续轮询）；其他错误码跳出
