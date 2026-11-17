@@ -1,6 +1,6 @@
 "use server"
 
-import { and, asc, eq, isNull, or, sql } from "drizzle-orm"
+import { and, asc, eq, isNull, or } from "drizzle-orm"
 import { db } from "@/db/client"
 import { chatApiConfigs, type ChatModelExtraConfig } from "@/db/schema"
 import {
@@ -11,6 +11,7 @@ import { chatModelConfigSchema } from "@/server/schemas/admin"
 import { encrypt } from "@/lib/crypto"
 import { revalidatePath } from "next/cache"
 import { nextSortOrder } from "@/server/services/sort-order"
+import { isUniqueViolation } from "@/server/services/db-errors"
 import type { PresetChatModelRow } from "@/server/actions/platform-chat-models"
 
 /**
@@ -64,7 +65,39 @@ const chatModelSelectFields = {
   isActive: chatApiConfigs.isActive,
 }
 
-/** 列出平台预置对话模型（只读）+ 本企业私有对话模型（不含解密 Key，分页） */
+/**
+ * 企业可见对话模型全量加载（平台预置按 visiblePresetChatModels 白名单过滤），
+ * listAdminChatModelsAction / listAllAdminChatModelsAction 共用核心。
+ */
+async function loadVisibleChatModels(
+  ctx: Awaited<ReturnType<typeof requireEnterpriseAdmin>>,
+) {
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+
+  const rows = await db
+    .select(chatModelSelectFields)
+    .from(chatApiConfigs)
+    .where(
+      or(isNull(chatApiConfigs.enterpriseId), eq(chatApiConfigs.enterpriseId, enterpriseId)),
+    )
+    .orderBy(asc(chatApiConfigs.sortOrder), asc(chatApiConfigs.createdAt))
+
+  const visiblePresetChat = ctx.enterprise?.visiblePresetChatModels ?? []
+  return rows.filter((m) => {
+    if (m.enterpriseId !== null) return true // 企业私有：保留
+    // 平台预置：白名单空 = 全部可见；否则只留白名单内
+    if (visiblePresetChat.length === 0) return true
+    return visiblePresetChat.includes(m.id)
+  })
+}
+
+/**
+ * 列出平台预置对话模型（只读）+ 本企业私有对话模型（不含解密 Key，分页）。
+ *
+ * 平台预置按企业白名单 visiblePresetChatModels 过滤（空 = 全部可见），
+ * 企业私有恒保留——与 listModelsAction（生图）同口径；白名单过滤在内存中
+ * 完成，分页对过滤后的列表切片，统计从过滤后集合派生。
+ */
 export async function listAdminChatModelsAction(
   opts: { page?: number; pageSize?: number } = {},
 ): Promise<{
@@ -77,42 +110,30 @@ export async function listAdminChatModelsAction(
   pageSize: number
 }> {
   const ctx = await requireEnterpriseAdmin()
-  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  const filtered = await loadVisibleChatModels(ctx)
+
   const page = Math.max(1, Math.floor(opts.page ?? 1))
   const pageSize = Math.min(50, Math.max(1, Math.floor(opts.pageSize ?? 20)))
-
-  const where = or(
-    isNull(chatApiConfigs.enterpriseId),
-    eq(chatApiConfigs.enterpriseId, enterpriseId),
-  )
-  const [rows, [{ total }], agg] = await Promise.all([
-    db
-      .select(chatModelSelectFields)
-      .from(chatApiConfigs)
-      .where(where)
-      .orderBy(asc(chatApiConfigs.sortOrder), asc(chatApiConfigs.createdAt))
-      .limit(pageSize)
-      .offset((page - 1) * pageSize),
-    db.select({ total: sql<number>`count(*)::int` }).from(chatApiConfigs).where(where),
-    db
-      .select({
-        presetCount: sql<number>`count(*) filter (where ${chatApiConfigs.enterpriseId} is null)::int`,
-        privateCount: sql<number>`count(*) filter (where ${chatApiConfigs.enterpriseId} is not null)::int`,
-        activeCount: sql<number>`count(*) filter (where ${chatApiConfigs.isActive})::int`,
-      })
-      .from(chatApiConfigs)
-      .where(where),
-  ])
-
   return {
-    items: rows,
-    total,
-    presetCount: agg[0]?.presetCount ?? 0,
-    privateCount: agg[0]?.privateCount ?? 0,
-    activeCount: agg[0]?.activeCount ?? 0,
+    items: filtered.slice((page - 1) * pageSize, page * pageSize),
+    total: filtered.length,
+    presetCount: filtered.filter((m) => m.enterpriseId === null).length,
+    privateCount: filtered.filter((m) => m.enterpriseId !== null).length,
+    activeCount: filtered.filter((m) => m.isActive).length,
     page,
     pageSize,
   }
+}
+
+/**
+ * 列出企业可见对话模型全量（不分页；供组管理等受信调用方一次取全）。
+ *
+ * 分页只是对内存过滤后列表的切片，翻页拉全量会逐页重复全表查询——
+ * 此变体单次查询取全，过滤口径与分页版一致（与 listAllModelsAction 同构）。
+ */
+export async function listAllAdminChatModelsAction(): Promise<AdminChatModelRow[]> {
+  const ctx = await requireEnterpriseAdmin()
+  return loadVisibleChatModels(ctx)
 }
 
 /** 创建企业私有对话模型 */
@@ -165,12 +186,11 @@ export async function createChatModelAction(
       isActive: true,
     })
   } catch (err) {
+    // 真实 PG 错误码在 drizzle 包装的 .cause 上，按码判定唯一冲突
+    console.error("[createChatModelAction] failed:", err)
     return {
       ok: false,
-      error:
-        err instanceof Error && err.message.includes("unique")
-          ? "模型标识 + API 地址已存在"
-          : "创建失败",
+      error: isUniqueViolation(err) ? "模型标识 + API 地址已存在" : "创建失败",
     }
   }
 
@@ -249,12 +269,10 @@ export async function updateChatModelAction(
       .set(set)
       .where(eq(chatApiConfigs.id, modelId))
   } catch (err) {
+    console.error("[updateChatModelAction] failed:", err)
     return {
       ok: false,
-      error:
-        err instanceof Error && err.message.includes("unique")
-          ? "模型标识 + API 地址已存在"
-          : "更新失败",
+      error: isUniqueViolation(err) ? "模型标识 + API 地址已存在" : "更新失败",
     }
   }
 

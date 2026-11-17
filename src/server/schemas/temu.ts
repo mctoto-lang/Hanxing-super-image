@@ -29,16 +29,16 @@ export const temuListQuerySchema = z.object({
   store: z.string().uuid().optional(),
   q: z.string().max(100).optional(),
   /** 搜索字段（商品页共享搜索条）：缺省/all=五字段混合 ilike；sn=货号、name=商品名、
-   *  skc=SKC 单列精确 ilike */
-  qf: z.enum(["all", "sn", "name", "skc"]).optional(),
+   *  skc=SKC 单列精确 ilike；style=库存档案款名（归一化货号关联，B049≡B49 变体互查） */
+  qf: z.enum(["all", "sn", "name", "skc", "style"]).optional(),
   /** 在售筛选（商品信息页：on=在售 skcStatus=11，off=不在售；hot=热销 salesv2
    *  hotTag、stagnant=滞销 企业级阈值窗口，服务端 loadTemuProducts 分支） */
   sale: z.enum(["on", "off", "hot", "stagnant"]).optional(),
   page: z.coerce.number().int().min(1).max(500).default(1),
   /** 广告窗口天数（广告推广页 ?range=；action 内收敛为 7|30） */
   range: z.coerce.number().int().min(1).max(90).optional(),
-  /** 商品排序：listed 上架时间新→旧（默认）/ today 今日销量 / last7 七日销量 /
-   *  sn 货号 B 后数字自然序小→大（空值最上） */
+  /** 商品排序：listed 创建时间新→旧（默认，goodsList createdAt）/ today 今日销量 /
+   *  last7 七日销量 / sn 货号 B 后数字自然序小→大（空值最上） */
   sort: z.enum(["listed", "today", "last7", "sn"]).optional(),  /** 应用（主体）过滤（?app=；「全部主体」不传） */
   app: z.string().uuid().optional(),
 

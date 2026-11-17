@@ -1,6 +1,7 @@
 import { z } from "zod"
 import { MODULE_NAMES } from "@/db/schema"
 import { BANNER_ICON_NAMES } from "@/lib/banner"
+import { NAV_TITLE_KEYS } from "@/lib/modules"
 import { BADGE_ICON_KEYS } from "@/lib/plans/badge"
 
 /**
@@ -201,6 +202,18 @@ export const updateEnterpriseInfoSchema = z
 export const setEnterpriseStatusSchema = z.object({
   enterpriseId: z.string().uuid("请选择企业"),
   status: z.enum(["active", "suspended"]),
+})
+
+/** 企业导航名称自定义映射 + 测试企业开关（迁移 0100；value 长度按 trim 后校验，action 侧再 trim 并剔除空白 = 恢复默认） */
+export const updateEnterpriseNavSchema = z.object({
+  enterpriseId: z.string().uuid("请选择企业"),
+  /** 测试企业开关：开启后侧边栏 TEMU 预设显示为「数据中心」（显式映射优先） */
+  isTest: z.boolean(),
+  // partialRecord：键限定枚举且不要求穷举（v4 的 z.record+enum 会强制全键出现）
+  navTitleOverrides: z.partialRecord(
+    z.enum(NAV_TITLE_KEYS),
+    z.string().trim().max(20, "导航名最多 20 字符"),
+  ),
 })
 
 /** 超管编辑平台用户（用户名/昵称/类型/归属企业/角色；全量提交、服务端 diff） */

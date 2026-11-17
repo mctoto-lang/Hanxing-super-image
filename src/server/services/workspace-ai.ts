@@ -1,6 +1,6 @@
 import { and, eq, isNull, or } from "drizzle-orm"
 import { db } from "@/db/client"
-import { chatApiConfigs, promptTemplates, workspaceApiLogs } from "@/db/schema"
+import { chatApiConfigs, enterprises, promptTemplates, workspaceApiLogs } from "@/db/schema"
 import { decrypt } from "@/lib/crypto"
 import { API_ERROR_BODY_MAX_LENGTH } from "@/lib/ai/error-limits"
 
@@ -287,9 +287,17 @@ export async function getExecutableTemplate(opts: {
   }
   if (!tpl.chatApiId) throw new Error("模板未关联对话模型")
 
-  // 对话模型：平台预置（enterpriseId 为空）或本企业私有，且须为启用状态。
+  // 对话模型：平台预置（enterpriseId 为空，须在企业 visiblePresetChatModels
+  // 白名单内，空 = 全放行）或本企业私有，且须为启用状态。
   // 仅 openai 兼容格式：本链路走 callChatApi（OpenAI 兼容专用），
   // claude/gemini/grok 格式仅供 /chat 交互对话使用。
+  const [enterpriseRow] = await db
+    .select({ visiblePresetChatModels: enterprises.visiblePresetChatModels })
+    .from(enterprises)
+    .where(eq(enterprises.id, opts.enterpriseId))
+    .limit(1)
+  const chatWhitelist =
+    (enterpriseRow?.visiblePresetChatModels as string[] | null | undefined) ?? []
   const [api] = await db
     .select()
     .from(chatApiConfigs)
@@ -305,7 +313,15 @@ export async function getExecutableTemplate(opts: {
       ),
     )
     .limit(1)
-  if (!api) throw new Error("模板关联的对话模型不可用")
+  if (!api) throw new Error("模板关联的对话模型不可用，请重新关联")
+  // 平台预置行须在企业白名单内（关联后被超管对企业关闭 → 拒绝执行）
+  if (
+    api.enterpriseId === null &&
+    chatWhitelist.length > 0 &&
+    !chatWhitelist.includes(api.id)
+  ) {
+    throw new Error("模板关联的对话模型不可用，请重新关联")
+  }
 
   return {
     id: tpl.id,

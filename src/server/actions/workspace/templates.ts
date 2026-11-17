@@ -1,6 +1,6 @@
 "use server"
 
-import { and, asc, desc, eq, isNull, or } from "drizzle-orm"
+import { and, desc, eq, or } from "drizzle-orm"
 import { db } from "@/db/client"
 import { chatApiConfigs, promptTemplates } from "@/db/schema"
 import { getCurrentEnterpriseScope, requireUserContext } from "@/lib/auth/session"
@@ -8,6 +8,7 @@ import { checkModuleAccess, isEnterpriseAdmin } from "@/lib/auth/permissions"
 import { createTemplateSchema, updateTemplateSchema, wsIdSchema } from "@/server/schemas/workspace"
 import { revalidatePath } from "next/cache"
 import type { ChatApiOption, TemplateRow, TemplateType } from "@/lib/workspace/types"
+import { listAccessibleChatModels } from "@/server/services/chat-service"
 
 
 // ═══════════════ 模板管理 ═══════════════
@@ -54,39 +55,17 @@ export async function listTemplatesAction(opts: {
   return rows as TemplateRow[]
 }
 
-/** 列出可用对话模型（平台预置 + 本企业，均需 active） */
-
-
-
-/** 列出可用对话模型（平台预置 + 本企业，均需 active） */
+/** 列出可用对话模型（企业白名单 ∩ 权限组白名单，与 /chat 模型选择同口径） */
 export async function listChatApisAction(): Promise<ChatApiOption[]> {
   const ctx = await requireUserContext()
   const denied = checkModuleAccess(ctx, "workspace")
   if (denied) return []
-  const scope = getCurrentEnterpriseScope(ctx)
-  const rows = await db
-    .select({
-      id: chatApiConfigs.id,
-      name: chatApiConfigs.name,
-      displayName: chatApiConfigs.displayName,
-      enterpriseId: chatApiConfigs.enterpriseId,
-    })
-    .from(chatApiConfigs)
-    .where(
-      and(
-        eq(chatApiConfigs.isActive, true),
-        or(
-          isNull(chatApiConfigs.enterpriseId),
-          eq(chatApiConfigs.enterpriseId, scope.enterpriseId),
-        ),
-      ),
-    )
-    .orderBy(asc(chatApiConfigs.sortOrder), asc(chatApiConfigs.createdAt))
-  return rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    displayName: r.displayName,
-    isPlatformPreset: r.enterpriseId === null,
+  const models = await listAccessibleChatModels(ctx)
+  return models.map((m) => ({
+    id: m.id,
+    name: m.name,
+    displayName: m.displayName,
+    isPlatformPreset: m.enterpriseId === null,
   }))
 }
 

@@ -1,6 +1,7 @@
 import type { UserContext } from "@/lib/auth/session"
 import { roleLabel } from "@/lib/auth/permissions"
 import type { ModuleName } from "@/db/schema"
+import { NAV_DEFAULT_TITLES, resolveNavTitle } from "@/lib/modules"
 import type { PlanBadgeInfo } from "@/lib/plans/badge"
 import type { NavItem, SidebarUser } from "./types"
 
@@ -16,17 +17,20 @@ import type { NavItem, SidebarUser } from "./types"
  */
 
 /** 模块 → 菜单项配置（temu_* 子权限不进侧边栏——TEMU 保持单入口，tab 按权限过滤；
- *  条目仍需穷举以满足 Record<ModuleName>，url 指向对应 tab 供跳转复用） */
+ *  条目仍需穷举以满足 Record<ModuleName>，url 指向对应 tab 供跳转复用；
+ *  可自定义名称的 12 键标题与超管自定义弹窗共用 NAV_DEFAULT_TITLES 单一来源） */
 const MODULE_NAV: Record<ModuleName, { title: string; url: string; icon: string }> = {
-  create: { title: "自由创作", url: "/create", icon: "create" },
-  chat: { title: "AI 对话", url: "/chat", icon: "chat" },
-  assets: { title: "资产管理", url: "/assets", icon: "assets" },
-  workspace: { title: "批量生图", url: "/workspace", icon: "workspace" },
-  product: { title: "商品图片", url: "/product", icon: "product" },
-  weartry: { title: "穿戴图片", url: "/weartry", icon: "shirt" },
-  mockup: { title: "样机渲染", url: "/mockup", icon: "mockup" },
-  inventory: { title: "库存管理", url: "/inventory", icon: "inventory" },
-  temu: { title: "TEMU", url: "/temu", icon: "temu" },
+  create: { title: NAV_DEFAULT_TITLES.create, url: "/create", icon: "create" },
+  chat: { title: NAV_DEFAULT_TITLES.chat, url: "/chat", icon: "chat" },
+  assets: { title: NAV_DEFAULT_TITLES.assets, url: "/assets", icon: "assets" },
+  workspace: { title: NAV_DEFAULT_TITLES.workspace, url: "/workspace", icon: "workspace" },
+  product: { title: NAV_DEFAULT_TITLES.product, url: "/product", icon: "product" },
+  weartry: { title: NAV_DEFAULT_TITLES.weartry, url: "/weartry", icon: "shirt" },
+  mockup: { title: NAV_DEFAULT_TITLES.mockup, url: "/mockup", icon: "mockup" },
+  inventory: { title: NAV_DEFAULT_TITLES.inventory, url: "/inventory", icon: "inventory" },
+  video: { title: NAV_DEFAULT_TITLES.video, url: "/video", icon: "video" },
+  selection: { title: NAV_DEFAULT_TITLES.selection, url: "/selection", icon: "selection" },
+  temu: { title: NAV_DEFAULT_TITLES.temu, url: "/temu", icon: "temu" },
   temu_overview: { title: "TEMU-销售概览", url: "/temu?tab=overview", icon: "temu" },
   temu_products: { title: "TEMU-商品信息", url: "/temu?tab=products", icon: "temu" },
   temu_publish: { title: "TEMU-商品发布", url: "/temu?tab=publish", icon: "temu" },
@@ -41,16 +45,23 @@ const MODULE_NAV: Record<ModuleName, { title: string; url: string; icon: string 
 
 /**
  * 「图片生成」分组下子项的固定展示顺序（业务模块，不含 settings）。
- * 与 MODULE_NAMES 的顺序无关，专门控制侧边栏内子菜单呈现。
+ * 与 MODULE_NAMES 的顺序无关，专门控制侧边栏内子菜单呈现；
+ * as const 收窄字面量类型（元素同时是可自定义导航名的 NavTitleKey）。
  */
-const IMAGE_GEN_ORDER: Exclude<ModuleName, "settings">[] = [
+const IMAGE_GEN_ORDER = [
   "create",
   "workspace",
   "product",
   "weartry",
   "mockup",
   "assets",
-]
+] as const
+
+/**
+ * 视频生成/选品工具首个子页 URL（父页 redirect 目标与侧边栏首子项共用，避免双处硬编码）。
+ */
+export const VIDEO_LANDING_URL = "/video/create"
+export const SELECTION_LANDING_URL = "/selection/discover"
 
 /**
  * 「企业管理」分组下子项（页面均在 /admin/* 下，与聚合页卡片一致）。
@@ -97,11 +108,16 @@ const PLATFORM_NAV: { title: string; url: string }[] = [
 export function buildNavMain(ctx: UserContext): NavItem[] {
   const groups: NavItem[] = []
   const accessible = new Set(ctx.accessibleModules)
+  // 导航名称自定义映射（超管配置；显式映射 > 测试开关 TEMU 预设「数据中心」> 默认名）
+  const ov = ctx.enterprise?.navTitleOverrides
+  const isTest = ctx.enterprise?.isTest ?? false
+  const t = (key: Parameters<typeof resolveNavTitle>[2]) =>
+    resolveNavTitle(ov, isTest, key)
 
   // AI 对话：独立顶级导航项（无子项，直链渲染）
   if (accessible.has("chat")) {
     groups.push({
-      title: MODULE_NAV.chat.title,
+      title: t("chat"),
       url: MODULE_NAV.chat.url,
       icon: MODULE_NAV.chat.icon,
     })
@@ -110,10 +126,10 @@ export function buildNavMain(ctx: UserContext): NavItem[] {
   // 店铺管理：AI 对话下方的数据面板分组（TEMU 为第一个子项，后续平台按需追加）
   if (accessible.has("temu")) {
     groups.push({
-      title: "店铺管理",
+      title: t("storeGroup"),
       url: MODULE_NAV.temu.url,
       icon: "store",
-      items: [{ title: MODULE_NAV.temu.title, url: MODULE_NAV.temu.url }],
+      items: [{ title: t("temu"), url: MODULE_NAV.temu.url }],
     })
   }
 
@@ -121,7 +137,7 @@ export function buildNavMain(ctx: UserContext): NavItem[] {
   // 父组 url 用 /inventory（重定向到生产规划），前缀命中任一子页时父组保持高亮
   if (accessible.has("inventory")) {
     groups.push({
-      title: MODULE_NAV.inventory.title,
+      title: t("inventory"),
       url: MODULE_NAV.inventory.url,
       icon: MODULE_NAV.inventory.icon,
       items: [
@@ -132,7 +148,7 @@ export function buildNavMain(ctx: UserContext): NavItem[] {
   }
 
   const subItems = IMAGE_GEN_ORDER.filter((m) => accessible.has(m)).map((m) => ({
-    title: MODULE_NAV[m].title,
+    title: t(m),
     url: MODULE_NAV[m].url,
   }))
   if (subItems.length > 0) {
@@ -148,15 +164,49 @@ export function buildNavMain(ctx: UserContext): NavItem[] {
     })
   }
 
+  // 视频生成：折叠分组（占位阶段，子页均为 coming soon；单权限 key 不分级）
+  if (accessible.has("video")) {
+    groups.push({
+      title: t("video"),
+      url: MODULE_NAV.video.url,
+      icon: MODULE_NAV.video.icon,
+      items: [
+        { title: "视频创作", url: VIDEO_LANDING_URL },
+        { title: "视频复刻", url: "/video/replicate" },
+        { title: "带货视频", url: "/video/commerce" },
+        { title: "批量生成", url: "/video/batch" },
+        { title: "我的作品", url: "/video/works" },
+      ],
+    })
+  }
+
+  // 选品工具：折叠分组（占位阶段，子页均为 coming soon；单权限 key 不分级）
+  if (accessible.has("selection")) {
+    groups.push({
+      title: t("selection"),
+      url: MODULE_NAV.selection.url,
+      icon: MODULE_NAV.selection.icon,
+      items: [
+        { title: "选品发现", url: SELECTION_LANDING_URL },
+        { title: "市场分析", url: "/selection/market" },
+        { title: "竞品监控", url: "/selection/competitor" },
+        { title: "评论洞察", url: "/selection/reviews" },
+        { title: "数据任务", url: "/selection/tasks" },
+        { title: "我的选品", url: "/selection/mine" },
+      ],
+    })
+  }
+
   // 模板管理：子项各随其业务模块权限——生图提示词模板（workspace，批量生图消费）
-  // 与 TEMU 刊登模板（temu，模板化发品）；父组兜底跳第一个可见子项
+  // 与 TEMU 刊登模板（temu，模板化发品，名称随 TEMU 自定义名同步）；
+  // 父组兜底跳第一个可见子项
   {
     const templateItems: { title: string; url: string }[] = [
       ...(accessible.has("workspace")
         ? [{ title: "生图提示词模板", url: "/templates" }]
         : []),
       ...(accessible.has("temu")
-        ? [{ title: "TEMU刊登模板", url: "/templates/temu" }]
+        ? [{ title: `${t("temu")}刊登模板`, url: "/templates/temu" }]
         : []),
     ]
     if (templateItems.length > 0) {

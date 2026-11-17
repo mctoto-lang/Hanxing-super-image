@@ -11,8 +11,19 @@ export function formatDateTime(input: string | number | Date | null | undefined)
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
-/** 日粒度显示（官方接口仅到日的字段，如上架时间）：YYYY-MM-DD，空值或无效返回 —。 */
+/** 日粒度显示（官方接口仅到日的字段，如创建时间）：YYYY-MM-DD，空值或无效返回 —。 */
 export function formatDate(input: string | number | Date | null | undefined): string {
   const full = formatDateTime(input)
   return full === "—" ? full : full.slice(0, 10)
+}
+
+/** 中文全格式（TEMU 概览时间框/同步时间弹窗）：YYYY年MM月DD日HH时mm分ss秒，
+ *  24 小时制补零、浏览器本地时区；空值或无效返回 —。 */
+export function formatCnDateTime(input: string | number | Date | null | undefined): string {
+  const full = formatDateTime(input)
+  if (full === "—") return full
+  const [date, time] = full.split(" ")
+  const [y, m, d] = date.split("-")
+  const [h, min, s] = time.split(":")
+  return `${y}年${m}月${d}日${h}时${min}分${s}秒`
 }

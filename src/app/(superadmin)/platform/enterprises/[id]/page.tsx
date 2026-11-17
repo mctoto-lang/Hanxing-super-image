@@ -41,6 +41,7 @@ import { roleLabel } from "@/lib/auth/permissions"
 import { formatDateTime, formatDate } from "@/lib/datetime"
 import type { ModuleName } from "@/db/schema"
 import { EnterpriseEditDialog } from "@/components/superadmin/enterprise-edit-dialog"
+import { EnterpriseNavDialog } from "@/components/superadmin/enterprise-nav-dialog"
 import { EnterpriseStatusDialog } from "@/components/superadmin/enterprise-status-dialog"
 import { EnterpriseMemberCreateDialog } from "@/components/superadmin/enterprise-member-create-dialog"
 import { RechargeDialog } from "@/components/superadmin/recharge-dialog"
@@ -165,6 +166,11 @@ export default async function EnterpriseDetailPage({
               <Badge variant={suspended ? "destructive" : "default"}>
                 {suspended ? "已停用" : "正常"}
               </Badge>
+              {detail.isTest && (
+                <Badge variant="outline" className="rounded-[4px] px-1 py-0 text-[10px] text-amber-600 dark:text-amber-400">
+                  测试
+                </Badge>
+              )}
             </div>
             <p className="text-sm text-muted-foreground">
               slug：<span className="font-mono">{detail.slug}</span> · 创建于{" "}
@@ -179,6 +185,12 @@ export default async function EnterpriseDetailPage({
             slug={detail.slug}
             logoUrl={detail.logoUrl}
             size="default"
+          />
+          <EnterpriseNavDialog
+            enterpriseId={detail.id}
+            enterpriseName={detail.name}
+            isTest={detail.isTest}
+            navTitleOverrides={detail.navTitleOverrides ?? {}}
           />
           <EnterpriseStatusDialog
             enterpriseId={detail.id}

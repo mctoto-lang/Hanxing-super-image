@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { CheckCircleIcon, StarIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
+import SubscribeReceiptDialog from "./subscribe-receipt-dialog"
 
 /**
  * 订阅套餐区块（marketing 落地页「订阅套餐」锚点）
@@ -14,7 +15,7 @@ import { cn } from "@/lib/utils"
  * （bg-neutral-950 + white/xx），避免营销页未挂 .dark 时 token 失真。
  */
 
-type Frequency = "monthly" | "yearly"
+export type Frequency = "monthly" | "yearly"
 
 const FREQUENCIES: { value: Frequency; label: string }[] = [
   { value: "monthly", label: "月付" },
@@ -24,15 +25,18 @@ const FREQUENCIES: { value: Frequency; label: string }[] = [
 interface PlanFeature {
   text: string
   tooltip?: string
+  /** 订阅小票上的短标签（保证单行不换行；缺省回退 text） */
+  receipt?: string
 }
 
-interface Plan {
+export interface Plan {
   name: string
   info: string
   /** 年付价为月付 ×12 打 88 折（与折扣徽章的计算保持一致） */
   price: { monthly: number; yearly: number }
   features: PlanFeature[]
-  btn: { text: string; href: string }
+  /** 按钮文案（点击弹订阅小票弹窗，无跳转） */
+  btn: { text: string }
   highlighted?: boolean
 }
 
@@ -42,66 +46,75 @@ export const PLANS: Plan[] = [
     info: "小型团队入门之选",
     price: { monthly: 99, yearly: Math.round(99 * 12 * 0.88) },
     features: [
-      { text: "支持 1-5 人协作使用" },
+      { text: "支持 1-5 人协作使用", receipt: "协作席位 5 人内" },
       {
         text: "每月 9,900 基础积分 + 赠送 300",
         tooltip: "月度合计 10,200 积分，按月自动发放，用于图像生成与样机渲染",
+        receipt: "积分 9,900 + 赠 300",
       },
       {
-        text: "GPT Image 2.6 / Nano banana 2.1 可用约 340 次",
+        text: "GPT Image 2.6 / Nano banana 2 Lite 可用约 340 次",
         tooltip: "基础模型按月度总积分折算，折合约 0.29 元/次",
+        receipt: "AI 生图 约 340 次",
       },
       {
         text: "PS 样机渲染功能（消耗积分）",
         tooltip: "上传 PSD 样机源文件，AI 出图一键替换图层",
+        receipt: "PS 样机渲染",
       },
-      { text: "7×24 小时技术支持" },
+      { text: "7×24 小时技术支持", receipt: "7×24 技术支持" },
     ],
-    btn: { text: "立即订阅", href: "/login" },
+    btn: { text: "立即订阅" },
   },
   {
     name: "Pro",
     info: "成长型团队的首选",
     price: { monthly: 199, yearly: Math.round(199 * 12 * 0.88) },
     features: [
-      { text: "支持 1-20 人协作使用" },
+      { text: "支持 1-20 人协作使用", receipt: "协作席位 20 人内" },
       {
         text: "每月 19,900 基础积分 + 赠送 1,100",
         tooltip: "月度合计 21,000 积分，按月自动发放，用于图像生成与样机渲染",
+        receipt: "积分 19,900 + 赠 1,100",
       },
       {
-        text: "GPT Image 2.6 / Nano banana 2.1 可用约 700 次",
+        text: "GPT Image 2.6 / Nano banana 2 Lite 可用约 700 次",
         tooltip: "基础模型按月度总积分折算，折合约 0.28 元/次",
+        receipt: "AI 生图 约 700 次",
       },
       {
         text: "PS 样机渲染功能（消耗积分）",
         tooltip: "上传 PSD 样机源文件，AI 出图一键替换图层",
+        receipt: "PS 样机渲染",
       },
-      { text: "7×24 小时技术支持" },
+      { text: "7×24 小时技术支持", receipt: "7×24 技术支持" },
     ],
-    btn: { text: "立即订阅", href: "/login" },
+    btn: { text: "立即订阅" },
   },
   {
     name: "Ultra",
     info: "进阶团队的高性价比之选",
     price: { monthly: 399, yearly: Math.round(399 * 12 * 0.88) },
     features: [
-      { text: "支持 1-50 人协作使用" },
+      { text: "支持 1-50 人协作使用", receipt: "协作席位 50 人内" },
       {
         text: "每月 39,900 基础积分 + 赠送 3,000",
         tooltip: "月度合计 42,900 积分，按月自动发放，用于图像生成与样机渲染",
+        receipt: "积分 39,900 + 赠 3,000",
       },
       {
-        text: "GPT Image 2.6 / Nano banana 2.1 可用约 1,430 次",
+        text: "GPT Image 2.6 / Nano banana 2 Lite 可用约 1,430 次",
         tooltip: "基础模型按月度总积分折算，折合约 0.28 元/次",
+        receipt: "AI 生图 约 1,430 次",
       },
       {
         text: "PS 样机渲染功能（消耗积分）",
         tooltip: "上传 PSD 样机源文件，AI 出图一键替换图层",
+        receipt: "PS 样机渲染",
       },
-      { text: "7×24 小时技术支持" },
+      { text: "7×24 小时技术支持", receipt: "7×24 技术支持" },
     ],
-    btn: { text: "立即订阅", href: "/login" },
+    btn: { text: "立即订阅" },
     highlighted: true,
   },
   {
@@ -109,22 +122,25 @@ export const PLANS: Plan[] = [
     info: "大型组织的全能方案",
     price: { monthly: 599, yearly: Math.round(599 * 12 * 0.88) },
     features: [
-      { text: "支持 1-100 人协作使用" },
+      { text: "支持 1-100 人协作使用", receipt: "协作席位 100 人内" },
       {
         text: "每月 59,900 基础积分 + 赠送 5,980",
         tooltip: "月度合计 65,880 积分，按月自动发放，用于图像生成与样机渲染",
+        receipt: "积分 59,900 + 赠 5,980",
       },
       {
-        text: "GPT Image 2.6 / Nano banana 2.1 可用约 2,196 次",
+        text: "GPT Image 2.6 / Nano banana 2 Lite 可用约 2,196 次",
         tooltip: "基础模型按月度总积分折算，折合约 0.27 元/次",
+        receipt: "AI 生图 约 2,196 次",
       },
       {
         text: "PS 样机渲染功能（消耗积分）",
         tooltip: "上传 PSD 样机源文件，AI 出图一键替换图层",
+        receipt: "PS 样机渲染",
       },
-      { text: "7×24 小时技术支持" },
+      { text: "7×24 小时技术支持", receipt: "7×24 技术支持" },
     ],
-    btn: { text: "立即订阅", href: "/login" },
+    btn: { text: "立即订阅" },
   },
 ]
 
@@ -142,6 +158,8 @@ export default function PricingSection({
   className,
 }: PricingSectionProps) {
   const [frequency, setFrequency] = useState<Frequency>("monthly")
+  // 点「立即订阅」弹小票打印机弹窗（无在线支付，扫码联系客服激活）
+  const [selectedPlan, setSelectedPlan] = useState<Plan | null>(null)
 
   return (
     <div
@@ -163,9 +181,24 @@ export default function PricingSection({
       <FrequencyToggle frequency={frequency} onChange={setFrequency} />
       <div className="mx-auto grid w-full max-w-6xl grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
         {plans.map((plan) => (
-          <PricingCard key={plan.name} plan={plan} frequency={frequency} />
+          <PricingCard
+            key={plan.name}
+            plan={plan}
+            frequency={frequency}
+            onSubscribe={() => setSelectedPlan(plan)}
+          />
         ))}
       </div>
+      <SubscribeReceiptDialog
+        frequency={frequency}
+        onOpenChange={(next) => {
+          if (!next) {
+            setSelectedPlan(null)
+          }
+        }}
+        open={selectedPlan !== null}
+        plan={selectedPlan}
+      />
     </div>
   )
 }
@@ -210,9 +243,11 @@ function FrequencyToggle({
 function PricingCard({
   plan,
   frequency,
+  onSubscribe,
 }: {
   plan: Plan
   frequency: Frequency
+  onSubscribe: () => void
 }) {
   const yearlyDiscount = Math.round(
     ((plan.price.monthly * 12 - plan.price.yearly) /
@@ -289,10 +324,11 @@ function PricingCard({
         ))}
       </div>
 
-      {/* 底部按钮：mt-auto 保证三卡等高时按钮贴底 */}
+      {/* 底部按钮：mt-auto 保证三卡等高时按钮贴底；点击弹订阅小票弹窗 */}
       <div className="mt-auto w-full border-t border-white/10 p-3">
-        <a
-          href={plan.btn.href}
+        <button
+          type="button"
+          onClick={onSubscribe}
           className={cn(
             "inline-flex h-10 w-full cursor-pointer items-center justify-center rounded-md text-sm font-medium transition-colors",
             plan.highlighted
@@ -301,7 +337,7 @@ function PricingCard({
           )}
         >
           {plan.btn.text}
-        </a>
+        </button>
       </div>
     </div>
   )

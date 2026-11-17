@@ -16,6 +16,8 @@ export const MODULE_NAMES = [
   "weartry", // 穿戴图片（服装组图/模特穿戴/AI万戴/AI换色）
   "mockup", // 样机渲染
   "inventory", // 库存管理（生产规划/库存数据；单权限 key，tab 不分级）
+  "video", // 视频生成（占位阶段总开关；子页 coming soon，后续落地再评估子项分级）
+  "selection", // 选品工具（占位阶段总开关；子页 coming soon，后续落地再评估子项分级）
   "temu", // TEMU 数据与运营工作台（总开关：入口/刊登模板）
   "temu_overview", // TEMU tab：销售概览
   "temu_products", // TEMU tab：商品信息

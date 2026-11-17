@@ -24,6 +24,7 @@ import {
   temuPriorityLinks,
   temuStopReplenishLinks,
   temuSettings,
+  inventoryProducts,
   type TemuSyncStatus,
 } from "@/db/schema"
 import {
@@ -43,7 +44,7 @@ import {
 import { temuCached, invalidateTemuCache } from "@/server/services/temu-cache"
 import { ensureDemoStores } from "@/server/services/temu-demo"
 import { syncStore, verifyStoreToken } from "@/server/services/temu-sync"
-import { TEMU_TZ, temuDayStr, temuStartOfToday, temuYesterdayStr } from "@/server/services/temu-time"
+import { TEMU_TZ, previousPeriodRanges, temuDayStr, temuStartOfToday, temuYesterdayStr } from "@/server/services/temu-time"
 
 /**
  * TEMU 数据面板 Server Actions（手册 §6：查询 requireEnterpriseContext，
@@ -153,8 +154,10 @@ export interface TemuOverview {
   soldout: Record<string, number | null>
   /** 各店铺（含 token 状态与最近同步时间） */
   stores: TemuStoreBrief[]
-  /** 顶部四卡片（value 当前值，delta 环比昨日百分比；null = 无数据）：
-   *  今日销量 / 七日销量 / 30日销量 / 今日预估销售额（Σ 今日销量×申报价） */
+  /** 顶部四卡片（value 当前值；delta 环比基线百分比，null = 无数据）：
+   *  今日销量（基线=昨日）/ 七日销量（基线=上个自然周末日快照）/ 30日销量（基线=上个自然月末快照）
+   *  / 今日预估销售额（Σ 今日销量×申报价，基线=昨日）。七日/30日取上周期最后一天的
+   *  最后一次同步快照（官方滚动窗口字段），末日缺数据回退周期内最近有数据的一天 */
   cards: {
     todaySales: { value: number | null; delta: number | null }
     sevenDaySales: { value: number | null; delta: number | null }
@@ -317,6 +320,23 @@ async function loadTemuOverview(
     sevenDays: byDay.get(date)?.sevenDays ?? null,
   }))
 
+  // 七日/30日卡环比基线：上周期最后一天的最后一次同步快照（末日缺数据回退
+  // 周期内最近有数据的一天；days 升序，最后一个非空即所求）
+  const prevRanges = previousPeriodRanges()
+  const pickBaseline = (
+    range: { start: string; end: string },
+    field: "sevenDays" | "thirtyDays",
+  ): number | null => {
+    let best: number | null = null
+    for (const day of days) {
+      if (day > range.end) break
+      if (day < range.start) continue
+      const v = byDay.get(day)?.[field] ?? null
+      if (v != null) best = v
+    }
+    return best
+  }
+
   const soldout = soldoutRows[0]
   return {
     latest: {
@@ -343,11 +363,17 @@ async function loadTemuOverview(
       },
       sevenDaySales: {
         value: todaySnap?.sevenDays ?? 0,
-        delta: deltaPct(todaySnap?.sevenDays ?? null, yesterdaySnap?.sevenDays ?? null),
+        delta: deltaPct(
+          todaySnap?.sevenDays ?? null,
+          pickBaseline(prevRanges.week, "sevenDays"),
+        ),
       },
       thirtyDaySales: {
         value: todaySnap?.thirtyDays ?? 0,
-        delta: deltaPct(todaySnap?.thirtyDays ?? null, yesterdaySnap?.thirtyDays ?? null),
+        delta: deltaPct(
+          todaySnap?.thirtyDays ?? null,
+          pickBaseline(prevRanges.month, "thirtyDays"),
+        ),
       },
       estSalesAmount: {
         value: Math.round(estTodayFen) / 100,
@@ -439,7 +465,7 @@ export async function getTemuProductsAction(
   // page<1 会使 OFFSET 为负直接打爆 Postgres，超长 q 也不该全量进 ilike
   const safePage = Math.min(Math.max(1, Math.trunc(Number(page)) || 1), 500)
   const safeQ = q?.slice(0, 100)
-  const safeQf = qf === "sn" || qf === "name" || qf === "skc" ? qf : "all"
+  const safeQf = qf === "sn" || qf === "name" || qf === "skc" || qf === "style" ? qf : "all"
   return temuCached(
     `${enterpriseId}:products:${storeId ?? "all"}:${appId ?? "all"}:${safeQ ?? ""}:${safeQf}:${sale ?? ""}:${sort ?? "listed"}:${safePage}`,
     () => loadTemuProducts(enterpriseId, storeId, safeQ, safePage, sale, sort, safeQf, appId),
@@ -469,6 +495,22 @@ async function loadTemuProducts(
       conds.push(sql`${temuProducts.productName} ilike ${like}`)
     } else if (qf === "skc") {
       conds.push(sql`${temuProducts.productSkcId} ilike ${like}`)
+    } else if (qf === "style") {
+      // 款名搜索：库存档案 inventory_product.name ilike；货号关联 = 原串相等 OR
+      // 双侧归一化相等（regexp 镜像 normalizeSn：trim 前置 + 首个数字串去前导零，
+      // B049≡B49 变体互查；btrim 对齐 normalizeSn 的 trim 语义，两侧均前置）。
+      // EXISTS 半连接 + 企业内档案小表，无索引也够用。
+      // 注意：模板里反向引用须写 \\1\\2——cooked 串里单个 \1 会是 undefined（ES 转义规则）
+      conds.push(sql`exists (
+        select 1 from ${inventoryProducts} ip
+        where ip.enterprise_id = ${enterpriseId}::uuid
+          and ip.name ilike ${like}
+          and (
+            btrim(ip.product_code) = btrim(${temuProducts.productSn})
+            or regexp_replace(btrim(ip.product_code), '^([^0-9]*)0+([0-9])', '\\1\\2')
+                 = regexp_replace(btrim(${temuProducts.productSn}), '^([^0-9]*)0+([0-9])', '\\1\\2')
+          )
+      )`)
     } else {
       // 全部：SKC/SKU（productSkcId 前缀/子串命中 SKU 编号）、SPU（productId/goodsId）、货号、商品名
       conds.push(
@@ -557,7 +599,7 @@ async function loadTemuProducts(
           .as("sales_sort")
       : undefined
 
-  // 排序口径（用户选定）：上架时间默认新→旧；销量高→低；货号 B 后数字
+  // 排序口径（用户选定）：创建时间默认新→旧；销量高→低；货号 B 后数字
   // 自然序小→大且空值最上；末级统一 lastSeenAt 保持翻页稳定
   const orderBy =
     sortKey === "today"
@@ -580,7 +622,7 @@ async function loadTemuProducts(
               desc(temuProducts.lastSeenAt),
             ]
           : [
-              // 默认：上架时间新→旧（skcCreatedAt 为毫秒时间戳）
+              // 默认：创建时间新→旧（skcCreatedAt 为毫秒时间戳）
               desc(sql`coalesce(${temuProducts.skcCreatedAt}, 0)`),
               desc(temuProducts.lastSeenAt),
             ]
@@ -847,7 +889,7 @@ export interface TemuSalesTopBySnRow {
   last30DaysSalesVolume: number
 }
 
-/** 售出 TOP 榜（按货号）：概览页底部 TOP30 卡片用。同货号多 SKC 合并为一个
+/** 售出 TOP 榜（按货号）：概览页底部 TOP50 卡片用。同货号多 SKC 合并为一个
  *  货号，与 SKC 口径的 getTemuSalesTopAction（TOP10 条形图）并存互不影响 */
 export async function getTemuSalesTopBySnAction(storeId?: string, appId?: string): Promise<TemuSalesTopBySnRow[]> {
   const ctx = await requireEnterpriseContext()
@@ -932,9 +974,9 @@ async function loadTemuSalesTopBySn(
     last7DaysSalesVolume: Number(r.last7),
     last30DaysSalesVolume: Number(r.last30),
   }))
-  // 三口径各自 top30 并集（与 SKC 口径同因：只按单一口径预筛会漏其他口径的真实前三十）
+  // 三口径各自 top50 并集（与 SKC 口径同因：只按单一口径预筛会漏其他口径的真实前五十）
   const bySnMetric = (key: "todaySalesVolume" | "last7DaysSalesVolume" | "last30DaysSalesVolume") =>
-    [...mapped].sort((a, b) => b[key] - a[key]).slice(0, 30)
+    [...mapped].sort((a, b) => b[key] - a[key]).slice(0, 50)
   const union = new Map<string, TemuSalesTopBySnRow>()
   for (const r of [...bySnMetric("todaySalesVolume"), ...bySnMetric("last7DaysSalesVolume"), ...bySnMetric("last30DaysSalesVolume")]) {
     union.set(r.sn, r)

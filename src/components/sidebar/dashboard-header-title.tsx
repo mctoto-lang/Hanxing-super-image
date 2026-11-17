@@ -3,12 +3,18 @@
 import * as React from "react"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
+import { NAV_DEFAULT_TITLES } from "@/lib/modules"
 
 /**
  * 顶部 header 当前页面标题（手册 §7.1）
  *
  * 按 pathname 最长前缀匹配路由→标题。未命中则不渲染（header 保持原样）。
  * 在 SidebarTrigger 与分隔线之后展示，作为全局页面定位。
+ *
+ * TEMU 域两处（/temu、/templates/temu）跟随企业自定义导航名：由
+ * dashboard-shell（服务端）resolveNavTitle 解析后经 temuTitle 传入，
+ * 口径与 sidebar-data 的 t("temu") 一致（测试企业即「数据中心」）；
+ * 其余键（video/selection 等）暂不接入，维持静态标题。
  */
 
 /** 路由前缀（按长度降序优先）→ 标题 */
@@ -25,9 +31,24 @@ const ROUTE_TITLES: { prefix: string; title: string }[] = [
   { prefix: "/inventory/production", title: "生产规划" },
   { prefix: "/inventory/stock", title: "库存数据" },
   { prefix: "/inventory", title: "库存管理" },
-  // 店铺管理
+  // 视频生成（占位）
+  { prefix: "/video/create", title: "视频创作" },
+  { prefix: "/video/replicate", title: "视频复刻" },
+  { prefix: "/video/commerce", title: "带货视频" },
+  { prefix: "/video/batch", title: "批量生成" },
+  { prefix: "/video/works", title: "我的作品" },
+  { prefix: "/video", title: "视频生成" },
+  // 选品工具（占位）
+  { prefix: "/selection/discover", title: "选品发现" },
+  { prefix: "/selection/market", title: "市场分析" },
+  { prefix: "/selection/competitor", title: "竞品监控" },
+  { prefix: "/selection/reviews", title: "评论洞察" },
+  { prefix: "/selection/tasks", title: "数据任务" },
+  { prefix: "/selection/mine", title: "我的选品" },
+  { prefix: "/selection", title: "选品工具" },
+  // 店铺管理（标题在 matchTitle 内由 temuTitle 动态替换，静态值仅为缺省口径）
   { prefix: "/temu", title: "TEMU" },
-  // 模板管理
+  // 模板管理（同上，显示 `${temuTitle}刊登模板`）
   { prefix: "/templates/temu", title: "TEMU刊登模板" },
   { prefix: "/templates", title: "生图提示词模板" },
   // 企业管理（admin）
@@ -56,7 +77,8 @@ const ROUTE_TITLES: { prefix: string; title: string }[] = [
   { prefix: "/platform/system", title: "系统设置" },
 ]
 
-function matchTitle(pathname: string): string | null {
+/** 导出供单测断言（sidebar-nav-overrides.test.ts） */
+export function matchTitle(pathname: string, temuTitle: string): string | null {
   // 精确或前缀（prefix + "/"）匹配，避免 /a 误命中 /admin 等
   let best: { prefix: string; title: string } | null = null
   for (const r of ROUTE_TITLES) {
@@ -64,12 +86,23 @@ function matchTitle(pathname: string): string | null {
       if (!best || r.prefix.length > best.prefix.length) best = r
     }
   }
-  return best?.title ?? null
+  if (!best) return null
+  // TEMU 域两处替换为传入的企业自定义导航名（表内静态标题仅为缺省口径）
+  if (best.prefix === "/templates/temu") return `${temuTitle}刊登模板`
+  if (best.prefix === "/temu") return temuTitle
+  return best.title
 }
 
-export function HeaderTitle({ className }: { className?: string }) {
+export function HeaderTitle({
+  className,
+  temuTitle = NAV_DEFAULT_TITLES.temu,
+}: {
+  className?: string
+  /** TEMU 域页头标题（企业自定义导航名；缺省回落默认「TEMU」） */
+  temuTitle?: string
+}) {
   const pathname = usePathname()
-  const title = matchTitle(pathname)
+  const title = matchTitle(pathname, temuTitle)
   if (!title) return null
   return (
     <h1 className={cn("text-sm font-medium text-foreground truncate", className)}>

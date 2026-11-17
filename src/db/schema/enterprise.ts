@@ -15,6 +15,7 @@ import {
   type ModuleName,
   enterpriseStatusEnum,
 } from "./_shared"
+import type { NavTitleKey } from "@/lib/modules"
 
 /**
  * 企业（租户）—— 多租户顶层实体（手册 §4.1、D7/D8/D22）
@@ -36,7 +37,16 @@ export const enterprises = pgTable("enterprise", {
   creditsBalance: integer("credits_balance").default(0).notNull(),
   enabledModules: jsonb("enabled_modules")
     .$type<ModuleName[]>()
-    .default(["create", "chat", "assets", "mockup", "settings", "inventory"])
+    .default([
+      "create",
+      "chat",
+      "assets",
+      "mockup",
+      "settings",
+      "inventory",
+      "video",
+      "selection",
+    ])
     .notNull(),
   /** 生图企业级并发上限（Redis 槽位跨副本强制，图片级计数；≤0 = 不限） */
   maxConcurrent: integer("max_concurrent").default(5).notNull(),
@@ -53,6 +63,13 @@ export const enterprises = pgTable("enterprise", {
     .$type<string[]>()
     .default([])
     .notNull(), // 平台预置对话模型 id 白名单（空 = 全部预置可见）
+  /** 测试企业开关（超管）：开启后侧边栏 TEMU 预设显示为「数据中心」（仅改名，无其他行为） */
+  isTest: boolean("is_test").default(false).notNull(),
+  /** 导航名称自定义映射（模块键 → 自定义名；空 = 默认名；显式映射优先于测试开关预设） */
+  navTitleOverrides: jsonb("nav_title_overrides")
+    .$type<Partial<Record<NavTitleKey, string>>>()
+    .default({})
+    .notNull(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),

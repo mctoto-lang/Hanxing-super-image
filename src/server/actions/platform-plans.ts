@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache"
 import { db } from "@/db/client"
 import { enterpriseSubscriptions, subscriptionPlans } from "@/db/schema"
 import { requireSuperAdmin } from "@/lib/auth/session"
+import { isUniqueViolation } from "@/server/services/db-errors"
 import {
   assignEnterprisePlanSchema,
   clearEnterprisePlanSchema,
@@ -74,10 +75,11 @@ export async function createSubscriptionPlanAction(
     revalidatePath("/platform/plans")
     return { ok: true as const, error: null, id: plan.id, name: plan.name }
   } catch (err) {
-    const message = err instanceof Error ? err.message : "创建失败"
+    // 兜底不透出原始 message（drizzle 包装后是 SQL 文本，会泄给 UI）
+    console.error("[createSubscriptionPlanAction] failed:", err)
     return {
       ok: false as const,
-      error: message.includes("unique") ? "套餐名称已存在" : message,
+      error: isUniqueViolation(err) ? "套餐名称已存在" : "创建失败",
     }
   }
 }
@@ -112,10 +114,10 @@ export async function updateSubscriptionPlanAction(input: unknown) {
     revalidatePath("/platform/plans")
     return { ok: true as const, error: null }
   } catch (err) {
-    const message = err instanceof Error ? err.message : "更新失败"
+    console.error("[updateSubscriptionPlanAction] failed:", err)
     return {
       ok: false as const,
-      error: message.includes("unique") ? "套餐名称已存在" : message,
+      error: isUniqueViolation(err) ? "套餐名称已存在" : "更新失败",
     }
   }
 }

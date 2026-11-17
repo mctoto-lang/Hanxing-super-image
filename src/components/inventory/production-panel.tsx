@@ -532,6 +532,7 @@ export function ProductionPanel() {
           data={data}
           containerClassName="min-h-0 flex-1"
           initialSorting={[{ id: "days", desc: true }]}
+          showScrollbar
           loading={loading || !loadedOnce}
           onRowClick={(r) => setDetailId(r.id)}
           isRowSelected={group === "open" ? (r) => selectedIds.has(r.id) : undefined}

@@ -32,7 +32,7 @@ import {
   GroupModelPicker,
   type GroupModelOption,
 } from "@/components/admin/group-model-picker"
-import { BASE_MODULE_OPTIONS, MODULE_LABELS, TEMU_TAB_OPTIONS } from "@/lib/modules"
+import { MODULE_LABELS, type ModuleOption } from "@/lib/modules"
 
 /**
  * 新建权限组。
@@ -51,9 +51,16 @@ interface GroupCreateFormValues {
 export function GroupCreateDialog({
   imageModels,
   chatModels,
+  baseOptions,
+  temuOptions,
+  temuEnabled,
 }: {
   imageModels: GroupModelOption[]
   chatModels: GroupModelOption[]
+  /** 模块勾选项（企业已开通范围内，由页面按 enabledModules 预过滤） */
+  baseOptions: ModuleOption[]
+  temuOptions: ModuleOption[]
+  temuEnabled: boolean
 }) {
   const [open, setOpen] = React.useState(false)
   const [serverError, setServerError] = React.useState<string | null>(null)
@@ -87,7 +94,7 @@ export function GroupCreateDialog({
       next.delete(value)
       // 关闭 TEMU 总开关时连带清掉 tab 子项（子项单独存在无意义）
       if (value === "temu") {
-        for (const o of TEMU_TAB_OPTIONS) next.delete(o.value)
+        for (const o of temuOptions) next.delete(o.value)
       }
     }
     setPages(next)
@@ -96,11 +103,11 @@ export function GroupCreateDialog({
   async function onSubmit(values: GroupCreateFormValues) {
     setServerError(null)
     const allowedPages = [
-      ...BASE_MODULE_OPTIONS.filter((o) => pages.has(o.value)).map((o) => o.value),
+      ...baseOptions.filter((o) => pages.has(o.value)).map((o) => o.value),
       ...(pages.has("temu")
         ? [
             "temu",
-            ...TEMU_TAB_OPTIONS.filter((o) => pages.has(o.value)).map((o) => o.value),
+            ...temuOptions.filter((o) => pages.has(o.value)).map((o) => o.value),
           ]
         : []),
       ...(pages.has("settings") ? ["settings"] : []),
@@ -212,7 +219,7 @@ export function GroupCreateDialog({
             <div className="grid gap-2">
               <FormLabel>允许页面（不勾选默认放行企业全部已开通模块）</FormLabel>
               <div className="grid grid-cols-4 gap-2">
-                {BASE_MODULE_OPTIONS.map((o) => (
+                {baseOptions.map((o) => (
                   <label
                     key={o.value}
                     className="flex items-center gap-2 text-sm"
@@ -226,13 +233,15 @@ export function GroupCreateDialog({
                     {o.label}
                   </label>
                 ))}
-                <label className="flex items-center gap-2 text-sm font-medium">
-                  <Checkbox
-                    checked={temuOn}
-                    onCheckedChange={(checked) => togglePage("temu", checked === true)}
-                  />
-                  {MODULE_LABELS.temu}
-                </label>
+                {temuEnabled ? (
+                  <label className="flex items-center gap-2 text-sm font-medium">
+                    <Checkbox
+                      checked={temuOn}
+                      onCheckedChange={(checked) => togglePage("temu", checked === true)}
+                    />
+                    {MODULE_LABELS.temu}
+                  </label>
+                ) : null}
                 <label className="flex items-center gap-2 text-sm">
                   <Checkbox
                     checked={pages.has("settings")}
@@ -243,20 +252,22 @@ export function GroupCreateDialog({
                   {MODULE_LABELS.settings}
                 </label>
               </div>
-              <div className="ml-4 grid grid-cols-4 gap-2 border-l pl-3">
-                {TEMU_TAB_OPTIONS.map((o) => (
-                  <label key={o.value} className="flex items-center gap-2 text-sm">
-                    <Checkbox
-                      checked={pages.has(o.value)}
-                      disabled={!temuOn}
-                      onCheckedChange={(checked) =>
-                        togglePage(o.value, checked === true)
-                      }
-                    />
-                    {o.label}
-                  </label>
-                ))}
-              </div>
+              {temuEnabled && temuOptions.length > 0 ? (
+                <div className="ml-4 grid grid-cols-4 gap-2 border-l pl-3">
+                  {temuOptions.map((o) => (
+                    <label key={o.value} className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={pages.has(o.value)}
+                        disabled={!temuOn}
+                        onCheckedChange={(checked) =>
+                          togglePage(o.value, checked === true)
+                        }
+                      />
+                      {o.label}
+                    </label>
+                  ))}
+                </div>
+              ) : null}
               <p className="text-xs text-muted-foreground">
                 TEMU 子页面按勾选放行（须企业已开通 TEMU 且对应页面已授权）；店铺页面不设权限项，仅企业管理员可见
               </p>

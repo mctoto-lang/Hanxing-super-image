@@ -49,7 +49,7 @@ import { ChartAreaInteractive } from "@/components/chart-area-interactive"
 import {
   TemuCategoryShare,
   TemuSalesTop10,
-  TemuSalesTop30Cards,
+  TemuSalesTop50Cards,
   TemuShipStatsCards,
   TemuStoreSelect,
   TemuStoreManager,
@@ -59,6 +59,7 @@ import {
 } from "@/components/temu"
 import { TemuPublishPanel } from "@/components/temu/publish/publish-panel"
 import { TemuAppSelect } from "@/components/temu/app-select"
+import { TemuSyncClock } from "@/components/temu/sync-clock"
 import { TemuDemoBanner } from "@/components/temu/demo-banner"
 import { ScrollJumpButtons } from "@/components/ui/scroll-jump-buttons"
 
@@ -212,6 +213,17 @@ export default async function TemuPage({
           {apps.length > 1 && (
             <TemuAppSelect tab={activeTab} current={validApp} apps={apps} />
           )}
+          {/* 时间显示框（仅概览 tab）：走秒实时时钟，点击弹出各店最近同步时间 */}
+          {activeTab === "overview" && (
+            <TemuSyncClock
+              stores={enabledStores.map((s) => ({
+                id: s.id,
+                name: s.isDemo ? `${s.name}（演示）` : s.name,
+                lastSyncAt: s.lastSyncAt,
+                ok: s.lastSyncStatus?.ok ?? null,
+              }))}
+            />
+          )}
           <TemuStoreSelect
             tab={activeTab}
             current={effectiveStore}
@@ -320,10 +332,11 @@ async function OverviewTab({
     getTemuShipStatsAction(storeId ?? null, null, appId),
   ])
   const c = overview.cards
-  const lead = (delta: number | null) =>
+  /** 卡脚对比文案：今日/预估销售额对比昨日；七日卡对比上周、30日卡对比上月（上周期末快照） */
+  const lead = (delta: number | null, vs: "昨日" | "上周" | "上月" = "昨日") =>
     delta == null
       ? null
-      : `${delta >= 0 ? "较昨日增长" : "较昨日下降"} ${Math.abs(delta)}%`
+      : `${delta >= 0 ? `较${vs}增长` : `较${vs}下降`} ${Math.abs(delta)}%`
   return (
     <div className="@container/main space-y-6">
       {/* Row1 顶部四卡片：dashboard-01 SectionCards 模板原版（今日/七日/30日销量 + 今日广告消耗） */}
@@ -339,13 +352,13 @@ async function OverviewTab({
             label: "七日销量",
             value: fmtMetric(c.sevenDaySales.value, "count"),
             delta: c.sevenDaySales.delta,
-            footerLead: lead(c.sevenDaySales.delta),
+            footerLead: lead(c.sevenDaySales.delta, "上周"),
           },
           {
             label: "30日销量",
             value: fmtMetric(c.thirtyDaySales.value, "count"),
             delta: c.thirtyDaySales.delta,
-            footerLead: lead(c.thirtyDaySales.delta),
+            footerLead: lead(c.thirtyDaySales.delta, "上月"),
           },
           {
             label: "今日预估销售额",
@@ -371,8 +384,19 @@ async function OverviewTab({
         <TemuSalesTop10 data={salesTop} />
       </div>
 
-      {/* Row4 售出 TOP20 三卡（今日/七日/三十日，按货号汇总：前 3 名主图领奖台 + 4-20 名滚动列表） */}
-      <TemuSalesTop30Cards data={salesTopBySn} />
+      {/* Row4 售出 TOP50 三卡（今日/七日/三十日，按货号汇总：前 3 名主图领奖台 + 4-50 名滚动列表；
+          占比分母=对应口径顶部卡片数值（全店总量）；货号可点击选中，右上角显示选中合计占比）。
+          key=店铺/应用：切店是 soft navigation（组件不卸载），选中 Set<sn> 会残留上一
+          店铺的货号——加 key 随切店重置，与下方 TemuShipStatsCards 同惯例 */}
+      <TemuSalesTop50Cards
+        key={`${storeId ?? "all"}|${appId ?? "all"}`}
+        data={salesTopBySn}
+        totals={{
+          today: c.todaySales.value,
+          "7d": c.sevenDaySales.value,
+          "30d": c.thirtyDaySales.value,
+        }}
+      />
 
       {/* Row5 发货统计三卡：今日发货占比环形图 + 本周发货包裹/货物数量（发货仓库可筛选）。
           key=storeId：切店是 soft navigation，组件树位置不变时 client state 不会重置——
@@ -403,7 +427,7 @@ async function ProductsTab({
   const total = await getTemuProductsAction(query.store, query.q, 1, query.sale, query.sort, query.qf, query.app).then((r) => r.total)
   return (
     // h-full 高度链（根容器固定高 → tab 包装层 flex-1）：CardContent 为内部滚动区
-    // （scrollbar-hide 隐藏滚动条），表体滚动/表头吸顶，无限下滑加载
+    // （商品信息页按用户要求恢复滚动条显示），表体滚动/表头吸顶，无限下滑加载
     <Card className="flex h-full min-h-0 flex-col">
       <CardHeader className="flex flex-wrap items-center justify-between gap-3">
         <CardTitle className="text-base">商品（{total}）</CardTitle>
@@ -416,7 +440,7 @@ async function ProductsTab({
           sort={query.sort ?? "listed"}
         />
       </CardHeader>
-      <CardContent className="min-h-0 flex-1 overflow-x-auto overflow-y-auto scrollbar-hide [&_td]:px-4 [&_th]:px-4">
+      <CardContent className="min-h-0 flex-1 overflow-x-auto overflow-y-auto [&_td]:px-4 [&_th]:px-4">
         {/* w-max 与表同宽：ScrollJumpButtons 的 sticky right-5 依赖按钮包含块比
             可视区宽才有右移余量（与表头 sticky 吸附同理）——直接挂 CardContent 下
             包含块=可视宽，横滚时按钮会随内容漂出可视区 */}

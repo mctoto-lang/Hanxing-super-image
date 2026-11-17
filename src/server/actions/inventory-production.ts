@@ -26,6 +26,7 @@ import {
   getMainWarehouseId,
   requireInventory,
 } from "@/server/services/inventory-core"
+import type { DbTx } from "@/server/services/credits-service"
 import { temuDayStr } from "@/server/services/temu-time"
 
 /**
@@ -67,7 +68,7 @@ async function loadOrder(enterpriseId: string, orderId: string) {
 
 /** Σ直发+Σ入库 ≥ 数量 → 自动转已入库（仅进行中态触发） */
 async function maybeAutoReceived(
-  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  tx: DbTx,
   orderId: string,
   directQty: number,
   shippedQty: number,

@@ -18,6 +18,8 @@ import {
   redistributeSortOrder,
 } from "@/server/services/sort-order"
 import { revalidatePath } from "next/cache"
+import { isUniqueViolation } from "@/server/services/db-errors"
+import type { DbTx } from "@/server/services/credits-service"
 
 /**
  * 平台生图模型管理 Server Actions（需求 2）
@@ -35,11 +37,12 @@ import { revalidatePath } from "next/cache"
  * 非空 = 仅枚举的 id 可见，新建生图模型必须显式追加，否则会被企业端过滤层③
  * （listAvailableModelsAction 的 visiblePresetModels 判断）拦截。
  */
-async function syncPresetModelToWhitelists(modelId: string) {
+async function syncPresetModelToWhitelists(modelId: string, tx: DbTx) {
   // 单条 UPDATE 完成全部追加（原实现逐企业一次往返，企业数量无上限）：
-  // `||` 拼接 jsonb 数组、`@>` 包含判断保持「已包含则跳过」的幂等语义
+  // `||` 拼接 jsonb 数组、`@>` 包含判断保持「已包含则跳过」的幂等语义；
+  // 须与模型 insert 同事务调用
   const appended = JSON.stringify([modelId])
-  await db.execute(sql`
+  await tx.execute(sql`
     UPDATE ${enterprises}
     SET visible_preset_models = visible_preset_models || ${appended}::jsonb,
         updated_at = now()
@@ -174,55 +177,65 @@ export async function createPresetModelAction(
   }
 
   try {
-    const [created] = await db
-      .insert(models)
-      .values({
-        enterpriseId: null, // 平台生图模型
-        name: d.name,
-        displayName: d.displayName,
-        apiEndpoint: d.apiEndpoint,
-        apiKeyEncrypted: encrypt(d.apiKey),
-        apiFormat: d.apiFormat,
-        extraConfig,
-        costPerImage: d.costPerImage,
-        description: d.description || null,
-        badgeText: d.badgeText || null,
-        badgeColor: d.badgeColor || null,
-        sizePresets: d.sizePresets.length > 0 ? d.sizePresets : null,
-        supportsImageCount: d.supportsImageCount,
-        supportsSmartSize: d.supportsSmartSize,
-        // 比例传参仅 gemini 格式生效，其余格式强制复位（防格式切换残留）
-        useRatioParam: d.apiFormat === "gemini" && d.useRatioParam,
-        ratioParamField:
-          d.apiFormat === "gemini" && d.ratioParamField
-            ? d.ratioParamField
-            : null,
-        visibleInCreate: d.visibleInCreate,
-        visibleInWorkspace: d.visibleInWorkspace,
-        visibleInProduct: d.visibleInProduct,
-        visibleInWeartry: d.visibleInWeartry,
-        visibleInMockup: d.visibleInMockup,
-        supportsReferenceImage: d.supportsReferenceImage,
-        maxReferenceImages: d.maxReferenceImages,
-        referenceImageField: d.referenceImageField || null,
-        maxConcurrent: d.maxConcurrent,
-        maxRetries: d.maxRetries,
-        apiTimeout: d.apiTimeout,
-        taskTimeout: d.taskTimeout,
-        iconUrl: d.iconUrl || null,
-        sortOrder: await nextSortOrder(models),
-      })
-      .returning()
+    // 闭包内属性收窄会失效，先在函数体作用域完成加密（上方已校验非空）
+    const apiKeyEncrypted = encrypt(d.apiKey)
+    // insert 与白名单同步同事务：sync 失败连模型一起回滚，
+    // 避免出现「行已落库但提示失败、重试必撞唯一索引」的半提交态
+    await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(models)
+        .values({
+          enterpriseId: null, // 平台生图模型
+          name: d.name,
+          displayName: d.displayName,
+          apiEndpoint: d.apiEndpoint,
+          apiKeyEncrypted,
+          apiFormat: d.apiFormat,
+          extraConfig,
+          costPerImage: d.costPerImage,
+          description: d.description || null,
+          badgeText: d.badgeText || null,
+          badgeColor: d.badgeColor || null,
+          sizePresets: d.sizePresets.length > 0 ? d.sizePresets : null,
+          supportsImageCount: d.supportsImageCount,
+          supportsSmartSize: d.supportsSmartSize,
+          // 比例传参仅 gemini 格式生效，其余格式强制复位（防格式切换残留）
+          useRatioParam: d.apiFormat === "gemini" && d.useRatioParam,
+          ratioParamField:
+            d.apiFormat === "gemini" && d.ratioParamField
+              ? d.ratioParamField
+              : null,
+          visibleInCreate: d.visibleInCreate,
+          visibleInWorkspace: d.visibleInWorkspace,
+          visibleInProduct: d.visibleInProduct,
+          visibleInWeartry: d.visibleInWeartry,
+          visibleInMockup: d.visibleInMockup,
+          supportsReferenceImage: d.supportsReferenceImage,
+          maxReferenceImages: d.maxReferenceImages,
+          referenceImageField: d.referenceImageField || null,
+          maxConcurrent: d.maxConcurrent,
+          maxRetries: d.maxRetries,
+          apiTimeout: d.apiTimeout,
+          taskTimeout: d.taskTimeout,
+          iconUrl: d.iconUrl || null,
+          sortOrder: await nextSortOrder(models),
+        })
+        .returning({ id: models.id })
 
-    // 自动把新生图模型开放给所有「白名单模式」企业，否则这些企业端看不到
-    await syncPresetModelToWhitelists(created!.id)
+      // 自动把新生图模型开放给所有「白名单模式」企业，否则这些企业端看不到
+      if (created) {
+        await syncPresetModelToWhitelists(created.id, tx)
+      }
+    })
   } catch (err) {
+    // 真实 PG 错误在 drizzle 包装的 .cause 上（code=23505 唯一冲突），
+    // message.includes("unique") 永远匹配不到——按错误码判定
+    console.error("[createPresetModelAction] failed:", err)
     return {
       ok: false,
-      error:
-        err instanceof Error && err.message.includes("unique")
-          ? "模型标识 + API 地址已存在"
-          : "创建失败",
+      error: isUniqueViolation(err)
+        ? "模型标识 + API 地址已存在"
+        : "创建失败",
     }
   }
 
@@ -316,7 +329,17 @@ export async function updatePresetModelAction(
     set.apiKeyEncrypted = encrypt(d.apiKey)
   }
 
-  await db.update(models).set(set).where(eq(models.id, modelId))
+  try {
+    await db.update(models).set(set).where(eq(models.id, modelId))
+  } catch (err) {
+    console.error("[updatePresetModelAction] failed:", err)
+    return {
+      ok: false,
+      error: isUniqueViolation(err)
+        ? "模型标识 + API 地址已存在"
+        : "更新失败",
+    }
+  }
 
   revalidatePath("/platform/models")
   return { ok: true, error: null }

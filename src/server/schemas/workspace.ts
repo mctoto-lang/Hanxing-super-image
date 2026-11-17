@@ -59,7 +59,11 @@ export const createWorkspaceTaskSchema = z.object({
 
 export const updateTaskTitleSchema = z.object({ title: titleSchema })
 
-export const addCardSchema = z.object({ prompt: promptSchema })
+/** 添加卡片允许空白卡（点击「添加卡片」直接落库，提示词后续在卡片背面
+ *  编辑），仅保留长度上限；其它 promptSchema 消费方仍要求非空 */
+export const addCardSchema = z.object({
+  prompt: z.string().max(4000, "提示词过长（上限 4000 字符）"),
+})
 
 export const updateCardSchema = z.object({
   prompt: promptSchema.optional(),

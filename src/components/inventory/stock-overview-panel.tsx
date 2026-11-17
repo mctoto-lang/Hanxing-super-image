@@ -582,6 +582,7 @@ export function StockOverviewPanel({
         initialSorting={[{ id: "productCode", desc: false }]}
         columnDividers
         infinite
+        showScrollbar
         preserveScrollRef={preserveScrollRef}
         scrollJump
         loading={loading}

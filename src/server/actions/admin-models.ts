@@ -11,6 +11,7 @@ import { modelConfigSchema } from "@/server/schemas/admin"
 import { validateImageModelConfig } from "@/lib/ai/image-model-config"
 import { buildExtraConfig } from "@/server/services/model-form-helpers"
 import { encrypt } from "@/lib/crypto"
+import { isUniqueViolation } from "@/server/services/db-errors"
 import { revalidatePath } from "next/cache"
 import { nextSortOrder } from "@/server/services/sort-order"
 
@@ -24,19 +25,12 @@ import { nextSortOrder } from "@/server/services/sort-order"
  */
 
 /**
- * 列出平台生图模型（按企业 visiblePresetModels 过滤）+ 本企业私有模型（不含解密 Key）
- *
- * - 平台生图模型（enterpriseId=NULL）：仅当企业 visiblePresetModels 为空时全部可见，
- *   否则只返回白名单内的（需求 2c）。
- * - 企业私有模型：本企业全部。
- *
- * 白名单过滤在内存中完成，分页对过滤后的列表切片（page 从 1 开始）。
- * 返回行类型与 components/admin/model-form-dialog.tsx 的 ModelRow 一致。
+ * 企业可见生图模型全量加载（平台预置按 visiblePresetModels 白名单过滤），
+ * listModelsAction / listAllModelsAction 共用核心。
  */
-export async function listModelsAction(
-  opts: { page?: number; pageSize?: number } = {},
+async function loadVisibleModels(
+  ctx: Awaited<ReturnType<typeof requireEnterpriseAdmin>>,
 ) {
-  const ctx = await requireEnterpriseAdmin()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
 
   const rows = await db
@@ -80,14 +74,30 @@ export async function listModelsAction(
     .orderBy(asc(models.sortOrder), asc(models.createdAt))
 
   // 平台生图模型按企业白名单过滤（空 = 全部可见）
-  const visiblePreset =
-    (ctx.enterprise?.visiblePresetModels as string[] | null) ?? []
-  const filtered = rows.filter((m) => {
+  const visiblePreset = ctx.enterprise?.visiblePresetModels ?? []
+  return rows.filter((m) => {
     if (m.enterpriseId !== null) return true // 企业私有：保留
     // 平台预置：白名单空 = 全部可见；否则只留白名单内
     if (visiblePreset.length === 0) return true
     return visiblePreset.includes(m.id)
   })
+}
+
+/**
+ * 列出平台生图模型（按企业 visiblePresetModels 过滤）+ 本企业私有模型（不含解密 Key）
+ *
+ * - 平台生图模型（enterpriseId=NULL）：仅当企业 visiblePresetModels 为空时全部可见，
+ *   否则只返回白名单内的（需求 2c）。
+ * - 企业私有模型：本企业全部。
+ *
+ * 白名单过滤在内存中完成，分页对过滤后的列表切片（page 从 1 开始）。
+ * 返回行类型与 components/admin/model-form-dialog.tsx 的 ModelRow 一致。
+ */
+export async function listModelsAction(
+  opts: { page?: number; pageSize?: number } = {},
+) {
+  const ctx = await requireEnterpriseAdmin()
+  const filtered = await loadVisibleModels(ctx)
 
   const page = Math.max(1, Math.floor(opts.page ?? 1))
   const pageSize = Math.min(50, Math.max(1, Math.floor(opts.pageSize ?? 20)))
@@ -100,6 +110,17 @@ export async function listModelsAction(
     page,
     pageSize,
   }
+}
+
+/**
+ * 列出企业可见生图模型全量（不分页；供组管理等受信调用方一次取全）。
+ *
+ * listModelsAction 的白名单过滤在内存完成、分页只是切片，按 pageSize 翻页
+ * 拉全量会对同一全表查询逐页重复执行——此变体单次查询取全，过滤口径与分页版一致。
+ */
+export async function listAllModelsAction() {
+  const ctx = await requireEnterpriseAdmin()
+  return loadVisibleModels(ctx)
 }
 
 /** 创建企业私有模型 */
@@ -174,13 +195,11 @@ export async function createModelAction(input: Record<string, unknown>) {
       iconUrl: d.iconUrl || null,
     })
   } catch (err) {
-    // 唯一约束冲突等
+    // 唯一约束冲突等（真实 PG 错误码在 drizzle 包装的 .cause 上，按码判定）
+    console.error("[createModelAction] failed:", err)
     return {
       ok: false,
-      error:
-        err instanceof Error && err.message.includes("unique")
-          ? "模型标识 + API 地址已存在"
-          : "创建失败",
+      error: isUniqueViolation(err) ? "模型标识 + API 地址已存在" : "创建失败",
     }
   }
 
@@ -284,7 +303,15 @@ export async function updateModelAction(
     set.apiKeyEncrypted = encrypt(d.apiKey)
   }
 
-  await db.update(models).set(set).where(eq(models.id, modelId))
+  try {
+    await db.update(models).set(set).where(eq(models.id, modelId))
+  } catch (err) {
+    console.error("[updateModelAction] failed:", err)
+    return {
+      ok: false,
+      error: isUniqueViolation(err) ? "模型标识 + API 地址已存在" : "更新失败",
+    }
+  }
 
   revalidatePath("/admin/models")
   return { ok: true as const, error: null }

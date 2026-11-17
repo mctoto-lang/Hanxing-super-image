@@ -2058,6 +2058,8 @@ export async function getShipInventoryRefAction(input: {
           shipState: "auto" | "manual" | null
           /** 档案装箱数（每箱件数；自动创建发货拆包裹默认值，无档案=null） */
           cartonQty: number | null
+          /** 库存档案款名（商品信息页货号悬停联动；无档案=null） */
+          name: string | null
         }
       >,
     }
@@ -2078,6 +2080,7 @@ export async function getShipInventoryRefAction(input: {
       .select({
         id: inventoryProducts.id,
         code: inventoryProducts.productCode,
+        name: inventoryProducts.name,
         shipState: inventoryProducts.shipState,
         cartonQty: inventoryProducts.cartonQty,
       })
@@ -2095,7 +2098,13 @@ export async function getShipInventoryRefAction(input: {
   ])
   const productByKey = new Map<
     string,
-    { id: string; code: string; shipState: "auto" | "manual"; cartonQty: number | null }
+    {
+      id: string
+      code: string
+      name: string
+      shipState: "auto" | "manual"
+      cartonQty: number | null
+    }
   >()
   for (const p of products) {
     const key = normalizeSn(p.code)
@@ -2146,6 +2155,7 @@ export async function getShipInventoryRefAction(input: {
       pendingUnpacked: number
       shipState: "auto" | "manual" | null
       cartonQty: number | null
+      name: string | null
     }
   > = {}
   for (const c of codes) {
@@ -2156,9 +2166,47 @@ export async function getShipInventoryRefAction(input: {
       pendingUnpacked: pendingByKey.get(key) ?? 0,
       shipState: product?.shipState ?? null,
       cartonQty: product?.cartonQty ?? null,
+      name: product?.name ?? null,
     }
   }
   return { ok: true as const, rows }
+}
+
+/** 按货号批量查库存档案款名（商品信息页货号悬停联动专用轻量查询）。
+ *  getShipInventoryRefAction 是发货台重型口径（连带全量库存聚合 + 全店铺待装箱
+ *  发货单共 4 段查询），悬停只需 name——此处仅查 product_code/name 两列，
+ *  归一化匹配（B049≡B49）在 JS 完成，撞码取字典序首条（同上 productByKey 口径）。 */
+export async function getSnNamesAction(input: { codes: string[] }) {
+  const codes = (input.codes ?? [])
+    .filter((c) => typeof c === "string" && c.trim())
+    .slice(0, 200)
+  if (codes.length === 0) {
+    return { ok: true as const, names: {} as Record<string, string | null> }
+  }
+  let enterpriseId: string
+  try {
+    const ctx = await requireEnterpriseContext()
+    if (!ctx.canAccess("temu")) {
+      return { ok: false as const, error: "当前账号没有 TEMU 模块权限" }
+    }
+    enterpriseId = ctx.user.enterpriseId!
+  } catch (err) {
+    return { ok: false as const, error: err instanceof Error ? err.message : "登录状态失效" }
+  }
+
+  const products = await db
+    .select({ code: inventoryProducts.productCode, name: inventoryProducts.name })
+    .from(inventoryProducts)
+    .where(eq(inventoryProducts.enterpriseId, enterpriseId))
+    .orderBy(asc(inventoryProducts.productCode))
+  const nameByKey = new Map<string, string>()
+  for (const p of products) {
+    const key = normalizeSn(p.code)
+    if (!nameByKey.has(key)) nameByKey.set(key, p.name)
+  }
+  const names: Record<string, string | null> = {}
+  for (const c of codes) names[c] = nameByKey.get(normalizeSn(c)) ?? null
+  return { ok: true as const, names }
 }
 
 /** 待装箱发货单「需要打印条码」标记（发货单列表行内徽标）：

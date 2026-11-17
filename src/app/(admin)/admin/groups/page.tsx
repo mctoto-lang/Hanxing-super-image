@@ -1,8 +1,8 @@
 import { requireEnterpriseAdmin } from "@/lib/auth/session"
 import { listGroupsAction, listAllGroupsAction } from "@/server/actions/admin-groups"
-import { listModelsAction } from "@/server/actions/admin-models"
+import { listAllModelsAction } from "@/server/actions/admin-models"
 import {
-  listAdminChatModelsAction,
+  listAllAdminChatModelsAction,
 } from "@/server/actions/admin-chat-models"
 import {
   Card,
@@ -12,6 +12,11 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import {
+  BASE_MODULE_OPTIONS,
+  MODULE_LABELS,
+  TEMU_TAB_OPTIONS,
+} from "@/lib/modules"
 import {
   Table,
   TableBody,
@@ -37,21 +42,28 @@ export default async function AdminGroupsPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>
 }) {
-  await requireEnterpriseAdmin()
+  const ctx = await requireEnterpriseAdmin()
   const page = parsePageParam(await searchParams)
-  const [
-    { items: groups, total, pageSize },
-    allGroups,
-    { items: imageModels },
-    { items: chatModels },
-  ] = await Promise.all([
-    listGroupsAction({ page, pageSize: 20 }),
-    // 组成员弹窗「全部转移至」下拉需要全量组（跨页场景，>50 组时按 total 翻页拉全量）
-    listAllGroupsAction(),
-    // 模型勾选器数据源（企业可见生图/对话模型，pageSize 上限 50）
-    listModelsAction({ page: 1, pageSize: 50 }),
-    listAdminChatModelsAction({ page: 1, pageSize: 50 }),
-  ])
+  const [{ items: groups, total, pageSize }, allGroups, imageModels, chatModels] =
+    await Promise.all([
+      listGroupsAction({ page, pageSize: 20 }),
+      // 组成员弹窗「全部转移至」下拉需要全量组（跨页场景，>50 组时按 total 翻页拉全量）
+      listAllGroupsAction(),
+      // 模型勾选器数据源（企业可见生图/对话模型全量）——分页 action 的白名单
+      // 过滤在内存完成、分页只是切片，listAll 变体一次取全，避免按页重复全表查询
+      listAllModelsAction(),
+      listAllAdminChatModelsAction(),
+    ])
+
+  // 模块勾选项按企业已开通模块过滤（超管对企业关闭的模块不露出）
+  const enabledModules = ctx.enterprise?.enabledModules ?? []
+  const baseOptions = BASE_MODULE_OPTIONS.filter((o) =>
+    enabledModules.includes(o.value),
+  )
+  const temuEnabled = enabledModules.includes("temu")
+  const temuOptions = TEMU_TAB_OPTIONS.filter((o) =>
+    enabledModules.includes(o.value),
+  )
 
   const imageOptions = imageModels.map((m) => ({
     id: m.id,
@@ -65,6 +77,8 @@ export default async function AdminGroupsPage({
     isActive: m.isActive,
     isPreset: m.enterpriseId === null,
   }))
+  const visibleImageIds = new Set(imageOptions.map((m) => m.id))
+  const visibleChatIds = new Set(chatOptions.map((m) => m.id))
 
   return (
     <div className="space-y-4">
@@ -72,6 +86,9 @@ export default async function AdminGroupsPage({
         <GroupCreateDialog
           imageModels={imageOptions}
           chatModels={chatOptions}
+          baseOptions={baseOptions}
+          temuOptions={temuOptions}
+          temuEnabled={temuEnabled}
         />
       </div>
 
@@ -104,6 +121,16 @@ export default async function AdminGroupsPage({
               {groups.map((g) => {
                 const allowedModels = g.allowedModels as string[]
                 const allowedChatModels = g.allowedChatModels as string[]
+                // 允许页面/模型计数只按企业已开通范围展示（关闭模块/模型不露出）
+                const pageKeys = g.allowedPages.filter((p) =>
+                  enabledModules.includes(p),
+                )
+                const visibleModelCount = allowedModels.filter((id) =>
+                  visibleImageIds.has(id),
+                ).length
+                const visibleChatCount = allowedChatModels.filter((id) =>
+                  visibleChatIds.has(id),
+                ).length
                 return (
                 <TableRow key={g.id}>
                   <TableCell className="font-medium">
@@ -127,10 +154,12 @@ export default async function AdminGroupsPage({
                         <span className="text-xs text-muted-foreground">
                           全部模块
                         </span>
+                      ) : pageKeys.length === 0 ? (
+                        <span className="text-xs text-muted-foreground">—</span>
                       ) : (
-                        (g.allowedPages as string[]).map((p) => (
+                        pageKeys.map((p) => (
                           <Badge key={p} variant="outline" className="text-xs">
-                            {p}
+                            {MODULE_LABELS[p] ?? p}
                           </Badge>
                         ))
                       )}
@@ -139,17 +168,19 @@ export default async function AdminGroupsPage({
                   <TableCell>
                     {allowedModels.length === 0 ? (
                       <span className="text-xs text-muted-foreground">全部</span>
+                    ) : visibleModelCount === 0 ? (
+                      <span className="text-xs text-muted-foreground">—</span>
                     ) : (
-                      <span className="text-xs">已选 {allowedModels.length}</span>
+                      <span className="text-xs">已选 {visibleModelCount}</span>
                     )}
                   </TableCell>
                   <TableCell>
                     {allowedChatModels.length === 0 ? (
                       <span className="text-xs text-muted-foreground">全部</span>
+                    ) : visibleChatCount === 0 ? (
+                      <span className="text-xs text-muted-foreground">—</span>
                     ) : (
-                      <span className="text-xs">
-                        已选 {allowedChatModels.length}
-                      </span>
+                      <span className="text-xs">已选 {visibleChatCount}</span>
                     )}
                   </TableCell>
                   <TableCell className="tabular-nums">
@@ -184,6 +215,9 @@ export default async function AdminGroupsPage({
                         }}
                         imageModels={imageOptions}
                         chatModels={chatOptions}
+                        baseOptions={baseOptions}
+                        temuOptions={temuOptions}
+                        temuEnabled={temuEnabled}
                       />
                       {!g.isDefault ? (
                         <GroupDeleteDialog

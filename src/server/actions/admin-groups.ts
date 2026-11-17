@@ -1,8 +1,14 @@
 "use server"
 
-import { and, eq, inArray, sql } from "drizzle-orm"
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm"
 import { db } from "@/db/client"
-import { permissionGroups, users } from "@/db/schema"
+import {
+  chatApiConfigs,
+  models,
+  permissionGroups,
+  users,
+  type ModuleName,
+} from "@/db/schema"
 import {
   requireEnterpriseAdmin,
   getCurrentEnterpriseScope,
@@ -82,6 +88,128 @@ export async function listAllGroupsAction() {
   return rest.reduce((acc, r) => acc.concat(r.items), [...first.items])
 }
 
+/**
+ * 把 id 列表裁剪到企业开通范围（静默裁剪，兼容历史组残留数据）：
+ * 越权项（企业已关闭的模块/模型）移除；但若原值非空而裁完为空，
+ * 保留原值——空数组语义是「放行全部」，静默放宽权限比保留无效 id 更危险。
+ * （三白名单同时全部裁空的场景由返回的 allOutOfScope 标记，调用方直接报错，
+ * 不再走到这里的「保留原值」分支。）
+ */
+function pruneToScope<T extends string>(ids: T[], visibleIds: Set<string>): T[] {
+  const pruned = ids.filter((id) => visibleIds.has(id))
+  return pruned.length > 0 || ids.length === 0 ? pruned : ids
+}
+
+/** 企业可用生图模型 id 集（平台预置 ∩ visiblePresetModels 白名单 + 本企业私有） */
+async function loadVisibleModelIds(
+  enterpriseId: string,
+  whitelist: string[],
+): Promise<Set<string>> {
+  const rows = await db
+    .select({ id: models.id, enterpriseId: models.enterpriseId })
+    .from(models)
+    .where(or(isNull(models.enterpriseId), eq(models.enterpriseId, enterpriseId)))
+  return new Set(
+    rows
+      .filter(
+        (m) =>
+          m.enterpriseId !== null ||
+          whitelist.length === 0 ||
+          whitelist.includes(m.id),
+      )
+      .map((m) => m.id),
+  )
+}
+
+/** 企业可用对话模型 id 集（同上，白名单为 visiblePresetChatModels） */
+async function loadVisibleChatModelIds(
+  enterpriseId: string,
+  whitelist: string[],
+): Promise<Set<string>> {
+  const rows = await db
+    .select({ id: chatApiConfigs.id, enterpriseId: chatApiConfigs.enterpriseId })
+    .from(chatApiConfigs)
+    .where(
+      or(
+        isNull(chatApiConfigs.enterpriseId),
+        eq(chatApiConfigs.enterpriseId, enterpriseId),
+      ),
+    )
+  return new Set(
+    rows
+      .filter(
+        (m) =>
+          m.enterpriseId !== null ||
+          whitelist.length === 0 ||
+          whitelist.includes(m.id),
+      )
+      .map((m) => m.id),
+  )
+}
+
+/**
+ * 权限组三白名单按企业开通范围裁剪（allowedPages ⊆ enabledModules、
+ * allowedModels/allowedChatModels ⊆ 企业可见模型），仅处理入参中出现的字段。
+ */
+async function pruneGroupScope(
+  ctx: Awaited<ReturnType<typeof requireEnterpriseAdmin>>,
+  input: {
+    allowedModels?: string[]
+    allowedChatModels?: string[]
+    allowedPages?: ModuleName[]
+  },
+) {
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  const moduleKeys = new Set<string>([
+    ...(ctx.enterprise?.enabledModules ?? []),
+    "settings", // 平台侧强制保留 settings，防御旧数据缺失
+  ])
+  const [visibleModelIds, visibleChatIds] = await Promise.all([
+    loadVisibleModelIds(enterpriseId, ctx.enterprise?.visiblePresetModels ?? []),
+    loadVisibleChatModelIds(
+      enterpriseId,
+      ctx.enterprise?.visiblePresetChatModels ?? [],
+    ),
+  ])
+  // 所选全部越权判定：任一白名单有勾选，但全部勾选项均不在企业开通范围
+  // （三白名单裁后全空）——此时不走 pruneToScope 的「保留原值」兜底，
+  // 由调用方明确报错，避免整组无效 id 无感知落库
+  const validPages = (input.allowedPages ?? []).filter((p) =>
+    moduleKeys.has(p),
+  )
+  const validModels = (input.allowedModels ?? []).filter((id) =>
+    visibleModelIds.has(id),
+  )
+  const validChatModels = (input.allowedChatModels ?? []).filter((id) =>
+    visibleChatIds.has(id),
+  )
+  const allOutOfScope =
+    (input.allowedPages?.length ?? 0) +
+      (input.allowedModels?.length ?? 0) +
+      (input.allowedChatModels?.length ?? 0) >
+      0 &&
+    validPages.length === 0 &&
+    validModels.length === 0 &&
+    validChatModels.length === 0
+  return {
+    ...(input.allowedModels
+      ? { allowedModels: pruneToScope(input.allowedModels, visibleModelIds) }
+      : {}),
+    ...(input.allowedChatModels
+      ? {
+          allowedChatModels: pruneToScope(
+            input.allowedChatModels,
+            visibleChatIds,
+          ),
+        }
+      : {}),
+    ...(input.allowedPages
+      ? { allowedPages: pruneToScope(input.allowedPages, moduleKeys) }
+      : {}),
+    allOutOfScope,
+  }
+}
+
 /** 创建权限组 */
 export async function createGroupAction(input: {
   name: string
@@ -99,6 +227,15 @@ export async function createGroupAction(input: {
     return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
   }
   const d = parsed.data
+  // 三白名单按企业开通范围静默裁剪（越权项不可落库）；
+  // 所选全部越权（裁后全空）时明确报错，绝不静默放宽为「放行全部」
+  const scoped = await pruneGroupScope(ctx, d)
+  if (scoped.allOutOfScope) {
+    return {
+      ok: false as const,
+      error: "所选模块/模型均已不在企业开通范围，请重新选择",
+    }
+  }
 
   const [group] = await db
     .insert(permissionGroups)
@@ -106,9 +243,9 @@ export async function createGroupAction(input: {
       enterpriseId,
       name: d.name,
       description: d.description ?? null,
-      allowedModels: d.allowedModels,
-      allowedChatModels: d.allowedChatModels,
-      allowedPages: d.allowedPages,
+      allowedModels: scoped.allowedModels ?? [],
+      allowedChatModels: scoped.allowedChatModels ?? [],
+      allowedPages: scoped.allowedPages ?? [],
       maxConcurrent: d.maxConcurrent,
       priority: d.priority,
       isDefault: false, // 默认组只能由系统创建
@@ -155,6 +292,16 @@ export async function updateGroupAction(
     return { ok: false as const, error: "默认权限组不可改名" }
   }
 
+  // 三白名单按企业开通范围静默裁剪（越权项不可落库；编辑弹窗可能带出历史残留 id）；
+  // 所选全部越权（裁后全空）时明确报错，绝不静默放宽为「放行全部」
+  const scoped = await pruneGroupScope(ctx, parsed.data)
+  if (scoped.allOutOfScope) {
+    return {
+      ok: false as const,
+      error: "所选模块/模型均已不在企业开通范围，请重新选择",
+    }
+  }
+
   await db
     .update(permissionGroups)
     .set({
@@ -163,13 +310,13 @@ export async function updateGroupAction(
         ? { description: parsed.data.description }
         : {}),
       ...(parsed.data.allowedModels
-        ? { allowedModels: parsed.data.allowedModels }
+        ? { allowedModels: scoped.allowedModels ?? parsed.data.allowedModels }
         : {}),
       ...(parsed.data.allowedChatModels
-        ? { allowedChatModels: parsed.data.allowedChatModels }
+        ? { allowedChatModels: scoped.allowedChatModels ?? parsed.data.allowedChatModels }
         : {}),
       ...(parsed.data.allowedPages
-        ? { allowedPages: parsed.data.allowedPages }
+        ? { allowedPages: scoped.allowedPages ?? parsed.data.allowedPages }
         : {}),
       ...(parsed.data.maxConcurrent
         ? { maxConcurrent: parsed.data.maxConcurrent }

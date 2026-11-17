@@ -57,6 +57,7 @@ import {
   updateEnterpriseModelConfigSchema,
   updateEnterpriseInfoSchema,
   setEnterpriseStatusSchema,
+  updateEnterpriseNavSchema,
   updatePlatformUserSchema,
   setPlatformUserStatusSchema,
   resetPlatformUserPasswordSchema,
@@ -654,6 +655,39 @@ export async function setEnterpriseStatusAction(input: {
   return { ok: true as const, error: null }
 }
 
+/**
+ * 企业导航名称自定义映射 + 测试企业开关（超管；迁移 0100）
+ *
+ * 测试开关仅影响命名：开启后该企业侧边栏 TEMU 预设显示为「数据中心」；
+ * navTitleOverrides 显式映射优先于预设；value trim 后空白剔除 = 恢复默认名。
+ */
+export async function updateEnterpriseNavAction(input: {
+  enterpriseId: string
+  isTest: boolean
+  navTitleOverrides: Record<string, string>
+}) {
+  await requireSuperAdmin()
+  const parsed = updateEnterpriseNavSchema.safeParse(input)
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.issues[0]?.message ?? "参数错误" }
+  }
+  const d = parsed.data
+  const overrides: Record<string, string> = {}
+  for (const [key, value] of Object.entries(d.navTitleOverrides)) {
+    const v = value.trim()
+    if (v) overrides[key] = v
+  }
+
+  await db
+    .update(enterprises)
+    .set({ isTest: d.isTest, navTitleOverrides: overrides, updatedAt: new Date() })
+    .where(eq(enterprises.id, d.enterpriseId))
+
+  revalidatePath("/platform/enterprises")
+  revalidatePath(`/platform/enterprises/${d.enterpriseId}`)
+  return { ok: true as const, error: null }
+}
+
 /** 企业详情（超管）：基本信息 + 套餐 + 成员/任务统计；不存在返回 null */
 export async function getEnterpriseDetailAction(enterpriseId: string) {
   await requireSuperAdmin()
@@ -674,6 +708,8 @@ export async function getEnterpriseDetailAction(enterpriseId: string) {
       allowCustomModels: enterprises.allowCustomModels,
       visiblePresetModels: enterprises.visiblePresetModels,
       visiblePresetChatModels: enterprises.visiblePresetChatModels,
+      isTest: enterprises.isTest,
+      navTitleOverrides: enterprises.navTitleOverrides,
       createdAt: enterprises.createdAt,
       memberCount: db.$count(users, eq(users.enterpriseId, enterprises.id)),
       taskCount: db.$count(
@@ -878,6 +914,8 @@ export async function listEnterprisesAction(
         allowCustomModels: enterprises.allowCustomModels,
         visiblePresetModels: enterprises.visiblePresetModels,
         visiblePresetChatModels: enterprises.visiblePresetChatModels,
+        isTest: enterprises.isTest,
+        navTitleOverrides: enterprises.navTitleOverrides,
         createdAt: enterprises.createdAt,
         // 成员数 / 累计生图任务数（标量子查询，每页 ≤50 行）
         memberCount: db.$count(users, eq(users.enterpriseId, enterprises.id)),

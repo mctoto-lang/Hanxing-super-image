@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useRouter } from "next/navigation"
 import { Area, AreaChart, CartesianGrid, XAxis } from "recharts"
-import { Ban, ChevronDown, ChevronRight, ImagePlus, Settings, SlidersHorizontal, TrendingUp, Video, Zap } from "lucide-react"
+import { Ban, ChevronDown, ChevronRight, Copy, ImagePlus, Settings, SlidersHorizontal, TrendingUp, Video, Zap } from "lucide-react"
 import { DashRing } from "@/components/ui/dash-ring"
 import { toast } from "sonner"
 import {
@@ -82,6 +82,8 @@ import {
   type TemuProductDetailExtra,
   type TemuSaleFilter,
 } from "@/server/actions/temu"
+import { getSnNamesAction } from "@/server/actions/temu-ship"
+import { copyText } from "@/lib/utils"
 
 /**
  * Temu 商品信息页组件族：销量趋势弹层、在售筛选、商品无限滚动表格
@@ -212,12 +214,14 @@ export function ProductSalesTrendPopover({ series }: { series: SalesSeriesPoint[
 }
 
 /** 滞销阈值设置按钮 + 弹窗（搜索框右侧；企业级共享配置 temu_settings） */
-/** 商品页共享搜索条字段（本地库 ilike：全部=五字段混合，其余单列） */
+/** 商品页共享搜索条字段（本地库 ilike：全部=五字段混合，其余单列；
+ *  款名=库存档案款名（inventory_product.name，经归一化货号关联，变体 B049≡B49 可命中）） */
 const PRODUCT_SEARCH_FIELDS: SearchBarField[] = [
   { value: "all", label: "全部", placeholder: "搜索 SKC/SPU/货号/商品名" },
   { value: "sn", label: "货号", placeholder: "输入货号…" },
   { value: "name", label: "商品名", placeholder: "输入商品名…" },
   { value: "skc", label: "SKC", placeholder: "输入 SKC…" },
+  { value: "style", label: "款名", placeholder: "搜索库存款名…" },
 ]
 
 function StagnantThresholdButton() {
@@ -350,7 +354,7 @@ export function TemuProductsSaleFilter({
     { value: "stagnant", label: "滞销" },
   ]
   const sortItems = [
-    { value: "listed", label: "上架时间" },
+    { value: "listed", label: "创建时间" },
     { value: "today", label: "今日销量" },
     { value: "last7", label: "七日销量" },
     { value: "sn", label: "货号" },
@@ -359,7 +363,7 @@ export function TemuProductsSaleFilter({
 
   /** 搜索条草稿态（URL q/qf 回填）：按钮/回车提交才跳转，空关键词=清除筛选 */
   const [searchField, setSearchField] = React.useState(
-    qf === "sn" || qf === "name" || qf === "skc" ? qf : "all",
+    qf === "sn" || qf === "name" || qf === "skc" || qf === "style" ? qf : "all",
   )
   const [searchKeyword, setSearchKeyword] = React.useState(q ?? "")
 
@@ -426,7 +430,7 @@ export function TemuProductsSaleFilter({
         }}
       >
         <SelectTrigger className="h-8 w-28 text-xs" aria-label="排序方式">
-          <SelectValue placeholder="上架时间" />
+          <SelectValue placeholder="创建时间" />
         </SelectTrigger>
         <SelectContent>
           {sortItems.map((it) => (
@@ -535,7 +539,7 @@ export function skcStatusView(skcStatus: number | null): SkcStatusView {
   }
 }
 
-/** 上架时间戳格式化（goods-list createdAt 实测为毫秒；按量级自适应兼容秒；日粒度 YYYY-MM-DD；
+/** 创建时间戳格式化（goods-list createdAt 实测为毫秒；按量级自适应兼容秒；日粒度 YYYY-MM-DD；
  *  无效返回 null 由外层显空值占位） */
 function formatListedAt(ts: number | null): string | null {
   if (ts == null) return null
@@ -599,7 +603,7 @@ function ProductDetailPanel({
     {
       title: "商品信息",
       items: [
-        { label: "上架时间", value: formatListedAt(row.skcCreatedAt) ?? <EmptyHint /> },
+        { label: "创建时间", value: formatListedAt(row.skcCreatedAt) ?? <EmptyHint /> },
         {
           label: "加入站点时长",
           value: extra.onSalesDurationDays != null ? `${extra.onSalesDurationDays} 天` : <EmptyHint />,
@@ -794,16 +798,53 @@ export function ProductsInfiniteTable({
 
   React.useEffect(() => {
     let cancelled = false
-    void getPriorityShipLinksAction(store).then((r) => {
-      if (!cancelled) setPrioritySkcs(new Set(r.skcIds))
-    })
-    void getStopReplenishLinksAction(store).then((r) => {
-      if (!cancelled) setStoppedSkcs(new Set(r.skcIds))
-    })
+    void getPriorityShipLinksAction(store)
+      .then((r) => {
+        if (!cancelled) setPrioritySkcs(new Set(r.skcIds))
+      })
+      .catch(() => {}) // 网络层异常静默（标记集保持空 = 全部未标记）
+    void getStopReplenishLinksAction(store)
+      .then((r) => {
+        if (!cancelled) setStoppedSkcs(new Set(r.skcIds))
+      })
+      .catch(() => {})
     return () => {
       cancelled = true
     }
   }, [store])
+
+  /** 货号 → 库存档案款名（货号悬停联动）：rows 变化（首屏/无限加载）后按批拉取，
+   *  已查过的货号跳过（占位去重，避免重复请求）；值三态——undefined=查询中、
+   *  null=未录入、string=款名（轻量 name-only 查询，发货台重型口径见 action 注释） */
+  const [snNames, setSnNames] = React.useState<Record<string, string | null | undefined>>({})
+  const snNamesRef = React.useRef<Record<string, string | null | undefined>>({})
+  React.useEffect(() => {
+    const wanted = [...new Set(rows.map((r) => r.productSn).filter((sn): sn is string => !!sn))]
+    const missing = wanted.filter((sn) => !(sn in snNamesRef.current))
+    if (missing.length === 0) return
+    // 先占位 undefined（查询中）防同批重复拉取
+    for (const sn of missing) snNamesRef.current[sn] = undefined
+    setSnNames({ ...snNamesRef.current })
+    // 刻意无 cleanup 取消：依赖含 rows，翻页追加触发的 cleanup 会误杀在途请求，
+    // 使该批货号永久停留占位；React 18 对卸载后 setState 已是静默 no-op
+    void getSnNamesAction({ codes: missing })
+      .then((res) => {
+        if (!res.ok) {
+          // 鉴权/参数失败收敛为「未录入」态
+          for (const sn of missing) snNamesRef.current[sn] = null
+        } else {
+          for (const [code, name] of Object.entries(res.names)) {
+            snNamesRef.current[code] = name
+          }
+        }
+        setSnNames({ ...snNamesRef.current })
+      })
+      .catch(() => {
+        // 网络/服务端异常同样收敛为「未录入」态，不留 unhandled rejection
+        for (const sn of missing) snNamesRef.current[sn] = null
+        setSnNames({ ...snNamesRef.current })
+      })
+  }, [rows, store])
 
   const togglePriority = async (r: TemuProductRow) => {
     const isPriority = prioritySkcs.has(r.productSkcId)
@@ -970,8 +1011,8 @@ export function ProductsInfiniteTable({
             const expandable = skuRows.length > 0
             return (
               <React.Fragment key={r.id}>
-              {/* 整行点击即可展开/收纳（chevron 仅为视觉提示，行内无其他可点元素）；
-                  货号排序时同组行共享浅蓝/浅紫交替底色（同货号跨店分组辨识） */}
+              {/* 整行点击即可展开/收纳（chevron 仅为视觉提示；行内还有复制 SKC 按钮，
+                  已 stopPropagation 阻断行点击）；货号排序时同组行共享浅蓝/浅紫交替底色（同货号跨店分组辨识） */}
               <TableRow
                 className={[
                   // 列间竖线挂行上而非外层 table：变体按后代匹配，挂 table 会波及展开行内嵌套的 SKU 子表
@@ -1007,7 +1048,33 @@ export function ProductsInfiniteTable({
                     <div className="size-10 rounded bg-muted" />
                   )}
                 </TableCell>
-                <TableCell className="font-mono text-xs">{r.productSkcId}</TableCell>
+                <TableCell className="font-mono text-xs">
+                  <span className="inline-flex items-center gap-1">
+                    {r.productSkcId}
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <button
+                            type="button"
+                            aria-label="复制 SKC"
+                            className="cursor-pointer text-muted-foreground transition-colors hover:text-foreground"
+                            onClick={(e) => {
+                              // 阻断行点击（整行点击是展开/收纳）
+                              e.stopPropagation()
+                              void copyText(r.productSkcId).then((ok) => {
+                                if (ok) toast.success("SKC 已复制")
+                                else toast.error("复制失败，请手动复制")
+                              })
+                            }}
+                          >
+                            <Copy className="size-3" />
+                          </button>
+                        }
+                      />
+                      <TooltipContent className="text-xs">复制 SKC</TooltipContent>
+                    </Tooltip>
+                  </span>
+                </TableCell>
                 <TableCell>
                   <span className="inline-flex items-center gap-1">
                     {r.productName ? <ProductNameCell name={r.productName} /> : <EmptyHint />}
@@ -1031,7 +1098,23 @@ export function ProductsInfiniteTable({
                     )}
                   </span>
                 </TableCell>
-                <TableCell className="font-mono text-xs">{r.productSn ?? <EmptyHint />}</TableCell>
+                <TableCell className="font-mono text-xs">
+                  {r.productSn ? (
+                    /* 货号悬停联动库存档案款名（归一化匹配 B049≡B49；未录入显提示） */
+                    <Tooltip>
+                      <TooltipTrigger className="cursor-default">{r.productSn}</TooltipTrigger>
+                      <TooltipContent className="max-w-sm break-all text-xs">
+                        {snNames[r.productSn] != null
+                          ? `款名：${snNames[r.productSn]}`
+                          : r.productSn in snNames
+                            ? "库存未录入该货号"
+                            : "款名查询中…"}
+                      </TooltipContent>
+                    </Tooltip>
+                  ) : (
+                    <EmptyHint />
+                  )}
+                </TableCell>
                 <TableCell className="tabular-nums">
                   {r.supplierPrice != null ? `¥${(r.supplierPrice / 100).toFixed(2)}` : <EmptyHint />}
                 </TableCell>

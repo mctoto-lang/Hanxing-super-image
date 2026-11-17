@@ -38,39 +38,43 @@ export async function createExportTicketAction(
   }
 }
 
-// ═══════════════ 旧接口保留（兼容现有调用方） ═══════════════
+// ═══════════════ 旧接口保留（暂无调用方，保留待清理） ═══════════════
 
-/** 列出本企业可见的对话模型（完整字段，旧接口保留兼容） */
-
-
-
-// ═══════════════ 旧接口保留（兼容现有调用方） ═══════════════
-
-/** 列出本企业可见的对话模型（完整字段，旧接口保留兼容） */
+/** 列出本企业可见的对话模型（活跃 + 企业白名单内；暂无调用方，保留待清理） */
 export async function listChatApiConfigsAction() {
   const ctx = await requireUserContext()
   const denied = checkModuleAccess(ctx, "workspace")
   if (denied) return []
   const scope = getCurrentEnterpriseScope(ctx)
-  return await db
+  const whitelist = ctx.enterprise?.visiblePresetChatModels ?? []
+  const rows = await db
     .select({
       id: chatApiConfigs.id,
+      enterpriseId: chatApiConfigs.enterpriseId,
       name: chatApiConfigs.name,
       displayName: chatApiConfigs.displayName,
       isActive: chatApiConfigs.isActive,
     })
     .from(chatApiConfigs)
     .where(
-      or(
-        isNull(chatApiConfigs.enterpriseId),
-        eq(chatApiConfigs.enterpriseId, scope.enterpriseId),
+      and(
+        eq(chatApiConfigs.isActive, true),
+        or(
+          isNull(chatApiConfigs.enterpriseId),
+          eq(chatApiConfigs.enterpriseId, scope.enterpriseId),
+        ),
       ),
     )
+  // 平台预置按企业白名单过滤（空 = 全部可见），企业私有恒保留
+  return rows
+    .filter(
+      (m) =>
+        m.enterpriseId !== null ||
+        whitelist.length === 0 ||
+        whitelist.includes(m.id),
+    )
+    .map(({ enterpriseId: _enterpriseId, ...rest }) => rest)
 }
-
-/** 列出本企业的提示词模板（按 type 参数化，默认 fission） */
-
-
 
 /** 列出本企业的提示词模板（按 type 参数化，默认 fission） */
 export async function listPromptTemplatesAction(opts?: {

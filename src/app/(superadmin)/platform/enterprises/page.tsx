@@ -31,6 +31,7 @@ import { EnterpriseCreateDialog } from "@/components/superadmin/enterprise-creat
 import { RechargeDialog } from "@/components/superadmin/recharge-dialog"
 import { PlanAssignDialog } from "@/components/superadmin/plan-assign-dialog"
 import { ModulesDialog } from "@/components/superadmin/modules-dialog"
+import { EnterpriseNavDialog } from "@/components/superadmin/enterprise-nav-dialog"
 import { EnterpriseFilterBar } from "@/components/superadmin/enterprise-filter-bar"
 import type { ModuleName } from "@/db/schema"
 
@@ -154,6 +155,11 @@ export default async function EnterprisesPage({
                       >
                         {e.name}
                       </Link>
+                      {e.isTest && (
+                        <Badge variant="outline" className="ml-1.5 rounded-[4px] px-1 py-0 text-[10px] text-amber-600 dark:text-amber-400">
+                          测试
+                        </Badge>
+                      )}
                     </TableCell>
                     <TableCell className="font-mono text-xs">{e.slug}</TableCell>
                     <TableCell>
@@ -204,6 +210,12 @@ export default async function EnterprisesPage({
                           enterpriseId={e.id}
                           enterpriseName={e.name}
                           currentModules={e.enabledModules as ModuleName[]}
+                        />
+                        <EnterpriseNavDialog
+                          enterpriseId={e.id}
+                          enterpriseName={e.name}
+                          isTest={e.isTest}
+                          navTitleOverrides={e.navTitleOverrides ?? {}}
                         />
                         <RechargeDialog
                           enterpriseId={e.id}

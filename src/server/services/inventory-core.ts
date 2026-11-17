@@ -89,9 +89,12 @@ export async function getInventoryStatusConfig(enterpriseId: string): Promise<In
  * 保留字母前缀与其余部分（B9001 与 D9001 是不同货号，不能并）。
  * 用于 TEMU productSn/skcExtCode ↔ 档案 productCode 匹配
  * （销速聚合/装箱扣减/参考查询），展示一律用原串。
+ * 口径与 temu.ts 款名搜索的 SQL regexp 镜像逐字对齐（trim 前置、保留原数字位数）。
  */
 export function normalizeSn(sn: string): string {
-  return sn.trim().replace(/[0-9]+/, (m) => String(Number(m)))
+  // 首个数字串去前导零用纯正则（至少保留一位数字）：String(Number(m)) 对
+  // ≥16 位有效数字串会产生精度碰撞/科学计数法，与 SQL 镜像（保留原数字）不一致
+  return sn.trim().replace(/[0-9]+/, (m) => m.replace(/^0+(?=\d)/, ""))
 }
 
 export type DailySalesLoad = {

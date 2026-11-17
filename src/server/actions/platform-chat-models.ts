@@ -11,6 +11,8 @@ import {
   redistributeSortOrder,
 } from "@/server/services/sort-order"
 import { revalidatePath } from "next/cache"
+import { isUniqueViolation } from "@/server/services/db-errors"
+import type { DbTx } from "@/server/services/credits-service"
 
 /**
  * 平台预置对话模型管理 Server Actions（openai / claude / gemini / grok）
@@ -24,24 +26,20 @@ import { revalidatePath } from "next/cache"
  *   maxContext/maxOutput/厘级价格/思考强度为 /chat 交互对话专用。
  */
 
-/** 新建平台预置对话模型后，追加进所有白名单非空的企业（幂等） */
-async function syncPresetChatModelToWhitelists(modelId: string) {
-  const affected = await db
-    .select({
-      id: enterprises.id,
-      visible: enterprises.visiblePresetChatModels,
-    })
-    .from(enterprises)
-    .where(sql`jsonb_array_length(${enterprises.visiblePresetChatModels}) > 0`)
-
-  for (const ent of affected) {
-    const list = (ent.visible as string[] | null) ?? []
-    if (list.includes(modelId)) continue
-    await db
-      .update(enterprises)
-      .set({ visiblePresetChatModels: [...list, modelId], updatedAt: new Date() })
-      .where(eq(enterprises.id, ent.id))
-  }
+/**
+ * 新建平台预置对话模型后，追加进所有白名单非空的企业（幂等）。
+ * 单条原子 UPDATE（与生图侧 syncPresetModelToWhitelists 同构，替代原
+ * 逐企业读-改-写：无 N+1 往返、无并发竞态）；须与模型 insert 同事务调用。
+ */
+async function syncPresetChatModelToWhitelists(modelId: string, tx: DbTx) {
+  const appended = JSON.stringify([modelId])
+  await tx.execute(sql`
+    UPDATE ${enterprises}
+    SET visible_preset_chat_models = visible_preset_chat_models || ${appended}::jsonb,
+        updated_at = now()
+    WHERE jsonb_array_length(visible_preset_chat_models) > 0
+      AND NOT (visible_preset_chat_models @> ${appended}::jsonb)
+  `)
 }
 
 /** 把扁平字段组装为 extraConfig */
@@ -156,44 +154,52 @@ export async function createPresetChatModelAction(
   }
 
   try {
-    const [created] = await db
-      .insert(chatApiConfigs)
-      .values({
-        enterpriseId: null, // 平台预置对话模型
-        name: d.name,
-        displayName: d.displayName,
-        description: d.description || null,
-        badgeText: d.badgeText || null,
-        badgeColor: d.badgeColor || null,
-        iconUrl: d.iconUrl || null,
-        apiEndpoint: d.apiEndpoint,
-        apiKeyEncrypted: encrypt(d.apiKey),
-        formatType: d.formatType,
-        extraConfig: buildChatExtraConfig(d),
-        maxContextTokens: d.maxContextTokens,
-        maxOutputTokens: d.maxOutputTokens,
-        inputPriceCenticredits: d.inputPriceCenticredits,
-        outputPriceCenticredits: d.outputPriceCenticredits,
-        supportsThinking: d.supportsThinking,
-        supportsVision: d.supportsVision,
-        maxConcurrent: d.maxConcurrent,
-        maxRetries: d.maxRetries,
-        apiTimeout: d.apiTimeout,
-        taskTimeout: d.taskTimeout,
-        sortOrder: await nextSortOrder(chatApiConfigs),
-        isActive: true,
-      })
-      .returning({ id: chatApiConfigs.id })
-    if (created) {
-      await syncPresetChatModelToWhitelists(created.id)
-    }
+    // 闭包内属性收窄会失效，先在函数体作用域完成加密（上方已校验非空）
+    const apiKeyEncrypted = encrypt(d.apiKey)
+    // insert 与白名单同步同事务：sync 失败连模型一起回滚，
+    // 避免出现「行已落库但提示失败、重试必撞唯一索引」的半提交态
+    await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(chatApiConfigs)
+        .values({
+          enterpriseId: null, // 平台预置对话模型
+          name: d.name,
+          displayName: d.displayName,
+          description: d.description || null,
+          badgeText: d.badgeText || null,
+          badgeColor: d.badgeColor || null,
+          iconUrl: d.iconUrl || null,
+          apiEndpoint: d.apiEndpoint,
+          apiKeyEncrypted,
+          formatType: d.formatType,
+          extraConfig: buildChatExtraConfig(d),
+          maxContextTokens: d.maxContextTokens,
+          maxOutputTokens: d.maxOutputTokens,
+          inputPriceCenticredits: d.inputPriceCenticredits,
+          outputPriceCenticredits: d.outputPriceCenticredits,
+          supportsThinking: d.supportsThinking,
+          supportsVision: d.supportsVision,
+          maxConcurrent: d.maxConcurrent,
+          maxRetries: d.maxRetries,
+          apiTimeout: d.apiTimeout,
+          taskTimeout: d.taskTimeout,
+          sortOrder: await nextSortOrder(chatApiConfigs),
+          isActive: true,
+        })
+        .returning({ id: chatApiConfigs.id })
+      if (created) {
+        await syncPresetChatModelToWhitelists(created.id, tx)
+      }
+    })
   } catch (err) {
+    // 真实 PG 错误在 drizzle 包装的 .cause 上（code=23505 唯一冲突），
+    // message.includes("unique") 永远匹配不到——按错误码判定
+    console.error("[createPresetChatModelAction] failed:", err)
     return {
       ok: false,
-      error:
-        err instanceof Error && err.message.includes("unique")
-          ? "模型标识 + API 地址已存在"
-          : "创建失败",
+      error: isUniqueViolation(err)
+        ? "模型标识 + API 地址已存在"
+        : "创建失败",
     }
   }
 
@@ -258,12 +264,12 @@ export async function updatePresetChatModelAction(
   try {
     await db.update(chatApiConfigs).set(set).where(eq(chatApiConfigs.id, modelId))
   } catch (err) {
+    console.error("[updatePresetChatModelAction] failed:", err)
     return {
       ok: false,
-      error:
-        err instanceof Error && err.message.includes("unique")
-          ? "模型标识 + API 地址已存在"
-          : "更新失败",
+      error: isUniqueViolation(err)
+        ? "模型标识 + API 地址已存在"
+        : "更新失败",
     }
   }
 

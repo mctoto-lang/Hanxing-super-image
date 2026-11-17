@@ -1,15 +1,18 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest"
 import { randomUUID } from "node:crypto"
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { db } from "@/db/client"
-import { enterprises } from "@/db/schema"
+import { enterprises, inventoryProducts, users } from "@/db/schema"
+import { MODULE_NAMES } from "@/db/schema/_shared"
 import { temuStores, temuSalesOverviews, temuProducts, temuSkuMaps } from "@/db/schema/temu"
 import {
   getTemuProductSalesInfoAction,
   getTemuProductsAction,
   getTemuProductsPageAction,
 } from "@/server/actions/temu"
+import { getShipInventoryRefAction } from "@/server/actions/temu-ship"
 import { temuDayStr } from "@/server/services/temu-time"
+import { normalizeSn } from "@/server/services/inventory-core"
 
 /**
  * 商品信息页数据链路回归：getTemuProductsPageAction / getTemuProductSalesInfoAction
@@ -31,6 +34,7 @@ vi.mock("@/server/services/temu-cache", () => ({
 }))
 
 let entId: string
+let entBId: string
 let storeId: string
 const SKC_A = "990001"
 const SKC_B = "990002"
@@ -42,9 +46,21 @@ beforeAll(async () => {
       name: "temu 商品页测试企业",
       slug: `pg-${randomUUID().slice(0, 8)}`,
       creditsBalance: 0,
+      enabledModules: [...MODULE_NAMES],
     })
     .returning()
   entId = ent!.id
+
+  // 隔离对照企业：其库存档案款名不应被 A 企业款名搜索命中
+  const [entB] = await db
+    .insert(enterprises)
+    .values({
+      name: "temu 商品页隔离企业",
+      slug: `pgb-${randomUUID().slice(0, 8)}`,
+      creditsBalance: 0,
+    })
+    .returning()
+  entBId = entB!.id
 
   const [user] = await db
     .insert((await import("@/db/schema")).users)
@@ -154,20 +170,34 @@ beforeAll(async () => {
     { storeId, skuId: "80002", skcId: SKC_A, supplierPrice: 2590 },
   ])
 
-  // 排序用商品行：货号 B2/B10/空 + 上架时间错开；销售行给 today 排序口径
+  // 排序用商品行：货号 B2/B10/空 + 上架时间错开；销售行给 today 排序口径；
+  // 款名搜索用：B49（档案 B049 归一化变体）/ B77（原串相等）/ B55（他企业档案款名）
   await db.insert(temuProducts).values([
     { storeId, productSkcId: "990101", productId: "7101", productSn: "B10", skcCreatedAt: 1000 },
     { storeId, productSkcId: "990102", productId: "7102", productSn: "B2", skcCreatedAt: 3000 },
     { storeId, productSkcId: "990103", productId: "7103", productSn: null, skcCreatedAt: 2000 },
+    { storeId, productSkcId: "990201", productId: "7201", productSn: "B49", skcCreatedAt: 4000 },
+    { storeId, productSkcId: "990202", productId: "7202", productSn: "B77", skcCreatedAt: 5000 },
+    { storeId, productSkcId: "990203", productId: "7203", productSn: "B55", skcCreatedAt: 6000 },
   ])
   await db.insert(temuSalesOverviews).values([
     { storeId, skcId: "990101", capturedAt, capturedDay, todaySalesVolume: 5, priceDetail: [], contentHash: hash("s1") },
     { storeId, skcId: "990102", capturedAt, capturedDay, todaySalesVolume: 9, priceDetail: [], contentHash: hash("s2") },
   ])
+
+  // 库存档案（款名搜索/货号悬停联动数据源）：B049 ↔ TEMU B49 为归一化变体
+  await db.insert(inventoryProducts).values([
+    { enterpriseId: entId, productCode: "B049", name: "星河连帽卫衣" },
+    { enterpriseId: entId, productCode: "B77", name: "基础款圆领T恤" },
+    { enterpriseId: entBId, productCode: "B55", name: "别家独占款名" },
+  ])
 })
 
 afterAll(async () => {
+  // users.enterpriseId 为 set null 不级联，先清成员再删企业（库存档案随企业级联）
+  await db.delete(users).where(eq(users.enterpriseId, entId))
   await db.delete(enterprises).where(eq(enterprises.id, entId))
+  await db.delete(enterprises).where(eq(enterprises.id, entBId))
 })
 
 describe("商品信息页 salesInfo 链路", () => {
@@ -238,17 +268,76 @@ describe("商品信息页 salesInfo 链路", () => {
 
   it("商品排序：货号空值最上 + B 后数字自然序", async () => {
     const r = await getTemuProductsAction(storeId, undefined, 1, undefined, "sn")
-    // 空货号最上，B2 在 B10 前（数字自然序，非字典序）
-    expect(r.rows.map((x) => x.productSn)).toEqual([null, "B2", "B10"])
+    // 空货号最上，B2 在 B10 前（数字自然序，非字典序）；款名搜索夹具行一并覆盖
+    expect(r.rows.map((x) => x.productSn)).toEqual([null, "B2", "B10", "B49", "B55", "B77"])
   })
 
   it("商品排序：今日销量高→低（无销售数据沉底）", async () => {
     const r = await getTemuProductsAction(storeId, undefined, 1, undefined, "today")
-    expect(r.rows.map((x) => x.productSkcId)).toEqual(["990102", "990101", "990103"])
+    expect(r.rows).toHaveLength(6)
+    expect(r.rows.slice(0, 2).map((x) => x.productSkcId)).toEqual(["990102", "990101"])
+    // 无销售数据行沉底（稳定序不作内部排序断言）
+    expect(new Set(r.rows.slice(2).map((x) => x.productSkcId))).toEqual(
+      new Set(["990103", "990201", "990202", "990203"]),
+    )
   })
 
-  it("商品排序：默认上架时间新→旧", async () => {
+  it("商品排序：默认创建时间新→旧", async () => {
     const r = await getTemuProductsAction(storeId, undefined, 1, undefined)
-    expect(r.rows.map((x) => x.productSkcId)).toEqual(["990102", "990103", "990101"])
+    expect(r.rows.map((x) => x.productSkcId)).toEqual([
+      "990203", "990202", "990201", "990102", "990103", "990101",
+    ])
+  })
+})
+
+describe("款名搜索（qf=style，库存档案归一化关联）", () => {
+  it("命中归一化变体：款名「星河」→ TEMU 货号 B49（档案 B049）", async () => {
+    const r = await getTemuProductsAction(storeId, "星河", 1, undefined, undefined, "style")
+    expect(r.rows.map((x) => x.productSn)).toEqual(["B49"])
+  })
+
+  it("原串相等命中；无命中返回空", async () => {
+    const r = await getTemuProductsAction(storeId, "基础款", 1, undefined, undefined, "style")
+    expect(r.rows.map((x) => x.productSn)).toEqual(["B77"])
+    const none = await getTemuProductsAction(
+      storeId,
+      "不存在的款名",
+      1,
+      undefined,
+      undefined,
+      "style",
+    )
+    expect(none.rows).toHaveLength(0)
+  })
+
+  it("企业隔离：他企业档案款名不命中本企业商品", async () => {
+    const r = await getTemuProductsAction(storeId, "别家独占", 1, undefined, undefined, "style")
+    expect(r.rows).toHaveLength(0)
+  })
+
+  it("货号悬停联动：getShipInventoryRefAction 透出档案款名（B49 ↔ B049 归一化）", async () => {
+    const res = await getShipInventoryRefAction({ codes: ["B49", "B77", "B10"] })
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(res.rows["B49"]?.name).toBe("星河连帽卫衣")
+    expect(res.rows["B77"]?.name).toBe("基础款圆领T恤")
+    expect(res.rows["B10"]?.name).toBeNull()
+  })
+
+  it("SQL 归一化 regexp 与 normalizeSn 逐样本一致（款名搜索双侧匹配的口径基础）", async () => {
+    const samples = [
+      "B049", "B49", "B007", "B0", "B9001",
+      "0123x45", "B123045", "A0B123", "100", "B000",
+    ]
+    // 样本为固定字母数字串，内联数组字面量（drizzle 会把 JS 数组展开成多参数）
+    const arrLiteral = `ARRAY[${samples.map((s) => `'${s}'`).join(",")}]::text[]`
+    const rows = await db.execute<{ input: string; norm: string }>(sql`
+      select unnest(${sql.raw(arrLiteral)}) as input,
+             regexp_replace(unnest(${sql.raw(arrLiteral)}), '^([^0-9]*)0+([0-9])', '\\1\\2') as norm
+    `)
+    expect(rows).toHaveLength(samples.length)
+    for (const r of rows) {
+      expect(r.norm).toBe(normalizeSn(r.input))
+    }
   })
 })

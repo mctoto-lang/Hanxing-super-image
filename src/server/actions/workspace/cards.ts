@@ -255,10 +255,6 @@ export async function getTaskCardsAction(
 }
 
 /** 添加卡片（cardIndex = MAX+1） */
-
-
-
-/** 添加卡片（cardIndex = MAX+1） */
 export async function addCardAction(
   taskId: string,
   input: { prompt: string },
@@ -299,10 +295,6 @@ export async function addCardAction(
   revalidatePath("/workspace")
   return { ok: true, error: null, cardId: card!.id }
 }
-
-/** 更新卡片提示词/显示语言 */
-
-
 
 /** 更新卡片提示词/显示语言 */
 export async function updateCardAction(

@@ -60,8 +60,8 @@ export default function BentoFeaturesSection() {
             className="lg:col-span-2 lg:rounded-[0.5rem_0.5rem_0.5rem_2rem]"
           />
           <BentoCard
-            eyebrow="电商运营"
-            title="TEMU 全链路 一站打通"
+            eyebrow="电商工具"
+            title="电商运营 全链路 一站打通"
             description="发品、发货、调价、质检全流程覆盖，多店铺统一管理，运营动作一屏完成。"
             graphic={
               <div className="absolute inset-0 bg-center bg-cover bg-[url(https://cdn.21st.dev/assets/mirror/05/05a9718924c99a9e5c6d5a61b9ea8d088c6f2ce2515716d60f69064dc178462f.png)]" />

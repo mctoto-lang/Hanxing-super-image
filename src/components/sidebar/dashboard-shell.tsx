@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils"
 import { getCurrentUserContext } from "@/lib/auth/session"
+import { resolveNavTitle } from "@/lib/modules"
 import { redirect } from "next/navigation"
 import { AppSidebar } from "@/components/sidebar/app-sidebar"
 import { buildNavMain, buildSidebarUser } from "@/components/sidebar/sidebar-data"
@@ -49,6 +50,13 @@ export async function DashboardShell({
 
   // 导航构建一次：侧边栏与命令面板共用（面板条目 = 子项展平 + 分组名）
   const navMain = buildNavMain(ctx)
+  // 页头 TEMU 域标题跟随企业自定义导航名（与 buildNavMain 的 t("temu") 同口径；
+  // 无企业上下文/未自定义/超管无企业时 resolveNavTitle 回落默认「TEMU」）
+  const temuNavTitle = resolveNavTitle(
+    ctx.enterprise?.navTitleOverrides,
+    ctx.enterprise?.isTest ?? false,
+    "temu",
+  )
   const paletteItems = navMain.flatMap((group) =>
     group.items?.length
       ? group.items.map((sub) => ({
@@ -96,7 +104,7 @@ export async function DashboardShell({
         <SidebarInset className={cn(inner && "min-h-0 overflow-hidden")}>
           <header className="flex h-16 shrink-0 items-center gap-2 border-b px-4">
             <SidebarTrigger className="-ml-1" />
-            <HeaderTitle className="ml-4" />
+            <HeaderTitle className="ml-4" temuTitle={temuNavTitle} />
             {/* 企业在线成员头像组：超管/无企业不展示（内部自动轮询心跳） */}
             <OnlineMembers
               enabled={!!ctx.user.enterpriseId && !ctx.user.isSuperAdmin}

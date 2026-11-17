@@ -128,7 +128,8 @@ async function upsertGoodsBatch(storeId: string, items: Record<string, unknown>[
       cat1Name: cat1,
       // 站点状态（响应 skcSiteStatus；查询侧入参叫 skcTopStatus）
       skcStatus: num(it.skcSiteStatus),
-      // 官方口径为上架时间（秒级时间戳可能性大，原样存档，前端按 ms 展示历史兼容）
+      // 官方字段 createdAt（毫秒；2026-11-16 起商品页展示口径为「创建时间」，
+      // 接入时曾对照后台标为上架时间，原样存档不做换算）
       skcCreatedAt: num(it.createdAt),
       // SKU 概要（含虚拟库存）→ SKU↔SKC 映射
     })

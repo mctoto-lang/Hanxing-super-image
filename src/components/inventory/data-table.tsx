@@ -83,6 +83,8 @@ interface DataTableProps<TData> {
   preserveScrollRef?: React.RefObject<boolean>
   /** 挂载跳转顶部/底部悬浮按钮（贴滚动容器右下角；点按跳转/按住慢滚） */
   scrollJump?: boolean
+  /** 恢复滚动条显示（缺省沿用隐藏口径；库存总览/生产规划已启用） */
+  showScrollbar?: boolean
 }
 
 export function DataTable<TData>({
@@ -99,6 +101,7 @@ export function DataTable<TData>({
   columnDividers,
   preserveScrollRef,
   scrollJump,
+  showScrollbar,
 }: DataTableProps<TData>) {
   const [sorting, setSorting] = React.useState<SortingState>(initialSorting ?? [])
   const [clientPagination, setClientPagination] = React.useState({
@@ -203,7 +206,10 @@ export function DataTable<TData>({
     <div className={cn("relative flex min-h-0 flex-col gap-4", containerClassName)}>
       <div
         ref={scrollRef}
-        className="min-h-0 flex-1 overflow-x-auto overflow-y-auto rounded-lg border scrollbar-hide"
+        className={cn(
+          "min-h-0 flex-1 overflow-x-auto overflow-y-auto rounded-lg border",
+          showScrollbar ? "" : "scrollbar-hide",
+        )}
       >
         <table
           className={cn(

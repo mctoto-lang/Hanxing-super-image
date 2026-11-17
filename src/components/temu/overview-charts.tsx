@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { useRouter } from "next/navigation"
-import { Medal } from "lucide-react"
+import { Medal, X } from "lucide-react"
 import { DashRing } from "@/components/ui/dash-ring"
 import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, XAxis, YAxis } from "recharts"
 import {
@@ -19,6 +19,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { KpiTile } from "@/components/ui/kpi-tile"
+import { Badge } from "@/components/ui/badge"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import {
   Select,
@@ -381,9 +382,9 @@ export function TemuSalesTop10({ data }: { data: TemuSalesTopRow[] }) {
 /** 领奖台名次勋章底色：金 / 银 / 铜（实底圆内嵌 Medal 白图标，名次由领奖台位置表达） */
 const RANK_MEDAL = ["bg-amber-500", "bg-slate-400", "bg-orange-700"]
 
-/** TOP30 主图缩略：取「该口径销量最高 SKC」的图（转存 URL 优先，temuImageSrc 回落
+/** TOP50 主图缩略：取「该口径销量最高 SKC」的图（转存 URL 优先，temuImageSrc 回落
  *  kwcdn 外链），无图占位 */
-function Top30Thumb({
+function Top50Thumb({
   row,
   metric,
   className,
@@ -420,17 +421,51 @@ function Top30Thumb({
   )
 }
 
-/** 售出 TOP30 单卡：前 3 名主图领奖台（2-1-3 排列，第一名居中更大）+
- *  第 4-30 名行内列表（序号+主图+货号+销量，固定高度内部滚动、隐藏滚动条） */
-function TemuTop30Card({
+/** 占比徽标（1 位小数；分母=该口径全店总销量，即顶部卡片数值，含 TOP50 之外的款） */
+function TopPctBadge({ pct }: { pct: number | null }) {
+  if (pct == null) return null
+  return (
+    <Badge className="rounded-[4px] bg-muted px-1 py-0 text-[10px] font-normal tabular-nums text-muted-foreground">
+      {pct.toFixed(1)}%
+    </Badge>
+  )
+}
+
+/** 售出 TOP50 单卡：前 3 名主图领奖台（2-1-3 排列，第一名居中更大）+
+ *  第 4-50 名行内列表（序号+主图+货号+销量+占比徽标，固定高度内部滚动、隐藏滚动条）。
+ *  货号可点击选中（方案A：主题色淡底+左缘主色条），再点取消；各卡独立不联动；
+ *  卡右上角实时显示「已选 N 款 · 合计占比」 */
+function TemuTop50Card({
   title,
   metric,
   rows,
+  total,
 }: {
   title: string
   metric: "today" | "7d" | "30d"
   rows: { row: TemuSalesTopBySnRow; value: number }[]
+  /** 该口径全店总销量（占比分母；null/0 = 不显示占比） */
+  total: number | null
 }) {
+  const [selected, setSelected] = React.useState<Set<string>>(new Set())
+  const toggle = (sn: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(sn)) next.delete(sn)
+      else next.add(sn)
+      return next
+    })
+  const pct = (value: number) =>
+    total && total > 0 ? Math.round((value / total) * 1000) / 10 : null
+  // 已选合计：件数（千分位同行内销量）+ 占比（1 位小数同徽标口径）
+  const selectedQty = rows
+    .filter((x) => selected.has(x.row.sn))
+    .reduce((a, x) => a + x.value, 0)
+  const selectedPct =
+    selected.size > 0 && total && total > 0
+      ? Math.round((selectedQty / total) * 1000) / 10
+      : null
+
   const podium = rows.slice(0, 3).map((x, i) => ({ ...x, rank: i + 1 }))
   const podiumOrder = podium.length === 3 ? [podium[1], podium[0], podium[2]] : podium
   const rest = rows.slice(3)
@@ -439,6 +474,21 @@ function TemuTop30Card({
       <CardHeader>
         <CardTitle>{title}</CardTitle>
         <CardDescription>按货号汇总销量（件）</CardDescription>
+        {selected.size > 0 && (
+          <CardAction className="flex items-center gap-1 text-xs font-medium text-primary">
+            {/* 一键清空本卡选中（各卡独立，不影响另两卡） */}
+            <button
+              type="button"
+              aria-label="取消选择"
+              onClick={() => setSelected(new Set())}
+              className="cursor-pointer rounded p-0.5 transition-colors hover:text-foreground"
+            >
+              <X className="size-3" />
+            </button>
+            已选 {selected.size} 款 · {selectedQty.toLocaleString("zh-CN")} 件
+            {selectedPct != null ? ` · ${selectedPct.toFixed(1)}%` : ""}
+          </CardAction>
+        )}
       </CardHeader>
       <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
         {rows.length === 0 ? (
@@ -448,46 +498,79 @@ function TemuTop30Card({
         ) : (
           <>
             <div className="flex items-end justify-center gap-4 px-2 pt-2">
-              {podiumOrder.map((p) => (
-                <div key={p.row.sn} className="flex w-24 min-w-0 flex-col items-center gap-1">
-                  <div className={cn("relative", p.rank === 1 ? "size-20" : "size-14")}>
-                    <Top30Thumb row={p.row} metric={metric} className="size-full" />
-                    <div
-                      className={cn(
-                        "absolute -left-2 -top-2 flex size-6 items-center justify-center rounded-full text-white shadow-md",
-                        RANK_MEDAL[p.rank - 1],
-                      )}
-                    >
-                      <Medal className="size-3.5" />
+              {podiumOrder.map((p) => {
+                const isSel = selected.has(p.row.sn)
+                return (
+                  <div key={p.row.sn} className="flex w-24 min-w-0 flex-col items-center gap-1">
+                    <div className={cn("relative", p.rank === 1 ? "size-20" : "size-14")}>
+                      <Top50Thumb row={p.row} metric={metric} className="size-full" />
+                      <div
+                        className={cn(
+                          "absolute -left-2 -top-2 flex size-6 items-center justify-center rounded-full text-white shadow-md",
+                          RANK_MEDAL[p.rank - 1],
+                        )}
+                      >
+                        <Medal className="size-3.5" />
+                      </div>
+                    </div>
+                    <div className="w-full text-center text-xs font-medium">
+                      <button
+                        type="button"
+                        aria-pressed={isSel}
+                        onClick={() => toggle(p.row.sn)}
+                        className={cn(
+                          "w-full cursor-pointer",
+                          isSel && "text-primary underline decoration-2 underline-offset-2",
+                        )}
+                      >
+                        <TruncTip text={p.row.sn} className="max-w-full font-medium" />
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-1 text-xs tabular-nums text-muted-foreground">
+                      {p.value.toLocaleString("zh-CN")} 件
+                      <TopPctBadge pct={pct(p.value)} />
                     </div>
                   </div>
-                  <div className="w-full text-center text-xs font-medium">
-                    <TruncTip text={p.row.sn} className="max-w-full font-medium" />
-                  </div>
-                  <div className="text-xs tabular-nums text-muted-foreground">
-                    {p.value.toLocaleString("zh-CN")} 件
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
             {rest.length > 0 && (
               /* 高度 = 恰好 8 行（行高 36 + 行间 2：8×36+7×2=302），第 9 行起滚动查看 */
               <div className="scrollbar-hide mt-3 max-h-[302px] space-y-0.5 overflow-y-auto">
-                {rest.map((x, i) => (
-                  <div
-                    key={x.row.sn}
-                    className="flex items-center gap-2 rounded-md px-1.5 py-1 text-xs hover:bg-muted/50"
-                  >
-                    <span className="w-5 shrink-0 text-center tabular-nums text-muted-foreground">
-                      {i + 4}
-                    </span>
-                    <Top30Thumb row={x.row} metric={metric} className="size-7 shrink-0" />
-                    <TruncTip text={x.row.sn} className="min-w-0 flex-1" />
-                    <span className="shrink-0 font-medium tabular-nums">
-                      {x.value.toLocaleString("zh-CN")}
-                    </span>
-                  </div>
-                ))}
+                {rest.map((x, i) => {
+                  const isSel = selected.has(x.row.sn)
+                  return (
+                    <div
+                      key={x.row.sn}
+                      className={cn(
+                        "flex items-center gap-2 rounded-md px-1.5 py-1 text-xs hover:bg-muted/50",
+                        // 选中样式（方案A）：主题色淡底 + 左缘 2px 主色条（inset 阴影不加占位）
+                        isSel &&
+                          "bg-primary/10 shadow-[inset_2px_0_0_0_var(--primary)] hover:bg-primary/10",
+                      )}
+                    >
+                      <span className="w-5 shrink-0 text-center tabular-nums text-muted-foreground">
+                        {i + 4}
+                      </span>
+                      <Top50Thumb row={x.row} metric={metric} className="size-7 shrink-0" />
+                      <button
+                        type="button"
+                        aria-pressed={isSel}
+                        onClick={() => toggle(x.row.sn)}
+                        className={cn(
+                          "min-w-0 flex-1 cursor-pointer text-left",
+                          isSel && "font-medium text-primary",
+                        )}
+                      >
+                        <TruncTip text={x.row.sn} className="min-w-0 flex-1" />
+                      </button>
+                      <span className="shrink-0 font-medium tabular-nums">
+                        {x.value.toLocaleString("zh-CN")}
+                      </span>
+                      <TopPctBadge pct={pct(x.value)} />
+                    </div>
+                  )
+                })}
               </div>
             )}
           </>
@@ -497,12 +580,19 @@ function TemuTop30Card({
   )
 }
 
-/** 售出 TOP30 三卡（今日/七日/三十日，按货号汇总；口径固定无切换） */
-export function TemuSalesTop30Cards({ data }: { data: TemuSalesTopBySnRow[] }) {
+/** 售出 TOP50 三卡（今日/七日/三十日，按货号汇总；口径固定无切换） */
+export function TemuSalesTop50Cards({
+  data,
+  totals,
+}: {
+  data: TemuSalesTopBySnRow[]
+  /** 三口径全店总销量（占比分母=顶部卡片数值，含 TOP50 之外的款） */
+  totals: { today: number | null; "7d": number | null; "30d": number | null }
+}) {
   const cards = [
-    { key: "today", title: "今日销量 TOP 30" },
-    { key: "7d", title: "七日销量 TOP 30" },
-    { key: "30d", title: "三十日销量 TOP 30" },
+    { key: "today", title: "今日销量 TOP 50" },
+    { key: "7d", title: "七日销量 TOP 50" },
+    { key: "30d", title: "三十日销量 TOP 50" },
   ] as const
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
@@ -519,8 +609,16 @@ export function TemuSalesTop30Cards({ data }: { data: TemuSalesTopBySnRow[] }) {
           }))
           .filter((x) => x.value > 0)
           .sort((a, b) => b.value - a.value)
-          .slice(0, 30)
-        return <TemuTop30Card key={c.key} title={c.title} metric={c.key} rows={rows} />
+          .slice(0, 50)
+        return (
+          <TemuTop50Card
+            key={c.key}
+            title={c.title}
+            metric={c.key}
+            rows={rows}
+            total={totals[c.key]}
+          />
+        )
       })}
     </div>
   )

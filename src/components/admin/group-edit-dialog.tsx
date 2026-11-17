@@ -32,7 +32,9 @@ import {
   GroupModelPicker,
   type GroupModelOption,
 } from "@/components/admin/group-model-picker"
-import { BASE_MODULE_OPTIONS, MODULE_LABELS, TEMU_TAB_OPTIONS } from "@/lib/modules"
+import { MODULE_LABELS, type ModuleOption } from "@/lib/modules"
+import { Badge } from "@/components/ui/badge"
+import type { ModuleName } from "@/db/schema"
 
 export interface EditableGroup {
   id: string
@@ -53,7 +55,9 @@ export interface EditableGroup {
  * 表单口径：4 个文本/数字字段（name/description/maxConcurrent/priority）走
  * useForm + standardSchemaResolver（permissionGroupFormSchema），open 时以组
  * 当前配置 form.reset 回填；页面 Checkbox 矩阵与 GroupModelPicker 为受控
- * state（不进 RHF），提交时从 state 取。
+ * state（不进 RHF），提交时从 state 取。回填不滤掉已不在企业开通范围的
+ * 残留 id——渲染为「已失效」徽章行（StalePickRow）供手动移除，保留勾选时
+ * 由服务端保存链路的白名单裁剪兜底。
  */
 interface GroupEditFormValues {
   name: string
@@ -62,14 +66,56 @@ interface GroupEditFormValues {
   priority: number
 }
 
+/**
+ * 「已失效」勾选徽章行：组配置里残留的、已不在企业开通范围的模块/模型 id
+ * （历史数据或平台侧收紧后遗留）。回填不再静默滤掉这些 id，显式标注出来并
+ * 支持点击移除；用户保留勾选时由服务端保存链路的白名单裁剪兜底。
+ */
+function StalePickRow({
+  items,
+  onRemove,
+}: {
+  items: { id: string; label: string }[]
+  onRemove: (id: string) => void
+}) {
+  if (items.length === 0) return null
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <span className="text-xs text-muted-foreground">
+        已失效（不在企业开通范围，点击移除）：
+      </span>
+      {items.map((it) => (
+        <Badge
+          key={it.id}
+          variant="outline"
+          title={it.id}
+          className="max-w-48 cursor-pointer truncate font-mono text-[10px] text-muted-foreground hover:text-foreground"
+          render={
+            <button type="button" onClick={() => onRemove(it.id)} />
+          }
+        >
+          {it.label}
+        </Badge>
+      ))}
+    </div>
+  )
+}
+
 export function GroupEditDialog({
   group,
   imageModels,
   chatModels,
+  baseOptions,
+  temuOptions,
+  temuEnabled,
 }: {
   group: EditableGroup
   imageModels: GroupModelOption[]
   chatModels: GroupModelOption[]
+  /** 模块勾选项（企业已开通范围内，由页面按 enabledModules 预过滤） */
+  baseOptions: ModuleOption[]
+  temuOptions: ModuleOption[]
+  temuEnabled: boolean
 }) {
   const [open, setOpen] = React.useState(false)
   const [serverError, setServerError] = React.useState<string | null>(null)
@@ -112,6 +158,29 @@ export function GroupEditDialog({
     }
   }, [open, form, group])
 
+  // 残留勾选 = 已不在企业开通范围（勾选矩阵渲染不出来）的模块/模型 id：
+  // 不静默隐藏，渲染为「已失效」徽章行并可手动移除（服务端裁剪仍兜底）
+  const validPageKeys = new Set<string>([
+    ...baseOptions.map((o) => o.value),
+    ...(temuEnabled ? ["temu", ...temuOptions.map((o) => o.value)] : []),
+    "settings",
+  ])
+  const stalePages = [...pages].filter((p) => !validPageKeys.has(p))
+  const staleImageIds = [...imageSelected].filter(
+    (id) => !imageModels.some((m) => m.id === id),
+  )
+  const staleChatIds = [...chatSelected].filter(
+    (id) => !chatModels.some((m) => m.id === id),
+  )
+  const removeStale = (
+    setter: React.Dispatch<React.SetStateAction<ReadonlySet<string>>>,
+  ) => (id: string) =>
+    setter((prev) => {
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
+
   const togglePage = (value: string, checked: boolean) => {
     const next = new Set(pages)
     if (checked) next.add(value)
@@ -119,7 +188,7 @@ export function GroupEditDialog({
       next.delete(value)
       // 关闭 TEMU 总开关时连带清掉 tab 子项（子项单独存在无意义）
       if (value === "temu") {
-        for (const o of TEMU_TAB_OPTIONS) next.delete(o.value)
+        for (const o of temuOptions) next.delete(o.value)
       }
     }
     setPages(next)
@@ -245,7 +314,7 @@ export function GroupEditDialog({
               <div className="grid gap-2">
                 <FormLabel>允许页面（不勾选默认放行企业全部已开通模块）</FormLabel>
                 <div className="grid grid-cols-4 gap-2">
-                  {BASE_MODULE_OPTIONS.map((o) => (
+                  {baseOptions.map((o) => (
                     <label key={o.value} className="flex items-center gap-2 text-sm">
                       <Checkbox
                         checked={pages.has(o.value)}
@@ -256,13 +325,15 @@ export function GroupEditDialog({
                       {o.label}
                     </label>
                   ))}
-                  <label className="flex items-center gap-2 text-sm font-medium">
-                    <Checkbox
-                      checked={pages.has("temu")}
-                      onCheckedChange={(checked) => togglePage("temu", checked)}
-                    />
-                    {MODULE_LABELS.temu}
-                  </label>
+                  {temuEnabled ? (
+                    <label className="flex items-center gap-2 text-sm font-medium">
+                      <Checkbox
+                        checked={pages.has("temu")}
+                        onCheckedChange={(checked) => togglePage("temu", checked)}
+                      />
+                      {MODULE_LABELS.temu}
+                    </label>
+                  ) : null}
                   <label className="flex items-center gap-2 text-sm">
                     <Checkbox
                       checked={pages.has("settings")}
@@ -271,23 +342,32 @@ export function GroupEditDialog({
                     {MODULE_LABELS.settings}
                   </label>
                 </div>
-                <div className="ml-4 grid grid-cols-4 gap-2 border-l pl-3">
-                  {TEMU_TAB_OPTIONS.map((o) => (
-                    <label key={o.value} className="flex items-center gap-2 text-sm">
-                      <Checkbox
-                        checked={pages.has(o.value)}
-                        disabled={!pages.has("temu")}
-                        onCheckedChange={(checked) =>
-                          togglePage(o.value, checked)
-                        }
-                      />
-                      {o.label}
-                    </label>
-                  ))}
-                </div>
+                {temuEnabled && temuOptions.length > 0 ? (
+                  <div className="ml-4 grid grid-cols-4 gap-2 border-l pl-3">
+                    {temuOptions.map((o) => (
+                      <label key={o.value} className="flex items-center gap-2 text-sm">
+                        <Checkbox
+                          checked={pages.has(o.value)}
+                          disabled={!pages.has("temu")}
+                          onCheckedChange={(checked) =>
+                            togglePage(o.value, checked)
+                          }
+                        />
+                        {o.label}
+                      </label>
+                    ))}
+                  </div>
+                ) : null}
                 <p className="text-xs text-muted-foreground">
                   TEMU 子页面按勾选放行（须企业已开通 TEMU 且对应页面已授权）；店铺页面不设权限项，仅企业管理员可见
                 </p>
+                <StalePickRow
+                  items={stalePages.map((p) => ({
+                    id: p,
+                    label: MODULE_LABELS[p as ModuleName] ?? p,
+                  }))}
+                  onRemove={removeStale(setPages)}
+                />
               </div>
               <GroupModelPicker
                 label="可用生图模型"
@@ -295,11 +375,19 @@ export function GroupEditDialog({
                 selected={imageSelected}
                 onChange={setImageSelected}
               />
+              <StalePickRow
+                items={staleImageIds.map((id) => ({ id, label: id }))}
+                onRemove={removeStale(setImageSelected)}
+              />
               <GroupModelPicker
                 label="可用对话模型"
                 options={chatModels}
                 selected={chatSelected}
                 onChange={setChatSelected}
+              />
+              <StalePickRow
+                items={staleChatIds.map((id) => ({ id, label: id }))}
+                onRemove={removeStale(setChatSelected)}
               />
               {serverError ? (
                 <p className="text-sm text-destructive">{serverError}</p>
