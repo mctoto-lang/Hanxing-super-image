@@ -221,7 +221,10 @@ function mockTemuFetch(opts: { tokenExpired?: boolean; semiMall?: boolean } = {}
                   ? ADS_MALL
                   : body.type === "bg.glo.searchrec.ad.reports.goods.query"
                     ? ADS_GOODS
-                    : body.type === "bg.mall.info.get"
+                    // 商品级报表依赖 detail.query 先取在投清单（2026-11-18 链路）
+                    : body.type === "bg.glo.searchrec.ad.detail.query"
+                      ? { adsDetail: [{ productId: 7001, adShowStatus: 8 }] }
+                      : body.type === "bg.mall.info.get"
                       ? { semiManagedMall: opts.semiMall === true }
                       : {}
     return {
@@ -492,5 +495,144 @@ describe("verifyStoreToken", () => {
     const [store] = await db.select().from(temuStores).where(eq(temuStores.id, storeId))
     expect(store?.mallType).toBe("semi")
     expect(store?.tokenState).toBe("active")
+  })
+})
+
+describe("ads 报表真实行形态落库（2026-11-18 jsonb 铁证）", () => {
+  /**
+   * 真实店铺天级行：无前缀（推广维）指标官方恒 null，值落在前缀字段——
+   * 净推广维 net*（订单/件数/每笔成交花费）与全域维 total*（曝光/点击无 net*）；
+   * 唯 adSpend 以单层 {val} 返回。adMetric 候选链（指定维→total→单层→平铺→
+   * net* 前缀→total* 前缀）须全部取到，否则六指标恒空（线上事故形态）。
+   */
+  const ADS_GOODS_REAL = {
+    reportInfo: {
+      reportsItemList: [
+        {
+          ts: Date.now(),
+          // 逐商品查询官方不回填 productId（同步内部注入查询 pid）
+          productId: null,
+          adSpend: { val: 5856 },
+          imprCnt: null,
+          clkCnt: null,
+          orderPayAmt: null,
+          orderPayCnt: null,
+          goodsNum: null,
+          transactionCost: null,
+          roas: null,
+          cartCnt: null,
+          netAdSpend: { val: 5856 },
+          netOrderPayAmt: { val: 87580 },
+          netOrderPayCnt: { val: 43 },
+          netGoodsNum: { val: 58 },
+          netTransactionCost: { val: 137 },
+          netRoas: { val: 14955 },
+          totalImprCnt: { val: 14812 },
+          totalClkCnt: { val: 665 },
+        },
+        // 花费 0 行：netRoas 官方除零哨兵 5e15（不落库）+ 全域曝光仍可取
+        {
+          ts: Date.now() - 86400_000,
+          productId: null,
+          adSpend: { val: 0 },
+          imprCnt: null,
+          clkCnt: null,
+          orderPayAmt: null,
+          orderPayCnt: null,
+          goodsNum: null,
+          transactionCost: null,
+          roas: null,
+          netRoas: { val: 5e15 },
+          netOrderPayAmt: { val: 12000 },
+          totalImprCnt: { val: 123 },
+        },
+      ],
+    },
+  }
+  const ADS_MALL_REAL = {
+    reportInfo: {
+      reportsItemList: [
+        {
+          ts: Date.now(),
+          adSpend: { val: 5856 },
+          imprCnt: null,
+          clkCnt: null,
+          orderPayAmt: null,
+          orderPayCnt: null,
+          netOrderPayAmt: { val: 87580 },
+          netOrderPayCnt: { val: 43 },
+          totalImprCnt: { val: 14812 },
+          totalClkCnt: { val: 665 },
+        },
+      ],
+    },
+  }
+
+  it("无前缀 null + net*/total* 前缀有值 → 十列全部解析落库；哨兵不落库", { timeout: 60_000 }, async () => {
+    const [realStore] = await db
+      .insert(temuStores)
+      .values({
+        enterpriseId: entId,
+        name: "sync 真实行形态店铺",
+        accessTokenEncrypted: encrypt("real-shape-token"),
+        tokenState: "active",
+      })
+      .returning()
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { type: string }
+        const result =
+          body.type === "bg.glo.goods.list.get"
+            ? GOODS_LIST_PAGE
+            : body.type === "bg.glo.product.search"
+              ? LIFECYCLE_PAGE
+              : body.type === "bg.goods.salesv2.get"
+                ? SALES_PAGE
+                : body.type === "bg.glo.searchrec.ad.reports.mall.query"
+                  ? ADS_MALL_REAL
+                  : body.type === "bg.glo.searchrec.ad.reports.goods.query"
+                    ? ADS_GOODS_REAL
+                    : body.type === "bg.glo.searchrec.ad.detail.query"
+                      ? { adsDetail: [{ productId: 7001, adShowStatus: 8 }] }
+                      : {}
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ result, success: true, errorCode: 1000000, errorMsg: "" }),
+        } as unknown as Response
+      }),
+    )
+    const outcome = await syncStore(realStore!.id)
+    expect(outcome.status?.sources["api-ads-reports"]?.ok).toBe(true)
+
+    const prodRows = await db
+      .select()
+      .from(temuAdsProductDailies)
+      .where(eq(temuAdsProductDailies.storeId, realStore!.id))
+    // 有花费行：十列全部解析
+    const row = prodRows.find((r) => r.adSpend === 5856)
+    expect(row?.orderPayAmt).toBe(87580) // net* 前缀
+    expect(row?.orderPayCnt).toBe(43)
+    expect(row?.goodsNum).toBe(58)
+    expect(row?.transactionCost).toBe(137)
+    expect(row?.roas).toBe(14955)
+    expect(row?.imprCnt).toBe(14812) // total* 前缀（无 net*）
+    expect(row?.clkCnt).toBe(665)
+    // 花费 0 行：netRoas 5e15 哨兵不落库，全域曝光仍解析
+    const zero = prodRows.find((r) => r.adSpend === 0)
+    expect(zero?.roas).toBeNull()
+    expect(zero?.orderPayAmt).toBe(12000)
+    expect(zero?.imprCnt).toBe(123)
+
+    const [mall] = await db
+      .select()
+      .from(temuAdsDailies)
+      .where(eq(temuAdsDailies.storeId, realStore!.id))
+    expect(mall?.adSpend).toBeCloseTo(58.56) // 元口径
+    expect(mall?.gmv).toBeCloseTo(875.8)
+    expect(mall?.orders).toBe(43)
+    expect(mall?.impressions).toBe(14812)
+    expect(mall?.clicks).toBe(665)
   })
 })

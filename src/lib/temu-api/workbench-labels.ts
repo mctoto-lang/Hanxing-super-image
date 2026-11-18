@@ -91,12 +91,65 @@ export const EXPRESS_REJECT_STATUS: Record<number, string> = {
   2: "存在拒收，物流商已处理",
 }
 
-/** 广告展示状态（ad.detail.query adShowStatus）与阶段（adPhase）——
- *  官方文档未提供枚举含义，以下映射为占位，拿到真实广告后按实测补全；
+/** 广告展示状态（ad.detail.query adShowStatus，官方 2026-10 参数表 0-15 枚举）；
  *  未命中码值时前端回退展示「状态码 n」。 */
-export const TEMU_AD_SHOW_STATUS: Record<number, string> = {}
+export const TEMU_AD_SHOW_STATUS: Record<number, string> = {
+  0: "无余额",
+  1: "今日预算为 0",
+  2: "商品售罄",
+  3: "商品已下架",
+  4: "商品审核中",
+  5: "审核驳回",
+  6: "推广受限",
+  7: "已暂停",
+  8: "推广中",
+  9: "已删除",
+  10: "不可创建",
+  11: "低流量",
+  12: "低流量（soft ROAS）",
+  13: "已通过",
+  14: "达到月度上限",
+  15: "禁止投放",
+}
 
-export const TEMU_AD_PHASE: Record<number, string> = {}
+/** 广告阶段（ad.detail.query adPhase：0 一阶段学习期 / 1 二阶段平稳期） */
+export const TEMU_AD_PHASE: Record<number, string> = {
+  0: "学习期",
+  1: "平稳期",
+}
+
+/** 广告状态五色语义（与 TEMU_AD_SHOW_STATUS 对齐；未命中码值按 gray 处理）：
+ *  green=推广中；gray=已暂停/已删除；blue=审核中/已通过；
+ *  amber=低流量/余额预算类/月上限/售罄；red=驳回/受限/下架/不可创建/禁止投放 */
+export type TemuAdStatusTone = "green" | "gray" | "blue" | "amber" | "red"
+export const TEMU_AD_STATUS_TONE: Record<number, TemuAdStatusTone> = {
+  0: "amber",
+  1: "amber",
+  2: "amber",
+  3: "red",
+  4: "blue",
+  5: "red",
+  6: "red",
+  7: "gray",
+  8: "green",
+  9: "gray",
+  10: "red",
+  11: "amber",
+  12: "amber",
+  13: "blue",
+  14: "amber",
+  15: "red",
+}
+
+/** 目标 ROAS 归一：官方出参实测两种口径并存（120000=×10000 整数口径 /
+ *  14.0 实值口径），>1000 视为万倍口径 ÷10000（与 roas.pred 口径一致，保留两位）。
+ *  归一后仍 >1000 视为官方除零哨兵（2026-11-18 实测 summary.roas/netRoas 花费 0
+ *  时返回 5e15，真实 ROAS 业务上界远低于 1000）返回 null（页面显示「—」） */
+export function normalizeAdRoas(v: number | null | undefined): number | null {
+  if (v == null || !Number.isFinite(v)) return null
+  const n = v > 1000 ? Math.round((v / 10000) * 100) / 100 : v
+  return n > 1000 ? null : n
+}
 
 
 /** 站点字典（docs/temu-openapi-guide.md §13.2，2025-09-29 版）：

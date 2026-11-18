@@ -7,7 +7,7 @@ import { MODULE_NAMES } from "@/db/schema/_shared"
 import { temuStores, temuProducts, temuSalesOverviews } from "@/db/schema/temu"
 import { encrypt } from "@/lib/crypto"
 import { temuDayStr } from "@/server/services/temu-time"
-import { getTemuSalesTopBySnAction } from "@/server/actions/temu"
+import { getTemuSalesTopBySnAction, getTemuStoreShareAction } from "@/server/actions/temu"
 
 /**
  * TOP50 按货号聚合回归（2026-11-13 前 TOP30）：
@@ -173,6 +173,36 @@ describe("TOP50 按货号聚合", () => {
       expect(sns.has("BI09")).toBe(false)
       expect(sns.has("BI10")).toBe(true)
       expect(sns.has("BI59")).toBe(true)
+    },
+  )
+})
+
+describe("售出店铺占比（getTemuStoreShareAction）", () => {
+  it(
+    "单店：各 SKC 最新行按店铺求和（今日 132 / 7日 87 / 30日 87）",
+    { timeout: 30_000 },
+    async () => {
+      const rows = await getTemuStoreShareAction(storeId)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]?.storeName).toBe("top50 测试店铺")
+      expect(rows[0]?.todaySalesVolume).toBe(132)
+      expect(rows[0]?.last7DaysSalesVolume).toBe(87)
+      expect(rows[0]?.last30DaysSalesVolume).toBe(87)
+    },
+  )
+
+  it(
+    "全部店铺：跨店分列（隔离店 60 款等差 0..59 求和 1770）",
+    { timeout: 30_000 },
+    async () => {
+      const rows = await getTemuStoreShareAction()
+      const iso = rows.find((r) => r.storeName === "top50 并集隔离店铺")
+      const main = rows.find((r) => r.storeName === "top50 测试店铺")
+      expect(iso).toBeTruthy()
+      expect(main).toBeTruthy()
+      expect(iso?.todaySalesVolume).toBe(1770)
+      expect(iso?.last7DaysSalesVolume).toBe(1770)
+      expect(main?.todaySalesVolume).toBe(132)
     },
   )
 })

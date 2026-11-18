@@ -1,6 +1,6 @@
 "use server"
 
-import { and, asc, count, desc, eq, gte, inArray, sql, type SQL } from "drizzle-orm"
+import { and, asc, count, desc, eq, gte, inArray, or, sql, type SQL } from "drizzle-orm"
 import type { PgColumn } from "drizzle-orm/pg-core"
 import { z } from "zod"
 import { revalidatePath } from "next/cache"
@@ -43,7 +43,7 @@ import {
 } from "@/server/schemas/temu"
 import { temuCached, invalidateTemuCache } from "@/server/services/temu-cache"
 import { ensureDemoStores } from "@/server/services/temu-demo"
-import { syncStore, verifyStoreToken } from "@/server/services/temu-sync"
+import { probeStoreTokenIdentity, syncStore } from "@/server/services/temu-sync"
 import { TEMU_TZ, previousPeriodRanges, temuDayStr, temuStartOfToday, temuYesterdayStr } from "@/server/services/temu-time"
 
 /**
@@ -487,6 +487,22 @@ async function loadTemuProducts(
 
   const PAGE_SIZE = 20
   const conds = [inArray(temuProducts.storeId, storeIds)]
+  // 跨店去重（同发货单列表口径）：同 skcId 双落（历史 token 错绑残留——本地唯一键
+  // 是店+SKC，同一物理 SKC 在两店各一行）只保留 last_seen_at 最新行（同刻平手取
+  // store_id 小）；单店唯一键天然无重复，不加
+  if (storeIds.length > 1) {
+    conds.push(
+      sql`not exists (
+        select 1 from temu_product x
+        where x.product_skc_id = ${temuProducts.productSkcId}
+          and ${inArray(sql`x.store_id`, storeIds)}
+          and (
+            x.last_seen_at > ${temuProducts.lastSeenAt}
+            or (x.last_seen_at = ${temuProducts.lastSeenAt} and x.store_id < ${temuProducts.storeId})
+          )
+      )`,
+    )
+  }
   if (q) {
     const like = `%${q}%`
     if (qf === "sn") {
@@ -769,47 +785,33 @@ async function loadTemuCategoryShare(
   }))
 }
 
-export interface TemuSalesTopRow {
-  skcId: string
-  productName: string | null
-  category: string | null
-  /** 货号（销售总览自带，缺失时回落商品表） */
-  productSn: string | null
-  /** 主图（关联 temu_product 补齐，榜单缩略图用） */
-  mainImageUrl: string | null
-  /** 主图转存 URL（COS/本地；展示优先于 kwcdn 外链） */
-  mainImageCosUrl: string | null
-  /** 申报供货价（分，CNY；预估销售额 = 销量 × 价格 / 100） */
-  supplierPrice: number | null
-  todaySalesVolume: number | null
-  last7DaysSalesVolume: number | null
-  last30DaysSalesVolume: number | null
+export interface TemuStoreShare {
+  storeName: string
+  todaySalesVolume: number
+  last7DaysSalesVolume: number
+  last30DaysSalesVolume: number
 }
 
-/** 售出 TOP 榜：每 SKC 聚合后取 今日/近7日/近30日 三口径各自前 60 的并集
- *  （前端按口径重排取 10——只按单一口径预筛会漏其他口径的真实前十，已实测） */
-export async function getTemuSalesTopAction(storeId?: string, appId?: string): Promise<TemuSalesTopRow[]> {
+/** 售出店铺占比：每 SKC 最新行按店铺汇总销量（今日/7日/30日三口径，空名归
+ *  「未命名店铺」；选中单店时为 100% 单切片属预期） */
+export async function getTemuStoreShareAction(storeId?: string, appId?: string): Promise<TemuStoreShare[]> {
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
-  return temuCached(`${enterpriseId}:${storeId ?? "all"}:${appId ?? "all"}:sales-top`, () =>
-    loadTemuSalesTop(enterpriseId, storeId, appId),
+  return temuCached(`${enterpriseId}:${storeId ?? "all"}:${appId ?? "all"}:store-share`, () =>
+    loadTemuStoreShare(enterpriseId, storeId, appId),
   )
 }
 
-async function loadTemuSalesTop(
+async function loadTemuStoreShare(
   enterpriseId: string,
   storeId?: string,
   appId?: string,
-): Promise<TemuSalesTopRow[]> {
+): Promise<TemuStoreShare[]> {
   const storeIds = await resolveStoreIds(enterpriseId, storeId, appId)
   if (storeIds.length === 0) return []
   const latestSq = db
     .selectDistinctOn([temuSalesOverviews.storeId, temuSalesOverviews.skcId], {
       storeId: temuSalesOverviews.storeId,
-      skcId: temuSalesOverviews.skcId,
-      productName: temuSalesOverviews.productName,
-      category: temuSalesOverviews.category,
-      productSn: temuSalesOverviews.productSn,
       capturedAt: temuSalesOverviews.capturedAt,
       todaySalesVolume: temuSalesOverviews.todaySalesVolume,
       last7DaysSalesVolume: temuSalesOverviews.last7DaysSalesVolume,
@@ -825,51 +827,25 @@ async function loadTemuSalesTop(
     )
     .as("latest_skc")
   const todayStart = startOfToday()
-  // 按 SKC 聚合（SQL GROUP BY）：多店铺视图下同一 SKC 出现在各店批次中，
-  // 不聚合会导致列表 key 重复且榜单口径失真；三口径销量跨店求和
+  // 按本站店铺名归组（name 非空；同名店自然合并），trim 兜底避免图表空标签
+  const nameExpr = sql<string>`coalesce(nullif(trim(${temuStores.name}), ''), '未命名店铺')`
   const rows = await db
     .select({
-      skcId: latestSq.skcId,
-      productName: sql<string | null>`max(${latestSq.productName})`,
-      category: sql<string | null>`max(${latestSq.category})`,
-      productSn: sql<string | null>`coalesce(max(${latestSq.productSn}), max(${temuProducts.productSn}))`,
-      mainImageUrl: sql<string | null>`max(${temuProducts.mainImageUrl})`,
-      mainImageCosUrl: sql<string | null>`max(${temuProducts.mainImageCosUrl})`,
-      supplierPrice: sql<string | null>`max(${temuProducts.supplierPrice})`,
+      storeName: nameExpr,
       // 今日口径只累计当日捕获的行（同类目占比）
       today: sql<string>`coalesce(sum(case when ${gte(latestSq.capturedAt, todayStart)} then coalesce(${latestSq.todaySalesVolume}, 0) else 0 end), 0)`,
       last7: sql<string>`coalesce(sum(${latestSq.last7DaysSalesVolume}), 0)`,
       last30: sql<string>`coalesce(sum(${latestSq.last30DaysSalesVolume}), 0)`,
     })
     .from(latestSq)
-    .leftJoin(
-      temuProducts,
-      and(
-        eq(temuProducts.storeId, latestSq.storeId),
-        eq(temuProducts.productSkcId, latestSq.skcId),
-      ),
-    )
-    .groupBy(latestSq.skcId)
-  const mapped = rows.map((r) => ({
-    skcId: r.skcId,
-    productName: r.productName,
-    category: r.category,
-    productSn: r.productSn,
-    mainImageUrl: r.mainImageUrl,
-    mainImageCosUrl: r.mainImageCosUrl,
-    supplierPrice: r.supplierPrice != null ? Number(r.supplierPrice) : null,
-    todaySalesVolume: Number(r.today),
-    last7DaysSalesVolume: Number(r.last7),
-    last30DaysSalesVolume: Number(r.last30),
+    .innerJoin(temuStores, eq(temuStores.id, latestSq.storeId))
+    .groupBy(nameExpr)
+  return rows.map((r) => ({
+    storeName: r.storeName,
+    todaySalesVolume: Number(r.today ?? 0),
+    last7DaysSalesVolume: Number(r.last7 ?? 0),
+    last30DaysSalesVolume: Number(r.last30 ?? 0),
   }))
-  // 三口径各自 top60 并集（去重）；返回序按近7日降序，前端会按所选口径重排
-  const byMetric = (key: "todaySalesVolume" | "last7DaysSalesVolume" | "last30DaysSalesVolume") =>
-    [...mapped].sort((a, b) => (b[key] ?? 0) - (a[key] ?? 0)).slice(0, 60)
-  const union = new Map<string, (typeof mapped)[number]>()
-  for (const r of [...byMetric("todaySalesVolume"), ...byMetric("last7DaysSalesVolume"), ...byMetric("last30DaysSalesVolume")]) {
-    union.set(r.skcId, r)
-  }
-  return [...union.values()].sort((a, b) => b.last7DaysSalesVolume - a.last7DaysSalesVolume)
 }
 
 export interface TemuSalesTopBySnRow {
@@ -889,8 +865,7 @@ export interface TemuSalesTopBySnRow {
   last30DaysSalesVolume: number
 }
 
-/** 售出 TOP 榜（按货号）：概览页底部 TOP50 卡片用。同货号多 SKC 合并为一个
- *  货号，与 SKC 口径的 getTemuSalesTopAction（TOP10 条形图）并存互不影响 */
+/** 售出 TOP 榜（按货号）：概览页底部 TOP50 卡片用。同货号多 SKC 合并为一个货号 */
 export async function getTemuSalesTopBySnAction(storeId?: string, appId?: string): Promise<TemuSalesTopBySnRow[]> {
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
@@ -1097,9 +1072,10 @@ async function loadTemuProductSalesInfo(
   if (storeIds.length === 0 || ids.length === 0) return { latest: {}, series: {} }
 
   const since = new Date(Date.now() - 31 * 86400 * 1000)
-  // 每 SKC 各店最新行再跨店求和；今日口径只认当日捕获的行（同上）
+  // 每 SKC 取最新一行（跨店去重：同一物理 SKC 只算一次——错绑残留行的销量
+  // 不再双计；单店视图与原口径等价）；今日口径只认当日捕获的行（同上）
   const latestSq = db
-    .selectDistinctOn([temuSalesOverviews.storeId, temuSalesOverviews.skcId], {
+    .selectDistinctOn([temuSalesOverviews.skcId], {
       skcId: temuSalesOverviews.skcId,
       capturedAt: temuSalesOverviews.capturedAt,
       todaySalesVolume: temuSalesOverviews.todaySalesVolume,
@@ -1116,7 +1092,6 @@ async function loadTemuProductSalesInfo(
       and(inArray(temuSalesOverviews.storeId, storeIds), inArray(temuSalesOverviews.skcId, ids)),
     )
     .orderBy(
-      temuSalesOverviews.storeId,
       temuSalesOverviews.skcId,
       desc(temuSalesOverviews.capturedAt),
       desc(temuSalesOverviews.id),
@@ -1248,13 +1223,14 @@ async function loadTemuProductSalesInfo(
     }
   }
 
-  // 快照推算序列：分日分店取最后批次，再按日跨店求和（多店视图口径一致）。
+  // 快照推算序列：分日取最后批次（同 skcId 跨店双落只取最新一侧——错绑残留
+  // 不双计；单店视图与原口径一致）。
   // （曾有 temu_sku_sales_daily「直采」表优先分支——该表自插件下线后无任何写入方、
   //  存量止于 2026-09-16，直采优先会让在售 SKC 拿到陈旧/空序列，2026-10-22 移除）
   const dayStoreLatest = new Map<string, { ts: number; vol: number }>()
   for (const r of historyRows) {
     const day = new Date(r.capturedAt).toLocaleDateString("sv-SE", { timeZone: TEMU_TZ })
-    const key = `${r.skcId}|${day}|${r.storeId}`
+    const key = `${r.skcId}|${day}`
     const prev = dayStoreLatest.get(key)
     const ts = r.capturedAt.getTime()
     if (prev && prev.ts >= ts) continue
@@ -1283,6 +1259,9 @@ export interface TemuAdsRow {
   mainImageUrl: string | null
   /** 主图转存 URL（COS/本地；展示优先于 kwcdn 外链） */
   mainImageCosUrl: string | null
+  /** 归属店铺（temu_product 反查；报表列「店铺」展示用） */
+  storeId: string | null
+  storeName: string | null
   /** 花费（分，ad 推广维度，窗口内求和） */
   adSpend: number | null
   /** 申报价销售额（分，ad 推广维度） */
@@ -1323,7 +1302,8 @@ export async function getTemuAdsAction(
 }> {
   const ctx = await requireEnterpriseContext()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
-  const days = range === 30 ? 30 : 7
+  // 窗口：1=今日（数据截至最近一次同步，worker 15 分钟一轮）/ 7（默认）/ 30
+  const days = range === 30 ? 30 : range === 1 ? 1 : 7
   return temuCached(`${enterpriseId}:${storeId ?? "all"}:${appId ?? "all"}:ads:v2:${days}`, () =>
     loadTemuAds(enterpriseId, storeId, days, appId),
   )
@@ -1401,6 +1381,13 @@ async function loadTemuAds(
     }
   }
 
+  // 店铺名映射（报表行「店铺」列）
+  const storeNameRows = await db
+    .select({ id: temuStores.id, name: temuStores.name })
+    .from(temuStores)
+    .where(inArray(temuStores.id, storeIds))
+  const storeNameBy = new Map(storeNameRows.map((s) => [s.id, s.name]))
+
   const rows: TemuAdsRow[] = aggRows.map((r) => {
     const p = productBy.get(r.productId)
     const adSpend = r.adSpend != null ? Number(r.adSpend) : null
@@ -1413,6 +1400,8 @@ async function loadTemuAds(
       productName: p?.productName ?? null,
       mainImageUrl: p?.mainImageUrl ?? null,
       mainImageCosUrl: p?.mainImageCosUrl ?? null,
+      storeId: p?.storeId ?? null,
+      storeName: p?.storeId ? (storeNameBy.get(p.storeId) ?? null) : null,
       adSpend,
       orderPayAmt,
       roas: adSpend != null && adSpend > 0 && orderPayAmt != null
@@ -1426,17 +1415,32 @@ async function loadTemuAds(
     }
   })
 
-  // —— 大盘卡：店铺级日报（temu_ads_daily，元口径）优先，无行时商品级聚合兜底 ——
-  const mallRows = await db
-    .select({
-      date: temuAdsDailies.date,
-      adSpend: sql<string | null>`sum(${temuAdsDailies.adSpend})`,
-      gmv: sql<string | null>`sum(${temuAdsDailies.gmv})`,
-      orders: sql<string | null>`sum(${temuAdsDailies.orders})`,
-    })
-    .from(temuAdsDailies)
-    .where(and(inArray(temuAdsDailies.storeId, storeIds), inArray(temuAdsDailies.date, window)))
-    .groupBy(temuAdsDailies.date)
+  // —— 大盘卡：店铺级日报（temu_ads_daily，元口径）优先，无行时商品级全量聚合兜底 ——
+  // 【2026-11-18 审计修正】兜底不再复用被 limit(100) 截断的 rows（mall 日行缺失是
+  // 真实店常态，卡片曾只含花费 Top-100）；改独立窗口全量聚合（无 groupBy/limit）
+  const [mallRows, productTotals] = await Promise.all([
+    db
+      .select({
+        date: temuAdsDailies.date,
+        adSpend: sql<string | null>`sum(${temuAdsDailies.adSpend})`,
+        gmv: sql<string | null>`sum(${temuAdsDailies.gmv})`,
+        orders: sql<string | null>`sum(${temuAdsDailies.orders})`,
+      })
+      .from(temuAdsDailies)
+      .where(and(inArray(temuAdsDailies.storeId, storeIds), inArray(temuAdsDailies.date, window)))
+      .groupBy(temuAdsDailies.date),
+    db
+      .select({
+        adSpend: sql<string | null>`sum(${temuAdsProductDailies.adSpend})`,
+        orderPayAmt: sql<string | null>`sum(${temuAdsProductDailies.orderPayAmt})`,
+        orderPayCnt: sql<string | null>`sum(${temuAdsProductDailies.orderPayCnt})`,
+        maxDate: sql<string | null>`max(${temuAdsProductDailies.date})`,
+      })
+      .from(temuAdsProductDailies)
+      .where(
+        and(inArray(temuAdsProductDailies.storeId, storeIds), inArray(temuAdsProductDailies.date, window)),
+      ),
+  ])
 
   let cards: TemuAdsCards = emptyCards
   if (mallRows.length > 0) {
@@ -1449,20 +1453,27 @@ async function loadTemuAds(
       roas: spend > 0 ? Math.round((gmv / spend) * 100) / 100 : null,
       costPerOrder: orders > 0 ? Math.round((spend / orders) * 100) / 100 : null,
     }
-  } else if (rows.length > 0) {
-    const spendFen = rows.reduce((s, r) => s + (r.adSpend ?? 0), 0)
-    const gmvFen = rows.reduce((s, r) => s + (r.orderPayAmt ?? 0), 0)
-    const orders = rows.reduce((s, r) => s + (r.orderPayCnt ?? 0), 0)
-    cards = {
-      totalSpend: Math.round(spendFen) / 100,
-      salesAmount: Math.round(gmvFen) / 100,
-      roas: spendFen > 0 ? Math.round((gmvFen / spendFen) * 100) / 100 : null,
-      costPerOrder: orders > 0 ? Math.round(spendFen / orders) / 100 : null,
+  } else {
+    const t = productTotals[0]
+    const spendFen = t?.adSpend != null ? Number(t.adSpend) : null
+    const gmvFen = t?.orderPayAmt != null ? Number(t.orderPayAmt) : null
+    const orders = t?.orderPayCnt != null ? Number(t.orderPayCnt) : null
+    if (spendFen != null || gmvFen != null || orders != null) {
+      cards = {
+        totalSpend: spendFen != null ? Math.round(spendFen) / 100 : null,
+        salesAmount: gmvFen != null ? Math.round(gmvFen) / 100 : null,
+        roas: spendFen != null && spendFen > 0 && gmvFen != null ? Math.round((gmvFen / spendFen) * 100) / 100 : null,
+        costPerOrder: orders != null && orders > 0 && spendFen != null ? Math.round(spendFen / orders) / 100 : null,
+      }
     }
   }
 
   const dates = mallRows.map((r) => String(r.date)).sort()
-  return { rows, cards, range, dataThrough: dates.length > 0 ? dates[dates.length - 1] : null }
+  const dataThrough =
+    dates.length > 0 ? dates[dates.length - 1]! : productTotals[0]?.maxDate != null
+      ? String(productTotals[0]!.maxDate)
+      : null
+  return { rows, cards, range, dataThrough }
 }
 
 // ---------- 店铺管理（企业管理员） ----------
@@ -1554,15 +1565,38 @@ export async function createTemuStoreAction(input: {
   return { ok: true, store: row }
 }
 
+/** setTemuStoreTokenAction 的身份比对结论（needConfirm 时随错误一并返回，前端弹确认） */
+export interface TemuTokenIdentityMismatch {
+  /** 当前店铺已绑定的 mall */
+  currentMallId?: string
+  currentMallName?: string
+  /** 新 token 实际归属的 mall */
+  newMallId?: string
+  newMallName?: string
+  /** 新 token 归属 mall 已被同企业其他店铺占用时的店铺名 */
+  conflictStoreName?: string
+  /** 面向用户的比对说明 */
+  detail: string
+}
+
 /**
  * 录入/更新店铺 access_token（卖家中心授权页复制，自研应用 365 天有效）。
- * 保存后立刻调官方接口验证（bg.mall.info.get 判全托/半托），验证失败会回写
- * invalid 状态并把错误带回前端提示。
+ * 【防错绑】保存前先探测 token 真实归属（全托/半托 + mallId/mallName）并与
+ * 店铺当前身份比对：①店铺已绑定 mallId 且新 token 归属不同 mall；②新 mallId
+ * 已被同企业其他店铺占用——两种情况都返回 needConfirm 由用户确认后才落库
+ * （历史上店铺 A 错录店铺 B 的 token 零拦截，导致 B 的数据落进 A 名下）。
+ * 探测失败直接报错，token 不落库。
  */
 export async function setTemuStoreTokenAction(input: {
   id: string
   accessToken: string
-}): Promise<{ ok: boolean; error?: string; mallType?: "full" | "semi"; mallId?: string }> {
+  /** 身份比对不一致时用户已在确认弹窗点击「仍要绑定」 */
+  confirmIdentityMismatch?: boolean
+}): Promise<
+  | { ok: true; mallType?: "full" | "semi"; mallId?: string }
+  | { ok: false; error: string }
+  | { ok: false; needConfirm: true; mismatch: TemuTokenIdentityMismatch; error: string }
+> {
   const ctx = await requireEnterpriseAdmin()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
   const id = String(input.id || "")
@@ -1572,22 +1606,78 @@ export async function setTemuStoreTokenAction(input: {
   }
   const guard = await requireRealStore(enterpriseId, id)
   if (!guard.ok) return { ok: false, error: guard.error }
+  const [store] = await db
+    .select()
+    .from(temuStores)
+    .where(and(eq(temuStores.id, id), eq(temuStores.enterpriseId, enterpriseId)))
+    .limit(1)
+  if (!store) return { ok: false, error: "店铺不存在" }
+
+  // 先探测后保存：验证不过/身份存疑都不动库
+  const probed = await probeStoreTokenIdentity(store, accessToken)
+  if (!probed.ok) return { ok: false, error: probed.error }
+  const { mallType, mallId: newMallId, mallName: newMallName } = probed.identity
+
+  let mismatch: TemuTokenIdentityMismatch | null = null
+  if (newMallId) {
+    // ② 新 token 归属 mall 已被同企业其他非演示店铺占用（错绑事故的直接形态）
+    const conflicts = await db
+      .select({ id: temuStores.id, name: temuStores.name })
+      .from(temuStores)
+      .where(
+        and(
+          eq(temuStores.enterpriseId, enterpriseId),
+          eq(temuStores.mallId, newMallId),
+          eq(temuStores.isDemo, false),
+        ),
+      )
+    const conflict = conflicts.find((c) => c.id !== id)
+    if (conflict) {
+      mismatch = {
+        newMallId,
+        newMallName,
+        conflictStoreName: conflict.name,
+        detail: `该 token 属于 mall「${newMallName ?? newMallId}」，而此 mall 已绑定在店铺「${conflict.name}」名下`,
+      }
+    }
+    // ① 店铺此前绑定的 mall 与新 token 归属不一致（换了店铺的 token）
+    if (!mismatch && store.mallId && store.mallId !== newMallId) {
+      mismatch = {
+        currentMallId: store.mallId,
+        currentMallName: store.mallName ?? undefined,
+        newMallId,
+        newMallName,
+        detail: `该 token 属于 mall「${newMallName ?? newMallId}」，与店铺当前绑定的 mall「${store.mallName ?? store.mallId}」不一致`,
+      }
+    }
+  }
+  if (mismatch && !input.confirmIdentityMismatch) {
+    return {
+      ok: false,
+      needConfirm: true,
+      mismatch,
+      error: `${mismatch.detail}，请确认是否仍要绑定到店铺「${store.name}」`,
+    }
+  }
+
   const rows = await db
     .update(temuStores)
     .set({
       accessTokenEncrypted: encrypt(accessToken),
       tokenState: "active",
       tokenExpiresAt: new Date(Date.now() + 365 * 24 * 3600 * 1000),
+      ...(mallType ? { mallType } : {}),
+      ...(newMallId ? { mallId: newMallId } : {}),
+      ...(newMallName ? { mallName: newMallName } : {}),
       updatedAt: sql`now()`,
     })
     .where(and(eq(temuStores.id, id), eq(temuStores.enterpriseId, enterpriseId)))
     .returning({ id: temuStores.id })
   if (rows.length === 0) throw new Error("店铺不存在")
 
-  const verify = await verifyStoreToken(id)
   invalidateTemuCache(enterpriseId)
   revalidatePath("/temu")
-  return verify
+  return { ok: true, mallType, mallId: newMallId }
 }
 
 /** 手动触发单店同步（worker 15 分钟循环之外立即拉一次官方 API） */
@@ -1745,7 +1835,435 @@ export async function clearTemuStoreDataAction(input: { id: string }) {
   return { ok: true, counts }
 }
 
-// ---------- 内部 ----------
+// ---------- 错绑残留数据体检（token 曾绑错 mall 的治理工具） ----------
+
+/**
+ * 残留判定阈值：跨店双落的同一键（skcId / 发货单号），行时间落后该键全店
+ * 最新值超过 48h 视为「冻结残留」（正确归属店持续同步刷新，错绑店换 token
+ * 后不再返回该数据 → lastSeenAt/capturedAt 冻结）。两侧时间接近时不判定
+ * （可能均为正常历史冻结，宁漏勿删）。
+ */
+const RESIDUAL_STALE_MS = 48 * 3600 * 1000
+
+/** 单店铺的残留键集合（清理按 (店铺, 键) 精确删除） */
+interface ResidualStorePlan {
+  storeId: string
+  storeName: string
+  skcIds: Set<string>
+  productIds: Set<string>
+  goodsIds: Set<string>
+  skuIds: Set<string>
+  /** 残留商品行样例货号（≤5，检测弹窗展示） */
+  sampleSns: string[]
+  /** 残留行最晚 lastSeenAt（冻结时刻） */
+  staleSince: Date | null
+}
+
+/** 检测/清理共用：计算企业内错绑残留计划（跨店双落 + 冻结判定） */
+async function collectTemuResidual(enterpriseId: string): Promise<{
+  mallConflicts: { mallId: string; stores: string[] }[]
+  plans: ResidualStorePlan[]
+}> {
+  // 同 mallId 多店绑定预警（错绑的根形态：两个店铺行指向同一 mall）
+  const storeRows = await db
+    .select({ id: temuStores.id, name: temuStores.name, mallId: temuStores.mallId })
+    .from(temuStores)
+    .where(and(eq(temuStores.enterpriseId, enterpriseId), eq(temuStores.isDemo, false)))
+  const byMall = new Map<string, string[]>()
+  for (const s of storeRows) {
+    if (!s.mallId) continue
+    const list = byMall.get(s.mallId) ?? []
+    list.push(s.name)
+    byMall.set(s.mallId, list)
+  }
+  const mallConflicts = [...byMall.entries()]
+    .filter(([, names]) => names.length > 1)
+    .map(([mallId, stores]) => ({ mallId, stores }))
+
+  const storeIds = storeRows.map((s) => s.id)
+  const nameOf = new Map(storeRows.map((s) => [s.id, s.name]))
+  if (storeIds.length < 2) return { mallConflicts, plans: [] }
+
+  // —— 商品：同 skcId 跨店双落 → 冻结侧为残留 ——
+  const dupSkcs = await db
+    .select({ skcId: temuProducts.productSkcId })
+    .from(temuProducts)
+    .where(inArray(temuProducts.storeId, storeIds))
+    .groupBy(temuProducts.productSkcId)
+    .having(sql`count(distinct ${temuProducts.storeId}) > 1`)
+  const plansByStore = new Map<string, ResidualStorePlan>()
+  const planOf = (storeId: string): ResidualStorePlan => {
+    let p = plansByStore.get(storeId)
+    if (!p) {
+      p = {
+        storeId,
+        storeName: nameOf.get(storeId) ?? storeId,
+        skcIds: new Set(),
+        productIds: new Set(),
+        goodsIds: new Set(),
+        skuIds: new Set(),
+        sampleSns: [],
+        staleSince: null,
+      }
+      plansByStore.set(storeId, p)
+    }
+    return p
+  }
+  if (dupSkcs.length > 0) {
+    const dupIds = dupSkcs.map((d) => d.skcId)
+    const rows = await db
+      .select({
+        storeId: temuProducts.storeId,
+        productSkcId: temuProducts.productSkcId,
+        productId: temuProducts.productId,
+        goodsId: temuProducts.goodsId,
+        productSn: temuProducts.productSn,
+        lastSeenAt: temuProducts.lastSeenAt,
+      })
+      .from(temuProducts)
+      // skcId 是平台全局编号，须限定本企业店集，外店同 skcId 的更新鲜行
+      // 会抬高 maxSeenOf，把本企业正常行误判成冻结残留
+      .where(and(inArray(temuProducts.storeId, storeIds), inArray(temuProducts.productSkcId, dupIds)))
+    const maxSeenOf = new Map<string, number>()
+    for (const r of rows) {
+      maxSeenOf.set(
+        r.productSkcId,
+        Math.max(maxSeenOf.get(r.productSkcId) ?? 0, r.lastSeenAt.getTime()),
+      )
+    }
+    for (const r of rows) {
+      const maxSeen = maxSeenOf.get(r.productSkcId) ?? 0
+      if (r.lastSeenAt.getTime() >= maxSeen - RESIDUAL_STALE_MS) continue // 活跃行/双侧同冻结：不判定
+      const plan = planOf(r.storeId)
+      plan.skcIds.add(r.productSkcId)
+      if (r.productId) plan.productIds.add(r.productId)
+      if (r.goodsId) plan.goodsIds.add(r.goodsId)
+      if (r.productSn && plan.sampleSns.length < 5 && !plan.sampleSns.includes(r.productSn)) {
+        plan.sampleSns.push(r.productSn)
+      }
+      if (!plan.staleSince || r.lastSeenAt > plan.staleSince) plan.staleSince = r.lastSeenAt
+    }
+  }
+
+  // 发货单不参与错绑残留判定：官方 shiporderv2 同主体跨店可见，同一物理发货单
+  // 在主体内各店各落一行是设计使然（读侧已有跨店 NOT EXISTS 去重），与错绑无关；
+  // 商品域（goods.list 按 mall 隔离）跨店双落才是错绑形态。
+
+  // —— SKU 映射：残留 (店, skc) 命中的 skuId（连带 SKU 日序列） ——
+  for (const plan of plansByStore.values()) {
+    if (plan.skcIds.size === 0) continue
+    const skuRows = await db
+      .select({ skuId: temuSkuMaps.skuId })
+      .from(temuSkuMaps)
+      .where(
+        and(eq(temuSkuMaps.storeId, plan.storeId), inArray(temuSkuMaps.skcId, [...plan.skcIds])),
+      )
+    for (const s of skuRows) plan.skuIds.add(s.skuId)
+  }
+
+  return { mallConflicts, plans: [...plansByStore.values()] }
+}
+
+/** 残留体检结果（检测弹窗展示；clean 按同口径重算后删除） */
+export interface TemuResidualReport {
+  /** 同 mallId 绑定在多个店铺（配置错误预警，需人工处理，不在自动清理范围） */
+  mallConflicts: { mallId: string; stores: string[] }[]
+  /** 各店铺残留汇总 */
+  stores: {
+    storeId: string
+    storeName: string
+    productCount: number
+    skuCount: number
+    sampleSns: string[]
+    staleSince: string | null
+  }[]
+  /** 各表待清理行数 */
+  tableCounts: Record<string, number>
+  hasResidual: boolean
+}
+
+/** 检测企业内错绑残留数据（店铺管理「数据体检」；admin） */
+export async function detectTemuResidualDataAction(): Promise<TemuResidualReport> {
+  const ctx = await requireEnterpriseAdmin()
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  const { mallConflicts, plans } = await collectTemuResidual(enterpriseId)
+
+  const tableCounts: Record<string, number> = {}
+  // 多店循环会对同名表多次计数，累加（与 clean 侧 bump 同口径），勿覆盖
+  const addCount = async (table: string, q: Promise<{ n: number }[]>) => {
+    tableCounts[table] = (tableCounts[table] ?? 0) + Number((await q)[0]?.n ?? 0)
+  }
+  const storeSummary: TemuResidualReport["stores"] = []
+  for (const p of plans) {
+    storeSummary.push({
+      storeId: p.storeId,
+      storeName: p.storeName,
+      productCount: p.skcIds.size,
+      skuCount: p.skuIds.size,
+      sampleSns: p.sampleSns,
+      staleSince: p.staleSince ? p.staleSince.toISOString() : null,
+    })
+    if (p.skcIds.size > 0) {
+      const skcs = [...p.skcIds]
+      await addCount(
+        "temu_product",
+        db
+          .select({ n: count() })
+          .from(temuProducts)
+          .where(and(eq(temuProducts.storeId, p.storeId), inArray(temuProducts.productSkcId, skcs))),
+      )
+      await addCount(
+        "temu_sales_overview",
+        db
+          .select({ n: count() })
+          .from(temuSalesOverviews)
+          .where(and(eq(temuSalesOverviews.storeId, p.storeId), inArray(temuSalesOverviews.skcId, skcs))),
+      )
+      await addCount(
+        "temu_product_ads",
+        db
+          .select({ n: count() })
+          .from(temuProductAds)
+          .where(
+            and(
+              eq(temuProductAds.storeId, p.storeId),
+              or(
+                inArray(temuProductAds.skcId, skcs),
+                p.goodsIds.size > 0 ? inArray(temuProductAds.goodsId, [...p.goodsIds]) : sql`false`,
+              ),
+            ),
+          ),
+      )
+      await addCount(
+        "temu_sku_map",
+        db
+          .select({ n: count() })
+          .from(temuSkuMaps)
+          .where(and(eq(temuSkuMaps.storeId, p.storeId), inArray(temuSkuMaps.skcId, skcs))),
+      )
+      await addCount(
+        "temu_priority_link",
+        db
+          .select({ n: count() })
+          .from(temuPriorityLinks)
+          .where(
+            and(
+              eq(temuPriorityLinks.enterpriseId, enterpriseId),
+              eq(temuPriorityLinks.storeId, p.storeId),
+              inArray(temuPriorityLinks.productSkcId, skcs),
+            ),
+          ),
+      )
+      await addCount(
+        "temu_stop_replenish_link",
+        db
+          .select({ n: count() })
+          .from(temuStopReplenishLinks)
+          .where(
+            and(
+              eq(temuStopReplenishLinks.enterpriseId, enterpriseId),
+              eq(temuStopReplenishLinks.storeId, p.storeId),
+              inArray(temuStopReplenishLinks.productSkcId, skcs),
+            ),
+          ),
+      )
+    }
+    if (p.goodsIds.size > 0) {
+      await addCount(
+        "temu_product_flow",
+        db
+          .select({ n: count() })
+          .from(temuProductFlows)
+          .where(
+            and(eq(temuProductFlows.storeId, p.storeId), inArray(temuProductFlows.goodsId, [...p.goodsIds])),
+          ),
+      )
+    }
+    if (p.skuIds.size > 0) {
+      await addCount(
+        "temu_sku_sales_daily",
+        db
+          .select({ n: count() })
+          .from(temuSkuSalesDailies)
+          .where(
+            and(eq(temuSkuSalesDailies.storeId, p.storeId), inArray(temuSkuSalesDailies.skuId, [...p.skuIds])),
+          ),
+      )
+    }
+    if (p.productIds.size > 0) {
+      await addCount(
+        "temu_ads_product_daily",
+        db
+          .select({ n: count() })
+          .from(temuAdsProductDailies)
+          .where(
+            and(
+              eq(temuAdsProductDailies.storeId, p.storeId),
+              inArray(temuAdsProductDailies.productId, [...p.productIds]),
+            ),
+          ),
+      )
+    }
+  }
+
+  const hasResidual =
+    plans.length > 0 && plans.some((p) => p.skcIds.size > 0 || p.skuIds.size > 0)
+  return { mallConflicts, stores: storeSummary, tableCounts, hasResidual }
+}
+
+/**
+ * 清理错绑残留数据（检测口径重算后按 (店铺, 键) 精确删除；admin）。
+ * 只删商品域「跨店双落且时间冻结」的行——正确归属店的行不动；发货单跨店
+ * 双落是官方同主体跨店可见的设计（读侧已去重）不在清理范围；店铺级日报
+ * （temu_ads_daily/metric_snapshot 等聚合表）无法归因不自动清理。
+ */
+export async function cleanTemuResidualDataAction(): Promise<{
+  ok: boolean
+  error?: string
+  counts?: Record<string, number>
+}> {
+  const ctx = await requireEnterpriseAdmin()
+  const { enterpriseId } = getCurrentEnterpriseScope(ctx)
+  const { plans } = await collectTemuResidual(enterpriseId)
+  const counts: Record<string, number> = {}
+  await db.transaction(async (tx) => {
+    for (const p of plans) {
+      const bump = (table: string, n: number) => {
+        counts[table] = (counts[table] ?? 0) + n
+      }
+      if (p.skcIds.size > 0) {
+        const skcs = [...p.skcIds]
+        bump(
+          "temu_product",
+          (
+            await tx
+              .delete(temuProducts)
+              .where(and(eq(temuProducts.storeId, p.storeId), inArray(temuProducts.productSkcId, skcs)))
+              .returning({ id: temuProducts.id })
+          ).length,
+        )
+        bump(
+          "temu_sales_overview",
+          (
+            await tx
+              .delete(temuSalesOverviews)
+              .where(and(eq(temuSalesOverviews.storeId, p.storeId), inArray(temuSalesOverviews.skcId, skcs)))
+              .returning({ id: temuSalesOverviews.id })
+          ).length,
+        )
+        if (p.goodsIds.size > 0) {
+          bump(
+            "temu_product_flow",
+            (
+              await tx
+                .delete(temuProductFlows)
+                .where(
+                  and(
+                    eq(temuProductFlows.storeId, p.storeId),
+                    inArray(temuProductFlows.goodsId, [...p.goodsIds]),
+                  ),
+                )
+                .returning({ id: temuProductFlows.id })
+            ).length,
+          )
+        }
+        bump(
+          "temu_product_ads",
+          (
+            await tx
+              .delete(temuProductAds)
+              .where(
+                and(
+                  eq(temuProductAds.storeId, p.storeId),
+                  or(
+                    inArray(temuProductAds.skcId, skcs),
+                    p.goodsIds.size > 0
+                      ? inArray(temuProductAds.goodsId, [...p.goodsIds])
+                      : sql`false`,
+                  ),
+                ),
+              )
+              .returning({ id: temuProductAds.id })
+          ).length,
+        )
+        bump(
+          "temu_sku_map",
+          (
+            await tx
+              .delete(temuSkuMaps)
+              .where(and(eq(temuSkuMaps.storeId, p.storeId), inArray(temuSkuMaps.skcId, skcs)))
+              .returning({ id: temuSkuMaps.id })
+          ).length,
+        )
+        if (p.skuIds.size > 0) {
+          bump(
+            "temu_sku_sales_daily",
+            (
+              await tx
+                .delete(temuSkuSalesDailies)
+                .where(
+                  and(
+                    eq(temuSkuSalesDailies.storeId, p.storeId),
+                    inArray(temuSkuSalesDailies.skuId, [...p.skuIds]),
+                  ),
+                )
+                .returning({ id: temuSkuSalesDailies.id })
+            ).length,
+          )
+        }
+        if (p.productIds.size > 0) {
+          bump(
+            "temu_ads_product_daily",
+            (
+              await tx
+                .delete(temuAdsProductDailies)
+                .where(
+                  and(
+                    eq(temuAdsProductDailies.storeId, p.storeId),
+                    inArray(temuAdsProductDailies.productId, [...p.productIds]),
+                  ),
+                )
+                .returning({ id: temuAdsProductDailies.id })
+            ).length,
+          )
+        }
+        bump(
+          "temu_priority_link",
+          (
+            await tx
+              .delete(temuPriorityLinks)
+              .where(
+                and(
+                  eq(temuPriorityLinks.enterpriseId, enterpriseId),
+                  eq(temuPriorityLinks.storeId, p.storeId),
+                  inArray(temuPriorityLinks.productSkcId, skcs),
+                ),
+              )
+              .returning({ id: temuPriorityLinks.id })
+          ).length,
+        )
+        bump(
+          "temu_stop_replenish_link",
+          (
+            await tx
+              .delete(temuStopReplenishLinks)
+              .where(
+                and(
+                  eq(temuStopReplenishLinks.enterpriseId, enterpriseId),
+                  eq(temuStopReplenishLinks.storeId, p.storeId),
+                  inArray(temuStopReplenishLinks.productSkcId, skcs),
+                ),
+              )
+              .returning({ id: temuStopReplenishLinks.id })
+          ).length,
+        )
+      }
+    }
+  })
+  invalidateTemuCache(enterpriseId)
+  revalidatePath("/temu")
+  return { ok: true, counts }
+}
 
 /** 企业 → 店铺 id 列表（store/app 过滤可选；店铺管理双层隔离的锚点。
  *  appId 与 enterpriseId 双条件取交集，跨企业 app id 交集为空不泄数据） */

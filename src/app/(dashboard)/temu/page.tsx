@@ -21,7 +21,7 @@ import {
   getTemuProductsPageAction,
   getTemuAdsAction,
   getTemuCategoryShareAction,
-  getTemuSalesTopAction,
+  getTemuStoreShareAction,
   getTemuSalesTopBySnAction,
   listTemuAppsBriefAction,
   type TemuOverview,
@@ -48,7 +48,7 @@ import { SectionCards } from "@/components/section-cards"
 import { ChartAreaInteractive } from "@/components/chart-area-interactive"
 import {
   TemuCategoryShare,
-  TemuSalesTop10,
+  TemuStoreShare,
   TemuSalesTop50Cards,
   TemuShipStatsCards,
   TemuStoreSelect,
@@ -161,8 +161,8 @@ export default async function TemuPage({
     return `/temu?${p.toString()}`
   }
 
-  // 店铺下拉只列启用店铺；核价调价/广告/备货/质检/发货/退货工作台按店铺 token 调接口，
-  // 未选店时默认第一个启用店铺；备货支持全部店铺（扇出合并）——不默认选店；
+  // 店铺下拉只列启用店铺；核价调价/质检/发货/退货工作台按店铺 token 调接口，
+  // 未选店时默认第一个启用店铺；备货/广告支持全部店铺（扇出合并）——不默认选店；
   // 发品 tab 只列可发布店（全托+token 有效）且必须选具体店
   // 应用（主体）维度过滤：店铺下拉/默认店/发品可发布店都在应用范围内取
   const inApp = (s: { appId: string | null }) => !validApp || s.appId === validApp
@@ -173,7 +173,6 @@ export default async function TemuPage({
   const isPublishTab = activeTab === "publish"
   const workbenchDefaultStore =
     (activeTab === "price" ||
-      activeTab === "ads" ||
       activeTab === "qc" ||
       activeTab === "ship" ||
       activeTab === "return") &&
@@ -206,8 +205,8 @@ export default async function TemuPage({
             </Link>
           ))}
         </div>
-        {/* 核价/质检/广告/发布/退货工作台按单店 token 调官方接口，不提供「全部店铺」；
-            概览/商品信息为本地聚合、备货为逐店扇出合并——支持全店 */}
+        {/* 核价/质检/发布/退货工作台按单店 token 调官方接口，不提供「全部店铺」；
+            概览/商品信息为本地聚合、备货/广告为逐店扇出合并——支持全店 */}
         <div className="flex items-center gap-2">
           {/* 多主体切换（应用 ≤1 时隐藏；「全部主体」不筛选） */}
           {apps.length > 1 && (
@@ -228,7 +227,10 @@ export default async function TemuPage({
             tab={activeTab}
             current={effectiveStore}
             allowAll={
-              activeTab === "overview" || activeTab === "products" || activeTab === "purchase"
+              activeTab === "overview" ||
+              activeTab === "products" ||
+              activeTab === "purchase" ||
+              activeTab === "ads"
             }
             app={validApp}
             stores={(isPublishTab ? publishableStores : enabledStores).map((s) => ({
@@ -261,8 +263,11 @@ export default async function TemuPage({
           <AdsTab
             storeId={query.store}
             range={query.range}
-            workbenchStore={effectiveStore}
             appId={validApp}
+            stores={enabledStores.map((s) => ({
+              id: s.id,
+              name: s.isDemo ? `${s.name}（演示）` : s.name,
+            }))}
           />
         )}
         {activeTab === "price" && <TemuPriceReviewPanel store={effectiveStore} />}
@@ -325,9 +330,9 @@ async function OverviewTab({
   appId?: string
 }) {
   // overview 复用页面级已查结果（店铺选择栏也要用），不在此重复执行整组聚合查询
-  const [categoryShare, salesTop, salesTopBySn, shipStats] = await Promise.all([
+  const [categoryShare, storeShare, salesTopBySn, shipStats] = await Promise.all([
     getTemuCategoryShareAction(storeId, appId),
-    getTemuSalesTopAction(storeId, appId),
+    getTemuStoreShareAction(storeId, appId),
     getTemuSalesTopBySnAction(storeId, appId),
     getTemuShipStatsAction(storeId ?? null, null, appId),
   ])
@@ -378,10 +383,10 @@ async function OverviewTab({
         }))}
       />
 
-      {/* Row3 左：售出类目占比（环形图）｜右：售出 TOP10（横向条形图，分色） */}
+      {/* Row3 左：售出类目占比｜右：售出店铺占比（同构环形图，单店选中时 100% 单切片） */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <TemuCategoryShare data={categoryShare} />
-        <TemuSalesTop10 data={salesTop} />
+        <TemuStoreShare data={storeShare} />
       </div>
 
       {/* Row4 售出 TOP50 三卡（今日/七日/三十日，按货号汇总：前 3 名主图领奖台 + 4-50 名滚动列表；
@@ -389,7 +394,7 @@ async function OverviewTab({
           key=店铺/应用：切店是 soft navigation（组件不卸载），选中 Set<sn> 会残留上一
           店铺的货号——加 key 随切店重置，与下方 TemuShipStatsCards 同惯例 */}
       <TemuSalesTop50Cards
-        key={`${storeId ?? "all"}|${appId ?? "all"}`}
+        key={`top50|${storeId ?? "all"}|${appId ?? "all"}`}
         data={salesTopBySn}
         totals={{
           today: c.todaySales.value,
@@ -402,7 +407,7 @@ async function OverviewTab({
           key=storeId：切店是 soft navigation，组件树位置不变时 client state 不会重置——
           不加 key 会停留在前一店铺的预取数据（useState(initial) 不随 props 更新） */}
       <TemuShipStatsCards
-        key={`${storeId ?? "all"}|${appId ?? "all"}`}
+        key={`ship-stats|${storeId ?? "all"}|${appId ?? "all"}`}
         initial={shipStats}
         storeId={storeId}
         appId={appId}
@@ -472,41 +477,56 @@ async function ProductsTab({
 async function AdsTab({
   storeId,
   range,
-  workbenchStore,
   appId,
+  stores,
 }: {
   storeId?: string
   range?: number
-  workbenchStore?: string
   appId?: string
+  stores: { id: string; name: string }[]
 }) {
-  const { rows, cards: syncedCards, range: r } = await getTemuAdsAction(storeId, range, appId)
   // 同步窗口无数据时用注册表 detail.query 实时汇总兜底——创建广告后立即出数，
-  // 不等 15 分钟同步落库（与前端工作台共用 30s 缓存，不产生额外官方调用）
-  const plansRes = workbenchStore ? await getTemuAdPlansAction({ store: workbenchStore }) : null
+  // 不等 15 分钟同步落库（与前端工作台共用缓存，不产生额外官方调用）。
+  // 逐字段补空（不再整组 all-or-nothing）：同步缺哪个指标就补哪个；仅单店视图
+  // （全部店铺视图扇出成本高，走同步落库数据）。两读并行（plans 分批拉取慢，
+  // 串行会让广告页首屏白等）
+  const [adsRes, plansRes] = await Promise.all([
+    getTemuAdsAction(storeId, range, appId),
+    storeId ? getTemuAdPlansAction({ store: storeId }) : null,
+  ])
+  const { rows, cards: syncedCards, range: r } = adsRes
   const plans = plansRes?.ok ? plansRes.rows : []
   const rtSpend = plans.reduce((s, p) => s + (p.spendFen ?? 0), 0)
   const rtAmt = plans.reduce((s, p) => s + (p.orderPayAmtFen ?? 0), 0)
   const rtOrders = plans.reduce((s, p) => s + (p.orderCnt ?? 0), 0)
-  const realtime = syncedCards.totalSpend == null && rtSpend > 0
-  const cards = realtime
-    ? {
-        totalSpend: Math.round(rtSpend) / 100,
-        salesAmount: Math.round(rtAmt) / 100,
-        roas: rtSpend > 0 ? Math.round((rtAmt / rtSpend) * 100) / 100 : null,
-        costPerOrder: rtOrders > 0 ? Math.round(rtSpend / rtOrders) / 100 : null,
-      }
-    : syncedCards
+  const rtAvailable = storeId != null && rtSpend > 0
+  const pick = (synced: number | null, rt: number | null) =>
+    synced != null ? synced : rtAvailable && rt != null ? rt : null
+  const realtime = rtAvailable && syncedCards.totalSpend == null
+  const cards = {
+    totalSpend: pick(syncedCards.totalSpend, Math.round(rtSpend) / 100),
+    salesAmount: pick(syncedCards.salesAmount, Math.round(rtAmt) / 100),
+    roas: pick(
+      syncedCards.roas,
+      rtSpend > 0 ? Math.round((rtAmt / rtSpend) * 100) / 100 : null,
+    ),
+    costPerOrder: pick(
+      syncedCards.costPerOrder,
+      rtOrders > 0 ? Math.round(rtSpend / rtOrders) / 100 : null,
+    ),
+  }
+  // 窗口文案：今日/近 N 日（用户口径：今日不带「截至最近同步」注）
+  const winText = r === 1 ? "今日" : `近 ${r} 日`
   const cardItems = [
     {
       label: "总花费",
       value: cards.totalSpend != null ? `¥${cards.totalSpend.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}` : "—",
-      hint: realtime ? "官方 API 实时汇总（待同步落库）" : `近 ${r} 日推广花费（官方广告 API）`,
+      hint: realtime ? "官方 API 实时汇总（待同步落库）" : `${winText}推广花费（官方广告 API）`,
     },
     {
       label: "申报价销售额",
       value: cards.salesAmount != null ? `¥${cards.salesAmount.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}` : "—",
-      hint: `近 ${r} 日推广维度申报价口径`,
+      hint: `${winText}推广维度申报价口径`,
     },
     {
       label: "投资回报率（ROAS）",
@@ -523,12 +543,12 @@ async function AdsTab({
     // 平台限制标注条 → 4 大盘卡（渐变样式；同步无数据时实时汇总兜底）→ 商品推广报表
     // （双源合并单表：报表同步行 ∪ 本页创建的注册表行；创建/窗口/刷新工具行）
     <div className="flex h-full min-h-0 flex-col gap-6">
-      {/* 平台限制标注条（用户口径：仅本页创建的广告数据可同步） */}
-      <div className="flex items-start gap-2.5 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3.5 py-2.5 text-sm text-amber-700 dark:text-amber-400">
+      {/* 数据源说明条（2026-11-18 实测推翻旧「后台手建广告不可见」结论：后台创建的在投广告对官方接口可见） */}
+      <div className="flex items-start gap-2.5 rounded-lg border border-sky-500/30 bg-sky-500/5 px-3.5 py-2.5 text-sm text-sky-700 dark:text-sky-400">
         <Info className="mt-0.5 size-4 shrink-0" />
         <p>
-          平台限制：仅在<b>本页面通过官方 API 创建</b>的广告，其投放数据可同步展示；
-          卖家后台（ads.temu.com）手动创建的广告不在官方接口可见范围（已实测确认）。
+          广告数据来自官方广告 API：本页创建与卖家后台创建的在投广告均会展示，
+          数据每约 15 分钟自动同步。
         </p>
       </div>
       <div
@@ -551,7 +571,8 @@ async function AdsTab({
         ))}
       </div>
       <TemuAdsWorkbench
-        store={workbenchStore}
+        store={storeId}
+        stores={stores}
         reportRows={rows}
         range={r}
         urlStore={storeId}

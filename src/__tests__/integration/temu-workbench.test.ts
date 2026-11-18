@@ -13,6 +13,7 @@ import {
   listTemuAdProductsAction,
   createTemuAdsAction,
   modifyTemuAdAction,
+  predictTemuAdRoasAction,
 } from "@/server/actions/temu-workbench"
 
 /**
@@ -205,6 +206,8 @@ beforeAll(async () => {
     productSn: "SN-9001",
     mainImageUrl: "https://img.example.com/9001.jpg",
     supplierPrice: 4990,
+    // 创建广告候选只取在售商品（skcStatus 1/11，同商品页口径）
+    skcStatus: 11,
   })
   await db.insert(temuSkuMaps).values({ storeId, skuId: "50001", skcId: "9001" })
 })
@@ -353,6 +356,79 @@ describe("广告工作台", () => {
     expect(r.rows[0]?.advertised).toBe(false)
   })
 
+  it("候选商品只返回可投（grayReason 不可投被服务端过滤）", { timeout: 30_000 }, async () => {
+    await db.insert(temuProducts).values({
+      storeId,
+      productSkcId: "SKC-7002",
+      productId: "7002",
+      productName: "不可投测试商品",
+      productSn: "SN-7002",
+      skcStatus: 11,
+    })
+    vi.stubGlobal(
+      "fetch",
+      mockWorkbenchFetch({
+        "bg.glo.searchrec.ad.goods.create.query": {
+          goodsInfoList: [
+            { goodsId: 7001, grayReason: [] },
+            { goodsId: 7002, grayReason: [{ type: 1, reason: "库存不足" }] },
+          ],
+        },
+      }),
+    )
+    const r = await listTemuAdProductsAction({ store: storeId })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    // 2026-11-17 口径：不可投完全隐藏；灰名单非空时 grayListEmpty=false
+    expect(r.grayListEmpty).toBe(false)
+    expect(r.rows.some((x) => x.productId === "7002")).toBe(false)
+    expect(r.rows.some((x) => x.productId === "7001")).toBe(true)
+  })
+
+  it("非在售商品（skcStatus≠1/11）不出现在候选列表", { timeout: 30_000 }, async () => {
+    await db.insert(temuProducts).values({
+      storeId,
+      productSkcId: "SKC-7003",
+      productId: "7003",
+      productName: "已下架测试商品",
+      productSn: "SN-7003",
+      skcStatus: 0,
+    })
+    vi.stubGlobal(
+      "fetch",
+      mockWorkbenchFetch({
+        "bg.glo.searchrec.ad.goods.create.query": { goodsInfoList: [] },
+      }),
+    )
+    const r = await listTemuAdProductsAction({ store: storeId })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.rows.some((x) => x.productId === "7003")).toBe(false)
+    expect(r.rows.some((x) => x.productId === "7001")).toBe(true)
+  })
+
+  it("灰名单语义：goodsInfoList 为空 = 全部在售候选返回且 grayListEmpty=true", { timeout: 30_000 }, async () => {
+    // 官方参数表 grayReason.type 枚举全为不可投原因（未在售/已在线/审核驳回/
+    // 审核异常）——名单只含不可投商品；【2026-11-17 五真店实测接口恒空，疑
+    // API 通道广告协议未生效】空名单=官方未返回校验数据：在售候选全返回 +
+    // grayListEmpty 标记（前端徽章降级「在售」、提示以提交校验为准）
+    vi.stubGlobal(
+      "fetch",
+      mockWorkbenchFetch({
+        "bg.glo.searchrec.ad.goods.create.query": { goodsInfoList: [] },
+      }),
+    )
+    const r = await listTemuAdProductsAction({ store: storeId })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.grayListEmpty).toBe(true)
+    // 实断言（原 rows.every(eligible) 因实现已 filter(eligible) 恒真）：
+    // 在售候选全返回——7001/7002 两行（7003 已下架 skcStatus 0 不入）
+    expect(r.rows.length).toBe(2)
+    expect(r.rows.some((x) => x.productId === "7001")).toBe(true)
+    expect(r.rows.some((x) => x.productId === "7002")).toBe(true)
+  })
+
   it("创建广告按官方口径发 productId/roas×10000 并登记注册表", async () => {
     const fetchMock = mockWorkbenchFetch({ "bg.glo.searchrec.ad.create": AD_CREATE_RESULT })
     vi.stubGlobal("fetch", fetchMock)
@@ -381,6 +457,42 @@ describe("广告工作台", () => {
     expect(row?.roas).toBe(3.5)
   })
 
+  it("日预算 -1（不限）按官方口径透传", { timeout: 30_000 }, async () => {
+    const fetchMock = mockWorkbenchFetch({ "bg.glo.searchrec.ad.create": AD_CREATE_RESULT })
+    vi.stubGlobal("fetch", fetchMock)
+    const r = await createTemuAdsAction({
+      store: storeId,
+      items: [{ productId: "7001", budget: -1, roas: 13 }],
+    })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    // -1=不限（docs §8.10 官方口径）；roas 13 → ×10000 = 130000
+    const reqBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as {
+      createAdReqs: { productId: number; budget: number; roas: number }[]
+    }
+    expect(reqBody.createAdReqs?.[0]?.budget).toBe(-1)
+    expect(reqBody.createAdReqs?.[0]?.roas).toBe(130000)
+  })
+
+  it("官方推荐 ROAS：predList 首档、×10000 大值归一", { timeout: 30_000 }, async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockWorkbenchFetch({
+        "bg.glo.searchrec.ad.roas.pred": {
+          queryAdBidResult: [{ predList: [{ roas: 130000 }] }],
+        },
+      }),
+    )
+    const r = await predictTemuAdRoasAction({ store: storeId, productIds: ["7001"] })
+    expect(r.roas).toBe(13)
+  })
+
+  it("官方推荐 ROAS 失败静默返回 null（前端回落 13）", { timeout: 30_000 }, async () => {
+    vi.stubGlobal("fetch", mockWorkbenchFetch({}, true))
+    const r = await predictTemuAdRoasAction({ store: storeId, productIds: ["7001"] })
+    expect(r.roas).toBeNull()
+  })
+
   it("我的广告 = 注册表 + detail.query 实时状态/指标", async () => {
     vi.stubGlobal(
       "fetch",
@@ -396,9 +508,56 @@ describe("广告工作台", () => {
     expect(row.spendFen).toBe(5000)
     expect(row.orderPayAmtFen).toBe(15000)
     expect(row.roasSummary).toBe(3)
-    // 枚举官方未文档化：回退状态码展示
-    expect(row.adShowStatusLabel).toBe("状态码 2")
+    // 官方枚举（2026-10 参数表）：2 = goods sold out 商品售罄
+    expect(row.adShowStatusLabel).toBe("商品售罄")
     expect(row.productName).toBe("测试连衣裙 SKC1")
+  })
+
+  it("我的广告官方实时主源：registry 外的在售广告照常返回、注册表行降级补充", { timeout: 30_000 }, async () => {
+    // 2026-11-18 升级：detail.query 为主源（后台手建广告 API 可见）——官方返回
+    // 的在售广告行即使不在本地注册表也展示；注册表有而官方未返回的（本站
+    // 创建、已删除/不在售）降级为补充行（无实时状态）
+    await db.insert(temuProducts).values({
+      storeId,
+      productSkcId: "SKC-7004",
+      productId: "7004",
+      productName: "官方后台手建广告商品",
+      productSn: "SN-7004",
+      skcStatus: 11,
+    })
+    vi.stubGlobal(
+      "fetch",
+      mockWorkbenchFetch({
+        "bg.glo.searchrec.ad.detail.query": {
+          adsDetail: [
+            {
+              productId: 7004,
+              adShowStatus: 8, // 官方枚举 8=promoting 推广中
+              adPhase: 1,
+              budget: -1,
+              roas: 17100,
+              summary: { adSpend: { ad: { val: 1234 } }, orderPayAmt: { ad: { val: 5000 } } },
+            },
+          ],
+        },
+      }),
+    )
+    const r = await getTemuAdPlansAction({ store: storeId })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    const official = r.rows.find((x) => x.productId === "7004")
+    const registryRow = r.rows.find((x) => x.productId === "7001")
+    // 官方主源行：不在注册表也返回，实时值优先
+    expect(official).toBeTruthy()
+    expect(official?.adShowStatusLabel).toBe("推广中")
+    expect(official?.budget).toBe(-1)
+    expect(official?.spendFen).toBe(1234)
+    expect(official?.productName).toBe("官方后台手建广告商品")
+    // 注册表补充行（官方未返回 7001）：保留但无实时状态
+    expect(registryRow).toBeTruthy()
+    expect(registryRow?.adShowStatusLabel).toBe("无实时状态")
+    // 非在售商品（7003）不参与聚合
+    expect(r.rows.some((x) => x.productId === "7003")).toBe(false)
   })
 
   it("修改广告（改预算）按官方 modifyAdDTO 包装并更新注册表", async () => {
@@ -478,7 +637,7 @@ describe("广告候选搜索下推 SQL（>60 行店铺规模）", () => {
       productSn: `SN-8${String(i).padStart(3, "0")}`,
     }))
     await db.insert(temuProducts).values(fillers)
-    // 同 productId 双 SKC：验证去重后只出一行候选
+    // 同 productId 双 SKC：验证去重后只出一行候选（候选只取在售，skcStatus 必带）
     await db.insert(temuProducts).values([
       {
         storeId,
@@ -486,6 +645,7 @@ describe("广告候选搜索下推 SQL（>60 行店铺规模）", () => {
         productId: "9901",
         productName: "目标商品-金色皇冠项链",
         productSn: "SN-9901",
+        skcStatus: 11,
       },
       {
         storeId,
@@ -493,6 +653,7 @@ describe("广告候选搜索下推 SQL（>60 行店铺规模）", () => {
         productId: "9901",
         productName: "目标商品-金色皇冠项链 B 款",
         productSn: "SN-9902",
+        skcStatus: 11,
       },
     ])
     vi.stubGlobal(

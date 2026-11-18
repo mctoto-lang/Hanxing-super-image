@@ -4,7 +4,8 @@ import * as React from "react"
 import { useRouter } from "next/navigation"
 import { Medal, X } from "lucide-react"
 import { DashRing } from "@/components/ui/dash-ring"
-import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, XAxis, YAxis } from "recharts"
+import { ZoomableImage } from "@/components/ui/zoomable-image"
+import { Cell, Pie, PieChart } from "recharts"
 import {
   ChartContainer,
   ChartTooltip,
@@ -34,12 +35,12 @@ import { TruncTip } from "@/components/temu/trunc-tip"
 import { getTemuShipStatsAction, type TemuShipStats } from "@/server/actions/temu-ship"
 import type {
   TemuCategoryShare,
+  TemuStoreShare,
   TemuSalesTopBySnRow,
-  TemuSalesTopRow,
 } from "@/server/actions/temu"
 
 /**
- * Temu 面板概览组件：店铺切换下拉、类目占比、售出 TOP10、售出 TOP20（按货号）。
+ * Temu 面板概览组件：店铺切换下拉、类目/店铺占比、售出 TOP50（按货号）。
  * 趋势图与顶部卡片用 dashboard-01 真源组件
  * （@/components/chart-area-interactive、@/components/section-cards）。
  */
@@ -180,25 +181,33 @@ function ShareTooltip({
   )
 }
 
-/** 售出类目占比（环形图，动态切片 + 其他；口径可切 今日/近7日/近30日） */
-export function TemuCategoryShare({ data }: { data: TemuCategoryShare[] }) {
-  const [metric, setMetric] = React.useState("today")
-  const pick = (d: TemuCategoryShare) =>
-    metric === "today"
-      ? d.todaySalesVolume
-      : metric === "30d"
-        ? d.last30DaysSalesVolume
-        : d.last7DaysSalesVolume
+/** 共享占比卡数据行（类目/店铺占比同构：标签 + 三口径销量） */
+type ShareRow = { label: string; today: number; last7: number; last30: number }
 
-  const total = data.reduce((s, d) => s + pick(d), 0)
+/** 占比环形卡（动态切片 + 其他；口径可切 今日/近7日/近30日）：类目占比与
+ *  店铺占比共用，仅标题/描述与数据行不同 */
+function ShareDonutCard({
+  title,
+  description,
+  rows,
+}: {
+  title: string
+  description: string
+  rows: ShareRow[]
+}) {
+  const [metric, setMetric] = React.useState("today")
+  const pick = (d: ShareRow) =>
+    metric === "today" ? d.today : metric === "30d" ? d.last30 : d.last7
+
+  const total = rows.reduce((s, d) => s + pick(d), 0)
   const slices = React.useMemo(() => {
-    const sorted = [...data].sort((a, b) => pick(b) - pick(a)).filter((d) => pick(d) > 0)
-    // 动态纳入：占比 ≥1% 的类目全部展示（最多 15 条），其余合并「其他」
+    const sorted = [...rows].sort((a, b) => pick(b) - pick(a)).filter((d) => pick(d) > 0)
+    // 动态纳入：占比 ≥1% 的条目全部展示（最多 15 条），其余合并「其他」
     const kept: Array<{ label: string; value: number }> = []
     for (const d of sorted) {
       if (kept.length >= 15) break
       if (total > 0 && pick(d) / total < 0.01) break
-      kept.push({ label: d.category, value: pick(d) })
+      kept.push({ label: d.label, value: pick(d) })
     }
     const rest = sorted.slice(kept.length).reduce((s, d) => s + pick(d), 0)
     if (rest > 0) kept.push({ label: "其他", value: rest })
@@ -207,7 +216,7 @@ export function TemuCategoryShare({ data }: { data: TemuCategoryShare[] }) {
       color: s.label === "其他" ? "var(--muted)" : donutPalette[i % donutPalette.length],
     }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, metric, total])
+  }, [rows, metric, total])
 
   const config = Object.fromEntries(
     slices.map((s) => [s.label, { label: s.label, color: s.color }]),
@@ -216,8 +225,8 @@ export function TemuCategoryShare({ data }: { data: TemuCategoryShare[] }) {
   return (
     <Card className="@container/card">
       <CardHeader>
-        <CardTitle>售出类目占比</CardTitle>
-        <CardDescription>销售管理最新批次 · 按类目汇总销量（展示占比 ≥1% 的类目，至多 15 条）</CardDescription>
+        <CardTitle>{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
         <CardAction>
           <MetricToggle value={metric} onChange={setMetric} />
         </CardAction>
@@ -248,7 +257,7 @@ export function TemuCategoryShare({ data }: { data: TemuCategoryShare[] }) {
               </PieChart>
             </ChartContainer>
             {/* 自渲染图例（替代 ChartLegend）：slices 已按当前口径占比降序（「其他」
-                垫尾），类目名单行省略不折行，右侧跟占比百分比 */}
+                垫尾），条目名单行省略不折行，右侧跟占比百分比 */}
             <div className="mt-2 flex flex-wrap justify-center gap-x-3 gap-y-1">
               {slices.map((s) => {
                 const pct = total > 0 ? Math.round((s.value / total) * 1000) / 10 : 0
@@ -274,106 +283,35 @@ export function TemuCategoryShare({ data }: { data: TemuCategoryShare[] }) {
   )
 }
 
-// ---------- 售出 TOP20 ----------
-
-type TopDatum = {
-  name: string
-  value: number
-  skcId: string
-  productSn: string | null
-  category: string | null
-  mainImageUrl: string | null
-  /** 主图转存 URL（COS/本地；展示优先于 kwcdn 外链） */
-  mainImageCosUrl: string | null
-  supplierPrice: number | null
-}
-
-/** TOP20 自定义 tooltip：货号 / 类目 / 销量 / 预估销售额（申报价 × 销量） */
-function TopTooltip({ active, payload }: { active?: boolean; payload?: Array<{ payload: TopDatum }> }) {
-  if (!active || !payload?.length) return null
-  const d = payload[0].payload
-  const estAmount =
-    d.supplierPrice != null ? Math.round((d.value * d.supplierPrice) / 100 * 100) / 100 : null
+/** 售出类目占比：销售管理最新批次按类目汇总销量 */
+export function TemuCategoryShare({ data }: { data: TemuCategoryShare[] }) {
   return (
-    <div className="min-w-44 rounded-lg border bg-background px-3 py-2 text-xs shadow-xl">
-      <TruncTip text={d.name} className="max-w-56 font-medium" />
-      <div className="mt-1 grid gap-0.5 text-muted-foreground">
-        <span>货号：{d.productSn ?? "—"}</span>
-        {d.category && <span>类目：{d.category}</span>}
-        <span className="text-foreground">销量：{d.value.toLocaleString("zh-CN")} 件</span>
-        {estAmount != null && <span>预估销售额：¥{estAmount.toLocaleString("zh-CN")}</span>}
-      </div>
-    </div>
+    <ShareDonutCard
+      title="售出类目占比"
+      description="销售管理最新批次 · 按类目汇总销量（展示占比 ≥1% 的类目，至多 15 条）"
+      rows={data.map((d) => ({
+        label: d.category,
+        today: d.todaySalesVolume,
+        last7: d.last7DaysSalesVolume,
+        last30: d.last30DaysSalesVolume,
+      }))}
+    />
   )
 }
 
-/** 售出 TOP10（横向条形图；条形按排名循环色板区分；口径可切 今日/近7日/近30日） */
-export function TemuSalesTop10({ data }: { data: TemuSalesTopRow[] }) {
-  const [metric, setMetric] = React.useState("today")
-
-  const rows = React.useMemo(() => {
-    const pick = (r: TemuSalesTopRow) =>
-      metric === "today"
-        ? r.todaySalesVolume ?? 0
-        : metric === "30d"
-          ? r.last30DaysSalesVolume ?? 0
-          : r.last7DaysSalesVolume ?? 0
-    return [...data]
-      .map((r) => ({
-        name: r.productName?.trim() || `SKC ${r.skcId}`,
-        value: pick(r),
-        skcId: r.skcId,
-        productSn: r.productSn,
-        category: r.category,
-        mainImageUrl: r.mainImageUrl,
-        mainImageCosUrl: r.mainImageCosUrl,
-        supplierPrice: r.supplierPrice,
-      }))
-      .filter((r) => r.value > 0)
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 10)
-  }, [data, metric])
-
-  const config = { value: { label: "销量(件)" } } satisfies ChartConfig
-
+/** 售出店铺占比：各店铺销量对比（选中单店时为 100% 单切片属预期） */
+export function TemuStoreShare({ data }: { data: TemuStoreShare[] }) {
   return (
-    <Card className="@container/card">
-      <CardHeader>
-        <CardTitle>售出 TOP10</CardTitle>
-        <CardDescription>SKC 销量排行 · 悬停查看货号与预估销售额</CardDescription>
-        <CardAction>
-          <MetricToggle value={metric} onChange={setMetric} />
-        </CardAction>
-      </CardHeader>
-      <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
-        {rows.length === 0 ? (
-          <div className="flex h-[320px] items-center justify-center text-sm text-muted-foreground">
-            所选口径暂无数据（数据随官方 API 定时同步更新）
-          </div>
-        ) : (
-          <ChartContainer config={config} className="h-[320px] w-full">
-            <BarChart data={rows} layout="vertical" margin={{ left: 8, right: 16 }} barSize={18}>
-              <CartesianGrid horizontal={false} strokeDasharray="3 3" />
-              <XAxis type="number" tickLine={false} axisLine={false} allowDecimals={false} />
-              <YAxis
-                type="category"
-                dataKey="name"
-                width={120}
-                tickLine={false}
-                axisLine={false}
-                tickFormatter={(v: string) => (v.length > 9 ? `${v.slice(0, 9)}…` : v)}
-              />
-              <ChartTooltip cursor={{ fill: "var(--muted)" }} content={<TopTooltip />} />
-              <Bar dataKey="value" radius={4}>
-                {rows.map((r, i) => (
-                  <Cell key={r.skcId} fill={donutPalette[i % donutPalette.length]} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ChartContainer>
-        )}
-      </CardContent>
-    </Card>
+    <ShareDonutCard
+      title="售出店铺占比"
+      description="销售管理最新批次 · 按店铺汇总销量（选择「全部店铺」时对比各店占比）"
+      rows={data.map((d) => ({
+        label: d.storeName,
+        today: d.todaySalesVolume,
+        last7: d.last7DaysSalesVolume,
+        last30: d.last30DaysSalesVolume,
+      }))}
+    />
   )
 }
 
@@ -383,7 +321,8 @@ export function TemuSalesTop10({ data }: { data: TemuSalesTopRow[] }) {
 const RANK_MEDAL = ["bg-amber-500", "bg-slate-400", "bg-orange-700"]
 
 /** TOP50 主图缩略：取「该口径销量最高 SKC」的图（转存 URL 优先，temuImageSrc 回落
- *  kwcdn 外链），无图占位 */
+ *  kwcdn 外链），点击放大（ZoomableImage，stopPropagation 不触发货号选中），
+ *  无图占位 */
 function Top50Thumb({
   row,
   metric,
@@ -407,8 +346,7 @@ function Top50Thumb({
         : row.last30MainImageUrl
   const src = temuImageSrc(cosUrl, imageUrl)
   return src ? (
-    // eslint-disable-next-line @next/next/no-img-element -- kwcdn/COS 外链不走 next/image
-    <img src={src} alt="" loading="lazy" className={cn("rounded-md object-cover", className)} />
+    <ZoomableImage src={src} className={cn("rounded-md object-cover", className)} />
   ) : (
     <div
       className={cn(
@@ -457,7 +395,7 @@ function TemuTop50Card({
     })
   const pct = (value: number) =>
     total && total > 0 ? Math.round((value / total) * 1000) / 10 : null
-  // 已选合计：件数（千分位同行内销量）+ 占比（1 位小数同徽标口径）
+  // 已选合计：件数/全店总量件数（千分位同行内销量）+ 占比（1 位小数同徽标口径）
   const selectedQty = rows
     .filter((x) => selected.has(x.row.sn))
     .reduce((a, x) => a + x.value, 0)
@@ -486,6 +424,7 @@ function TemuTop50Card({
               <X className="size-3" />
             </button>
             已选 {selected.size} 款 · {selectedQty.toLocaleString("zh-CN")} 件
+            {total != null && total > 0 && <>/{total.toLocaleString("zh-CN")}件</>}
             {selectedPct != null ? ` · ${selectedPct.toFixed(1)}%` : ""}
           </CardAction>
         )}

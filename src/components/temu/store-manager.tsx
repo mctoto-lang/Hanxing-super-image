@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { ChevronDown, RefreshCw } from "lucide-react"
+import { ChevronDown, RefreshCw, ShieldCheck } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -33,8 +33,12 @@ import {
   deleteTemuStoreAction,
   clearTemuStoreDataAction,
   reorderTemuStoresAction,
+  detectTemuResidualDataAction,
+  cleanTemuResidualDataAction,
   type TemuStoreBrief,
   type TemuAppBrief,
+  type TemuTokenIdentityMismatch,
+  type TemuResidualReport,
 } from "@/server/actions/temu"
 import { MAX_STORES_PER_APP } from "@/lib/temu-api/constants"
 import { useDragSort, DragHandle } from "@/hooks/use-drag-sort"
@@ -85,6 +89,36 @@ function expiryHint(expiresAt: Date | string | null): string | null {
   return null
 }
 
+/** token 身份比对不一致确认弹窗（防错绑）：探测到 token 归属与店铺身份不符时二次确认 */
+function TokenMismatchDialog({
+  data,
+  pending,
+  onCancel,
+  onConfirm,
+}: {
+  data: { storeName: string; mismatch: TemuTokenIdentityMismatch } | null
+  pending: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <ConfirmDialog
+      open={data !== null}
+      onOpenChange={(o) => !o && onCancel()}
+      title="店铺身份不一致，仍要绑定？"
+      description={
+        data
+          ? `${data.mismatch.detail}。绑定后该店铺将同步 token 归属店铺的数据，原有残留数据不会自动清理（可在店铺管理「数据体检」处理）。确认仍要绑定到店铺「${data.storeName}」？`
+          : ""
+      }
+      confirmText="仍要绑定"
+      destructive
+      pending={pending}
+      onConfirm={onConfirm}
+    />
+  )
+}
+
 interface AddingForm {
   appId: string
   name: string
@@ -108,6 +142,59 @@ export function TemuStoreManager({
   const [pending] = React.useTransition()
   /** 新增弹窗：token 提交后走验证（不中断弹窗，验证失败留在弹窗提示） */
   const [submitting, setSubmitting] = React.useState(false)
+  /** 新增流程 token 身份不一致待确认（店铺已创建、token 未落库） */
+  const [addingTokenConfirm, setAddingTokenConfirm] = React.useState<{
+    storeId: string
+    storeName: string
+    accessToken: string
+    mismatch: TemuTokenIdentityMismatch
+  } | null>(null)
+  /** 数据体检（错绑残留检测/清理） */
+  const [healthOpen, setHealthOpen] = React.useState(false)
+  const [healthLoading, setHealthLoading] = React.useState(false)
+  const [healthReport, setHealthReport] = React.useState<TemuResidualReport | null>(null)
+  const [cleanConfirm, setCleanConfirm] = React.useState(false)
+  const [cleaning, setCleaning] = React.useState(false)
+
+  const runHealth = () => {
+    setHealthOpen(true)
+    setHealthLoading(true)
+    void (async () => {
+      try {
+        setHealthReport(await detectTemuResidualDataAction())
+      } catch (e) {
+        toast.error((e instanceof Error ? e.message : String(e)).slice(0, 150) || "检测失败")
+        setHealthOpen(false)
+      } finally {
+        setHealthLoading(false)
+      }
+    })()
+  }
+
+  const runClean = () => {
+    setCleaning(true)
+    void (async () => {
+      try {
+        const r = await cleanTemuResidualDataAction()
+        if (r.ok) {
+          const total = Object.values(r.counts ?? {}).reduce((s, n) => s + n, 0)
+          toast.success(`已清理残留数据 ${total} 行`)
+          setCleanConfirm(false)
+          // 先清旧报告再重检测：若重检测 throw，弹窗不会继续展示已清掉的残留
+          setHealthReport(null)
+          setHealthLoading(true)
+          setHealthReport(await detectTemuResidualDataAction())
+        } else {
+          toast.error(r.error ?? "清理失败")
+        }
+      } catch (e) {
+        toast.error((e instanceof Error ? e.message : String(e)).slice(0, 150) || "清理失败")
+      } finally {
+        setHealthLoading(false)
+        setCleaning(false)
+      }
+    })()
+  }
 
   const appSelectable = apps.filter((a) => a.storeCount < MAX_STORES_PER_APP)
 
@@ -172,6 +259,17 @@ export function TemuStoreManager({
             id: created.store.id,
             accessToken: adding.accessToken.trim(),
           })
+          if ("needConfirm" in tokenRes && tokenRes.needConfirm) {
+            // 身份不一致：店铺已创建但 token 未落库，交由确认弹窗二次确认
+            setAddingTokenConfirm({
+              storeId: created.store.id,
+              storeName: created.store.name,
+              accessToken: adding.accessToken.trim(),
+              mismatch: tokenRes.mismatch,
+            })
+            setAdding(null)
+            return
+          }
           if (!tokenRes.ok) {
             toast.error(`店铺已创建，但 token 验证失败：${tokenRes.error ?? "未知错误"}`, { duration: 6000 })
             setAdding(null)
@@ -201,16 +299,21 @@ export function TemuStoreManager({
             「授权管理」复制的 access_token，保存时自动验证店铺类型；全托/半托均可。
           </p>
         </div>
-        <Button
-          size="sm"
-          className="h-8 text-xs"
-          disabled={pending || apps.length === 0 || appSelectable.length === 0}
-          onClick={() =>
-            setAdding({ appId: appSelectable[0]?.id ?? "", name: "", mallId: "", mallName: "", accessToken: "" })
-          }
-        >
-          新增店铺
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" className="h-8 text-xs" disabled={pending} onClick={runHealth}>
+            <ShieldCheck className="size-3.5" /> 数据体检
+          </Button>
+          <Button
+            size="sm"
+            className="h-8 text-xs"
+            disabled={pending || apps.length === 0 || appSelectable.length === 0}
+            onClick={() =>
+              setAdding({ appId: appSelectable[0]?.id ?? "", name: "", mallId: "", mallName: "", accessToken: "" })
+            }
+          >
+            新增店铺
+          </Button>
+        </div>
       </div>
 
       {/* 演示模式（企业未配置 TEMU 应用） */}
@@ -348,6 +451,131 @@ export function TemuStoreManager({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 新增流程 token 身份不一致二次确认（店铺已创建、token 未落库） */}
+      <TokenMismatchDialog
+        data={addingTokenConfirm}
+        pending={submitting}
+        onCancel={() => {
+          toast.info("已取消绑定，店铺已创建，可稍后在卡片中录入正确的 access_token")
+          setAddingTokenConfirm(null)
+        }}
+        onConfirm={() => {
+          const req = addingTokenConfirm
+          if (!req) return
+          setSubmitting(true)
+          void (async () => {
+            try {
+              const r = await setTemuStoreTokenAction({
+                id: req.storeId,
+                accessToken: req.accessToken,
+                confirmIdentityMismatch: true,
+              })
+              if (r.ok) {
+                toast.success(
+                  `token 验证通过：${r.mallType === "semi" ? "半托店铺" : "全托店铺"}${r.mallId ? `（mall:${r.mallId}）` : ""}`,
+                )
+              } else {
+                toast.error(`token 验证失败：${r.error ?? "未知错误"}`, { duration: 6000 })
+              }
+            } catch (e) {
+              toast.error((e instanceof Error ? e.message : String(e)).slice(0, 150) || "保存失败")
+            } finally {
+              setSubmitting(false)
+              setAddingTokenConfirm(null)
+            }
+          })()
+        }}
+      />
+
+      {/* 数据体检结果（错绑残留检测与清理） */}
+      <Dialog open={healthOpen} onOpenChange={(o) => !o && setHealthOpen(false)}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>数据体检 · 错绑残留检测</DialogTitle>
+            <DialogDescription>
+              检测历史 token 错绑产生的残留数据（同一货品跨店双落且同步已冻结），可一键清理；
+              正确归属店铺的数据不受影响。发货单跨店多行是官方同主体跨店可见的正常设计，不在检测范围。
+            </DialogDescription>
+          </DialogHeader>
+          {healthLoading ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">检测中…</p>
+          ) : healthReport ? (
+            <div className="max-h-96 space-y-3 overflow-y-auto text-sm">
+              {healthReport.mallConflicts.length > 0 && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
+                  <p className="font-medium text-amber-700 dark:text-amber-400">
+                    ⚠ 以下店铺绑定了同一 mall（需人工处理，不在自动清理范围）
+                  </p>
+                  <ul className="mt-1 space-y-0.5">
+                    {healthReport.mallConflicts.map((c) => (
+                      <li key={c.mallId}>
+                        mall:{c.mallId} → {c.stores.join("、")}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {!healthReport.hasResidual ? (
+                <p className="py-6 text-center text-muted-foreground">
+                  {healthReport.mallConflicts.length === 0
+                    ? "未发现错绑残留数据 ✓"
+                    : "未发现跨店残留行（仅 mall 绑定预警）"}
+                </p>
+              ) : (
+                healthReport.stores.map((s) => (
+                  <div key={s.storeId} className="rounded-lg border p-3">
+                    <p className="font-medium">{s.storeName}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      残留商品 {s.productCount} 行 · SKU 映射 {s.skuCount} 行
+                      {s.staleSince ? ` · 冻结于 ${formatDateTime(s.staleSince)}` : ""}
+                    </p>
+                    {s.sampleSns.length > 0 && (
+                      <p className="mt-1 font-mono text-xs text-muted-foreground">
+                        样例货号：{s.sampleSns.join("、")}
+                      </p>
+                    )}
+                  </div>
+                ))
+              )}
+              {healthReport.hasResidual &&
+                Object.values(healthReport.tableCounts).some((n) => n > 0) && (
+                  <div className="rounded-lg bg-muted/50 p-3 text-xs">
+                    <p className="font-medium">将清理以下表中的残留行：</p>
+                    <p className="mt-1 font-mono text-muted-foreground">
+                      {Object.entries(healthReport.tableCounts)
+                        .filter(([, n]) => n > 0)
+                        .map(([t, n]) => `${t} ${n} 行`)
+                        .join(" · ") || "—"}
+                    </p>
+                  </div>
+                )}
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setHealthOpen(false)}>
+              关闭
+            </Button>
+            {healthReport?.hasResidual && (
+              <Button variant="destructive" disabled={cleaning} onClick={() => setCleanConfirm(true)}>
+                {cleaning ? "清理中…" : "清理残留数据"}
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 清理残留二次确认 */}
+      <ConfirmDialog
+        open={cleanConfirm}
+        onOpenChange={(o) => !o && setCleanConfirm(false)}
+        title="清理残留数据"
+        description="将删除检测到的错绑残留行（跨店双落且同步冻结的货品/销量/SKU 映射等），正确归属店铺的数据不受影响。建议清理后手动触发一次「立即同步」核对数据。此操作不可恢复。"
+        confirmText="确认清理"
+        destructive
+        pending={cleaning}
+        onConfirm={runClean}
+      />
     </div>
   )
 }
@@ -448,7 +676,40 @@ function StoreFormCard({
   })
   const [tokenInput, setTokenInput] = React.useState<string | null>(null)
   const [confirmAction, setConfirmAction] = React.useState<"delete" | "clear" | null>(null)
+  /** token 身份比对不一致（防错绑确认）；确认后带 confirmIdentityMismatch 重发 */
+  const [tokenMismatch, setTokenMismatch] = React.useState<TemuTokenIdentityMismatch | null>(null)
+  const [tokenBusy, setTokenBusy] = React.useState(false)
   const [, startTransition] = React.useTransition()
+
+  /** token 保存并验证；身份不一致先弹确认（confirmMismatch=true 为用户已确认） */
+  const submitToken = (confirmMismatch = false) => {
+    const accessToken = tokenInput?.trim()
+    if (!accessToken) return
+    setTokenBusy(true)
+    startTransition(async () => {
+      try {
+        const r = await setTemuStoreTokenAction({
+          id: store.id,
+          accessToken,
+          ...(confirmMismatch ? { confirmIdentityMismatch: true } : {}),
+        })
+        if (r.ok) {
+          const typeText = r.mallType === "semi" ? "半托店铺" : "全托店铺"
+          toast.success(`token 验证通过：${typeText}${r.mallId ? `（mall:${r.mallId}）` : ""}`)
+          setTokenInput(null)
+          setTokenMismatch(null)
+        } else if ("needConfirm" in r && r.needConfirm) {
+          setTokenMismatch(r.mismatch)
+        } else {
+          toast.error(r.error ?? "token 验证失败", { duration: 6000 })
+        }
+      } catch (e) {
+        toast.error((e instanceof Error ? e.message : String(e)).slice(0, 150) || "保存失败")
+      } finally {
+        setTokenBusy(false)
+      }
+    })
+  }
 
   const dirty =
     draft.name !== store.name ||
@@ -619,34 +880,20 @@ function StoreFormCard({
             <Button variant="outline" onClick={() => setTokenInput(null)}>
               取消
             </Button>
-            <Button
-              disabled={pending || !tokenInput?.trim()}
-              onClick={() =>
-                tokenInput &&
-                startTransition(async () => {
-                  try {
-                    const r = await setTemuStoreTokenAction({
-                      id: store.id,
-                      accessToken: tokenInput.trim(),
-                    })
-                    if (r.ok) {
-                      const typeText = r.mallType === "semi" ? "半托店铺" : "全托店铺"
-                      toast.success(`token 验证通过：${typeText}${r.mallId ? `（mall:${r.mallId}）` : ""}`)
-                      setTokenInput(null)
-                    } else {
-                      toast.error(r.error ?? "token 验证失败", { duration: 6000 })
-                    }
-                  } catch (e) {
-                    toast.error((e instanceof Error ? e.message : String(e)).slice(0, 150) || "保存失败")
-                  }
-                })
-              }
-            >
+            <Button disabled={pending || tokenBusy || !tokenInput?.trim()} onClick={() => submitToken()}>
               保存并验证
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* token 身份比对不一致二次确认（防错绑）：确认后带标志重发 */}
+      <TokenMismatchDialog
+        data={tokenMismatch ? { storeName: store.name, mismatch: tokenMismatch } : null}
+        pending={tokenBusy}
+        onCancel={() => setTokenMismatch(null)}
+        onConfirm={() => submitToken(true)}
+      />
 
       {/* 删除 / 清空数据二次确认 */}
       <ConfirmDialog

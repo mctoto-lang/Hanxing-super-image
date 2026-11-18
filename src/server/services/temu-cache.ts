@@ -33,8 +33,13 @@ function prune(): void {
   }
 }
 
-/** 读穿缓存：命中直接返回；未命中加载一次（并发去重，失败不缓存） */
-export async function temuCached<T>(key: string, load: () => Promise<T>): Promise<T> {
+/** 读穿缓存：命中直接返回；未命中加载一次（并发去重，失败不缓存）。
+ *  opts.ttlMs 覆盖默认 30s（如广告分批加载要 40-60s 的读用 5 分钟），失效仍走写路径显式失效 */
+export async function temuCached<T>(
+  key: string,
+  load: () => Promise<T>,
+  opts?: { ttlMs?: number },
+): Promise<T> {
   const hit = cache.get(key)
   if (hit && hit.expiresAt > Date.now()) return hit.value as T
   const pending = inflight.get(key) as Promise<T> | undefined
@@ -42,7 +47,7 @@ export async function temuCached<T>(key: string, load: () => Promise<T>): Promis
   const p = (async () => {
     try {
       const value = await load()
-      cache.set(key, { expiresAt: Date.now() + TEMU_CACHE_TTL_MS, value })
+      cache.set(key, { expiresAt: Date.now() + (opts?.ttlMs ?? TEMU_CACHE_TTL_MS), value })
       if (cache.size > MAX_ENTRIES) prune()
       return value
     } finally {
@@ -53,10 +58,15 @@ export async function temuCached<T>(key: string, load: () => Promise<T>): Promis
   return p
 }
 
-/** 失效企业全部 Temu 面板缓存（ingest 写入 / 店铺管理变更后调用） */
-export function invalidateTemuCache(enterpriseId: string): void {
+/** 失效企业全部 Temu 面板缓存（ingest 写入 / 店铺管理变更后调用）。
+ *  storeId 提供时收敛为只失效该店键（键约定 {enterpriseId}:{scope}:{storeId}[:后缀]，
+ *  第 2 段精确匹配）：单店写操作（如广告）全企业失效会连带其他店的 5 分钟缓存，
+ *  写后全店视图逐店重拉 detail.query 可达分钟级 */
+export function invalidateTemuCache(enterpriseId: string, storeId?: string): void {
   const prefix = `${enterpriseId}:`
   for (const key of [...cache.keys()]) {
-    if (key.startsWith(prefix)) cache.delete(key)
+    if (!key.startsWith(prefix)) continue
+    if (storeId != null && key.slice(prefix.length).split(":")[1] !== storeId) continue
+    cache.delete(key)
   }
 }

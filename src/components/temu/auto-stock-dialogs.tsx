@@ -204,15 +204,15 @@ export function AutoApplyDialog({
   const [partialErrors, setPartialErrors] = React.useState<Array<{ store: string; error: string }>>([])
   const [loading, setLoading] = React.useState(true)
   const [q, setQ] = React.useState("")
-  /** 探测上限（skcId → 结果；无记录=未探测） */
+  /** 探测上限（行键 → 结果；无记录=未探测。行键=storeId:skcId，跨店同 skcId 不串行） */
   const [limits, setLimits] = React.useState<Record<string, ProbeLimit>>({})
   const [quantities, setQuantities] = React.useState<Record<string, string>>({})
-  /** 勾选行（skcId；探测出正上限自动勾选，联动批量申报） */
+  /** 勾选行（行键；探测出正上限自动勾选，联动批量申报） */
   const [selected, setSelected] = React.useState<Set<string>>(new Set())
   const [probing, setProbing] = React.useState(false)
   const [progress, setProgress] = React.useState<{ done: number; total: number } | null>(null)
   const [cursor, setCursor] = React.useState(-1)
-  /** 批量申报逐行结果（skcId → 成功/失败，悬停官方错误原文） */
+  /** 批量申报逐行结果（行键 → 成功/失败，悬停官方错误原文） */
   const [statusBySkc, setStatusBySkc] = React.useState<Record<string, { ok: boolean; error?: string }>>({})
   const [filterOpen, setFilterOpen] = React.useState(false)
   const [filterValue, setFilterValue] = React.useState("")
@@ -223,6 +223,10 @@ export function AutoApplyDialog({
   /** 批量申报进度（按行计）与当前正在提交块内的行键（行高亮 + 状态列旋转图标） */
   const [applyProgress, setApplyProgress] = React.useState<{ done: number; total: number } | null>(null)
   const [processingSkcs, setProcessingSkcs] = React.useState<Set<string>>(new Set())
+
+  /** 行唯一键（店+SKC）：本地唯一键是 (store_id, skc_id)，全部店铺视图同 skcId
+   *  双落（历史 token 错绑残留）时勾选/数量/状态互不串行 */
+  const rowKey = (r: { storeId: string; productSkcId: string }) => `${r.storeId}:${r.productSkcId}`
 
   React.useEffect(() => {
     abortedRef.current = false
@@ -251,11 +255,22 @@ export function AutoApplyDialog({
           }
         }
         if (cancelled) return
-        const ref = await loadInvRef(store, all.map((x) => x.productSn))
-        if (cancelled) return
         // 库存联动：有 SKU 明细且带货号的链接才入列（本地库存=0 与停止补货行不
         // 隐藏——置顶禁选，可申报上限列徽标提示，保证用户可见不可操作）
-        setRows(all.filter((x) => x.skus.length > 0 && !!x.productSn))
+        const eligible = all.filter((x) => x.skus.length > 0 && !!x.productSn)
+        // 跨店同 skcId 双落（历史 token 错绑残留）只保留 lastSeenAt 最新行——
+        // 残留治理前的显示兜底，防止同一物理链接出现两行
+        const freshest = new Map<string, StockRow>()
+        for (const x of eligible) {
+          const cur = freshest.get(x.productSkcId)
+          if (!cur || new Date(x.lastSeenAt).getTime() > new Date(cur.lastSeenAt).getTime()) {
+            freshest.set(x.productSkcId, x)
+          }
+        }
+        const deduped = [...freshest.values()]
+        const ref = await loadInvRef(store, deduped.map((x) => x.productSn))
+        if (cancelled) return
+        setRows(deduped)
         setInvMap(ref)
         setPartialErrors(partials)
       } finally {
@@ -306,17 +321,17 @@ export function AutoApplyDialog({
 
   /** 可勾选行（停止补货/本地库存=0 禁选；探测出上限 0 的行申报无意义，同样禁用勾选） */
   const checkableRows = visibleRows.filter(
-    (r) => blockReason(r) == null && limits[r.productSkcId]?.max !== 0,
+    (r) => blockReason(r) == null && limits[rowKey(r)]?.max !== 0,
   )
-  const allChecked = checkableRows.length > 0 && checkableRows.every((r) => selected.has(r.productSkcId))
-  const someChecked = checkableRows.some((r) => selected.has(r.productSkcId))
+  const allChecked = checkableRows.length > 0 && checkableRows.every((r) => selected.has(rowKey(r)))
+  const someChecked = checkableRows.some((r) => selected.has(rowKey(r)))
 
   // 部分勾选（半选「-」态）或全选时点击 = 取消全部（同 TEMU 主表/库存面板口径）
   const toggleAll = () => {
     setSelected((s) => {
       const n = new Set(s)
-      if (allChecked || someChecked) checkableRows.forEach((r) => n.delete(r.productSkcId))
-      else checkableRows.forEach((r) => n.add(r.productSkcId))
+      if (allChecked || someChecked) checkableRows.forEach((r) => n.delete(rowKey(r)))
+      else checkableRows.forEach((r) => n.add(rowKey(r)))
       return n
     })
   }
@@ -352,35 +367,35 @@ export function AutoApplyDialog({
               .map((s) => s.maxQuantity)
               .filter((x): x is number => x != null)
             const max = valid.length > 0 ? Math.min(...valid) : null
-            next[row.productSkcId] = { max, perSku: r.result.skuLimits }
+            next[rowKey(row)] = { max, perSku: r.result.skuLimits }
             if (max != null && max > 0) {
               // 回填申报量 + 自动勾选（0=不可申报无意义，不勾选）
-              setQuantities((s) => ({ ...s, [row.productSkcId]: String(max) }))
+              setQuantities((s) => ({ ...s, [rowKey(row)]: String(max) }))
               setSelected((s) => {
                 const n = new Set(s)
-                n.add(row.productSkcId)
+                n.add(rowKey(row))
                 return n
               })
             } else {
               setSelected((s) => {
-                if (!s.has(row.productSkcId)) return s
+                if (!s.has(rowKey(row))) return s
                 const n = new Set(s)
-                n.delete(row.productSkcId)
+                n.delete(rowKey(row))
                 return n
               })
             }
           } else if (r.ok) {
             // 探测被官方接受（上限 ≥ 探测值）：已自动取消回滚，上限未知需人工处理
-            next[row.productSkcId] = {
+            next[rowKey(row)] = {
               max: null,
               perSku: r.result.skuLimits,
               error: r.result.rollbackNote,
             }
           } else {
-            next[row.productSkcId] = { max: null, perSku: [], error: r.error }
+            next[rowKey(row)] = { max: null, perSku: [], error: r.error }
           }
         } catch (err) {
-          next[row.productSkcId] = {
+          next[rowKey(row)] = {
             max: null,
             perSku: [],
             error: err instanceof Error ? err.message : String(err),
@@ -409,11 +424,11 @@ export function AutoApplyDialog({
       return
     }
     const toRemove = rows.filter(
-      (r) => selected.has(r.productSkcId) && (limits[r.productSkcId]?.max ?? 0) < x,
+      (r) => selected.has(rowKey(r)) && (limits[rowKey(r)]?.max ?? 0) < x,
     )
     setSelected((s) => {
       const n = new Set(s)
-      toRemove.forEach((r) => n.delete(r.productSkcId))
+      toRemove.forEach((r) => n.delete(rowKey(r)))
       return n
     })
     setFilterOpen(false)
@@ -422,9 +437,9 @@ export function AutoApplyDialog({
 
   /** 数量有效性：探测出正上限且 1 ≤ 值 ≤ 上限 */
   const qtyState = (row: StockRow): { valid: boolean; value: number } | null => {
-    const lim = limits[row.productSkcId]
+    const lim = limits[rowKey(row)]
     if (!lim || lim.max == null || lim.max <= 0) return null
-    const v = Math.round(Number(quantities[row.productSkcId]))
+    const v = Math.round(Number(quantities[rowKey(row)]))
     if (!Number.isFinite(v) || v < 1 || v > lim.max) return { valid: false, value: v }
     return { valid: true, value: v }
   }
@@ -432,7 +447,7 @@ export function AutoApplyDialog({
   /** 批量申报目标 = 已勾选 且 数量有效；提交前硬过滤禁选行（同 AutoJoinDialog joinable
    *  口径）——停止补货集合晚到时探测仍可能误勾选禁选行，此处兜底不被提交 */
   const applicable = orderedRows.filter(
-    (r) => blockReason(r) == null && selected.has(r.productSkcId) && qtyState(r)?.valid,
+    (r) => blockReason(r) == null && selected.has(rowKey(r)) && qtyState(r)?.valid,
   )
 
   const runApply = () => {
@@ -456,11 +471,11 @@ export function AutoApplyDialog({
       let done = 0
       let okCount = 0
       let badCount = 0
-      const merge = (items: TemuStockApplyBatchResult[]) => {
+      const merge = (storeId: string, items: TemuStockApplyBatchResult[]) => {
         setStatusBySkc((prev) => {
           const n = { ...prev }
           for (const it of items)
-            n[String(it.productSkcId)] = { ok: it.ok, ...(it.error ? { error: it.error } : {}) }
+            n[`${storeId}:${it.productSkcId}`] = { ok: it.ok, ...(it.error ? { error: it.error } : {}) }
           return n
         })
         okCount += items.filter((x) => x.ok).length
@@ -476,9 +491,9 @@ export function AutoApplyDialog({
               break
             }
             const chunk = items.slice(i, i + 5)
-            setProcessingSkcs(new Set(chunk.map((c) => String(c.productSkcId))))
+            setProcessingSkcs(new Set(chunk.map((c) => `${storeId}:${c.productSkcId}`)))
             const r = await batchApplyTemuStockingAction({ store: storeId, items: chunk })
-            if (r.ok) merge(r.results)
+            if (r.ok) merge(storeId, r.results)
             else toast.error(r.error, { duration: 8000 })
             done += chunk.length
             setApplyProgress({ done, total })
@@ -608,27 +623,27 @@ export function AutoApplyDialog({
                 </TableRow>
               )}
               {orderedRows.map((r, i) => {
-                const lim = limits[r.productSkcId]
+                const lim = limits[rowKey(r)]
                 const qs = qtyState(r)
                 const over = qs != null && !qs.valid
                 const locked = !lim || lim.max == null || lim.max <= 0
                 const block = blockReason(r)
                 return (
                   <TableRow
-                    key={r.productSkcId}
+                    key={rowKey(r)}
                     className={
-                      i === cursor || processingSkcs.has(r.productSkcId) ? "bg-primary/5" : undefined
+                      i === cursor || processingSkcs.has(rowKey(r)) ? "bg-primary/5" : undefined
                     }
                   >
                     <TableCell>
                       <Checkbox
-                        checked={selected.has(r.productSkcId)}
+                        checked={selected.has(rowKey(r))}
                         disabled={busy || block != null || lim?.max === 0}
                         onCheckedChange={() =>
                           setSelected((s) => {
                             const n = new Set(s)
-                            if (n.has(r.productSkcId)) n.delete(r.productSkcId)
-                            else n.add(r.productSkcId)
+                            if (n.has(rowKey(r))) n.delete(rowKey(r))
+                            else n.add(rowKey(r))
                             return n
                           })
                         }
@@ -748,19 +763,19 @@ export function AutoApplyDialog({
                         inputMode="numeric"
                         min={1}
                         max={lim?.max ?? undefined}
-                        value={quantities[r.productSkcId] ?? "0"}
+                        value={quantities[rowKey(r)] ?? "0"}
                         disabled={busy || locked}
                         onChange={(e) =>
-                          setQuantities((s) => ({ ...s, [r.productSkcId]: e.target.value }))
+                          setQuantities((s) => ({ ...s, [rowKey(r)]: e.target.value }))
                         }
                         aria-label="申报数量"
                       />
                     </TableCell>
                     <TableCell>
                       <StatusIconCell
-                        status={statusBySkc[r.productSkcId]}
-                        rowKey={`SKC ${r.productSkcId}`}
-                        processing={processingSkcs.has(r.productSkcId)}
+                        status={statusBySkc[rowKey(r)]}
+                        rowKey={`${store ? "" : `${r.storeName} · `}SKC ${r.productSkcId}`}
+                        processing={processingSkcs.has(rowKey(r))}
                       />
                     </TableCell>
                     {!store && (

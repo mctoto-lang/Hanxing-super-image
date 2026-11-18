@@ -252,6 +252,52 @@ describe("callTemuApi 虚拟拦截层", () => {
     const other = await callTemuApi<Record<string, unknown>>("bg.unknown.endpoint", {}, ctx)
     expect(other.success).toBe(true)
   })
+
+  it("demo 凭证：广告四端点形状对齐消费端（可投性/创建/实时状态/推荐 ROAS）", async () => {
+    const ctx = { ...getDemoCredential(), rateKey: "test-demo-ads", qps: 3 }
+    const products = buildDemoProducts()
+
+    // goods.create.query：灰名单语义（官方参数表），goodsInfoList[{productId,
+    // grayReason}] 只返回不可投商品；条目字段官方为 productId（DPID 字符串对齐）
+    const creatable = await callTemuApi<{
+      goodsInfoList: Array<{ productId: string; grayReason: Array<{ reason: string }> }>
+    }>("bg.glo.searchrec.ad.goods.create.query", { productIdList: [] }, ctx)
+    expect(creatable.result.goodsInfoList).toHaveLength(products.length)
+    // 每 10 款 1 款带演示原因（验证服务端「只返回可投」过滤可见）
+    expect(
+      creatable.result.goodsInfoList.filter((g) => g.grayReason.length > 0).length,
+    ).toBeGreaterThan(0)
+
+    // ad.create：成功 ID 列表回显入参（DPID 字符串原样，-1 预算口径可透传）
+    const created = await callTemuApi<{
+      successCreateProductNum: number
+      successProductIdLists: string[]
+    }>("bg.glo.searchrec.ad.create", {
+      createAdReqs: [{ productId: products[0]!.productId, budget: -1, roas: 130000, roasType: 1 }],
+    }, ctx)
+    expect(created.result.successCreateProductNum).toBe(1)
+    expect(created.result.successProductIdLists[0]).toBe(products[0]!.productId)
+
+    // detail.query：按请求 productIdList 返回 adsDetail 实时形状（summary 四指标，
+    // 条目字段官方为 productId，adShowStatus 8=推广中）
+    const detail = await callTemuApi<{
+      adsDetail: Array<{
+        productId: string
+        adShowStatus: number
+        summary: Record<string, { ad: { val: number } }>
+      }>
+    }>("bg.glo.searchrec.ad.detail.query", { productIdList: [products[0]!.productId] }, ctx)
+    expect(detail.result.adsDetail).toHaveLength(1)
+    expect(detail.result.adsDetail[0]?.productId).toBe(products[0]!.productId)
+    expect(detail.result.adsDetail[0]?.adShowStatus).toBe(8)
+    expect(detail.result.adsDetail[0]?.summary.adSpend.ad.val).toBeGreaterThan(0)
+
+    // roas.pred：predList 推荐档位（实际值口径 13）
+    const pred = await callTemuApi<{
+      queryAdBidResult: Array<{ predList: Array<{ roas: number }> }>
+    }>("bg.glo.searchrec.ad.roas.pred", { goodsInfoList: [{ productId: 1 }] }, ctx)
+    expect(pred.result.queryAdBidResult[0]?.predList[0]?.roas).toBe(13)
+  })
 })
 
 describe("库存联动排除演示店铺", () => {

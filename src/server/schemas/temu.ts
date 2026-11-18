@@ -498,21 +498,31 @@ export const temuAdProductsQuerySchema = z.object({
   q: z.string().trim().max(64).optional(),
 })
 
-/** 创建广告（ad.create；budget 分，目标 ROAS 数值口径待官方确认） */
+/** 创建广告（ad.create；budget 分，-1=不限；目标 ROAS 数值口径待官方确认） */
 export const temuAdCreateSchema = z.object({
   store: z.string().uuid(),
   items: z
     .array(
       z.object({
         productId: z.string().trim().min(1).max(32),
-        /** 日预算（分） */
-        budget: z.coerce.number().int().min(1).max(100_000_000),
-        /** 目标 ROAS（如 3.5） */
+        /** 日预算（分）；官方口径不限制传 -1（docs §8.10） */
+        budget: z.coerce
+          .number()
+          .int()
+          .max(100_000_000)
+          .refine((v) => v === -1 || v >= 1, "日预算须为正整数（分）或 -1（不限）"),
+        /** 目标 ROAS（如 13） */
         roas: z.coerce.number().min(0.01).max(1000),
       }),
     )
     .min(1)
     .max(20),
+})
+
+/** 官方推荐 ROAS 查询（ad.roas.pred：goodsInfoList[{productId}] 必填） */
+export const temuAdRoasPredSchema = z.object({
+  store: z.string().uuid(),
+  productIds: z.array(z.string().trim().min(1).max(32)).min(1).max(20),
 })
 
 /** 广告修改（ad.modify status：2 暂停 / 3 开启 / 4 改预算 / 5 改 ROAS） */

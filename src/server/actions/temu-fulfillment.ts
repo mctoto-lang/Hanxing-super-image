@@ -371,6 +371,8 @@ export interface TemuStockableRow {
   /** 主图转存 URL（COS/本地；展示优先于 kwcdn 外链） */
   mainImageCosUrl: string | null
   productSn: string | null
+  /** 最近一次同步见到该行的时间（全部店铺视图跨店去重依据） */
+  lastSeenAt: Date
   last7DaysSalesVolume: number | null
   warehouseAvailableStock: number | null
   availableSaleDays: number | null
@@ -419,6 +421,7 @@ export async function getStockableProductsAction(input: {
         mainImageUrl: temuProducts.mainImageUrl,
         mainImageCosUrl: temuProducts.mainImageCosUrl,
         productSn: temuProducts.productSn,
+        lastSeenAt: temuProducts.lastSeenAt,
       })
       .from(temuProducts)
       .where(and(...conds))
@@ -481,6 +484,7 @@ export async function getStockableProductsAction(input: {
         mainImageUrl: p.mainImageUrl,
         mainImageCosUrl: p.mainImageCosUrl,
         productSn: p.productSn,
+        lastSeenAt: p.lastSeenAt,
         last7DaysSalesVolume: latest?.last7DaysSalesVolume ?? null,
         warehouseAvailableStock: sumSkuWarehouseStock(skuRows),
         availableSaleDays: latest?.availableSaleDays ?? null,

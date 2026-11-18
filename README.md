@@ -44,8 +44,7 @@ cp .env.example .env
 ### 4. 数据库迁移 + 种子
 
 ```bash
-pnpm db:generate    # 生成迁移文件
-pnpm db:migrate     # 执行迁移
+pnpm db:migrate     # 执行迁移（迁移文件已随仓库提交，无需 generate）
 pnpm db:seed        # 种子超管账号
 ```
 

@@ -1,9 +1,15 @@
 "use server"
 
-import { and, desc, eq, ilike, inArray, or } from "drizzle-orm"
+import { and, desc, eq, gt, gte, ilike, inArray, isNotNull, or } from "drizzle-orm"
 import { z } from "zod"
 import { db } from "@/db/client"
-import { temuProducts, temuSkuMaps, temuStores, temuAds } from "@/db/schema"
+import {
+  temuProducts,
+  temuSkuMaps,
+  temuStores,
+  temuAds,
+  temuAdsProductDailies,
+} from "@/db/schema"
 import type { ModuleName } from "@/db/schema/_shared"
 import {
   requireEnterpriseContext,
@@ -18,10 +24,12 @@ import {
 } from "@/lib/temu-api/client"
 import { getTemuCallContext } from "@/server/services/temu-sync"
 import { temuCached, invalidateTemuCache } from "@/server/services/temu-cache"
+import { temuDayStr } from "@/server/services/temu-time"
 import {
   PRICE_REVIEW_STATUS,
   ADJUST_ORDER_STATUS,
   TEMU_AD_SHOW_STATUS,
+  normalizeAdRoas,
 } from "@/lib/temu-api/workbench-labels"
 import {
   temuPriceReviewQuerySchema,
@@ -31,6 +39,7 @@ import {
   temuAdProductsQuerySchema,
   temuAdCreateSchema,
   temuAdModifySchema,
+  temuAdRoasPredSchema,
 } from "@/server/schemas/temu"
 
 /**
@@ -38,7 +47,7 @@ import {
  *
  * 与同步落库的数据面板不同，本组为「实时拉取」：页面打开即调官方 API
  * （核价/调价单时效性强，落库反而陈旧），读走
- * temu-cache 30s 短缓存，写操作直连后失效缓存。
+ * temu-cache 短缓存（默认 30s；广告类分批拉取慢，用 5 分钟），写操作直连后失效缓存。
  *
  * 权限：查询 requireEnterpriseContext（企业成员可看）；价格/广告类写操作
  * 校验对应 tab 模块权限（可查看当前页面即有该页功能按钮权限，2026-10-22 口径）。
@@ -557,7 +566,9 @@ export async function batchApproveTemuAdjustAction(
 
 const AD_CREATE_ROAS_TYPE = 1
 
-/** detail.query summary 指标（四维结构取 ad 推广维度；字段名 adSpend/spend 两口径都认） */
+/** detail.query summary 指标（四维结构取 ad 推广维度；字段名 adSpend/spend 两口径都认）。
+ *  【2026-11-18 实测】summary 四维的 ad 维官方常为 null、值在 total 维
+ *  （探针铁证 ctr:{total:{val:465},ad:null}）——加 total 维与单层回退 */
 function adDetailMetric(detail: Record<string, unknown>, names: string[]): number | null {
   const summary = isRecord(detail.summary) ? detail.summary : {}
   for (const name of names) {
@@ -565,9 +576,17 @@ function adDetailMetric(detail: Record<string, unknown>, names: string[]): numbe
     const d = isRecord(m.ad) ? (m.ad as Record<string, unknown>) : {}
     const v = num(d.val)
     if (v != null) return v
+    const t = isRecord(m.total) ? (m.total as Record<string, unknown>) : {}
+    const tv = num(t.val)
+    if (tv != null) return tv
+    const single = num(m.val)
+    if (single != null) return single
   }
   return null
 }
+
+/** 目标 ROAS 归一（client-safe 实现见 workbench-labels.ts——"use server" 文件
+ *  禁止导出同步函数） */
 
 /** 广告组频控削峰（实测背靠背两次调用即 4000004），分批 detail.query 间停顿 */
 const ADS_BATCH_SIZE = 20
@@ -589,6 +608,12 @@ export interface TemuAdPlanRow {
   roasSummary: number | null
   /** 实时成交订单数（summary.orderPayCnt，卡片兜底口径用） */
   orderCnt: number | null
+  /** 实时曝光/点击/件数（报表列落库无值时的兜底源，detail.query summary） */
+  imprCnt: number | null
+  clkCnt: number | null
+  goodsNum: number | null
+  /** 实时每笔成交花费（分口径假设与花费一致，展示层 yuan() 换算） */
+  transactionCostFen: number | null
   createdAt: string
 }
 
@@ -597,7 +622,7 @@ const temuAdPlansQuerySchema = z.object({
   store: z.string().uuid(),
 })
 
-/** 我的广告（注册表 + detail.query 实时状态/指标，30s 缓存） */
+/** 我的广告（官方 detail.query 实时主源 + 注册表补充，5 分钟缓存——分批拉取要 40-60s，30s 形同虚设；写路径失效兜及时性） */
 export async function getTemuAdPlansAction(input: {
   store: string
 }): Promise<{ ok: true; rows: TemuAdPlanRow[] } | { ok: false; error: string }> {
@@ -608,37 +633,86 @@ export async function getTemuAdPlansAction(input: {
   const guard = await requireTemuStore(parsed.data.store, null)
   if (!guard.ok) return guard
   const { store } = guard
-  return temuCached(`${store.enterpriseId}:ad-plans:${store.id}`, () => loadAdPlans(store))
+  return temuCached(
+    `${store.enterpriseId}:ad-plans:${store.id}`,
+    () => loadAdPlans(store),
+    { ttlMs: 300_000 },
+  )
 }
 
 async function loadAdPlans(
   store: StoreRow,
 ): Promise<{ ok: true; rows: TemuAdPlanRow[] } | { ok: false; error: string }> {
-  const registry = await db
+  // 【2026-11-18 升级】官方实时广告为主源：重授权 token 后后台手建广告对
+  // API 可见（RoseBlanche 实测 79 在售中 58 条），本地 temu_ad 注册表降级为
+  // 「本站创建记录」补充（官方未返回的行保留，预算/ROAS 用注册表快照）。
+  // 范围=在售前 1000 商品 ∪ 近 30 天有花费商品（全店上千商品全量分批不可行；
+  // 广告基本挂在在售品，但后台手建广告可能非本站创建、排在在售窗口外，
+  // 靠广告日报的花费捞回）。官方 adsDetail 返回仍是行的唯一主源，
+  // 并集只扩大 detail.query 的查询面
+  const products = await db
     .select({
-      productId: temuAds.productId,
-      budget: temuAds.budget,
-      roas: temuAds.roas,
-      createdAt: temuAds.createdAt,
+      productId: temuProducts.productId,
       productName: temuProducts.productName,
-      mainImageUrl: temuProducts.mainImageUrl,
       productSn: temuProducts.productSn,
+      mainImageUrl: temuProducts.mainImageUrl,
     })
-    .from(temuAds)
-    .leftJoin(
-      temuProducts,
-      and(eq(temuAds.productId, temuProducts.productId), eq(temuAds.storeId, temuProducts.storeId)),
+    .from(temuProducts)
+    .where(
+      and(
+        eq(temuProducts.storeId, store.id),
+        inArray(temuProducts.skcStatus, [1, 11]),
+        isNotNull(temuProducts.productId),
+      ),
     )
+    .orderBy(desc(temuProducts.lastSeenAt), desc(temuProducts.productSkcId))
+    .limit(1000)
+  const seen = new Set<string>()
+  const unique: { productId: string; productName: string | null; productSn: string | null; mainImageUrl: string | null }[] = []
+  for (const p of products) {
+    if (!p.productId || seen.has(p.productId)) continue
+    seen.add(p.productId)
+    unique.push({ ...p, productId: p.productId })
+  }
+  // 并集补「近期有花费」商品：广告日报（temu_ads_product_daily）近 30 天
+  // 花费 >0 的 distinct productId（日期列为 ISO 字符串口径，gte 直接比）；
+  // 这些商品可能已不在售前 1000 窗口内，商品信息列缺省由 toRow 兜空
+  const sinceDay = temuDayStr(new Date(Date.now() - 30 * 86_400_000))
+  const spentRows = await db
+    .selectDistinct({ productId: temuAdsProductDailies.productId })
+    .from(temuAdsProductDailies)
+    .where(
+      and(
+        eq(temuAdsProductDailies.storeId, store.id),
+        gte(temuAdsProductDailies.date, sinceDay),
+        gt(temuAdsProductDailies.adSpend, 0),
+      ),
+    )
+  for (const s of spentRows) {
+    if (!s.productId || seen.has(s.productId)) continue
+    seen.add(s.productId)
+    unique.push({ productId: s.productId, productName: null, productSn: null, mainImageUrl: null })
+  }
+  const productBy = new Map(unique.map((p) => [p.productId, p]))
+  if (unique.length === 0) return { ok: true, rows: [] }
+
+  const registry = await db
+    .select({ productId: temuAds.productId, budget: temuAds.budget, roas: temuAds.roas, createdAt: temuAds.createdAt })
+    .from(temuAds)
     .where(eq(temuAds.storeId, store.id))
-  if (registry.length === 0) return { ok: true, rows: [] }
+  const regBy = new Map(registry.map((r) => [r.productId, r]))
 
   const built = buildCallContext(store, await getTemuCallContext(store))
   if (!built.ok) return built
 
-  // detail.query 实时状态（adsDetail 以 productId 对齐；批量间停顿削峰）
+  // detail.query 实时状态（候选商品分批；批量间停顿削峰；官方条目字段为
+  // productId，US 旧版 goodsId 兼容；非数字 ID（演示 DPID）原样回传对齐演示层）
   const details = new Map<string, Record<string, unknown>>()
   try {
-    const ids = registry.map((r) => Number(r.productId)).filter(Number.isFinite)
+    const ids = unique.map((p) => {
+      const n = Number(p.productId)
+      return Number.isFinite(n) ? n : p.productId
+    })
     for (let i = 0; i < ids.length; i += ADS_BATCH_SIZE) {
       if (i > 0) await new Promise((r) => setTimeout(r, 1500))
       const envelope = await callTemuApi<{ adsDetail?: unknown }>(
@@ -647,7 +721,7 @@ async function loadAdPlans(
         built.ctx,
       )
       for (const d of asList(envelope.result?.adsDetail)) {
-        const pid = idStr(d.goodsId ?? d.productId, 32)
+        const pid = idStr(d.productId ?? d.goodsId, 32)
         if (pid) details.set(pid, d)
       }
     }
@@ -655,27 +729,47 @@ async function loadAdPlans(
     return { ok: false, error: await toWorkbenchError(store.id, err) }
   }
 
-  const rows: TemuAdPlanRow[] = registry.map((r) => {
-    const d = details.get(r.productId)
+  const toRow = (
+    pid: string,
+    d: Record<string, unknown> | undefined,
+    reg: { budget: number | null; roas: number | null; createdAt: Date } | undefined,
+    product: { productName: string | null; mainImageUrl: string | null; productSn: string | null } | undefined,
+  ): TemuAdPlanRow => {
     const status = d ? num(d.adShowStatus) : null
     return {
-      productId: r.productId,
-      productName: r.productName,
-      mainImageUrl: r.mainImageUrl,
-      productSn: r.productSn,
-      budget: d ? num(d.budget) : r.budget,
-      roas: d ? num(d.roas) : r.roas,
+      productId: pid,
+      productName: product?.productName ?? null,
+      mainImageUrl: product?.mainImageUrl ?? null,
+      productSn: product?.productSn ?? null,
+      // detail 实时值优先；官方行无注册表时预算/ROAS 也取实时值
+      budget: d ? num(d.budget) : reg?.budget ?? null,
+      roas: d ? normalizeAdRoas(num(d.roas)) : reg?.roas ?? null,
       adShowStatus: status,
       adShowStatusLabel:
         status != null ? TEMU_AD_SHOW_STATUS[status] ?? `状态码 ${status}` : "无实时状态",
       adPhase: d ? num(d.adPhase) : null,
       spendFen: d ? adDetailMetric(d, ["adSpend", "spend"]) : null,
       orderPayAmtFen: d ? adDetailMetric(d, ["orderPayAmt"]) : null,
-      roasSummary: d ? adDetailMetric(d, ["roas"]) : null,
+      roasSummary: d ? normalizeAdRoas(adDetailMetric(d, ["roas"])) : null,
       orderCnt: d ? adDetailMetric(d, ["orderPayCnt"]) : null,
-      createdAt: r.createdAt.toISOString(),
+      imprCnt: d ? adDetailMetric(d, ["imprCnt"]) : null,
+      clkCnt: d ? adDetailMetric(d, ["clkCnt"]) : null,
+      goodsNum: d ? adDetailMetric(d, ["goodsNum"]) : null,
+      transactionCostFen: d ? adDetailMetric(d, ["transactionCost"]) : null,
+      // 官方行无创建时间来源（detail 不返回），取注册表值或同步时刻占位
+      createdAt: reg ? reg.createdAt.toISOString() : new Date().toISOString(),
     }
-  })
+  }
+
+  // 官方 adsDetail 条目为主 + 注册表中官方未返回的（本站创建、已删除/不在售）补充
+  const rows: TemuAdPlanRow[] = []
+  for (const [pid, d] of details) {
+    rows.push(toRow(pid, d, regBy.get(pid), productBy.get(pid)))
+  }
+  for (const [pid, reg] of regBy) {
+    if (details.has(pid)) continue
+    rows.push(toRow(pid, undefined, reg, productBy.get(pid)))
+  }
   return { ok: true, rows }
 }
 
@@ -686,32 +780,40 @@ export interface TemuAdProductRow {
   mainImageUrl: string | null
   /** 已在注册表（本站已创建过广告） */
   advertised: boolean
-  /** goods.create.query 可投性；false 时 grayReasons 给原因 */
+  /** goods.create.query 可投性；不可投已被服务端过滤（字段保留供调试/测试断言） */
   eligible: boolean
   grayReasons: string[]
 }
 
-/** 创建广告候选商品（temu_product 同步列表 + 可投性/已创建合并，30s 缓存） */
+/** 创建广告候选商品（temu_product 同步列表 + 可投性/已创建合并，仅返回在售可投，5 分钟缓存） */
 export async function listTemuAdProductsAction(input: {
   store: string
   q?: string
-}): Promise<{ ok: true; rows: TemuAdProductRow[] } | { ok: false; error: string }> {
+}): Promise<
+  | { ok: true; rows: TemuAdProductRow[]; grayListEmpty: boolean }
+  | { ok: false; error: string }
+> {
   const q = temuAdProductsQuerySchema.parse(input)
   const guard = await requireTemuStore(q.store, null)
   if (!guard.ok) return guard
   const { store } = guard
-  return temuCached(`${store.enterpriseId}:ad-products:${store.id}:${q.q ?? ""}`, () =>
-    loadAdProducts(store, q.q),
+  return temuCached(
+    `${store.enterpriseId}:ad-products:${store.id}:${q.q ?? ""}`,
+    () => loadAdProducts(store, q.q),
+    { ttlMs: 300_000 },
   )
 }
 
 async function loadAdProducts(
   store: StoreRow,
   q?: string,
-): Promise<{ ok: true; rows: TemuAdProductRow[] } | { ok: false; error: string }> {
+): Promise<
+  { ok: true; rows: TemuAdProductRow[]; grayListEmpty: boolean } | { ok: false; error: string }
+> {
   // 搜索下推 SQL：单店全量可达上千 SKC（api-goods-list 每店全量同步），
   // 「任意 60 行后再应用层过滤」会漏掉窗口外商品——q 命中 productName/
-  // productSn 的 ilike 或 productId 精确匹配；稳定排序保证候选列表不抖动
+  // productSn 的 ilike 或 productId 精确匹配；稳定排序保证候选列表不抖动。
+  // 只取在售商品（skcStatus 1/11，同商品页口径）：下架品不可能投放广告
   const trimmed = q?.trim()
   const like = trimmed ? `%${trimmed}%` : null
   const products = await db
@@ -725,6 +827,7 @@ async function loadAdProducts(
     .where(
       and(
         eq(temuProducts.storeId, store.id),
+        inArray(temuProducts.skcStatus, [1, 11]),
         ...(like
           ? [
               or(
@@ -777,20 +880,38 @@ async function loadAdProducts(
     eligible: false,
     grayReasons: [],
   }))
-  if (rows.length === 0) return { ok: true, rows }
+  if (rows.length === 0) return { ok: true, rows, grayListEmpty: false }
 
   const built = buildCallContext(store, await getTemuCallContext(store))
   if (!built.ok) return built
+  // 官方灰名单是否为空（空=官方未返回校验数据，前端提示以提交校验为准）
+  let grayListEmpty = false
   try {
-    const envelope = await callTemuApi<{ goodsInfoList?: unknown }>(
-      "bg.glo.searchrec.ad.goods.create.query",
-      { productIdList: rows.map((r) => Number(r.productId)).filter(Number.isFinite) },
-      built.ctx,
-    )
-    // 返回 entries 语义：出现且无 grayReason=可投；带原因=不可投；未出现=不可投（接口未返回原因）
+    // 【2026-11-18 实证】单次传 60 个候选报 230012000「query goods over
+    // limit」——goods.create.query 有批量上限（同组 roas.pred 官方标 50），
+    // 按 ADS_BATCH_SIZE 分批 + 批间停顿削峰（同 loadAdPlans）
+    const allIds = rows.map((r) => {
+      const n = Number(r.productId)
+      return Number.isFinite(n) ? n : r.productId
+    })
+    const grayEntries: Array<Record<string, unknown>> = []
+    for (let i = 0; i < allIds.length; i += ADS_BATCH_SIZE) {
+      if (i > 0) await new Promise((r) => setTimeout(r, 1500))
+      const envelope = await callTemuApi<{ goodsInfoList?: unknown }>(
+        "bg.glo.searchrec.ad.goods.create.query",
+        { productIdList: allIds.slice(i, i + ADS_BATCH_SIZE) },
+        built.ctx,
+      )
+      grayEntries.push(...asList(envelope.result?.goodsInfoList))
+    }
+    // 官方灰名单语义（doc 161793957243 参数表 + 2026-11-18 数据面恢复实证）：
+    // 返回全部查询的在售商品——grayReason 空=可创建（B161/B163 实测）、
+    // type 1 未在售/2 已在线推广/3 审核驳回/4 审核异常=排除原因；非在售商品
+    // 直接缺席（本站 SQL 已在售过滤兜住缺席误判）。响应条目官方字段为
+    // productId（US 旧版变体是 goodsId，兼容读取）
     const infoBy = new Map<string, string[]>()
-    for (const it of asList(envelope.result?.goodsInfoList)) {
-      const pid = idStr(it.goodsId ?? it.productId, 32)
+    for (const it of grayEntries) {
+      const pid = idStr(it.productId ?? it.goodsId, 32)
       if (!pid) continue
       infoBy.set(
         pid,
@@ -801,18 +922,16 @@ async function loadAdProducts(
     }
     for (const r of rows) {
       const reasons = infoBy.get(r.productId)
-      if (reasons == null) {
-        r.grayReasons = ["接口未返回可投标记（视为不可投）"]
-      } else if (reasons.length === 0) {
-        r.eligible = true
-      } else {
-        r.grayReasons = reasons
-      }
+      if (reasons == null || reasons.length === 0) r.eligible = true
+      else r.grayReasons = reasons
     }
+    grayListEmpty = grayEntries.length === 0
   } catch (err) {
     return { ok: false, error: await toWorkbenchError(store.id, err) }
   }
-  return { ok: true, rows }
+  // 只返回在售且未被灰名单排除的商品（不可投完全隐藏，2026-11-17 口径）；
+  // grayListEmpty=true 时 rows=全部在售候选（官方未返回校验数据，前端提示）
+  return { ok: true, rows: rows.filter((r) => r.eligible), grayListEmpty }
 }
 
 /** 创建广告（bg.glo.searchrec.ad.create，需广告推广页权限）→ 逐商品结果 + 注册表登记成功项 */
@@ -841,12 +960,16 @@ export async function createTemuAdsAction(input: unknown): Promise<
     }>(
       "bg.glo.searchrec.ad.create",
       {
-        createAdReqs: q.items.map((it) => ({
-          productId: Number(it.productId),
-          budget: it.budget,
-          roas: Math.round(it.roas * 10000),
-          roasType: AD_CREATE_ROAS_TYPE,
-        })),
+        createAdReqs: q.items.map((it) => {
+          // 官方要求数字 productId；非数字 ID（演示 DPID）原样回传对齐演示拦截层
+          const n = Number(it.productId)
+          return {
+            productId: Number.isFinite(n) ? n : it.productId,
+            budget: it.budget,
+            roas: Math.round(it.roas * 10000),
+            roasType: AD_CREATE_ROAS_TYPE,
+          }
+        }),
       },
       built.ctx,
     )
@@ -872,7 +995,9 @@ export async function createTemuAdsAction(input: unknown): Promise<
         )
         .onConflictDoNothing()
     }
-    invalidateTemuCache(guard.store.enterpriseId)
+    // 只失效本店键：广告读为 5 分钟档，全企业失效会让写后全店视图把其他店的
+    // ad-plans/ad-products 缓存一并打掉、逐店重拉 detail.query（分钟级）
+    invalidateTemuCache(guard.store.enterpriseId, guard.store.id)
     return {
       ok: true,
       successCount: successIds.length,
@@ -915,11 +1040,13 @@ export async function modifyTemuAdAction(input: unknown): Promise<{ ok: boolean;
   try {
     // 官方口径（doc-bg.glo.searchrec.ad.modify.json）：商品字段包在
     // modifyAdDTO{productId, roas, budget} 内 + 顶层 status（2/3/4/5 枚举）
+    const pidNum = Number(q.productId)
     await callTemuApi(
       "bg.glo.searchrec.ad.modify",
       {
         modifyAdDTO: {
-          productId: Number(q.productId),
+          // 同 ad.create：非数字 ID（演示 DPID）原样回传对齐演示拦截层
+          productId: Number.isFinite(pidNum) ? pidNum : q.productId,
           budget: q.budget ?? current?.budget ?? undefined,
           roas: q.roas ?? current?.roas ?? undefined,
         },
@@ -944,6 +1071,47 @@ export async function modifyTemuAdAction(input: unknown): Promise<{ ok: boolean;
       })
       .where(and(eq(temuAds.storeId, guard.store.id), eq(temuAds.productId, q.productId)))
   }
-  invalidateTemuCache(guard.store.enterpriseId)
+  // 同 ad.create：只失效本店键，写后全店视图仅重拉本店 detail.query
+  invalidateTemuCache(guard.store.enterpriseId, guard.store.id)
   return { ok: true }
+}
+
+/** 官方推荐目标 ROAS（bg.glo.searchrec.ad.roas.pred）：读 queryAdBidResult[]
+ *  predList[] 首个非空档位。失败/为空返回 null，由前端回落默认 13（接口组
+ *  频控紧，不重试；推荐值仅作预填增强，不阻断创建） */
+export async function predictTemuAdRoasAction(input: unknown): Promise<{ roas: number | null }> {
+  const q = temuAdRoasPredSchema.parse(input)
+  const guard = await requireTemuStore(q.store, null)
+  if (!guard.ok) return { roas: null }
+  const built = buildCallContext(guard.store, await getTemuCallContext(guard.store))
+  if (!built.ok) return { roas: null }
+  try {
+    const envelope = await callTemuApi<{ queryAdBidResult?: unknown }>(
+      "bg.glo.searchrec.ad.roas.pred",
+      {
+        // 同 goods.create.query：非数字 ID（演示 DPID）原样回传对齐演示拦截层
+        goodsInfoList: q.productIds.map((pid) => {
+          const n = Number(pid)
+          return { productId: Number.isFinite(n) ? n : pid }
+        }),
+      },
+      built.ctx,
+    )
+    for (const r of asList(envelope.result?.queryAdBidResult)) {
+      for (const p of asList(r.predList)) {
+        const v = num(p.roas)
+        if (v == null || v <= 0) continue
+        // 响应单位未实证（ad.create 入参口径是实际值×10000 整数）：超大方值按
+        // ×10000 归一回实际值（130000→13），正常档位（13 / 13.5）原样返回
+        return { roas: v > 1000 ? Math.round((v / 10000) * 100) / 100 : v }
+      }
+    }
+    return { roas: null }
+  } catch (err) {
+    // 回落 null（前端回落默认 13）不阻断创建，但摘要留痕便于排查频控/接口组异常
+    console.warn(
+      `[temu-workbench] ad.roas.pred 失败回落默认：${err instanceof Error ? err.message : String(err)}`,
+    )
+    return { roas: null }
+  }
 }

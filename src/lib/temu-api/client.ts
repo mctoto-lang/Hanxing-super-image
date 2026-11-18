@@ -334,6 +334,34 @@ export interface TemuEnvelope<T = unknown> {
   errorMsg?: string
 }
 
+/** PA 网关广告组接口实测（2026-11-18）响应为「网关 envelope.result 内嵌完整
+ *  业务 envelope」双层结构：外层 {success:true, result:{<内层 envelope>}}，
+ *  业务结果/错误码在内层 {success, errorCode, result}——单层读取恒空（此前
+ *  灰名单/详情/报表恒空、roas.pred 恒走回落值的根因）。判定：result 为对象
+ *  且带 success 标志与 result/errorCode 之一即视为内层 envelope，用内层替代
+ *  （外层 requestId 保留用于排查；内层失败同样走错误码路径，业务错误如
+ *  230016103 协议未签得以透出）。
+ *  仅限 bg.glo.searchrec.ad.* 广告接口（本仓 9 个广告 type 统一此前缀）：
+ *  启发式是形状猜测，非广告接口的业务 result 恰含 success 与 result/errorCode
+ *  字段时会被误剥一层，故按 type 前缀收窄双层解包范围。 */
+function unwrapNestedEnvelope<T>(
+  envelope: TemuEnvelope<T>,
+  type: string,
+): TemuEnvelope<T> {
+  if (!type.startsWith("bg.glo.searchrec.ad.")) return envelope
+  const inner = envelope.result as unknown
+  if (
+    typeof inner === "object" &&
+    inner !== null &&
+    !Array.isArray(inner) &&
+    "success" in inner &&
+    ("result" in inner || "errorCode" in inner)
+  ) {
+    return { ...(inner as object), requestId: envelope.requestId } as TemuEnvelope<T>
+  }
+  return envelope
+}
+
 export interface TemuCallContext {
   appKey: string
   appSecret: string
@@ -492,6 +520,8 @@ export async function callTemuApi<T = unknown>(
       }
       throw err
     }
+    // 双层 envelope 解包（仅广告接口，见 unwrapNestedEnvelope 注释）后再校验/重试/抛错
+    envelope = unwrapNestedEnvelope(envelope, type)
     if (envelope.success) return envelope
     // 7000010/11 时间戳漂移：重取时间戳重签重试一次；
     // 瞬时错误码：延迟 1.5s 重试一次（官方口径 please try again later）

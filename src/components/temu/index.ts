@@ -1,4 +1,4 @@
-export { TemuStoreSelect, TemuCategoryShare, TemuSalesTop10, TemuSalesTop50Cards, TemuShipStatsCards } from "./overview-charts"
+export { TemuStoreSelect, TemuCategoryShare, TemuStoreShare, TemuSalesTop50Cards, TemuShipStatsCards } from "./overview-charts"
 export {
   ProductSalesTrendPopover,
   TemuProductsSaleFilter,

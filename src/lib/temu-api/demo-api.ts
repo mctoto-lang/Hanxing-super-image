@@ -305,24 +305,31 @@ function staging() {
   return { total: list.length, list }
 }
 
-/* ─── 广告计划（bg.glo.searchrec.ad.detail.query，PA） ─── */
-function adPlans() {
-  const rows = demoProducts()
-    .slice(0, 8)
+/* ─── 广告计划实时状态（bg.glo.searchrec.ad.detail.query，PA；对齐 loadAdPlans
+ *  消费端：adsDetail[{goodsId, adShowStatus, adPhase, budget, roas, summary}]） ─── */
+function adDetails(params: Record<string, unknown>) {
+  // 请求 productIdList 的 id（演示商品 ID 为 DPID 字符串，原样对齐）
+  const ids = Array.isArray(params.productIdList)
+    ? params.productIdList.map((v) => String(v))
+    : []
+  const byId = new Map(demoProducts().map((p) => [p.productId, p]))
+  const rows = ids
+    .map((id) => byId.get(id))
+    .filter((p): p is DemoProduct => !!p)
     .map((p, i) => ({
-      adPlanId: 8000 + i,
-      adPlanName: `演示推广计划-${p.sn}`,
-      adStatus: i % 2 === 0 ? 1 : 2, // 1=投放中
-      dayBudget: 5000 + i * 100,
-      spendFen: p.priceFen * 2,
-      orderCnt: 100 + i * 10,
-      orderPayAmtFen: p.priceFen * (100 + i),
-      productSkcId: p.skcId,
-      skcExtCode: p.sn,
-      goodsName: p.name,
-      productImgUrl: p.imageUrl,
+      productId: p.productId,
+      adShowStatus: 8, // 官方枚举 8=promoting 推广中
+      adPhase: 1, // 官方枚举 1=平稳期
+      budget: 5000 + i * 100,
+      roas: 13,
+      summary: {
+        adSpend: { ad: { val: p.priceFen * 2 } },
+        orderPayAmt: { ad: { val: p.priceFen * 20 } },
+        roas: { ad: { val: 13 } },
+        orderPayCnt: { ad: { val: 2 } },
+      },
     }))
-  return { adPlanList: rows, total: rows.length }
+  return { adsDetail: rows }
 }
 
 /* ─── 类目（发品链路 bg.glo.goods.cats.get / category.match / attrs.get） ─── */
@@ -367,6 +374,17 @@ function writeSuccess(type: string, params: Record<string, unknown>) {
   if (type === "bg.shiporderv3.create") return { deliveryOrderSn: `DEMONEW${Date.now() % 100000}` }
   if (type === "bg.shiporder.packing.send") return { dataKey: `demo-print-${Date.now() % 100000}` }
   if (type === "bg.glo.searchrec.ad.modify") return { adPlanId: 8001 }
+  // ad.create 对齐 createTemuAdsAction 消费端：成功 ID 列表 + 成功数 + 失败明细
+  if (type === "bg.glo.searchrec.ad.create") {
+    const reqs = Array.isArray(params.createAdReqs)
+      ? (params.createAdReqs as Record<string, unknown>[])
+      : []
+    return {
+      successCreateProductNum: reqs.length,
+      successProductIdLists: reqs.map((r) => r.productId),
+      createGoodsFailObjList: [],
+    }
+  }
   return {}
 }
 
@@ -388,8 +406,24 @@ const READ_ROUTES: Record<string, (p: Record<string, unknown>) => unknown> = {
   "bg.shiporder.logistics.get": () => ({ logisticsList: [{ logisticsId: 1, logisticsName: "演示物流" }] }),
   "bg.shiporder.logisticsorder.match": () => ({ logisticsOrderId: 1, expressCompanyName: "演示物流", waybillNo: "DEMO123456" }),
   "bg.shiporderv3.logisticsmatch.get": () => ({ matchList: [{ channelName: "演示专线", firstWeightFen: 500, continueWeightFen: 100, expectPickDay: 1 }] }),
-  "bg.glo.searchrec.ad.detail.query": adPlans,
-  "bg.glo.searchrec.ad.goods.create.query": () => ({ goodsList: demoProducts().slice(0, 10).map((p) => ({ productSkcId: p.skcId, goodsName: p.name, skcExtCode: p.sn })) }),
+  "bg.glo.searchrec.ad.detail.query": adDetails,
+  // 对齐 loadAdProducts 灰名单语义（官方参数表）：goodsInfoList 只返回不可投
+  // 商品，未出现在名单=可投；条目字段官方为 productId（字符串 DPID 原样对齐）。
+  // 每 10 款 1 款带演示原因（type=2 已在线），验证服务端「只返回可投」过滤
+  "bg.glo.searchrec.ad.goods.create.query": () => ({
+    goodsInfoList: demoProducts().map((p, i) => ({
+      productId: p.productId,
+      grayReason:
+        i % 10 === 9 ? [{ type: 2, reason: "演示：商品已在广告中（Already Online）" }] : [],
+    })),
+  }),
+  // 对齐 predictTemuAdRoasAction 消费端：queryAdBidResult[].predList[{roas}]
+  "bg.glo.searchrec.ad.roas.pred": (p) => {
+    const reqs = Array.isArray(p.goodsInfoList)
+      ? (p.goodsInfoList as Record<string, unknown>[])
+      : []
+    return { queryAdBidResult: reqs.map(() => ({ predList: [{ roas: 13 }] })) }
+  },
   "bg.glo.goods.cats.get": goodsCats,
   "bg.glo.goods.category.match": categoryMatch,
   "bg.glo.goods.attrs.get": goodsAttrs,

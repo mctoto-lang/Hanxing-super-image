@@ -603,11 +603,36 @@ function adMetric(
   names: string[],
   dim: AdMetricDim,
 ): number | null {
+  // 【2026-11-18 实测四种行形态】① summary 四维嵌套 {adSpend:{ad:{val}}} ② goods
+  // 天级行单层 {adSpend:{val:0}} ③ 平铺数字 adSpend:1234 ④【2026-11-18 二轮实锤，
+  // metrics jsonb 铁证】真实店铺天级行的推广维（无前缀）指标官方恒 null，值落在
+  // 前缀字段：净推广维 netOrderPayAmt/netGoodsNum/netTransactionCost/netAdSpend…
+  // 与全域维 totalImprCnt/totalClkCnt/totalOrderPayAmt…（均为单层 {val}；曝光/点击
+  // 无 net* 只有 total*；roas 前缀字段为 ×1000 口径仅作存档不作展示源）——按
+  // 指定维→total 维→单层→平铺→net* 前缀→total* 前缀依次回退（0 是有效值须返回）
+  const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+  const pickPrefixed = (key: string): number | null => {
+    const p = item[key]
+    if (isRecord(p)) return num((p as Record<string, unknown>).val)
+    return num(p)
+  }
   for (const name of names) {
     const m = isRecord(item[name]) ? (item[name] as Record<string, unknown>) : {}
     const d = isRecord(m[dim]) ? (m[dim] as Record<string, unknown>) : {}
     const v = num(d.val)
     if (v != null) return v
+    const t = isRecord(m.total) ? (m.total as Record<string, unknown>) : {}
+    const tv = num(t.val)
+    if (tv != null) return tv
+    const single = num(m.val)
+    if (single != null) return single
+    const flat = num(item[name])
+    if (flat != null) return flat
+    // 净推广维前缀（语义最贴近推广报表）优先于全域前缀
+    const net = pickPrefixed(`net${cap(name)}`)
+    if (net != null) return net
+    const total = pickPrefixed(`total${cap(name)}`)
+    if (total != null) return total
   }
   return null
 }
@@ -621,10 +646,10 @@ interface AdsReportResult {
 }
 
 /** 广告报表窗口（天）：跨度 >1 天官方才按天级行返回；官方数据滞后修正，
- *  滚动窗口幂等覆盖（昨日/今日行随每轮同步刷新）。35 天兜住页面近 30 日
- *  视图（调用次数不变，仅窗口拉长；后台创建的广告对接口不可见，本源只
- *  覆盖通过 API 创建的广告——见 docs/temu-openapi-guide.md 实测备注） */
-const ADS_REPORT_WINDOW_DAYS = 35
+ *  滚动窗口幂等覆盖（昨日/今日行随每轮同步刷新）。31 天兜住页面近 30 日
+ *  视图——【2026-11-18 矩阵实测】mall.query 窗口 >31 天（92 天实测）报
+ *  230012000，31 天内 success；旧值 35 落在未验证区间，保守取 31 */
+const ADS_REPORT_WINDOW_DAYS = 31
 
 /** 北京时间 [startDay 0点, 今日 23:59:59.999] 的毫秒时间戳对 */
 function adsReportWindow(days: number): { startTs: number; endTs: number } {
@@ -642,6 +667,10 @@ function adsReportWindow(days: number): { startTs: number; endTs: number } {
  * 主指标取 ad 推广维度，全量四维存 metrics；单品推广口径（不传 selectedAdManagedType）。
  */
 async function syncAdsReports(storeId: string, ctx: TemuCallContext): Promise<number> {
+  // 【2026-11-18 实测】全源序列（价格/销售等 20+ 次调用）会耗尽广告组共享
+  // 配额，紧随其后的 ads 首调可能「success 但静默空」——段前冷却 + 在投
+  // 名单为空时整体重试一轮（单独时段调用全部正常：58 在投/每商品 31 天行）
+  await new Promise((r) => setTimeout(r, 8000))
   const { startTs, endTs } = adsReportWindow(ADS_REPORT_WINDOW_DAYS)
 
   // —— 店铺级：mall.query 天级行 → temu_ads_daily ——
@@ -692,20 +721,105 @@ async function syncAdsReports(storeId: string, ctx: TemuCallContext): Promise<nu
   // 广告组限频削峰（见上），两接口间隔 1.5s 再发
   await new Promise((r) => setTimeout(r, 1500))
 
-  // —— 商品级：goods.query 天级行（不传 productId = 全店商品）→ temu_ads_product_daily ——
-  const goods = await callTemuApi<AdsReportResult>(
-    "bg.glo.searchrec.ad.reports.goods.query",
-    { startTs, endTs },
-    ctx,
+  // —— 商品级：goods.query【2026-11-18 矩阵实测 productId 实际必传】（官方表
+  //    标可选，不传恒 230012000；带 productId 返回天级行）——先 detail.query
+  //    拿「在投商品清单」（在售商品分批查，同工作台 loadAdPlans 口径），再逐
+  //    商品拉报表（广告组频控紧，1.5s 停顿；单商品失败不阻断整源）
+  const onSaleIds = (
+    await db
+      .select({ productId: temuProducts.productId })
+      .from(temuProducts)
+      .where(
+        and(
+          eq(temuProducts.storeId, storeId),
+          isNotNull(temuProducts.productId),
+          sql`${temuProducts.skcStatus} in (1, 11)`,
+        ),
+      )
+      .orderBy(sql`${temuProducts.lastSeenAt} desc`)
+      .limit(500)
   )
-  const goodsItems = (Array.isArray(goods.result?.reportInfo?.reportsItemList)
-    ? (goods.result.reportInfo.reportsItemList as Record<string, unknown>[])
-    : []
-  ).filter((it) => num(it.ts) != null && idStr(it.productId, 32))
+    .map((r) => r.productId as string)
+    .filter((v, i, a) => v && a.indexOf(v) === i)
+  const AD_DETAIL_BATCH = 20
+  const collectActive = async (): Promise<Array<string | number>> => {
+    const active: Array<string | number> = []
+    for (let i = 0; i < onSaleIds.length; i += AD_DETAIL_BATCH) {
+      if (i > 0) await new Promise((r) => setTimeout(r, 2000))
+      const batch = onSaleIds.slice(i, i + AD_DETAIL_BATCH).map((pid) => {
+        const n = Number(pid)
+        return Number.isFinite(n) ? n : pid
+      })
+      try {
+        const detail = await callTemuApi<{ adsDetail?: unknown[] }>(
+          "bg.glo.searchrec.ad.detail.query",
+          { productIdList: batch },
+          ctx,
+        )
+        for (const d of Array.isArray(detail.result?.adsDetail) ? detail.result.adsDetail : []) {
+          const pid = idStr((d as Record<string, unknown>).productId ?? (d as Record<string, unknown>).goodsId, 32)
+          if (pid) active.push(pid)
+        }
+      } catch (err) {
+        console.warn(`[temu-sync] ads detail 批次失败（跳过该批）: ${err instanceof Error ? err.message.slice(0, 120) : err}`)
+      }
+    }
+    return active
+  }
+  let activeIds = await collectActive()
+  if (activeIds.length === 0 && onSaleIds.length > 0) {
+    console.warn("[temu-sync] ads 在投名单为空（疑广告组限频静默降级），8s 后重试一轮")
+    await new Promise((r) => setTimeout(r, 8000))
+    activeIds = await collectActive()
+  }
+  // 【2026-11-18 实测】广告组频控比常规组更严：逐商品连发 1.5s 间隔即 4000004
+  // （requests too frequently）——停顿放大到 2.5s，且 4000004 单次退避 6s 重试；
+  // 重试仍失败则跳过该商品（滚动窗口 + upsert 幂等，下轮同步自动回填）
+  const isRateLimited = (err: unknown) =>
+    err instanceof Error && err.message.includes("4000004")
+  const pullGoodsReport = async (pid: string | number): Promise<Record<string, unknown>[]> => {
+    // 【实测】逐商品查询时官方天级行的 productId 为 null（查询已指定不回填），
+    // 本地注入查询 pid 保证落库 productId 列非空
+    const withPid = (rows: Record<string, unknown>[]) =>
+      rows.map((it) => (idStr(it.productId, 32) == null ? { ...it, productId: pid } : it))
+    try {
+      const goods = await callTemuApi<AdsReportResult>(
+        "bg.glo.searchrec.ad.reports.goods.query",
+        { startTs, endTs, productId: Number.isFinite(Number(pid)) ? Number(pid) : pid },
+        ctx,
+      )
+      return Array.isArray(goods.result?.reportInfo?.reportsItemList)
+        ? withPid(goods.result.reportInfo.reportsItemList as Record<string, unknown>[])
+        : []
+    } catch (err) {
+      if (!isRateLimited(err)) throw err
+      await new Promise((r) => setTimeout(r, 6000))
+      const retry = await callTemuApi<AdsReportResult>(
+        "bg.glo.searchrec.ad.reports.goods.query",
+        { startTs, endTs, productId: Number.isFinite(Number(pid)) ? Number(pid) : pid },
+        ctx,
+      )
+      return Array.isArray(retry.result.reportInfo?.reportsItemList)
+        ? withPid(retry.result.reportInfo.reportsItemList as Record<string, unknown>[])
+        : []
+    }
+  }
   let goodsRows = 0
+  const goodsItems: Record<string, unknown>[] = []
+  for (const pid of activeIds) {
+    await new Promise((r) => setTimeout(r, 2500))
+    try {
+      goodsItems.push(...(await pullGoodsReport(pid)))
+    } catch (err) {
+      console.warn(
+        `[temu-sync] ads goods.report 商品 ${pid} 失败（跳过，下轮回填）: ${err instanceof Error ? err.message.slice(0, 120) : err}`,
+      )
+    }
+  }
+  const goodsReportItems = goodsItems.filter((it) => num(it.ts) != null && idStr(it.productId, 32))
   const BATCH = 100
-  for (let i = 0; i < goodsItems.length; i += BATCH) {
-    const batch = goodsItems.slice(i, i + BATCH)
+  for (let i = 0; i < goodsReportItems.length; i += BATCH) {
+    const batch = goodsReportItems.slice(i, i + BATCH)
     const values = batch.map((it) => ({
       storeId,
       date: temuDayOfTs(num(it.ts) as number),
@@ -717,7 +831,12 @@ async function syncAdsReports(storeId: string, ctx: TemuCallContext): Promise<nu
       orderPayCnt: adMetric(it, ["orderPayCnt"], "ad"),
       orderPayAmt: adMetric(it, ["orderPayAmt"], "ad"),
       goodsNum: adMetric(it, ["goodsNum"], "ad"),
-      roas: adMetric(it, ["roas"], "ad"),
+      // roas 前缀字段 ×1000 口径且花费 0 时官方返回 5e15 除零哨兵——
+      // 超 1e6 视为哨兵不落库（真实值实测 14955 量级）
+      roas: (() => {
+        const v = adMetric(it, ["roas"], "ad")
+        return v != null && v > 1e6 ? null : v
+      })(),
       acos: adMetric(it, ["acos"], "ad"),
       transactionCost: adMetric(it, ["transactionCost"], "ad"),
       metrics: it,
@@ -1216,38 +1335,34 @@ export async function syncStore(storeId: string): Promise<StoreSyncOutcome> {
  * bg.mall.info.get（CN）判全托/半托；bg.open.accesstoken.info.get.global（PA）
  * 尽力取 uniqueId 存 mallId。任一成功即视为 token 有效。
  */
-export async function verifyStoreToken(
-  storeId: string,
-): Promise<{ ok: boolean; error?: string; mallType?: "full" | "semi"; mallId?: string }> {
-  const [store] = await db.select().from(temuStores).where(eq(temuStores.id, storeId)).limit(1)
-  if (!store) return { ok: false, error: "店铺不存在" }
-  if (store.isDemo) return { ok: false, error: "演示店铺不支持录入 token（配置 TEMU 应用后创建真实店铺）" }
-  if (!store.accessTokenEncrypted) return { ok: false, error: "未录入 access_token" }
+/** token 身份探测结果（只调官方接口，不落库）：录入前比对店铺身份防错绑 */
+export interface TemuTokenIdentity {
+  mallType: "full" | "semi"
+  mallId?: string
+  mallName?: string
+}
 
+/**
+ * 探测 access_token 的真实归属（全托/半托 + mallId/mallName）。
+ * 不写库：setTemuStoreTokenAction 先用它比对身份，确认无误后才保存 token，
+ * 避免「店铺 A 录入店铺 B 的 token」错绑事故（历史上零拦截）。
+ */
+export async function probeStoreTokenIdentity(
+  store: typeof temuStores.$inferSelect,
+  accessToken: string,
+): Promise<{ ok: true; identity: TemuTokenIdentity } | { ok: false; error: string }> {
   const app = await resolveStoreAppCredential(store)
   if ("error" in app) return { ok: false, error: app.error }
-
-  let accessToken: string
-  try {
-    accessToken = decrypt(store.accessTokenEncrypted)
-  } catch (err) {
-    console.error(
-      "[temu-sync] access_token 解密失败（ENCRYPTION_KEY 轮换后未重加密？）：",
-      err instanceof Error ? err.message : err,
-    )
-    return { ok: false, error: "access_token 解密失败（ENCRYPTION_KEY 轮换后未重加密？）" }
-  }
 
   const ctx: TemuCallContext = {
     appKey: app.appKey,
     appSecret: app.appSecret,
     accessToken,
-    rateKey: `verify-${storeId}`,
+    rateKey: `verify-${store.id}`,
     qps: 3,
   }
 
-  let mallType: "full" | "semi" | undefined
-  let mallId: string | undefined
+  let mallType: "full" | "semi"
   try {
     const mall = await callTemuApi<{ semiManagedMall?: boolean }>("bg.mall.info.get", {}, ctx)
     mallType = mall.result?.semiManagedMall === true ? "semi" : "full"
@@ -1260,6 +1375,7 @@ export async function verifyStoreToken(
 
   // uniqueId/mallName 尽力而为（实测 result 形如 { mallName, uniqueId, expiredTime, apiScopeList }），
   // 失败不影响验证结论
+  let mallId: string | undefined
   let mallName: string | undefined
   try {
     const info = await callTemuApi<Record<string, unknown>>(
@@ -1271,9 +1387,40 @@ export async function verifyStoreToken(
     const candidate = str(r.uniqueId, 64)
     if (candidate) mallId = candidate
     mallName = str(r.mallName, 100) ?? undefined
-  } catch {
-    // 忽略：主验证已通过
+  } catch (err) {
+    // 尽力而为：主验证已通过，仅告警留痕（防错绑比对无痕降级时无日志可查）
+    console.warn(
+      `[temu-sync] accesstoken.info 查询失败（uniqueId/mallName 缺失，不影响验证结论）: ${
+        err instanceof Error ? err.message.slice(0, 120) : err
+      }`,
+    )
   }
+
+  return { ok: true, identity: { mallType, mallId, mallName } }
+}
+
+export async function verifyStoreToken(
+  storeId: string,
+): Promise<{ ok: boolean; error?: string; mallType?: "full" | "semi"; mallId?: string }> {
+  const [store] = await db.select().from(temuStores).where(eq(temuStores.id, storeId)).limit(1)
+  if (!store) return { ok: false, error: "店铺不存在" }
+  if (store.isDemo) return { ok: false, error: "演示店铺不支持录入 token（配置 TEMU 应用后创建真实店铺）" }
+  if (!store.accessTokenEncrypted) return { ok: false, error: "未录入 access_token" }
+
+  let accessToken: string
+  try {
+    accessToken = decrypt(store.accessTokenEncrypted)
+  } catch (err) {
+    console.error(
+      "[temu-sync] access_token 解密失败（ENCRYPTION_KEY 轮换后未重加密？）：",
+      err instanceof Error ? err.message : err,
+    )
+    return { ok: false, error: "access_token 解密失败（ENCRYPTION_KEY 轮换后未重加密？）" }
+  }
+
+  const probed = await probeStoreTokenIdentity(store, accessToken)
+  if (!probed.ok) return probed
+  const { mallType, mallId, mallName } = probed.identity
 
   await db
     .update(temuStores)
