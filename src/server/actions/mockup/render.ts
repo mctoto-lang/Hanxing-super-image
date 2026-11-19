@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto"
 import { revalidatePath } from "next/cache"
 import { after } from "next/server"
 import { db } from "@/db/client"
-import { generationTasks, mockupBatches, mockupCards, mockupGroupItems, models, type MockupBindingConfig, type MockupBindingDef } from "@/db/schema"
+import { generationTasks, mockupBatches, mockupCards, mockupGroupItems, models, type MockupBindingConfig, type MockupBindingDef, type ModelSizePreset } from "@/db/schema"
 import { getCurrentEnterpriseScope, requireEnterpriseContext, type UserContext } from "@/lib/auth/session"
 import { checkModelAccess } from "@/lib/auth/permissions"
 import { getTemplate } from "@/lib/mockup/client"
@@ -1123,7 +1123,7 @@ export async function listMockupModelsAction(): Promise<
     name: string
     displayName: string
     costPerImage: number
-    sizePresets: Array<{ label: string; width: number; height: number; enabled?: boolean }> | null
+    sizePresets: ModelSizePreset[] | null
     supportsReferenceImage: boolean
     maxReferenceImages: number
   }>

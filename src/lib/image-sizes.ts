@@ -5,13 +5,19 @@ import type { ModelSizePreset } from "@/db/schema"
  *
  * value = "{width}x{height}"（px），与 DB imageSize 字段格式一致。
  * 结构化预设（ModelSizePreset）来自各模型配置；空则回退 DEFAULT_SIZE_PRESETS。
+ * ratio 为展示比例（"16:9"），缺省由 width/height gcd 归约；比例协议
+ * （Gemini 官方 / Midjourney）在适配器内把 value 换算为比例参数。
  */
 export interface SizePreset {
   value: string
   label: string
+  /** 展示比例（如 "16:9"；缺省由 width/height 归约推导） */
+  ratio: string
   /** 宽高比 W/H，用于绘制比例示意图标 */
   width: number
   height: number
+  /** 图标样式预置项（outline=描边比例框（默认）/ solid=实底比例块 / shape=方向形状图标） */
+  icon: "outline" | "solid" | "shape"
   /** 该比例是否启用（后台开关）。false 时创作页置灰不可选，且不计入提交白名单 */
   enabled: boolean
 }
@@ -25,19 +31,22 @@ export interface SizePreset {
  * 管理员手动新增。每个预设的 value（WxH）必须唯一，避免选择器 key 冲突。
  */
 export const DEFAULT_SIZE_PRESETS: ModelSizePreset[] = [
-  { label: "1:1", width: 1024, height: 1024, enabled: true },
-  { label: "21:9", width: 1344, height: 576, enabled: true },
-  { label: "16:9", width: 1280, height: 720, enabled: true },
-  { label: "3:2", width: 1536, height: 1024, enabled: true },
-  { label: "4:3", width: 1024, height: 768, enabled: true },
-  { label: "3:4", width: 768, height: 1024, enabled: true },
-  { label: "2:3", width: 1024, height: 1536, enabled: true },
-  { label: "9:16", width: 720, height: 1280, enabled: true },
+  { ratio: "1:1", width: 1024, height: 1024, enabled: true },
+  { ratio: "21:9", width: 1344, height: 576, enabled: true },
+  { ratio: "16:9", width: 1280, height: 720, enabled: true },
+  { ratio: "3:2", width: 1536, height: 1024, enabled: true },
+  { ratio: "4:3", width: 1024, height: 768, enabled: true },
+  { ratio: "3:4", width: 768, height: 1024, enabled: true },
+  { ratio: "2:3", width: 1024, height: 1536, enabled: true },
+  { ratio: "9:16", width: 720, height: 1280, enabled: true },
 ]
 
 /**
  * 把模型的 sizePresets 解析为选择器可用的 SizePreset[]；
  * 空或非法则回退 DEFAULT_SIZE_PRESETS。
+ *
+ * 兼容旧结构（{label,width,height,enabled}）：label 缺省回退 ratio；
+ * ratio/icon 缺省按归约/outline 推导。
  *
  * 相同 value（WxH）只保留首个，避免列表 key 冲突 / 重复高亮
  * （防御管理员配置出重复尺寸）。
@@ -58,13 +67,7 @@ export function resolveSizePresets(
     return DEFAULT_SIZE_PRESETS.map(toSizePreset)
   }
   const mapped = sizePresets
-    .filter(
-      (s) =>
-        s &&
-        Number(s.width) > 0 &&
-        Number(s.height) > 0 &&
-        typeof s.label === "string",
-    )
+    .filter((s) => s && Number(s.width) > 0 && Number(s.height) > 0)
     .map(toSizePreset)
   const seen = new Set<string>()
   const unique = mapped.filter((s) => {
@@ -79,13 +82,23 @@ export function resolveSizePresets(
 function toSizePreset(s: ModelSizePreset): SizePreset {
   const width = Number(s.width)
   const height = Number(s.height)
+  const ratio = s.ratio?.trim() || gcdRatio(width, height)
   return {
     value: `${width}x${height}`,
-    label: s.label?.trim() || `${width}x${height}`,
+    label: s.label?.trim() || ratio || `${width}x${height}`,
+    ratio,
     width,
     height,
+    icon: s.icon === "solid" || s.icon === "shape" ? s.icon : "outline",
     enabled: s.enabled !== false,
   }
+}
+
+/** 数值宽高 gcd 归约为比例串（1024x768 → "4:3"）；非法返回空串 */
+export function gcdRatio(width: number, height: number): string {
+  if (!(width > 0) || !(height > 0)) return ""
+  const g = gcd(width, height)
+  return `${width / g}:${height / g}`
 }
 
 /**

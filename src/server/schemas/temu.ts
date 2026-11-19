@@ -58,6 +58,8 @@ export const temuShipListQuerySchema = z.object({
   skcExtCode: z.string().max(64).optional(),
   subPurchaseOrderSn: z.string().max(64).optional(),
   deliveryOrderSn: z.string().max(64).optional(),
+  /** 物流单号（expressDeliverySn 精确；一个单号对应同批次多张发货单） */
+  expressDeliverySn: z.string().max(64).optional(),
   /** 发货仓库（卖家发货地址 id，精确） */
   warehouseId: z.number().int().optional(),
   /** 实时核对：按当前页单号回查官方 shiporderv2 并落库；官方已移除的单本地置为已取消 */

@@ -102,10 +102,17 @@ describe("buildOpenAiRequestBody 比例传参", () => {
 })
 
 describe("validateImageModelConfig gemini 格式", () => {
-  it("gemini + 字符串 quality 通过（同 openai 白名单）", () => {
+  it("gemini（官方原生）+ quality 拒绝（质量透传仅 Images 协议 openai）", () => {
     expect(() =>
       validateImageModelConfig({
         apiFormat: "gemini",
+        extraConfig: { quality: "high" },
+      }),
+    ).toThrow(/不支持/)
+    // openai（Images 协议）仍放行
+    expect(() =>
+      validateImageModelConfig({
+        apiFormat: "openai",
         extraConfig: { quality: "high" },
       }),
     ).not.toThrow()

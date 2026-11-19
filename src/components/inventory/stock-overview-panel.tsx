@@ -457,7 +457,13 @@ export function StockOverviewPanel({
                       className="size-7 p-0"
                       onClick={() =>
                         setMovementTarget({
-                          product: { id: r.id, productCode: r.productCode, name: r.name },
+                          product: {
+                            id: r.id,
+                            productCode: r.productCode,
+                            name: r.name,
+                            // 调整段差值预览基准=主仓量（与服务端固定主仓写入口径一致）
+                            totalQty: r.mainQty,
+                          },
                         })
                       }
                     />
@@ -465,7 +471,7 @@ export function StockOverviewPanel({
                 >
                   <ArrowLeftRight className="size-3.5" />
                 </TooltipTrigger>
-                <TooltipContent side="top">库存变动（入库/出库）</TooltipContent>
+                <TooltipContent side="top">库存变动（入库/出库/调整）</TooltipContent>
               </Tooltip>
               <DropdownMenu>
                 <Tooltip>

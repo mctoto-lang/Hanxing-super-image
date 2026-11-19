@@ -40,10 +40,12 @@ import {
 export const dynamic = "force-dynamic"
 
 const FORMAT_LABEL: Record<string, string> = {
-  openai: "OpenAI 标准生图",
+  openai: "Images 协议",
+  chat: "Chat 协议",
+  gemini: "Gemini 官方",
+  midjourney: "Midjourney",
   jimeng: "即梦",
-  gemini: "Gemini",
-  grsai: "Gemini（Grsai）",
+  grsai: "Grsai",
 }
 
 export default async function AdminModelsPage({

@@ -195,6 +195,18 @@ export function CreatePromptInput({
   const maxRef = selectedModel?.maxReferenceImages ?? 0
   const supportsCount = selectedModel?.supportsImageCount ?? false
   const supportsAuto = selectedModel?.supportsSmartSize ?? false
+  // 自定义尺寸置灰提示：比例协议（Gemini 官方原生 / Midjourney）只按比例
+  // 生图；Images 协议固定档位（sizeMode=tier + tierValue）时按档位生成
+  const fixedTier =
+    selectedModel?.apiFormat === "openai" &&
+    (selectedModel.extraConfig?.sizeMode as unknown) === "tier" &&
+    typeof selectedModel.extraConfig?.tierValue === "string"
+  const customSizeHint =
+    selectedModel?.apiFormat === "gemini" || selectedModel?.apiFormat === "midjourney"
+      ? "该模型按比例生成，自定义尺寸不可用"
+      : fixedTier
+        ? `按档位 ${String(selectedModel?.extraConfig?.tierValue)} 生成，自定义尺寸不可用`
+        : undefined
   const sizePresets = useMemo(
     () => resolveSizePresets(selectedModel?.sizePresets, { includeDisabled: true }),
     [selectedModel?.sizePresets],
@@ -208,8 +220,12 @@ export function CreatePromptInput({
           Math.max(1, Number(selectedModel.extraConfig?.jimengN) || 1),
         )
       : 1
+  // Midjourney：选择为「任务数」，一次任务固定 4 张四宫格、按任务计费
+  //（每张照常扣积分，总张数 = 任务数 × 4，与服务端 submitTaskAction 一致）
+  const isMidjourney = selectedModel?.apiFormat === "midjourney"
+  const mjPerTask = isMidjourney ? 4 : 1
   const totalCost =
-    (selectedModel?.costPerImage ?? 0) * imageCount * jimengPerBatch
+    (selectedModel?.costPerImage ?? 0) * imageCount * jimengPerBatch * mjPerTask
   const canAfford = totalCost <= userCredits
   const hasModels = models.length > 0
 
@@ -664,13 +680,20 @@ export function CreatePromptInput({
               count={imageCount}
               onCountChange={setImageCount}
               countLabel={
-                jimengPerBatch > 1 ? "选择次数" : "选择生成数量"
+                isMidjourney
+                  ? "选择任务数"
+                  : jimengPerBatch > 1
+                    ? "选择次数"
+                    : "选择生成数量"
               }
               countHint={
-                jimengPerBatch > 1
-                  ? `每次 ${jimengPerBatch} 张 × 次数，按张计费`
-                  : undefined
+                isMidjourney
+                  ? "每任务 4 张 × 任务数，按任务计费"
+                  : jimengPerBatch > 1
+                    ? `每次 ${jimengPerBatch} 张 × 次数，按张计费`
+                    : undefined
               }
+              customSizeHint={customSizeHint}
             />
 
             {/* 积分进度环（位于尺寸选择器右侧） */}

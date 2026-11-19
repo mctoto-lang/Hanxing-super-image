@@ -24,6 +24,10 @@
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar: var(--sidebar);
   --color-chart-16: var(--chart-16);
+  --color-chart-20: var(--chart-20);
+  --color-chart-19: var(--chart-19);
+  --color-chart-18: var(--chart-18);
+  --color-chart-17: var(--chart-17);
   --color-chart-15: var(--chart-15);
   --color-chart-14: var(--chart-14);
   --color-chart-13: var(--chart-13);
@@ -87,7 +91,8 @@
   --ring: oklch(0.708 0 0);
   /* 数据看板图表色板：1-5 为原五色（蓝/青/紫/琥珀/玫红，500 档亮度、暗色 400 档提亮）；
      6-16 为类目饼图扩展色（切片上限 15+其他），补足绿/橙/靛/黄绿/绯红/天蓝/金黄/春绿/
-     紫红/草绿/品红，同族色相靠亮度/饱和度拉开（暗色统一提亮一档） */
+     紫红/草绿/品红，同族色相靠亮度/饱和度拉开（暗色统一提亮一档）；
+     17-20 为店铺占比扩展色（店铺切片上限 20+其他）：紫罗兰/蓝紫/黄/朱红 */
   --chart-1: oklch(0.623 0.214 259.815);
   --chart-2: oklch(0.704 0.14 182.503);
   --chart-3: oklch(0.606 0.25 292.717);
@@ -104,6 +109,10 @@
   --chart-14: oklch(0.58 0.22 315);
   --chart-15: oklch(0.7 0.19 125);
   --chart-16: oklch(0.62 0.24 335);
+  --chart-17: oklch(0.63 0.19 280);
+  --chart-18: oklch(0.6 0.18 247);
+  --chart-19: oklch(0.78 0.15 85);
+  --chart-20: oklch(0.62 0.21 8);
   --radius: 0.625rem;
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
@@ -150,6 +159,10 @@
   --chart-14: oklch(0.68 0.2 315);
   --chart-15: oklch(0.78 0.17 125);
   --chart-16: oklch(0.71 0.21 335);
+  --chart-17: oklch(0.72 0.17 280);
+  --chart-18: oklch(0.7 0.16 247);
+  --chart-19: oklch(0.85 0.14 85);
+  --chart-20: oklch(0.71 0.19 8);
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.488 0.243 264.376);

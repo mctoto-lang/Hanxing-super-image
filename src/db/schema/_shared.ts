@@ -76,8 +76,25 @@ export const creditTxTypeEnum = pgEnum("credit_tx_type", [
 ])
 export type CreditTxType = (typeof creditTxTypeEnum.enumValues)[number]
 
-/** AI 模型 API 格式（openai = OpenAI 标准生图，jimeng = 即梦，gemini = Gemini 系中转：请求形状同 openai，尺寸参数可切换为比例，grsai = Gemini (Grsai)：比例 + 清晰度档位） */
-export const apiFormatEnum = pgEnum("api_format", ["openai", "jimeng", "gemini", "grsai"])
+/**
+ * AI 模型 API 格式（六格式，2026-11 规范化）：
+ * - openai = Images 协议（OpenAI 标准：无参考图走 /v1/images/generations，
+ *   带参考图走 /v1/images/edits multipart）
+ * - chat = Chat 协议（OpenAI 兼容对话接口生图：参考图走多模态消息，从回复解析图片）
+ * - gemini = Gemini 协议（官方原生 :generateContent + responseModalities IMAGE，
+ *   imageConfig.aspectRatio 比例生图；旧「Gemini 系中转」行已迁移为 openai，见 0102）
+ * - midjourney = Midjourney（MJ Proxy 协议，aipaiai：提交 + 轮询，一任务 4 张）
+ * - jimeng = 即梦（jimeng-free-api 反代）
+ * - grsai = Grsai（统一端点 /v1/api/generate：比例 + 清晰度档位）
+ */
+export const apiFormatEnum = pgEnum("api_format", [
+  "openai",
+  "jimeng",
+  "gemini",
+  "grsai",
+  "chat",
+  "midjourney",
+])
 
 /** 任务状态 */
 export const taskStatusEnum = pgEnum("task_status", [

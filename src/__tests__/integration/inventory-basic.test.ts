@@ -12,6 +12,7 @@ import {
   inventoryWarehouses,
 } from "@/db/schema/inventory"
 import {
+  adjustStockAction,
   createProductAction,
   deleteProductAction,
   getInventoryOverviewAction,
@@ -232,14 +233,90 @@ describe("库存底座", () => {
     expect(r.ok).toBe(true)
     if (!r.ok) return
     const row = r.rows.find((x) => x.productCode === "B9001")
-    // 库存 50（100+30−80）；企业无销速数据 → 销速口径不判低库存，仅正常态
-    expect(row).toMatchObject({ totalQty: 50, status: "normal" })
+    // 库存 50（100+30−80）；企业无销速数据 → 销速口径不判低库存，仅正常态；
+    // 单仓制主仓量=全仓合计（库存调整预览基准）
+    expect(row).toMatchObject({ totalQty: 50, mainQty: 50, status: "normal" })
 
     const s = await searchProductsAction({ q: "B9001" })
     expect(s.ok).toBe(true)
     if (s.ok) {
       expect(s.rows).toHaveLength(1)
       expect(s.rows[0]!.totalQty).toBe(50)
+      expect(s.rows[0]!.mainQty).toBe(50)
     }
+  })
+
+  it("库存调整：按差值生成盘点流水（入/出）+ 目标=当前拦截 + 非法入参拒绝", async () => {
+    mockSession.userId = ownerId
+    const [product] = await db
+      .select()
+      .from(inventoryProducts)
+      .where(and(eq(inventoryProducts.enterpriseId, entId), eq(inventoryProducts.productCode, "B9001")))
+      .limit(1)
+    // 前置用例收尾库存 50
+    const [before] = await db
+      .select()
+      .from(inventoryStocks)
+      .where(eq(inventoryStocks.productId, product!.id))
+    expect(before?.qty).toBe(50)
+
+    // 调高 50→80：盘点入库 +30
+    const up = await adjustStockAction({ productId: product!.id, targetQty: 80, reason: "月末盘点" })
+    expect(up.ok).toBe(true)
+    // 调低 80→30：盘点出库 −50
+    const down = await adjustStockAction({ productId: product!.id, targetQty: 30, reason: "盘亏" })
+    expect(down.ok).toBe(true)
+    const [stock] = await db
+      .select()
+      .from(inventoryStocks)
+      .where(eq(inventoryStocks.productId, product!.id))
+    expect(stock?.qty).toBe(30)
+
+    const mvs = await db
+      .select()
+      .from(inventoryMovements)
+      .where(
+        and(eq(inventoryMovements.productId, product!.id), eq(inventoryMovements.type, "stocktake")),
+      )
+      .orderBy(inventoryMovements.createdAt)
+    expect(mvs).toHaveLength(2)
+    expect(mvs[0]).toMatchObject({
+      qtyBefore: 50,
+      qtyAfter: 80,
+      qtyChange: 30,
+      refType: "stocktake",
+    })
+    expect(mvs[0]!.reason).toContain("50→80")
+    expect(mvs[1]).toMatchObject({ qtyBefore: 80, qtyAfter: 30, qtyChange: -50 })
+
+    // 目标=当前 → 拦截
+    const same = await adjustStockAction({ productId: product!.id, targetQty: 30, reason: "无变化" })
+    expect(same.ok).toBe(false)
+    if (!same.ok) expect(same.error).toContain("一致")
+
+    // 非法入参：负数目标 / 空原因
+    const neg = await adjustStockAction({ productId: product!.id, targetQty: -1, reason: "x" })
+    expect(neg.ok).toBe(false)
+    const noReason = await adjustStockAction({ productId: product!.id, targetQty: 31, reason: "  " })
+    expect(noReason.ok).toBe(false)
+
+    // 超长原因截断：用户段 240 字 + 服务端前缀 > reason 列 varchar(255)，
+    // 落库 reason ≤255 且保留「当前→目标」前缀（不再以数据库错误上抛）
+    const trunc = await adjustStockAction({
+      productId: product!.id,
+      targetQty: 31,
+      reason: "长".repeat(240),
+    })
+    expect(trunc.ok).toBe(true)
+    const longMvs = await db
+      .select()
+      .from(inventoryMovements)
+      .where(
+        and(eq(inventoryMovements.productId, product!.id), eq(inventoryMovements.type, "stocktake")),
+      )
+      .orderBy(inventoryMovements.createdAt)
+    const lastMv = longMvs[longMvs.length - 1]!
+    expect(lastMv.reason!.length).toBeLessThanOrEqual(255)
+    expect(lastMv.reason).toContain("30→31")
   })
 })

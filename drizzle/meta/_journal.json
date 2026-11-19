@@ -715,6 +715,13 @@
       "when": 1795315200000,
       "tag": "0101_video_selection_modules",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1795401600000,
+      "tag": "0102_image_api_formats",
+      "breakpoints": true
     }
   ]
 }

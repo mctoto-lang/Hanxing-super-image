@@ -374,6 +374,8 @@ export async function getTemuShipOrdersAction(input: unknown) {
     conditions.push(eq(temuShipOrders.subPurchaseOrderSn, q.subPurchaseOrderSn.trim()))
   if (q.deliveryOrderSn)
     conditions.push(eq(temuShipOrders.deliveryOrderSn, q.deliveryOrderSn.trim()))
+  if (q.expressDeliverySn)
+    conditions.push(eq(temuShipOrders.expressDeliverySn, q.expressDeliverySn.trim()))
   if (q.warehouseId != null)
     conditions.push(eq(temuShipOrders.deliveryAddressId, q.warehouseId))
   const where = and(...conditions)

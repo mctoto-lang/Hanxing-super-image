@@ -97,11 +97,14 @@ const VIEW_OPTIONS = [
   { value: "orders", label: "发货单列表" },
 ]
 
-/** 发货单列表共享搜索条字段（本地库精确过滤，temu-ship 查询条件已支持三入参） */
+/** 发货单列表共享搜索条字段（本地库精确过滤，temu-ship 查询条件已支持四入参；
+ *  物流单号对应一个批次下多张发货单，命中返回多行属正常语义；单号只在装箱发货
+ *  status≥1 后产生，提交该字段搜索时状态筛选自动放宽为全部——见 onSearch） */
 const SHIP_SEARCH_FIELDS: SearchBarField[] = [
   { value: "sn", label: "发货单号", placeholder: "输入完整单号…" },
   { value: "subSn", label: "备货单号", placeholder: "输入完整单号…" },
   { value: "ext", label: "货号", placeholder: "输入货号…" },
+  { value: "expressSn", label: "物流单号", placeholder: "输入完整物流单号…" },
 ]
 
 /** 绝对截止时间 → 「X小时Y分后自动取消」；过期返回「已到期」 */
@@ -361,6 +364,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
             skcExtCode: appliedSearch.field === "ext" && kw ? kw : undefined,
             subPurchaseOrderSn: appliedSearch.field === "subSn" && kw ? kw : undefined,
             deliveryOrderSn: appliedSearch.field === "sn" && kw ? kw : undefined,
+            expressDeliverySn: appliedSearch.field === "expressSn" && kw ? kw : undefined,
             warehouseId: warehouseId ?? undefined,
             fresh: opts?.fresh ? true : undefined,
           })
@@ -873,6 +877,9 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
               setSearchField(f)
               setAppliedSearch({ field: f, keyword: kw })
               setPage(1)
+              // 物流单号只在装箱发货（status≥1）后产生：按单号搜索时把状态筛选放宽为
+              // 全部，避免默认「待装箱发货」与物流单号条件互斥恒空（用户可在状态下拉再收紧）
+              if (f === "expressSn" && kw && statusPreset !== "all") setStatusPreset("all")
             }}
             searching={loading}
             className="w-72"

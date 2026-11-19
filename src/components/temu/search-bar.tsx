@@ -62,17 +62,17 @@ export function TemuSearchBar({
     <InputGroup className={`h-8 text-xs ${className ?? ""}`}>
       <InputGroupAddon
         align="inline-start"
-        className="gap-0 self-stretch border-r border-input py-0 pr-1.5 pl-0.5"
+        className="gap-0 self-stretch border-r border-input py-0 pr-1.5 pl-0.5 has-[>button]:ml-0"
       >
         <Select items={items} value={current?.value} onValueChange={(v) => onFieldChange(v ?? field)}>
           <SelectTrigger
             size="sm"
             aria-label="可搜索项"
-            className="h-7 w-24 justify-center border-0 bg-transparent px-2 text-xs font-medium focus-visible:ring-0 dark:bg-transparent dark:hover:bg-transparent"
+            className="h-7 w-24 justify-center border-0 bg-transparent px-2 text-xs font-medium focus-visible:ring-0 *:data-[slot=select-value]:justify-center *:data-[slot=select-value]:text-center dark:bg-transparent dark:hover:bg-transparent"
           >
             <SelectValue>{current?.label}</SelectValue>
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent align="center">
             {fields.map((f) => (
               <SelectItem key={f.value} value={f.value}>
                 {f.label}
@@ -91,7 +91,10 @@ export function TemuSearchBar({
         className="h-7 px-2 text-xs"
         maxLength={maxLength}
       />
-      <InputGroupAddon align="inline-end" className="self-stretch py-0 pr-1">
+      <InputGroupAddon
+        align="inline-end"
+        className="self-stretch py-0 pr-1 has-[>button]:mr-0"
+      >
         <InputGroupButton
           variant="secondary"
           size="sm"

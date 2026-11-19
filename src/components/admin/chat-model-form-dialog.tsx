@@ -96,7 +96,12 @@ export function AdminChatModelFormDialog({
         </DialogHeader>
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-            <ChatModelFields form={form} isEdit={isEdit} />
+            <ChatModelFields
+              form={form}
+              isEdit={isEdit}
+              upstreamScope="enterprise"
+              upstreamModelId={model?.id}
+            />
             {serverError ? (
               <p className="text-sm text-destructive">{serverError}</p>
             ) : null}

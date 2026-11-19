@@ -78,16 +78,33 @@ export const modelConfigSchema = z.object({
   displayName: z.string().min(1, "请输入显示名").max(200),
   apiEndpoint: z.string().min(1, "请输入 API 地址").max(500),
   apiKey: z.string().optional(), // 创建时必填（action 内校验），编辑留空=不修改
-  apiFormat: z.enum(["openai", "jimeng", "gemini", "grsai"]),
+  /** 接口格式（六格式）：openai=Images 协议 / chat=Chat 协议 / gemini=Gemini
+   *  官方原生 / midjourney=MJ Proxy / jimeng=即梦反代 / grsai=Grsai 统一端点 */
+  apiFormat: z.enum(["openai", "chat", "gemini", "midjourney", "jimeng", "grsai"]),
   jimengResolution: z.enum(["1k", "2k", "4k"]).optional(),
   jimengN: z.number().int().min(1).max(8).optional(),
-  /** OpenAI 格式质量参数透传（管理员填入具体值；空 = 不传） */
+  /** Images 协议（openai）质量参数透传（管理员填入具体值；空 = 不传） */
   quality: z.string().trim().max(50).optional(),
+  /**
+   * 尺寸传参模式（Images 协议 openai 专属，落 extraConfig.sizeMode）：
+   * pixels = size 像素串（默认）/ ratio = 比例参数（nano banana 系中转）/
+   * tier = 清晰度档位（1K/2K/4K，按预设像素推导或 tierValue 固定）
+   */
+  sizeMode: z.enum(["pixels", "ratio", "tier"]).optional(),
+  /** tier 模式固定档位（空 = 按预设像素自动推导） */
+  tierValue: z.enum(["1K", "2K", "4K"]).optional(),
+  /** response_format 透传（Images 协议；空 = 不传） */
+  responseFormat: z.enum(["url", "b64_json"]).optional(),
   /** grsai 格式：清晰度档位手动覆盖（空 = 按预设尺寸自动推导） */
   grsaiImageSize: z.enum(["1K", "2K", "4K"]).optional(),
-  /** gemini 格式：以比例参数代替尺寸参数（openai/jimeng 格式忽略） */
+  /** midjourney 格式：prompt 参数后缀（--ar 自动生成并剔重；空 = 不追加） */
+  mjFlags: z.string().trim().max(200).optional(),
+  /** 旧 gemini 比例传参开关（存量兼容；新配置走 sizeMode，读取侧 sizeMode 优先） */
   useRatioParam: z.boolean().default(false),
-  /** gemini 格式：比例参数字段名（空 = aspect_ratio） */
+  /**
+   * 比例/档位参数字段名（Images 协议的 ratio/tier 模式生效；
+   * 空 = ratio→aspect_ratio、tier→size）
+   */
   ratioParamField: z
     .string()
     .trim()
@@ -101,12 +118,23 @@ export const modelConfigSchema = z.object({
   sizePresets: z
     .array(
       z.object({
-        label: z.string().trim().min(1, "比例名称不能为空").max(20),
+        /** 旧展示文案字段（兼容存量；新数据以 ratio 为准，可缺省） */
+        label: z.string().trim().max(20).optional(),
+        /** 展示比例（如 "16:9"；缺省由 width/height 归约推导） */
+        ratio: z
+          .string()
+          .trim()
+          .regex(/^\d+:\d+$/, "比例格式为 W:H（如 16:9）")
+          .max(20)
+          .optional(),
         width: z.number().int().min(1),
         height: z.number().int().min(1),
+        /** 前端比例图标样式（outline 描边比例框（默认）/ solid 实底比例块 / shape 方向形状图标） */
+        icon: z.enum(["outline", "solid", "shape"]).optional(),
         enabled: z.boolean().optional(),
       }),
     )
+    .max(24)
     .default([]),
   supportsImageCount: z.boolean().default(false),
   supportsSmartSize: z.boolean().default(false),

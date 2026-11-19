@@ -174,6 +174,8 @@ export async function submitTaskAction(input: {
   // 即梦相乘语义：创作页选择为「次数」（1-4），每次产出模型配置的
   // jimengN 张（1-8，>4 由适配器自动拆分多次 API 请求，单次上游上限 4 张）；
   // 总张数 = 次数 × N，按张计费。jimengN 缺省 1 = 行为与旧版一致。
+  // Midjourney 同款相乘：选择为「任务数」（1-4），一次任务固定 4 张四宫格
+  // （MJ_IMAGES_PER_TASK），总张数 = 任务数 × 4，按任务计费（每张照常扣积分）。
   // 32 = 4 次 × 8 张的防御性上限（页面 zod 与模型 zod 已分别限制）。
   // totalImageCount（重新生成）：任务行里的 imageCount 已是乘过的总张数，
   // 直传跳过乘法，否则选 1 次 × N=4 的任务重生成会变 4×4=16 张。
@@ -189,7 +191,9 @@ export async function submitTaskAction(input: {
             ) || 1,
           ),
         )
-      : 1
+      : model.apiFormat === "midjourney"
+        ? 4
+        : 1
   const imageCount = Math.min(
     32,
     d.totalImageCount ?? batches * perBatch,

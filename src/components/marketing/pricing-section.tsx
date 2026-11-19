@@ -40,11 +40,16 @@ export interface Plan {
   highlighted?: boolean
 }
 
+/**
+ * 暂时隐藏售价：月付/年付均显示 ¥0（「省 %」徽标同步隐藏）。
+ * 恢复时把各档 monthly 改回原月价，yearly 恢复 88 折公式：
+ * Math.round(月价 * 12 * 0.88)。
+ */
 export const PLANS: Plan[] = [
   {
     name: "Lite",
     info: "小型团队入门之选",
-    price: { monthly: 99, yearly: Math.round(99 * 12 * 0.88) },
+    price: { monthly: 0, yearly: 0 }, // 原月价 99
     features: [
       { text: "支持 1-5 人协作使用", receipt: "协作席位 5 人内" },
       {
@@ -53,8 +58,7 @@ export const PLANS: Plan[] = [
         receipt: "积分 9,900 + 赠 300",
       },
       {
-        text: "GPT Image 2.6 / Nano banana 2 Lite 可用约 340 次",
-        tooltip: "基础模型按月度总积分折算，折合约 0.29 元/次",
+        text: "基础生图模型 可用约 340 次",
         receipt: "AI 生图 约 340 次",
       },
       {
@@ -69,7 +73,7 @@ export const PLANS: Plan[] = [
   {
     name: "Pro",
     info: "成长型团队的首选",
-    price: { monthly: 199, yearly: Math.round(199 * 12 * 0.88) },
+    price: { monthly: 0, yearly: 0 }, // 原月价 199
     features: [
       { text: "支持 1-20 人协作使用", receipt: "协作席位 20 人内" },
       {
@@ -78,8 +82,7 @@ export const PLANS: Plan[] = [
         receipt: "积分 19,900 + 赠 1,100",
       },
       {
-        text: "GPT Image 2.6 / Nano banana 2 Lite 可用约 700 次",
-        tooltip: "基础模型按月度总积分折算，折合约 0.28 元/次",
+        text: "基础生图模型 可用约 700 次",
         receipt: "AI 生图 约 700 次",
       },
       {
@@ -94,7 +97,7 @@ export const PLANS: Plan[] = [
   {
     name: "Ultra",
     info: "进阶团队的高性价比之选",
-    price: { monthly: 399, yearly: Math.round(399 * 12 * 0.88) },
+    price: { monthly: 0, yearly: 0 }, // 原月价 399
     features: [
       { text: "支持 1-50 人协作使用", receipt: "协作席位 50 人内" },
       {
@@ -103,8 +106,7 @@ export const PLANS: Plan[] = [
         receipt: "积分 39,900 + 赠 3,000",
       },
       {
-        text: "GPT Image 2.6 / Nano banana 2 Lite 可用约 1,430 次",
-        tooltip: "基础模型按月度总积分折算，折合约 0.28 元/次",
+        text: "基础生图模型 可用约 1,430 次",
         receipt: "AI 生图 约 1,430 次",
       },
       {
@@ -120,7 +122,7 @@ export const PLANS: Plan[] = [
   {
     name: "Max",
     info: "大型组织的全能方案",
-    price: { monthly: 599, yearly: Math.round(599 * 12 * 0.88) },
+    price: { monthly: 0, yearly: 0 }, // 原月价 599
     features: [
       { text: "支持 1-100 人协作使用", receipt: "协作席位 100 人内" },
       {
@@ -129,8 +131,7 @@ export const PLANS: Plan[] = [
         receipt: "积分 59,900 + 赠 5,980",
       },
       {
-        text: "GPT Image 2.6 / Nano banana 2 Lite 可用约 2,196 次",
-        tooltip: "基础模型按月度总积分折算，折合约 0.27 元/次",
+        text: "基础生图模型 可用约 2,196 次",
         receipt: "AI 生图 约 2,196 次",
       },
       {
@@ -249,12 +250,16 @@ function PricingCard({
   frequency: Frequency
   onSubscribe: () => void
 }) {
-  const yearlyDiscount = Math.round(
-    ((plan.price.monthly * 12 - plan.price.yearly) /
-      plan.price.monthly /
-      12) *
-      100,
-  )
+  // 暂时隐藏售价（monthly=0）时无折扣可言，置 0 并由渲染处隐藏徽标
+  const yearlyDiscount =
+    plan.price.monthly > 0
+      ? Math.round(
+          ((plan.price.monthly * 12 - plan.price.yearly) /
+            plan.price.monthly /
+            12) *
+            100,
+        )
+      : 0
 
   return (
     <div
@@ -281,7 +286,7 @@ function PricingCard({
               热门
             </p>
           )}
-          {frequency === "yearly" && (
+          {frequency === "yearly" && plan.price.monthly > 0 && (
             <p className="flex items-center gap-1 rounded-md border border-white bg-white px-2 py-0.5 text-xs font-medium text-neutral-900">
               省 {yearlyDiscount}%
             </p>

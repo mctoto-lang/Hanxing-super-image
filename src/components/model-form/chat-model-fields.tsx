@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/form"
 import { ModelIconUpload } from "@/components/model-form/model-icon-upload"
 import { BadgeField } from "@/components/model-form/badge-field"
+import { UpstreamModelFetch } from "@/components/model-form/upstream-model-fetch"
 import {
   CHAT_ACTIVE_THINKING_LEVELS,
   CHAT_FORMAT_ENDPOINT_EXAMPLES,
@@ -363,14 +364,23 @@ export function buildChatModelInput(
 export function ChatModelFields({
   form,
   isEdit,
+  upstreamScope,
+  upstreamModelId,
 }: {
   form: UseFormReturn<ChatModelFormState>
   isEdit: boolean
+  /** 传入后模型标识下方渲染「从 /v1/models 拉取」按钮（openai/grok 格式） */
+  upstreamScope?: "enterprise" | "platform"
+  /** 编辑态模型 ID（拉取按钮留空 Key 时用已存密钥兜底） */
+  upstreamModelId?: string
 }) {
   const formatType = form.watch("formatType")
   const supportsThinking = form.watch("supportsThinking")
   const badgeColor = form.watch("badgeColor")
   const overrides = form.watch("thinkingOverrides")
+  // 拉取按钮的响应式入参（地址/Key 随输入更新）
+  const apiEndpointValue = form.watch("apiEndpoint")
+  const apiKeyValue = form.watch("apiKey")
 
   const upOverride = (
     level: ActiveThinkingLevel,
@@ -407,6 +417,19 @@ export function ChatModelFields({
               <FormControl>
                 <Input {...field} placeholder="如 gpt-4o、claude-sonnet-4、gemini-2.5-flash" />
               </FormControl>
+              {upstreamScope &&
+                (formatType === "openai" || formatType === "grok") && (
+                  <UpstreamModelFetch
+                    scope={upstreamScope}
+                    kind="chat"
+                    endpoint={apiEndpointValue}
+                    apiKey={apiKeyValue}
+                    modelId={upstreamModelId}
+                    onPick={(id) =>
+                      form.setValue("name", id, { shouldDirty: true })
+                    }
+                  />
+                )}
               <FormMessage />
             </FormItem>
           )}

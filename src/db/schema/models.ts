@@ -19,36 +19,56 @@ import { enterprises } from "./enterprise"
  *
  * - enterpriseId NULL = 平台级共享模型（所有企业可见）；
  *   非 NULL = 企业私有模型。
- * - apiFormat: openai | jimeng | gemini | grsai（openai = OpenAI 标准生图格式；
- *   gemini = Gemini 系中转，请求形状同 openai，尺寸参数可切比例；
- *   grsai = Gemini (Grsai)，aspectRatio 比例 + imageSize 清晰度档位）。
+ * - apiFormat 六格式（2026-11 规范化，见 _shared.ts）：openai = Images 协议
+ *   （OpenAI 标准，generations/edits 按参考图分流）；chat = Chat 协议
+ *   （OpenAI 兼容对话接口生图）；gemini = Gemini 官方原生（比例生图）；
+ *   midjourney = MJ Proxy；jimeng = 即梦反代；grsai = Grsai 统一端点。
  * - 可见性合并：旧项目 visible_in_generate + visible_in_canvas → 单一 visibleInCreate（D13）。
  */
 export interface ModelExtraConfig {
   // Jimeng 族
   jimengResolution?: "1k" | "2k" | "4k"
   jimengN?: number
-  // OpenAI 格式：质量参数透传（管理员填入具体值；空 = 不传该字段）
+  // Images 协议（openai）：质量参数透传（管理员填入具体值；空 = 不传该字段）
   quality?: string
+  // Images 协议（openai）：尺寸传参模式（pixels=size 像素串（默认）/ ratio=
+  // 比例参数（nano banana 系中转）/ tier=清晰度档位 1K/2K/4K）。旧 gemini 行的
+  // useRatioParam=true 已随 0102 迁移补写 sizeMode='ratio'（读取侧仍保留回退）
+  sizeMode?: "pixels" | "ratio" | "tier"
+  // Images 协议（openai）：tier 模式固定档位（空/缺省 = 按预设像素自动推导；
+  // 固定后前端自定义尺寸置灰、size 恒传该档位）
+  tierValue?: "1K" | "2K" | "4K"
+  // Images 协议（openai）：response_format 透传（url / b64_json；缺省不传）
+  responseFormat?: "url" | "b64_json"
   // Grsai 格式：清晰度档位手动覆盖（空 = 按预设尺寸自动推导）。
   // 旧键 grsai_image_size 为存量数据（历史行仍存旧键），读取侧双读兼容、新键优先
   grsaiImageSize?: "1K" | "2K" | "4K"
+  // Midjourney：追加到 prompt 末尾的参数后缀（如 "--v 8.2 --fast"，管理员配置；
+  // --ar 由所选比例自动生成，追加在参数后缀之前）
+  mjFlags?: string
   [key: string]: unknown
 }
 
 /**
  * 模型尺寸预设（结构化，替代旧 supportedSizes 字符串数组）
  *
- * 每条 = 一个可选比例：label 为展示文案（如 "1:1"、"智能"），
- * width/height 为对应的实际像素尺寸。比例图标的宽高比由 width/height 推导。
+ * 每条 = 一个可选比例：ratio 为比例文案（如 "1:1"，缺省由 width/height gcd
+ * 归约推导），width/height 为对应的实际像素尺寸（比例协议模型经适配器换算为
+ * 比例参数，像素仅用于图标比例与展示）。label 为旧展示文案字段（新数据以
+ * ratio 为准，读取侧 label 缺省回退 ratio）。
+ *
+ * icon：前端比例选择器的图标样式预置项（outline=描边比例框（默认，按宽高比
+ * 缩放）/ solid=实底比例块 / shape=方向形状图标），不可上传自定义图。
  *
  * enabled：后台可逐个开启/关闭某个比例。false 时创作页置灰不可选，
  * 且不会进入提交尺寸白名单。缺省视为 true（兼容旧数据）。
  */
 export interface ModelSizePreset {
-  label: string
+  label?: string
+  ratio?: string
   width: number
   height: number
+  icon?: "outline" | "solid" | "shape"
   enabled?: boolean
 }
 
@@ -84,9 +104,10 @@ export const models = pgTable(
     supportsSmartSize: boolean("supports_smart_size")
       .default(false)
       .notNull(),
-    /** gemini 格式：生图请求以比例参数代替尺寸参数（openai/jimeng 格式忽略） */
+    /** 旧「Gemini 系中转」格式的比例开关（该类行已随 0102 迁移为 openai/Images 协议，
+     *  比例行为由 extraConfig.sizeMode='ratio' 承载；新代码不再写入，读取侧保留回退兼容） */
     useRatioParam: boolean("use_ratio_param").default(false).notNull(),
-    /** gemini 格式：比例参数字段名（空 = aspect_ratio） */
+    /** 比例/档位参数字段名（Images 协议 ratio/tier 模式用；空 = ratio→aspect_ratio、tier→size） */
     ratioParamField: varchar("ratio_param_field", { length: 50 }),
     visibleInCreate: boolean("visible_in_create").default(true).notNull(),
     visibleInWorkspace: boolean("visible_in_workspace")

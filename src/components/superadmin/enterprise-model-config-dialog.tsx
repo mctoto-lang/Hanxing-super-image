@@ -33,9 +33,12 @@ import type { PresetChatModelRow } from "@/server/actions/platform-chat-models"
 import { formatPricePerMillion } from "@/lib/ai/chat/chat-model-config"
 
 const FORMAT_LABEL: Record<string, string> = {
-  openai: "OpenAI",
+  openai: "Images 协议",
+  chat: "Chat 协议",
+  gemini: "Gemini 官方",
+  midjourney: "Midjourney",
   jimeng: "即梦",
-  gemini: "Gemini",
+  grsai: "Grsai",
 }
 
 const CHAT_FORMAT_LABEL: Record<string, string> = {

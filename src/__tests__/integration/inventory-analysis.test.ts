@@ -308,6 +308,17 @@ describe("日快照 + 补货建议 + 库存分析", () => {
     // Q9001：停止生产 + 0 库存 → 停产（D9001 停止生产有库存 → 清仓）
     await createProduct("Q9001", { productionState: "stopped" })
 
+    // R9001：停止生产 + 有库存 + 窗口零销量 → 滞销（滞销优先于清仓显示）
+    const r9 = await createProduct("R9001", { productionState: "stopped" })
+    await manualMovementAction({
+      productId: r9.id,
+      warehouseId: mainWhId,
+      type: "manual_in",
+      qty: 8,
+      reason: "建账",
+    })
+    await seedSales("R9001", 0, 14)
+
     const r = await getInventoryOverviewAction({})
     expect(r.ok).toBe(true)
     if (!r.ok) return
@@ -330,9 +341,11 @@ describe("日快照 + 补货建议 + 库存分析", () => {
       temuStock: 7,
       availableDays: 11.8,
     })
-    // 停止生产分支：D9001 有库存 → 清仓；Q9001 无库存 → 停产
+    // 停止生产分支：D9001 有库存（窗口 70 件 > 上限 0）→ 清仓；Q9001 无库存 → 停产
     expect(byCode("D9001")?.status).toBe("clearance")
     expect(byCode("Q9001")?.status).toBe("discontinued")
+    // 滞销优先于清仓：R9001 停止生产有库存但窗口销量 0 ≤ 上限 0 → 滞销
+    expect(byCode("R9001")?.status).toBe("stagnant")
     // E9001 有销量数据但零销量 → 滞销
     expect(byCode("E9001")?.status).toBe("stagnant")
 

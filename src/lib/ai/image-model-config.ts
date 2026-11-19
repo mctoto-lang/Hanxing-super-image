@@ -1,13 +1,32 @@
 /**
  * 图片模型请求体构造（纯函数库，零副作用，零外部依赖）
  *
- * 接口格式：openai（OpenAI 标准生图 /v1/images/generations）| jimeng（即梦）|
- * gemini（Gemini 系中转：请求形状同 openai，尺寸参数可切换为比例）|
- * grsai（Gemini (Grsai)：aspectRatio 比例 + imageSize 清晰度档位）。
- * GRS 格式已下线。
+ * 接口格式（2026-11 规范化为六格式）：
+ * - openai：Images 协议（OpenAI 标准：无参考图 POST {base}/v1/images/generations，
+ *   带参考图 POST {base}/v1/images/edits multipart，见 openai-image.ts）
+ * - chat：Chat 协议（OpenAI 兼容对话接口生图：参考图走 image_url 多模态消息，
+ *   从回复内容解析图片 URL/b64；无尺寸参数，尺寸由模型自行决定）
+ * - gemini：Gemini 协议（官方原生 :generateContent + responseModalities IMAGE，
+ *   imageConfig.aspectRatio 比例生图；参考图 inlineData base64）
+ * - midjourney：Midjourney（MJ Proxy 协议，aipaiai：/mj/submit/imagine 提交 +
+ *   /mj/task/{id}/fetch 轮询，一次任务固定 4 张四宫格）
+ * - jimeng：即梦（jimeng-free-api 反代）
+ * - grsai：Grsai（统一端点 /v1/api/generate：aspectRatio 比例 + imageSize 清晰度档位）
+ *
+ * openai（Images 协议）「尺寸传参模式」（extraConfig.sizeMode）：
+ * pixels = size 像素串（默认）；ratio = 比例参数（nano banana 系中转，
+ * 1024x1024 → 1:1）；tier = 清晰度档位（1K/2K/4K，按预设像素推导，
+ * 可由 tierValue 固定为指定档位）。
+ * 旧 gemini 行 useRatioParam=true 已随 0102 迁移补写 sizeMode='ratio'。
  */
 
-export type ImageApiFormat = "openai" | "jimeng" | "gemini" | "grsai"
+export type ImageApiFormat =
+  | "openai"
+  | "jimeng"
+  | "gemini"
+  | "grsai"
+  | "chat"
+  | "midjourney"
 
 export const DEFAULT_IMAGE_API_FORMAT: ImageApiFormat = "openai"
 /**
@@ -19,10 +38,21 @@ export const DEFAULT_IMAGE_API_FORMAT: ImageApiFormat = "openai"
 export const DEFAULT_JIMENG_REFERENCE_IMAGE_FIELD = "filePaths"
 /** OpenAI 生图参考图字段缺省名（参考图以 URL 链接数组传入 image 字段） */
 export const DEFAULT_OPENAI_REFERENCE_IMAGE_FIELD = "image"
-/** gemini 格式比例参数字段缺省名（管理员可按中转站约定覆盖） */
+/** ratio 模式字段缺省名（nano banana / OpenRouter 风格中转；可按中转站约定覆盖） */
 export const DEFAULT_RATIO_FIELD = "aspect_ratio"
+/**
+ * tier 模式字段缺省名（中转站约定不一：常见 size / image_size，
+ * 可由 ratioParamField 覆盖）。
+ */
+export const DEFAULT_TIER_FIELD = "size"
 /** imageSize 兜底（历史任务缺尺寸时，避免请求体缺字段） */
 export const DEFAULT_IMAGE_SIZE = "1024x1024"
+
+/** 尺寸传参模式（openai/gemini 共用）：pixels=尺寸串 / ratio=比例 / tier=清晰度档位 */
+export type ImageSizeMode = "pixels" | "ratio" | "tier"
+export const IMAGE_SIZE_MODES = ["pixels", "ratio", "tier"] as const
+/** response_format 透传合法值（缺省不传，维持上游默认） */
+export const IMAGE_RESPONSE_FORMATS = ["url", "b64_json"] as const
 
 export interface ImageModelConfigInput {
   apiFormat?: unknown
@@ -37,10 +67,16 @@ interface BuildOpenAiRequestInput {
   referenceImageField?: string
   /** 质量参数透传（管理员配置的具体值；空 = 请求体不带该字段） */
   quality?: string
-  /** gemini 格式：以比例参数代替尺寸参数（1024x1024 → 1:1；auto 原样传） */
+  /** 尺寸传参模式（新配置，优先于旧 useRatioParam 回退） */
+  sizeMode?: ImageSizeMode
+  /** 旧 gemini 配置：以比例参数代替尺寸参数（sizeMode 缺省时回退生效） */
   useRatioParam?: boolean
-  /** gemini 格式：比例参数字段名（空 = aspect_ratio） */
+  /** tier 模式固定档位（1K/2K/4K；空 = 按预设像素自动推导） */
+  tierValue?: string | null
+  /** 比例/档位参数字段名（空 = ratio→aspect_ratio、tier→size） */
   ratioParamField?: string | null
+  /** response_format 透传（url / b64_json；空 = 请求体不带该字段） */
+  responseFormat?: string
 }
 
 interface BuildJimengRequestInput {
@@ -61,7 +97,14 @@ interface GenerationCapabilities {
   sizePresets?: unknown
 }
 
-const FORMATS = new Set<ImageApiFormat>(["openai", "jimeng", "gemini", "grsai"])
+const FORMATS = new Set<ImageApiFormat>([
+  "openai",
+  "jimeng",
+  "gemini",
+  "grsai",
+  "chat",
+  "midjourney",
+])
 
 function parseExtraConfig(value: unknown): Record<string, unknown> {
   if (value === undefined || value === null || value === "") return {}
@@ -169,16 +212,62 @@ export function validateGenerationCapabilities(
 export function validateImageModelConfig(input: ImageModelConfigInput): void {
   const format = input.apiFormat
   if (!FORMATS.has(format as ImageApiFormat)) {
-    throw new Error("图片模型仅支持 openai、jimeng、gemini 和 grsai 接口格式")
+    throw new Error(
+      "图片模型仅支持 openai、chat、gemini、midjourney、jimeng、grsai 接口格式",
+    )
   }
   const config = parseExtraConfig(input.extraConfig)
 
-  // openai / gemini：额外配置仅 quality（质量参数透传，值为管理员按上游文档填写的字符串）
-  if (format === "openai" || format === "gemini") {
-    rejectUnsupportedFields(config, new Set(["quality"]))
+  // openai（Images 协议）：quality（质量透传）+ sizeMode（尺寸传参模式）+
+  // tierValue（tier 固定档位）+ responseFormat（response_format 透传），
+  // 值为管理员按上游文档填写
+  if (format === "openai") {
+    rejectUnsupportedFields(
+      config,
+      new Set(["quality", "sizeMode", "tierValue", "responseFormat"]),
+    )
     const quality = config.quality
     if (quality !== undefined && typeof quality !== "string") {
       throw new Error("quality 必须是字符串")
+    }
+    if (
+      config.sizeMode !== undefined &&
+      !(IMAGE_SIZE_MODES as readonly string[]).includes(String(config.sizeMode))
+    ) {
+      throw new Error(`sizeMode 仅支持 ${IMAGE_SIZE_MODES.join("、")}`)
+    }
+    if (
+      config.tierValue !== undefined &&
+      !(GRSAI_IMAGE_SIZE_TIERS as readonly string[]).includes(
+        String(config.tierValue),
+      )
+    ) {
+      throw new Error(`tierValue 仅支持 ${GRSAI_IMAGE_SIZE_TIERS.join("、")}`)
+    }
+    if (
+      config.responseFormat !== undefined &&
+      !(IMAGE_RESPONSE_FORMATS as readonly string[]).includes(
+        String(config.responseFormat),
+      )
+    ) {
+      throw new Error(
+        `responseFormat 仅支持 ${IMAGE_RESPONSE_FORMATS.join("、")}`,
+      )
+    }
+    return
+  }
+
+  // chat（Chat 协议）/ gemini（Gemini 官方原生）：无尺寸/质量类透传配置
+  if (format === "chat" || format === "gemini") {
+    rejectUnsupportedFields(config, new Set())
+    return
+  }
+
+  // midjourney：仅 prompt 参数后缀（--ar 由所选比例自动生成，管理员无须也不应配置）
+  if (format === "midjourney") {
+    rejectUnsupportedFields(config, new Set(["mjFlags"]))
+    if (config.mjFlags !== undefined && typeof config.mjFlags !== "string") {
+      throw new Error("mjFlags 必须是字符串")
     }
     return
   }
@@ -229,13 +318,32 @@ export function sizeToRatio(size: string): string {
 }
 
 /**
- * OpenAI 标准生图请求体：POST {base}/v1/images/generations
+ * 解析尺寸传参模式（openai/gemini 共用）：
+ * extraConfig.sizeMode 优先；旧 gemini 行 useRatioParam=true 回退视为
+ * ratio（存量数据不迁移、行为不变）；都缺省为 pixels。
+ */
+export function resolveImageSizeMode(
+  extraConfig?: Record<string, unknown> | null,
+  legacyUseRatioParam?: boolean | null,
+): ImageSizeMode {
+  const raw = extraConfig?.sizeMode
+  if (raw === "pixels" || raw === "ratio" || raw === "tier") return raw
+  return legacyUseRatioParam === true ? "ratio" : "pixels"
+}
+
+/**
+ * OpenAI 兼容生图请求体：POST {base}/v1/images/generations
  *
- * - 尺寸默认走 size 字段（"1024x1536"；智能比例传 "auto"）
- * - gemini 格式可配置 useRatioParam：改为比例参数（默认字段 aspect_ratio，
- *   值由尺寸 gcd 归约，如 1024x1024 → 1:1），此时请求体不再携带 size
+ * - 尺寸传参模式（sizeMode，openai/gemini 共用；旧 useRatioParam 回退兼容）：
+ *   - pixels（默认）：size 字段传像素串（"1024x1536"；智能比例传 "auto"）
+ *   - ratio：比例参数（默认字段 aspect_ratio，值由尺寸 gcd 归约，如
+ *     1024x1024 → 1:1），此时请求体不再携带 size（nano banana 系中转）
+ *   - tier：清晰度档位（默认字段 size，值 1K/2K/4K 按预设总像素推导；
+ *     中转站约定字段名不一，可由 ratioParamField 覆盖为 image_size 等）
  * - 参考图以 URL 链接数组传入 image 字段（字段名可由 referenceImageField 覆盖）
  * - quality（可选）：管理员配置的质量参数原样透传（如 high/medium/low、hd/standard）
+ * - response_format（可选）：url / b64_json 透传（部分上游默认返回
+ *   b64、需显式要求才返回 URL，或反之）
  */
 export function buildOpenAiRequestBody(
   input: BuildOpenAiRequestInput,
@@ -245,14 +353,24 @@ export function buildOpenAiRequestBody(
     model: input.model,
     prompt: input.prompt,
   }
-  if (input.useRatioParam) {
+  const mode = resolveImageSizeMode(
+    { sizeMode: input.sizeMode },
+    input.useRatioParam,
+  )
+  if (mode === "ratio") {
     const field = input.ratioParamField?.trim() || DEFAULT_RATIO_FIELD
     body[field] = sizeToRatio(size)
+  } else if (mode === "tier") {
+    const field = input.ratioParamField?.trim() || DEFAULT_TIER_FIELD
+    body[field] = grsaiImageSizeTier(size, input.tierValue)
   } else {
     body.size = size
   }
   if (input.quality?.trim()) {
     body.quality = input.quality.trim()
+  }
+  if (input.responseFormat?.trim()) {
+    body.response_format = input.responseFormat.trim()
   }
   if (input.referenceImages.length > 0) {
     const field =
@@ -396,6 +514,328 @@ export function buildGrsaiRequestBody(
     body.images = input.referenceImages
   }
   return body
+}
+
+// ═══════════════ Chat 协议（OpenAI 兼容对话接口生图） ═══════════════
+
+/**
+ * Chat 生图请求体：POST {base}/v1/chat/completions
+ *
+ * - prompt 作为 user 消息文本；参考图以 image_url 多模态 part 附加（OpenAI
+ *   vision 消息形状，各类聚合渠道通用）；无参考图时 content 直接用纯文本
+ *   字符串（兼容面最宽）
+ * - 无尺寸/质量参数（协议本身不支持，尺寸由模型自行决定）
+ */
+export function buildChatImageRequestBody(input: {
+  model: string
+  prompt: string
+  referenceImages: string[]
+}): Record<string, unknown> {
+  const content =
+    input.referenceImages.length > 0
+      ? [
+          { type: "text", text: input.prompt },
+          ...input.referenceImages.map((url) => ({
+            type: "image_url",
+            image_url: { url },
+          })),
+        ]
+      : input.prompt
+  return {
+    model: input.model,
+    messages: [{ role: "user", content }],
+  }
+}
+
+/**
+ * 从 Chat 协议回复的 message.content 解析图片列表（返回 URL / data URL 数组）：
+ * - content 为分段数组时取 image_url part 的 url（兼容 image_url 为字符串或
+ *   {url} 对象、以及 output_url 变体）
+ * - 文本内容提取 markdown 图片链接 ![alt](url)，其次裸 data:URI 与常见
+ *   图片扩展名的 URL（部分聚合渠道直接回纯 URL 文本）
+ */
+export function extractChatImages(content: unknown): string[] {
+  const urls: string[] = []
+  const texts: string[] = []
+  const push = (u: unknown) => {
+    if (typeof u === "string" && u && !urls.includes(u)) urls.push(u)
+  }
+  const pushUrlPart = (part: Record<string, unknown>) => {
+    const iu = part.image_url ?? part.output_url ?? part.image
+    if (typeof iu === "string") push(iu)
+    else if (iu && typeof iu === "object") push((iu as Record<string, unknown>).url)
+    if (typeof part.url === "string") push(part.url)
+  }
+  if (typeof content === "string") {
+    texts.push(content)
+  } else if (Array.isArray(content)) {
+    for (const raw of content) {
+      if (typeof raw === "string") {
+        texts.push(raw)
+        continue
+      }
+      if (!raw || typeof raw !== "object") continue
+      const part = raw as Record<string, unknown>
+      if (part.type === "image_url" || part.type === "output_url" || part.type === "image") {
+        pushUrlPart(part)
+      }
+      if (typeof part.text === "string") texts.push(part.text)
+    }
+  }
+  if (urls.length === 0) {
+    const joined = texts.join("\n")
+    // markdown 图片链接
+    for (const m of joined.matchAll(/!\[[^\]]*\]\((\s*<)?([^)\s>]+)/g)) {
+      push(m[2])
+    }
+    if (urls.length === 0) {
+      // 裸 data URI 与常见图片扩展名 URL
+      for (const m of joined.matchAll(/data:image\/[a-z+]+;base64,[A-Za-z0-9+/=]+/g)) {
+        push(m[0])
+      }
+      for (const m of joined.matchAll(/https?:\/\/\S+\.(?:png|jpe?g|webp|gif)(?:\?\S*)?/gi)) {
+        push(m[0])
+      }
+    }
+  }
+  return urls
+}
+
+// ═══════════════ Gemini 协议（官方原生 :generateContent 生图） ═══════════════
+
+/** Gemini imageConfig.aspectRatio 支持值（官方生图模型固定十档；无像素级尺寸控制） */
+const GEMINI_SUPPORTED_RATIOS = [
+  "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9",
+] as const
+
+/**
+ * 把尺寸串换算成 Gemini aspectRatio：gcd 归约；不在支持集时按对数距离就近
+ * 吸附（复用 Grsai 同款算法，支持集不同）；"auto" 返回 null（省略 imageConfig，
+ * 由模型自定比例）。普通比例最大 14:1，超限钳到边界。
+ */
+export function geminiAspectRatio(size: string): string | null {
+  if (size === "auto") return null
+  const match = size.match(/^(\d+)x(\d+)$/i)
+  if (!match) return "1:1"
+  const width = Number(match[1])
+  const height = Number(match[2])
+  if (width <= 0 || height <= 0) return "1:1"
+  const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b))
+  const divisor = gcd(width, height)
+  let rw = width / divisor
+  let rh = height / divisor
+  // MJ/Gemini 普通模式画幅上限 14:1（含竖向），超限先钳到边界再吸附
+  if (rw / rh > 14) rw = 14 * rh
+  if (rh / rw > 14) rh = 14 * rw
+  const ratio = `${rw}:${rh}`
+  if ((GEMINI_SUPPORTED_RATIOS as readonly string[]).includes(ratio)) return ratio
+  const target = Math.log(rw / rh)
+  let best = "1:1"
+  let bestDist = Number.POSITIVE_INFINITY
+  for (const candidate of GEMINI_SUPPORTED_RATIOS) {
+    const [cw, ch] = candidate.split(":").map(Number)
+    const dist = Math.abs(Math.log(cw / ch) - target)
+    if (dist < bestDist) {
+      bestDist = dist
+      best = candidate
+    }
+  }
+  return best
+}
+
+/** Gemini 参考图（服务端取图后转 base64 的 inlineData part 载荷） */
+export interface GeminiInlineImage {
+  mimeType: string
+  data: string
+}
+
+/**
+ * Gemini 原生生图请求体：POST {base}/v1beta/models/{model}:generateContent
+ *
+ * - generationConfig.responseModalities 必须含 IMAGE 才返回图片
+ * - 比例生图：imageConfig.aspectRatio（十档；"auto" 省略该节）
+ * - 参考图以 inline_data base64 part 附加（官方协议不接受图片 URL）
+ */
+export function buildGeminiImageRequestBody(input: {
+  prompt: string
+  imageSize: string
+  inlineImages: GeminiInlineImage[]
+}): Record<string, unknown> {
+  const parts: Array<Record<string, unknown>> = [{ text: input.prompt }]
+  for (const img of input.inlineImages) {
+    parts.push({ inline_data: { mime_type: img.mimeType, data: img.data } })
+  }
+  const aspectRatio = geminiAspectRatio(input.imageSize || DEFAULT_IMAGE_SIZE)
+  const generationConfig: Record<string, unknown> = {
+    responseModalities: ["TEXT", "IMAGE"],
+    ...(aspectRatio ? { imageConfig: { aspectRatio } } : {}),
+  }
+  return {
+    contents: [{ role: "user", parts }],
+    generationConfig,
+  }
+}
+
+/**
+ * 从 Gemini generateContent 响应解析图片 data URL 列表（inlineData /
+ * inline_data part；兼容 data 为带前缀 data URL 或裸 base64）。
+ */
+export function extractGeminiImages(data: unknown): string[] {
+  if (!data || typeof data !== "object") return []
+  const obj = data as Record<string, unknown>
+  const candidates = obj.candidates
+  if (!Array.isArray(candidates) || candidates.length === 0) return []
+  const first = candidates[0]
+  if (!first || typeof first !== "object") return []
+  const content = (first as Record<string, unknown>).content
+  if (!content || typeof content !== "object") return []
+  const parts = (content as Record<string, unknown>).parts
+  if (!Array.isArray(parts)) return []
+  const urls: string[] = []
+  for (const raw of parts) {
+    if (!raw || typeof raw !== "object") continue
+    const part = raw as Record<string, unknown>
+    const inline = (part.inlineData ?? part.inline_data) as
+      | Record<string, unknown>
+      | undefined
+    const mimeType =
+      (inline?.mimeType as string) ?? (inline?.mime_type as string) ?? "image/png"
+    const base64 = inline?.data
+    if (typeof base64 === "string" && base64) {
+      urls.push(
+        base64.startsWith("data:")
+          ? base64
+          : `data:${mimeType};base64,${base64}`,
+      )
+    }
+  }
+  return urls
+}
+
+/** 从 Gemini 错误响应提取 message（{error: {message, status}} 常见形态） */
+export function extractGeminiErrorMessage(data: unknown): string | null {
+  if (!data || typeof data !== "object") return null
+  const err = (data as Record<string, unknown>).error
+  if (err && typeof err === "object") {
+    const obj = err as Record<string, unknown>
+    const msg = obj.message ?? obj.status
+    if (typeof msg === "string" && msg) return msg
+  }
+  if (typeof err === "string" && err) return err
+  return null
+}
+
+// ═══════════════ Midjourney（MJ Proxy 协议，aipaiai） ═══════════════
+
+/** 归一化 MJ Proxy 根地址：容忍配到域名 / /mj / 完整 submit 路径 */
+export function resolveMidjourneyBase(endpoint: string): string {
+  const url = endpoint.replace(/\/+$/, "")
+  if (url.endsWith("/mj/submit/imagine")) {
+    return url.slice(0, -"/mj/submit/imagine".length)
+  }
+  if (url.endsWith("/mj")) return url.slice(0, -"/mj".length)
+  return url
+}
+
+/** MJ imagine 提交端点 */
+export function resolveMidjourneySubmitEndpoint(endpoint: string): string {
+  return `${resolveMidjourneyBase(endpoint)}/mj/submit/imagine`
+}
+
+/** MJ 任务查询端点（GET，返回任务对象本身） */
+export function resolveMidjourneyFetchEndpoint(
+  endpoint: string,
+  taskId: string,
+): string {
+  return `${resolveMidjourneyBase(endpoint)}/mj/task/${encodeURIComponent(taskId)}/fetch`
+}
+
+/**
+ * 构造 MJ imagine 提交 prompt：
+ * - 参考图（公网 URL）以空格拼接在 prompt 开头（协议约定）
+ * - --ar 由所选比例 gcd 归约生成（auto 时省略）；普通模式画幅上限 14:1，
+ *   超限钳到边界
+ * - 管理员配置的参数后缀 mjFlags 追加在末尾（自动剔除其中可能冲突的 --ar）
+ */
+export function buildMidjourneyPrompt(input: {
+  prompt: string
+  imageSize: string
+  referenceImages: string[]
+  flags?: string | null
+}): string {
+  const parts: string[] = [...input.referenceImages, input.prompt.trim()]
+  const ar = geminiAspectRatio(input.imageSize || DEFAULT_IMAGE_SIZE)
+  if (ar) parts.push(`--ar ${ar}`)
+  const flags = (input.flags ?? "")
+    .replace(/(^|\s)--ar\s+\S+/gi, "$1")
+    .trim()
+  if (flags) parts.push(flags)
+  return parts.filter(Boolean).join(" ")
+}
+
+/**
+ * 解析 MJ imagine 提交响应：{code, description, result}。
+ * code 为 1/21/22 且 result 为非空字符串才算提交成功（HTTP 200 不代表成功）。
+ */
+export function parseMidjourneySubmitResponse(
+  data: unknown,
+): { ok: true; taskId: string } | { ok: false; error: string } {
+  if (!data || typeof data !== "object") {
+    return { ok: false, error: "MJ 提交响应格式无法识别" }
+  }
+  const obj = data as Record<string, unknown>
+  const code = Number(obj.code)
+  const description =
+    typeof obj.description === "string" ? obj.description : "未知错误"
+  if ((code === 1 || code === 21 || code === 22) && typeof obj.result === "string" && obj.result) {
+    return { ok: true, taskId: obj.result }
+  }
+  return { ok: false, error: `MJ 提交失败（code ${code || "?"}）：${description}` }
+}
+
+/** MJ 任务查询态（status 大写枚举；splitStatus 小写枚举） */
+export interface MidjourneyTaskState {
+  /** NOT_START / IN_PROGRESS / SUCCESS / FAILURE / 未知 */
+  status: string
+  /** waiting / polling / succeeded / failed / expired（四图拆分） */
+  splitStatus: string | null
+  /** 拆分后图片（index 1-4 对应四宫格位置） */
+  images: Array<{ url: string; width: number | null; height: number | null }>
+  progress: string | null
+  failReason: string | null
+}
+
+/** 解析 /mj/task/{id}/fetch 返回的任务对象 */
+export function extractMidjourneyTaskState(data: unknown): MidjourneyTaskState {
+  const state: MidjourneyTaskState = {
+    status: "",
+    splitStatus: null,
+    images: [],
+    progress: null,
+    failReason: null,
+  }
+  if (!data || typeof data !== "object") return state
+  const obj = data as Record<string, unknown>
+  if (typeof obj.status === "string") state.status = obj.status.toUpperCase()
+  if (typeof obj.splitStatus === "string") state.splitStatus = obj.splitStatus
+  if (typeof obj.progress === "string") state.progress = obj.progress
+  if (typeof obj.failReason === "string" && obj.failReason) {
+    state.failReason = obj.failReason
+  }
+  if (Array.isArray(obj.images)) {
+    for (const raw of obj.images) {
+      if (!raw || typeof raw !== "object") continue
+      const img = raw as Record<string, unknown>
+      const url = typeof img.url === "string" ? img.url : null
+      if (!url) continue
+      state.images.push({
+        url,
+        width: Number(img.width) > 0 ? Number(img.width) : null,
+        height: Number(img.height) > 0 ? Number(img.height) : null,
+      })
+    }
+  }
+  return state
 }
 
 // ═══════════════ 生图结果共享类型（供适配器与队列消费者使用） ═══════════════

@@ -53,6 +53,15 @@ export const inventoryManualMovementSchema = z
   })
 export type InventoryManualMovementInput = z.infer<typeof inventoryManualMovementSchema>
 
+/** 库存调整（盘点口径）：输入当前仓库库存目标值，事务内按差值生成盘点入库/出库流水 */
+export const inventoryAdjustStockSchema = z.object({
+  productId: z.string().uuid(),
+  /** 目标库存（当前仓库库存调整为该值；差值正=盘点入库、负=盘点出库） */
+  targetQty: z.number().int().min(0, "目标库存须为非负整数"),
+  reason: z.string().trim().min(1, "原因必填").max(255),
+})
+export type InventoryAdjustStockInput = z.infer<typeof inventoryAdjustStockSchema>
+
 /** 库存总览查询（q 搜货号/款名；status=六态筛选 chips） */
 export const inventoryOverviewQuerySchema = z.object({
   q: z.string().trim().max(64).optional(),

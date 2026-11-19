@@ -174,12 +174,12 @@ export async function createModelAction(input: Record<string, unknown>) {
       sizePresets: d.sizePresets.length > 0 ? d.sizePresets : null,
       supportsImageCount: d.supportsImageCount,
       supportsSmartSize: d.supportsSmartSize,
-      // 比例传参仅 gemini 格式生效，其余格式强制复位（防格式切换残留）
-      useRatioParam: d.apiFormat === "gemini" && d.useRatioParam,
+      // useRatioParam 为旧「Gemini 系中转」开关（该类行已随 0102 迁移为
+      // openai/Images 协议，比例行为由 extraConfig.sizeMode 承载）；新配置
+      // 不再写 true。ratioParamField 在 Images 协议的 ratio/tier 模式下生效
+      useRatioParam: false,
       ratioParamField:
-        d.apiFormat === "gemini" && d.ratioParamField
-          ? d.ratioParamField
-          : null,
+        d.apiFormat === "openai" && d.ratioParamField ? d.ratioParamField : null,
       visibleInCreate: d.visibleInCreate,
       visibleInWorkspace: d.visibleInWorkspace,
       visibleInProduct: d.visibleInProduct,
@@ -246,7 +246,11 @@ export async function updateModelAction(
     jimengResolution: d.jimengResolution,
     jimengN: d.jimengN,
     quality: d.quality,
+    sizeMode: d.sizeMode,
+    tierValue: d.tierValue,
+    responseFormat: d.responseFormat,
     grsaiImageSize: d.grsaiImageSize,
+    mjFlags: d.mjFlags,
   })
 
   try {
@@ -275,12 +279,12 @@ export async function updateModelAction(
     set.supportsImageCount = d.supportsImageCount
   if (d.supportsSmartSize !== undefined)
     set.supportsSmartSize = d.supportsSmartSize
-  // 比例传参仅 gemini 格式生效，其余格式强制复位（防格式切换残留）
-  if (d.useRatioParam !== undefined)
-    set.useRatioParam = apiFormat === "gemini" && d.useRatioParam
+  // useRatioParam 为旧「Gemini 系中转」开关（新配置不再写 true，存量行为由
+  // extraConfig.sizeMode 承载）；ratioParamField 在 Images 协议 ratio/tier 模式生效
+  if (d.useRatioParam !== undefined) set.useRatioParam = false
   if (d.ratioParamField !== undefined)
     set.ratioParamField =
-      apiFormat === "gemini" && d.ratioParamField ? d.ratioParamField : null
+      apiFormat === "openai" ? d.ratioParamField || null : null
   if (d.visibleInCreate !== undefined) set.visibleInCreate = d.visibleInCreate
   if (d.visibleInWorkspace !== undefined)
     set.visibleInWorkspace = d.visibleInWorkspace

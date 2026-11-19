@@ -13,6 +13,7 @@ import {
   users,
 } from "@/db/schema"
 import {
+  inventoryAdjustStockSchema,
   inventoryManualMovementSchema,
   inventoryMovementsQuerySchema,
   inventoryOverviewQuerySchema,
@@ -25,6 +26,7 @@ import {
   blendedDailySales,
   getMainWarehouseId,
   getInventoryStatusConfig,
+  getStockQtyForUpdate,
   InsufficientStockError,
   loadDailySalesBySn,
   loadTemuNetStockBySn,
@@ -215,6 +217,8 @@ export type InventoryOverviewRow = {
   shipState: "auto" | "manual"
   note: string | null
   totalQty: number
+  /** 主仓库存（单仓制出入库/调整的写入口径；历史义乌仓行不计入） */
+  mainQty: number
   /** 在产余量 = Σ(数量−已入库−直发) 未完结生产单 */
   producingQty: number
   /** TEMU 净库存（仓内−待发货；归一化货号聚合，0089 起有值） */
@@ -233,6 +237,8 @@ export async function getInventoryOverviewAction(input: unknown = {}) {
   const q = inventoryOverviewQuerySchema.safeParse(input)
   if (!q.success) return { ok: false as const, error: "参数错误" }
   await ensureDefaultWarehouses(g.enterpriseId)
+  // 主仓 id：带出各行主仓量（库存调整等写入侧固定主仓，预览/展示需与写入口径一致）
+  const mainWhId = await getMainWarehouseId(g.enterpriseId)
 
   const products = await db
     .select()
@@ -270,6 +276,7 @@ export async function getInventoryOverviewAction(input: unknown = {}) {
       .select({
         productId: inventoryStocks.productId,
         total: sql<number>`coalesce(sum(${inventoryStocks.qty}), 0)::int`,
+        mainTotal: sql<number>`coalesce(sum(${inventoryStocks.qty}) filter (where ${inventoryStocks.warehouseId} = ${mainWhId}), 0)::int`,
       })
       .from(inventoryStocks)
       .where(
@@ -301,11 +308,12 @@ export async function getInventoryOverviewAction(input: unknown = {}) {
     loadTemuNetStockBySn(g.enterpriseId),
   ])
 
-  const stockMap = new Map(stockRows.map((r) => [r.productId, r.total]))
+  const stockMap = new Map(stockRows.map((r) => [r.productId, r]))
   const producingMap = new Map(producingRows.map((r) => [r.productId, r.remain]))
 
   const rows: InventoryOverviewRow[] = products.map((p) => {
-    const totalQty = stockMap.get(p.id) ?? 0
+    const totalQty = stockMap.get(p.id)?.total ?? 0
+    const mainQty = stockMap.get(p.id)?.mainTotal ?? 0
     const producingQty = producingMap.get(p.id) ?? 0
     const snKey = normalizeSn(p.productCode)
     const temuStock = temuNet.get(snKey) ?? 0
@@ -334,6 +342,7 @@ export async function getInventoryOverviewAction(input: unknown = {}) {
       shipState: p.shipState,
       note: p.note,
       totalQty,
+      mainQty,
       producingQty,
       temuStock,
       dailySales,
@@ -461,6 +470,67 @@ export async function manualMovementAction(input: unknown) {
   return { ok: true as const }
 }
 
+/**
+ * 库存调整（盘点口径）：输入当前仓库库存目标值，事务内行锁读当前量，
+ * 按差值自动生成一条盘点流水（正=盘点入库、负=盘点出库）；目标=当前拦截。
+ */
+export async function adjustStockAction(input: unknown) {
+  const g = await requireInventory()
+  if (!g.ok) return { ok: false as const, error: g.error }
+  const q = inventoryAdjustStockSchema.safeParse(input)
+  if (!q.success) return { ok: false as const, error: q.error.issues[0]?.message ?? "参数错误" }
+
+  const [product] = await db
+    .select({ id: inventoryProducts.id, code: inventoryProducts.productCode })
+    .from(inventoryProducts)
+    .where(
+      and(
+        eq(inventoryProducts.id, q.data.productId),
+        eq(inventoryProducts.enterpriseId, g.enterpriseId),
+      ),
+    )
+    .limit(1)
+  if (!product) return { ok: false as const, error: "商品档案不存在" }
+  // 单仓制：仓库固定主仓
+  const mainWhId = await resolveMainWarehouseId(g.enterpriseId)
+  if (!mainWhId) return { ok: false as const, error: "库存未初始化，请先访问库存总览" }
+
+  try {
+    return await db.transaction(async (tx) => {
+      const current = await getStockQtyForUpdate(tx, q.data.productId, mainWhId)
+      const diff = q.data.targetQty - current
+      if (diff === 0) {
+        return { ok: false as const, error: `目标库存与当前库存一致（${current} 件），无需调整` }
+      }
+      // reason 列 varchar(255)：schema 只校验用户段，服务端拼前缀后超长会以数据库
+      // 错误上抛——截断用户原因尾部保证总长 ≤255
+      const reasonPrefix = `调整：${current}→${q.data.targetQty}（${diff > 0 ? "+" : ""}${diff}）｜`
+      await applyMovements(tx, [
+        {
+          enterpriseId: g.enterpriseId,
+          productId: q.data.productId,
+          warehouseId: mainWhId,
+          type: "stocktake",
+          qtyChange: diff,
+          boxQty: null,
+          refType: "stocktake",
+          reason: `${reasonPrefix}${q.data.reason.slice(0, Math.max(0, 255 - reasonPrefix.length))}`,
+          createdBy: g.ctx.user.id,
+        },
+      ])
+      return { ok: true as const }
+    })
+  } catch (err) {
+    if (err instanceof InsufficientStockError) {
+      return {
+        ok: false as const,
+        error: `库存不足：货号 ${product.code} 当前仅 ${err.available} 件`,
+      }
+    }
+    throw err
+  }
+}
+
 // ---------- 货号详情 / 搜索 ----------
 
 export async function getProductDetailAction(productId: string) {
@@ -559,10 +629,13 @@ export async function searchProductsAction(input: unknown = {}) {
 
   if (products.length === 0) return { ok: true as const, rows: [] }
 
+  // 主仓量随行带出（库存调整弹窗差值预览基准；与写入口径一致，义乌仓历史行不计）
+  const mainWhId = await getMainWarehouseId(g.enterpriseId)
   const sums = await db
     .select({
       productId: inventoryStocks.productId,
       total: sql<number>`coalesce(sum(${inventoryStocks.qty}), 0)::int`,
+      mainTotal: sql<number>`coalesce(sum(${inventoryStocks.qty}) filter (where ${inventoryStocks.warehouseId} = ${mainWhId}), 0)::int`,
     })
     .from(inventoryStocks)
     .where(
@@ -572,11 +645,15 @@ export async function searchProductsAction(input: unknown = {}) {
       ),
     )
     .groupBy(inventoryStocks.productId)
-  const sumMap = new Map(sums.map((s) => [s.productId, s.total]))
+  const sumMap = new Map(sums.map((s) => [s.productId, s]))
 
   return {
     ok: true as const,
-    rows: products.map((p) => ({ ...p, totalQty: sumMap.get(p.id) ?? 0 })),
+    rows: products.map((p) => ({
+      ...p,
+      totalQty: sumMap.get(p.id)?.total ?? 0,
+      mainQty: sumMap.get(p.id)?.mainTotal ?? 0,
+    })),
   }
 }
 

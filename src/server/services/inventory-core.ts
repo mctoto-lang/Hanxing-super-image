@@ -265,7 +265,8 @@ export type StockStatus =
 
 /**
  * 六态推导（可售天数 = (仓库库存+TEMU净库存+在产余量) ÷ 加权日销）：
- * - 停止生产分支优先：库存0=停产（discontinued）、有库存=清仓（clearance）
+ * - 停止生产分支：库存0=停产（discontinued）；有库存时滞销判定优先于清仓——
+ *   窗口销量 ≤ 上限=滞销（stagnant），否则=清仓（clearance）
  * - 持续生产：库存0=缺货；滞销判定窗（企业级可配 N 天）有销售行且合计 ≤ 上限
  *   =滞销（stagnant，先于补货/正常判定——滞销货不需要补货警示）；
  *   日销>0 且 可售天数<阈值=补货（restock）；其余（含无销速数据未铺货/新品）=正常
@@ -290,7 +291,12 @@ export function deriveStockStatus(args: {
         ) / 10
       : null
   if (args.productionState === "stopped") {
-    return { status: args.totalQty <= 0 ? "discontinued" : "clearance", availableDays }
+    // 无库存=停产仍最高优先；有库存时滞销判定优先于清仓显示（2026-11-19 口径）
+    if (args.totalQty <= 0) return { status: "discontinued", availableDays }
+    if (args.stagnantWindowQty != null && args.stagnantWindowQty <= args.stagnantMaxQty) {
+      return { status: "stagnant", availableDays }
+    }
+    return { status: "clearance", availableDays }
   }
   if (args.totalQty <= 0) return { status: "out_of_stock", availableDays }
   // 滞销窗口径优先于补货/正常：窗口销量 ≤ 上限即滞销（滞销货不需要补货警示）

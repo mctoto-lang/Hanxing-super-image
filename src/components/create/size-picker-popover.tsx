@@ -10,6 +10,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { parseImageSize, type SizePreset } from "@/lib/image-sizes"
+import { RatioIcon } from "@/components/model-form/ratio-icon"
 
 const COUNTS = [1, 2, 3, 4]
 const AUTO = "auto"
@@ -19,11 +20,15 @@ const AUTO = "auto"
  *
  * 一个 Popover 内含三段：
  * 1. 选择比例：横向单行分段样式。supportsAuto 时首项「智能」(value=auto)。
- *    被后台关闭的比例(enabled=false)置灰不可选。
+ *    被后台关闭的比例(enabled=false)置灰不可选。比例图标按预设的图标样式
+ *    预置项渲染（描边框/实底块/形状图标，与管理端所见一致）。
  * 2. 选择生成数量：supportsCount 时显示 1-4（铺满整行）。即梦模型下选择为
- *    「次数」（每次产出模型配置的 N 张），由 countLabel/countHint 覆盖文案。
+ *    「次数」（每次产出模型配置的 N 张）、Midjourney 为「任务数」（每任务 4 张），
+ *    由 countLabel/countHint 覆盖文案。
  * 3. 选择尺寸：宽 × 高 输入（W/H 前缀、右对齐），实时生效（输入即取消比例高亮，
- *    生图按自定义尺寸进行）；value=auto 时禁用。单位 PX。
+ *    生图按自定义尺寸进行）；value=auto 时禁用。单位 PX。比例协议模型
+ *    （Gemini 官方 / Midjourney，或固定档位的 Images 模型）传 customSizeHint
+ *    置灰输入并提示原因。
  */
 export function SizePickerPopover({
   presets,
@@ -35,6 +40,7 @@ export function SizePickerPopover({
   onCountChange,
   countLabel = "选择生成数量",
   countHint,
+  customSizeHint,
 }: {
   presets: SizePreset[]
   supportsAuto: boolean
@@ -43,10 +49,12 @@ export function SizePickerPopover({
   supportsCount: boolean
   count: number
   onCountChange: (n: number) => void
-  /** 数量段标题（即梦模型传「选择次数」） */
+  /** 数量段标题（即梦模型传「选择次数」、Midjourney 传「选择任务数」） */
   countLabel?: string
   /** 数量段下方提示（如「每次 8 张 × 次数，按张计费」） */
   countHint?: string
+  /** 非空时自定义宽高置灰并提示原因（比例协议/固定档位模型） */
+  customSizeHint?: string
 }) {
   const [open, setOpen] = React.useState(false)
   const isAuto = value === AUTO
@@ -100,7 +108,11 @@ export function SizePickerPopover({
         {isAuto ? (
           <AutoBadge className="shrink-0 text-primary" />
         ) : (
-          <RatioIcon size={parseImageSize(value)} className="shrink-0" />
+          <RatioIcon
+            size={parseImageSize(value)}
+            icon={selectedPreset?.icon}
+            className="shrink-0"
+          />
         )}
         <span className="max-w-[100px] truncate">{triggerLabel()}</span>
         {/* 分割线 + 生成数量（仅模型支持数量时显示） */}
@@ -143,6 +155,7 @@ export function SizePickerPopover({
               >
                 <RatioIcon
                   size={{ width: s.width, height: s.height }}
+                  icon={s.icon}
                   className={cn(
                     !isAuto && s.value === value && s.enabled && "text-primary",
                   )}
@@ -182,10 +195,15 @@ export function SizePickerPopover({
           </div>
         ) : null}
 
-        {/* 3. 选择尺寸（W/H 前缀、右对齐、实时生效） */}
+        {/* 3. 选择尺寸（W/H 前缀、右对齐、实时生效；比例协议/固定档位置灰） */}
         <div className="mt-3">
           <div className="mb-1.5 text-xs font-medium text-muted-foreground">
-            选择尺寸{isAuto ? "（智能模式下不可用）" : ""}
+            选择尺寸
+            {customSizeHint
+              ? `（${customSizeHint}）`
+              : isAuto
+                ? "（智能模式下不可用）"
+                : ""}
           </div>
           <div className="flex items-center gap-1.5">
             <div className="relative flex-1">
@@ -198,7 +216,8 @@ export function SizePickerPopover({
                 max={8192}
                 value={customW}
                 onChange={handleWidth}
-                disabled={isAuto}
+                disabled={isAuto || !!customSizeHint}
+                title={customSizeHint}
                 className="h-8 w-full pl-6 pr-2 text-right text-sm tabular-nums"
               />
             </div>
@@ -213,14 +232,18 @@ export function SizePickerPopover({
                 max={8192}
                 value={customH}
                 onChange={handleHeight}
-                disabled={isAuto}
+                disabled={isAuto || !!customSizeHint}
+                title={customSizeHint}
                 className="h-8 w-full pl-6 pr-2 text-right text-sm tabular-nums"
               />
             </div>
             <span className="shrink-0 text-[11px] font-medium text-muted-foreground">
-              PX
+              {customSizeHint ? "—" : "PX"}
             </span>
           </div>
+          {customSizeHint ? (
+            <p className="mt-1 text-[11px] text-muted-foreground">{customSizeHint}</p>
+          ) : null}
         </div>
       </PopoverContent>
     </Popover>
@@ -271,43 +294,4 @@ function RatioChip({
       {children}
     </button>
   )
-}
-
-/** 按宽高比绘制比例示意图标（按比例缩放到 boxSize 框内，默认 14） */
-function RatioIcon({
-  size,
-  boxSize = 14,
-  className,
-}: {
-  size: { width: number; height: number }
-  boxSize?: number
-  className?: string
-}) {
-  const max = boxSize
-  const ratio = size.width / size.height
-  let w: number, h: number
-  if (ratio >= 1) {
-    w = max
-    h = Math.max(4, Math.round(max / ratio))
-  } else {
-    h = max
-    w = Math.max(4, Math.round(max * ratio))
-  }
-  return (
-    <span
-      className={cn("inline-flex items-center justify-center", className)}
-      style={{ width: max, height: max }}
-    >
-      <span
-        className={cn("block rounded-[2px] border", activeBorderClass(className))}
-        style={{ width: w, height: h }}
-      />
-    </span>
-  )
-}
-
-/** 给 RatioIcon 内部矩形一个默认边框色（未选中时） */
-function activeBorderClass(className?: string): string {
-  if (className?.includes("text-primary")) return "border-primary"
-  return "border-current opacity-70"
 }

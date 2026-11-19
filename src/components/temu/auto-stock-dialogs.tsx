@@ -209,6 +209,10 @@ export function AutoApplyDialog({
   const [quantities, setQuantities] = React.useState<Record<string, string>>({})
   /** 勾选行（行键；探测出正上限自动勾选，联动批量申报） */
   const [selected, setSelected] = React.useState<Set<string>>(new Set())
+  /** 用户明确取消的行（手动取消勾选 / 筛选取消 / 取消全选）：重新探测不再自动勾选
+   *  复活（只回填上限），手动重新勾选或全选时移除——保证「取消勾选后数量随之删减」
+   *  的口径在二次探测后依然成立 */
+  const excludedRef = React.useRef(new Set<string>())
   const [probing, setProbing] = React.useState(false)
   const [progress, setProgress] = React.useState<{ done: number; total: number } | null>(null)
   const [cursor, setCursor] = React.useState(-1)
@@ -319,6 +323,25 @@ export function AutoApplyDialog({
   /** 探测目标（禁选行不探测——不可申报也无须消耗官方调用） */
   const probeTargets = orderedRows.filter((r) => blockReason(r) == null)
 
+  // 禁选口径异步晚到（停止补货集合/库存引用后到）时，探测期自动勾选的行可能已变
+  // 禁选——到位后修剪勾选集，消除「禁选行仍计数」的 footer 虚高（提交另有
+  // applicable 硬过滤兜底，此处只管展示口径；同 AutoJoinDialog）
+  React.useEffect(() => {
+    setSelected((s) => {
+      if (s.size === 0) return s
+      const n = new Set(s)
+      let changed = false
+      for (const r of rows) {
+        if (n.has(rowKey(r)) && blockReason(r) != null) {
+          n.delete(rowKey(r))
+          changed = true
+        }
+      }
+      return changed ? n : s
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, stoppedSkcs, invMap])
+
   /** 可勾选行（停止补货/本地库存=0 禁选；探测出上限 0 的行申报无意义，同样禁用勾选） */
   const checkableRows = visibleRows.filter(
     (r) => blockReason(r) == null && limits[rowKey(r)]?.max !== 0,
@@ -330,8 +353,19 @@ export function AutoApplyDialog({
   const toggleAll = () => {
     setSelected((s) => {
       const n = new Set(s)
-      if (allChecked || someChecked) checkableRows.forEach((r) => n.delete(rowKey(r)))
-      else checkableRows.forEach((r) => n.add(rowKey(r)))
+      if (allChecked || someChecked) {
+        // 取消全部：取消的行记入排除集，重探测不复活
+        checkableRows.forEach((r) => {
+          n.delete(rowKey(r))
+          excludedRef.current.add(rowKey(r))
+        })
+      } else {
+        // 全选：清除这些行的排除标记
+        checkableRows.forEach((r) => {
+          n.add(rowKey(r))
+          excludedRef.current.delete(rowKey(r))
+        })
+      }
       return n
     })
   }
@@ -369,13 +403,16 @@ export function AutoApplyDialog({
             const max = valid.length > 0 ? Math.min(...valid) : null
             next[rowKey(row)] = { max, perSku: r.result.skuLimits }
             if (max != null && max > 0) {
-              // 回填申报量 + 自动勾选（0=不可申报无意义，不勾选）
+              // 回填申报量 + 自动勾选（0=不可申报无意义，不勾选）；用户已明确取消的
+              // 行不复活——重探测只回填上限，勾选态尊重先前的取消操作
               setQuantities((s) => ({ ...s, [rowKey(row)]: String(max) }))
-              setSelected((s) => {
-                const n = new Set(s)
-                n.add(rowKey(row))
-                return n
-              })
+              if (!excludedRef.current.has(rowKey(row))) {
+                setSelected((s) => {
+                  const n = new Set(s)
+                  n.add(rowKey(row))
+                  return n
+                })
+              }
             } else {
               setSelected((s) => {
                 if (!s.has(rowKey(row))) return s
@@ -428,7 +465,10 @@ export function AutoApplyDialog({
     )
     setSelected((s) => {
       const n = new Set(s)
-      toRemove.forEach((r) => n.delete(rowKey(r)))
+      toRemove.forEach((r) => {
+        n.delete(rowKey(r))
+        excludedRef.current.add(rowKey(r))
+      })
       return n
     })
     setFilterOpen(false)
@@ -449,6 +489,10 @@ export function AutoApplyDialog({
   const applicable = orderedRows.filter(
     (r) => blockReason(r) == null && selected.has(rowKey(r)) && qtyState(r)?.valid,
   )
+
+  /** footer「已勾选」计数限定当前筛选可见行（与 applicable 同基），避免搜索隐藏行
+   *  计入 selected 导致「取消勾选后数量不减」的误读 */
+  const visibleChecked = visibleRows.filter((r) => selected.has(rowKey(r))).length
 
   const runApply = () => {
     // 按店铺分组（全部店铺视图跨店合并）→ 每店 ≤5/块串行（块小让逐块聚焦可见；服务端
@@ -642,8 +686,13 @@ export function AutoApplyDialog({
                         onCheckedChange={() =>
                           setSelected((s) => {
                             const n = new Set(s)
-                            if (n.has(rowKey(r))) n.delete(rowKey(r))
-                            else n.add(rowKey(r))
+                            if (n.has(rowKey(r))) {
+                              n.delete(rowKey(r))
+                              excludedRef.current.add(rowKey(r))
+                            } else {
+                              n.add(rowKey(r))
+                              excludedRef.current.delete(rowKey(r))
+                            }
                             return n
                           })
                         }
@@ -793,7 +842,7 @@ export function AutoApplyDialog({
             {doneCount > 0
               ? `申报结果：成功 ${okDone} / 失败 ${doneCount - okDone}（悬停状态列看原因）`
               : applicable.length > 0
-                ? `已勾选 ${selected.size} 行，其中 ${applicable.length} 行数量有效待申报`
+                ? `已勾选 ${visibleChecked} 行，其中 ${applicable.length} 行数量有效待申报`
                 : "勾选并探测后按「批量申报」提交（数量需 ≤ 可申报上限）"}
           </span>
           <Button variant="outline" size="sm" onClick={onClose} disabled={busy}>

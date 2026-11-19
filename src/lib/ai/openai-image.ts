@@ -1,14 +1,17 @@
 /**
- * OpenAI 标准生图适配器（openai / gemini 格式共用）
+ * Images 协议适配器（openai 格式；OpenAI 标准图片接口）
  *
- * POST {apiEndpoint}/v1/images/generations（apiEndpoint 配到 /v1 结尾，
- * 如 https://api.openai.com/v1），Bearer 鉴权，同步 JSON 响应。
+ * 按有无参考图分流（2026-11 规范化，行为对齐官方规范）：
+ * - 无参考图：POST {apiEndpoint}/v1/images/generations（JSON；
+ *   apiEndpoint 配到 /v1 结尾，如 https://api.openai.com/v1）
+ * - 带参考图：POST {apiEndpoint}/v1/images/edits（multipart 文件上传，
+ *   服务端先下载参考图 URL 转 Blob 再以 image/image[] 文件字段附加）
  *
- * - 请求体：{ model, prompt, size, image: [参考图URL...], quality? }
- *   尺寸默认走 size 字段；gemini 格式可配置 useRatioParam 改为比例参数
- *   （默认字段 aspect_ratio，值由尺寸 gcd 归约）；参考图以 URL 链接数组
- *   传入（默认字段 image，可由模型 referenceImageField 覆盖）；
- *   quality 为管理员配置的可选透传参数。
+ * - 请求体：{ model, prompt, size|比例|档位, quality?, response_format? }
+ *   尺寸传参模式（sizeMode）三态：pixels 走 size 字段 / ratio 走比例参数
+ *   （默认 aspect_ratio，值由尺寸 gcd 归约）/ tier 走清晰度档位（默认
+ *   size，1K/2K/4K 按预设像素推导，可由 tierValue 固定档位）；旧 gemini 行
+ *   useRatioParam=true 回退视为 ratio。
  * - 每张图一个独立工作单元（等待并发槽位 → fetch → 解析 → 转存），
  *   张与张之间互不阻塞、各自独立超时；单张失败不影响其他张，
  *   支持 indexes 子集重试补张。
@@ -20,6 +23,7 @@ import { describeFetchError } from "@/lib/fetch-error"
 import {
   buildOpenAiRequestBody,
   type ImageGenResult,
+  type ImageSizeMode,
 } from "@/lib/ai/image-model-config"
 import type { SavedImage } from "@/lib/storage/image-dim"
 
@@ -30,10 +34,16 @@ export interface OpenAiImageModel {
   referenceImageField?: string | null
   /** 质量参数透传（管理员配置；空 = 请求体不带 quality 字段） */
   quality?: string | null
-  /** gemini 格式：以比例参数代替尺寸参数（openai 格式忽略） */
+  /** 尺寸传参模式（新配置，优先于旧 useRatioParam 回退） */
+  sizeMode?: ImageSizeMode
+  /** 旧 gemini 配置：以比例参数代替尺寸参数 */
   useRatioParam?: boolean
-  /** gemini 格式：比例参数字段名（空 = aspect_ratio） */
+  /** tier 模式固定档位（1K/2K/4K；空 = 按预设像素自动推导） */
+  tierValue?: string | null
+  /** 比例/档位参数字段名（空 = ratio→aspect_ratio、tier→size） */
   ratioParamField?: string | null
+  /** response_format 透传（url / b64_json；空 = 请求体不带该字段） */
+  responseFormat?: string | null
 }
 
 export interface OpenAiImageTask {
@@ -75,6 +85,58 @@ export function resolveOpenAiGenerateEndpoint(endpoint: string): string {
   return url + "/v1/images/generations"
 }
 
+/** 解析 OpenAI 图像编辑端点（Images 协议：带参考图一律走 edits，multipart 文件上传） */
+export function resolveOpenAiEditsEndpoint(endpoint: string): string {
+  const url = endpoint.replace(/\/+$/, "")
+  if (url.includes("/images/edits")) return url
+  if (url.includes("/images/generations")) {
+    return url.replace("/images/generations", "/images/edits")
+  }
+  if (url.endsWith("/v1")) return url + "/images/edits"
+  return url + "/v1/images/edits"
+}
+
+/**
+ * 构造 edits multipart 表单：请求体各字段（model/prompt/size|比例|档位/
+ * quality/response_format）平铺为表单字段；参考图以文件形式附加
+ * （单张字段名 image，多张按官方 SDK 口径重复 image[]）。
+ */
+export function buildOpenAiEditsFormData(
+  body: Record<string, unknown>,
+  files: Array<{ blob: Blob; filename: string }>,
+): FormData {
+  const form = new FormData()
+  for (const [key, value] of Object.entries(body)) {
+    if (value === undefined || value === null) continue
+    form.append(key, String(value))
+  }
+  const field = files.length === 1 ? "image" : "image[]"
+  for (const f of files) form.append(field, f.blob, f.filename)
+  return form
+}
+
+/** 下载参考图为 Blob（edits multipart 需要真实文件）；缺 MIME 时按 png 兜底 */
+async function fetchReferenceBlob(
+  url: string,
+  signal: AbortSignal,
+): Promise<{ blob: Blob; filename: string }> {
+  let res: Response
+  try {
+    res = await fetch(url, { signal })
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") throw err
+    const reason = describeFetchError(err)
+    throw new Error(`参考图下载失败（${url}）${reason ? `: ${reason}` : ""}`)
+  }
+  if (!res.ok) {
+    throw new Error(`参考图下载失败（${url}）：HTTP ${res.status}`)
+  }
+  const raw = await res.blob()
+  const blob = raw.type ? raw : new Blob([raw], { type: "image/png" })
+  const m = url.split("?")[0]!.match(/([a-z0-9_-]+\.(?:png|jpe?g|webp))$/i)
+  return { blob, filename: m?.[1] ?? "reference.png" }
+}
+
 /**
  * 从响应中提取单张图片（url 或 b64_json → data URL）。
  * 优先 OpenAI 标准 data[0]，其次常见网关变体（url / image_url / results）。
@@ -89,6 +151,9 @@ export function extractOpenAiImage(data: unknown): string | null {
     if (first && typeof first === "object") {
       const item = first as Record<string, unknown>
       if (typeof item.url === "string" && item.url) return item.url
+      if (typeof item.image_url === "string" && item.image_url) {
+        return item.image_url
+      }
       if (typeof item.b64_json === "string" && item.b64_json) {
         return `data:image/png;base64,${item.b64_json}`
       }
@@ -135,12 +200,46 @@ export async function callOpenAiImageApi(opts: {
   slots?: ImageApiSlotCallbacks
 }): Promise<ImageGenResult[]> {
   const { model, task, apiKey, downloadAndUpload, signal, slots } = opts
-  const endpoint = resolveOpenAiGenerateEndpoint(model.apiEndpoint)
+  // Images 协议分流：无参考图走 generations（JSON），带参考图走 edits（multipart）
+  const generateEndpoint = resolveOpenAiGenerateEndpoint(model.apiEndpoint)
+  const editsEndpoint = resolveOpenAiEditsEndpoint(model.apiEndpoint)
   const referenceImages = task.referenceImages ?? []
   const indexes =
     task.indexes && task.indexes.length > 0
       ? task.indexes
       : Array.from({ length: task.imageCount }, (_, i) => i)
+
+  // edits 分支的参考图对任务内每张都相同：顶层统一下载一次 Blob 复用，
+  // 避免 N 张 × M 参考图重复下载，下载也不再占用并发槽位；下载失败不吞
+  // （对齐逐张失败语义）——每个工作单元直接按原因计失败，不发起请求。
+  // 下载受 apiTimeout 与外层中止信号双重约束（沿用单张请求的超时口径）
+  let referenceFiles: Array<{ blob: Blob; filename: string }> = []
+  let referenceError: string | null = null
+  if (referenceImages.length > 0) {
+    const refController = new AbortController()
+    const refTimeoutId = setTimeout(
+      () => refController.abort(),
+      (model.apiTimeout || 120) * 1000,
+    )
+    const onRefAbort = () => refController.abort()
+    signal?.addEventListener("abort", onRefAbort)
+    try {
+      referenceFiles = await Promise.all(
+        referenceImages.map((u) => fetchReferenceBlob(u, refController.signal)),
+      )
+    } catch (err) {
+      referenceFiles = []
+      referenceError =
+        err instanceof Error && err.name === "AbortError"
+          ? `参考图下载超时或被中止（上限 ${model.apiTimeout || 120} 秒）`
+          : err instanceof Error
+            ? err.message
+            : String(err)
+    } finally {
+      clearTimeout(refTimeoutId)
+      signal?.removeEventListener("abort", onRefAbort)
+    }
+  }
 
   /** 等待图片槽位（外层 signal 中止时放弃等待） */
   async function waitForSlot(): Promise<boolean> {
@@ -154,6 +253,8 @@ export async function callOpenAiImageApi(opts: {
 
   /** 生成单张图片（含槽位获取/释放、独立超时、转存） */
   async function generateOne(index: number): Promise<ImageGenResult> {
+    // 参考图取不到（顶层下载已失败）：按原因计失败，不占槽位、不发起请求
+    if (referenceError) return { index, error: referenceError }
     const acquired = await waitForSlot()
     if (!acquired) return { index, error: "任务被中止（等待并发槽位时中断）" }
     try {
@@ -163,32 +264,60 @@ export async function callOpenAiImageApi(opts: {
       const onAbort = () => controller.abort()
       signal?.addEventListener("abort", onAbort)
       try {
-        const requestBody = buildOpenAiRequestBody({
-          model: model.name,
-          prompt: task.prompt,
-          imageSize: task.imageSize,
-          referenceImages,
-          referenceImageField: model.referenceImageField ?? undefined,
-          quality: model.quality ?? undefined,
-          useRatioParam: model.useRatioParam,
-          ratioParamField: model.ratioParamField ?? undefined,
-        })
-
         let response: Response
         try {
-          response = await fetch(endpoint, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${apiKey}`,
-            },
-            body: JSON.stringify(requestBody),
-            signal: controller.signal,
-          })
+          if (referenceImages.length > 0) {
+            // edits：multipart 提交（官方规范不接受 URL 数组）；参考图
+            // Blob 已在顶层下载一次，此处仅复用
+            const formBody = buildOpenAiEditsFormData(
+              buildOpenAiRequestBody({
+                model: model.name,
+                prompt: task.prompt,
+                imageSize: task.imageSize,
+                referenceImages: [],
+                quality: model.quality ?? undefined,
+                sizeMode: model.sizeMode,
+                useRatioParam: model.useRatioParam,
+                tierValue: model.tierValue,
+                ratioParamField: model.ratioParamField ?? undefined,
+                responseFormat: model.responseFormat ?? undefined,
+              }),
+              referenceFiles,
+            )
+            response = await fetch(editsEndpoint, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${apiKey}` },
+              body: formBody,
+              signal: controller.signal,
+            })
+          } else {
+            const requestBody = buildOpenAiRequestBody({
+              model: model.name,
+              prompt: task.prompt,
+              imageSize: task.imageSize,
+              referenceImages: [],
+              quality: model.quality ?? undefined,
+              sizeMode: model.sizeMode,
+              useRatioParam: model.useRatioParam,
+              tierValue: model.tierValue,
+              ratioParamField: model.ratioParamField ?? undefined,
+              responseFormat: model.responseFormat ?? undefined,
+            })
+            response = await fetch(generateEndpoint, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${apiKey}`,
+              },
+              body: JSON.stringify(requestBody),
+              signal: controller.signal,
+            })
+          }
         } catch (err) {
           // AbortError 交给外层统一汉化（超时或被中止）；网络层失败带端点与原因
           if (err instanceof Error && err.name === "AbortError") throw err
           const reason = describeFetchError(err)
+          const endpoint = referenceImages.length > 0 ? editsEndpoint : generateEndpoint
           if (reason) throw new Error(`生图请求网络失败（${endpoint}）: ${reason}`)
           throw err
         }

@@ -32,6 +32,10 @@ interface SmartImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
  *
  * 自愈降级：src 带 COS 缩略参数（imageMogr2）加载失败时（如桶未开通
  * 数据万象），先重试去掉参数的原图，仍失败才显示占位。
+ *
+ * 占位自适应：容器查询按占位框宽度切换——≥96px 显示「图标+文案」，
+ * 更小的小方格（参考图 chips/卡片图层等 32~56px）只显示居中图标，
+ * 悬停 title 仍提示文案，避免文字折行截断。
  */
 export function SmartImage({
   src,
@@ -60,7 +64,10 @@ export function SmartImage({
     return (
       <div
         className={cn(
-          "flex flex-col items-center justify-center gap-0.5 overflow-hidden bg-muted text-muted-foreground",
+          // min-w-8：@container 的 inline-size containment 会把内容撑出的固有宽度
+          // 归零（悬停预览等 shrink-to-fit 调用点失败占位会塌成 0×0），兜底最小
+          // 可见图标框；32px 不超过仓内最小容器（参考图 chips size-8），不会溢出
+          "@container flex min-w-8 flex-col items-center justify-center gap-0.5 overflow-hidden bg-muted text-muted-foreground",
           className,
         )}
         // 调用方 style 在后展开可覆盖默认比例；宽度确定、高度自适应的
@@ -69,7 +76,7 @@ export function SmartImage({
         title={src ? fallbackText : "暂无图片"}
       >
         <ImageIcon className="size-4 shrink-0 opacity-50" />
-        <span className="px-1 text-center text-[10px] leading-tight">
+        <span className="hidden px-1 text-center text-[10px] leading-tight @min-[96px]:block">
           {src ? fallbackText : "暂无图片"}
         </span>
       </div>

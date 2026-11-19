@@ -128,8 +128,8 @@ function MetricToggle({
 
 // ---------- 售出类目占比 ----------
 
-// 16 色环形调色板（globals.css --chart-1..16），按色相交错排序：相邻两项色相差 ≥80°，
-// 覆盖饼图切片上限（15 类目 + 其他），不再出现取模循环撞色
+// 20 色环形调色板（globals.css --chart-1..20），按色相交错排序：相邻两项色相差 ≥80°，
+// 覆盖饼图切片上限（20 店铺 + 其他；类目 15+其他取前 15 色），不再取模循环撞色
 const donutPalette = [
   "var(--chart-1)", // 蓝
   "var(--chart-4)", // 琥珀
@@ -147,6 +147,10 @@ const donutPalette = [
   "var(--chart-14)", // 紫红
   "var(--chart-15)", // 草绿
   "var(--chart-16)", // 品红
+  "var(--chart-19)", // 黄
+  "var(--chart-17)", // 紫罗兰
+  "var(--chart-20)", // 朱红
+  "var(--chart-18)", // 蓝紫
 ]
 
 /** 类目占比 tooltip：类目名 · 数量 · 占圆环合计百分比 */
@@ -185,15 +189,21 @@ function ShareTooltip({
 type ShareRow = { label: string; today: number; last7: number; last30: number }
 
 /** 占比环形卡（动态切片 + 其他；口径可切 今日/近7日/近30日）：类目占比与
- *  店铺占比共用，仅标题/描述与数据行不同 */
+ *  店铺占比共用，仅标题/描述/切片上限与占比阈值不同 */
 function ShareDonutCard({
   title,
   description,
   rows,
+  maxEntries = 15,
+  minSharePct = 0.01,
 }: {
   title: string
   description: string
   rows: ShareRow[]
+  /** 切片上限（其余并入「其他」） */
+  maxEntries?: number
+  /** 单条占比低于该阈值即中断纳入（含其后全部，0=不过滤全展示） */
+  minSharePct?: number
 }) {
   const [metric, setMetric] = React.useState("today")
   const pick = (d: ShareRow) =>
@@ -202,11 +212,11 @@ function ShareDonutCard({
   const total = rows.reduce((s, d) => s + pick(d), 0)
   const slices = React.useMemo(() => {
     const sorted = [...rows].sort((a, b) => pick(b) - pick(a)).filter((d) => pick(d) > 0)
-    // 动态纳入：占比 ≥1% 的条目全部展示（最多 15 条），其余合并「其他」
+    // 动态纳入：占比 ≥ minSharePct 的条目全部展示（最多 maxEntries 条），其余合并「其他」
     const kept: Array<{ label: string; value: number }> = []
     for (const d of sorted) {
-      if (kept.length >= 15) break
-      if (total > 0 && pick(d) / total < 0.01) break
+      if (kept.length >= maxEntries) break
+      if (minSharePct > 0 && total > 0 && pick(d) / total < minSharePct) break
       kept.push({ label: d.label, value: pick(d) })
     }
     const rest = sorted.slice(kept.length).reduce((s, d) => s + pick(d), 0)
@@ -299,12 +309,15 @@ export function TemuCategoryShare({ data }: { data: TemuCategoryShare[] }) {
   )
 }
 
-/** 售出店铺占比：各店铺销量对比（选中单店时为 100% 单切片属预期） */
+/** 售出店铺占比：各店铺销量对比（选中单店时为 100% 单切片属预期）。店铺有量即展示
+ *  （无 1% 阈值——单应用店铺上限 20，小店归「其他」会丢对比信息），至多 20 条 */
 export function TemuStoreShare({ data }: { data: TemuStoreShare[] }) {
   return (
     <ShareDonutCard
       title="售出店铺占比"
-      description="销售管理最新批次 · 按店铺汇总销量（选择「全部店铺」时对比各店占比）"
+      description="销售管理最新批次 · 按店铺汇总销量（全部店铺对比，至多 20 条）"
+      maxEntries={20}
+      minSharePct={0}
       rows={data.map((d) => ({
         label: d.storeName,
         today: d.todaySalesVolume,
