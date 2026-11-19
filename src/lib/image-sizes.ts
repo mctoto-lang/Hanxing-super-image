@@ -45,8 +45,9 @@ export const DEFAULT_SIZE_PRESETS: ModelSizePreset[] = [
  * 把模型的 sizePresets 解析为选择器可用的 SizePreset[]；
  * 空或非法则回退 DEFAULT_SIZE_PRESETS。
  *
- * 兼容旧结构（{label,width,height,enabled}）：label 缺省回退 ratio；
- * ratio/icon 缺省按归约/outline 推导。
+ * 展示口径（2026-11-19 起，配套 0103 迁移）：显式 ratio 优先（管理员编辑
+ * 即生效），存量自定义 label 兜底（如「智能」，不做比例转写）；两者皆缺
+ * 时按宽高 gcd 归约推导；icon 缺省 outline。
  *
  * 相同 value（WxH）只保留首个，避免列表 key 冲突 / 重复高亮
  * （防御管理员配置出重复尺寸）。
@@ -82,10 +83,11 @@ export function resolveSizePresets(
 function toSizePreset(s: ModelSizePreset): SizePreset {
   const width = Number(s.width)
   const height = Number(s.height)
-  const ratio = s.ratio?.trim() || gcdRatio(width, height)
+  const storedRatio = s.ratio?.trim() || ""
+  const ratio = storedRatio || gcdRatio(width, height)
   return {
     value: `${width}x${height}`,
-    label: s.label?.trim() || ratio || `${width}x${height}`,
+    label: storedRatio || s.label?.trim() || ratio || `${width}x${height}`,
     ratio,
     width,
     height,

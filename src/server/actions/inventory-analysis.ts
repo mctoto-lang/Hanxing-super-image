@@ -245,7 +245,9 @@ export async function createProductionOrdersFromAdviceAction(input: {
 }
 
 /** 每日预警汇总（总览顶部 Alert 条）：六态口径，与总览状态完全一致
- *  （补货=可售天数<企业阈值；滞销=窗口销量≤上限且有库存；停产/清仓不入预警） */
+ *  （补货=可售天数<企业阈值；滞销=窗口销量≤上限且有库存——2026-11-19 起
+ *  滞销判定优先于清仓：停产但有库存且窗口零销量的货号同样判滞销并进入本
+ *  预警，处置指引按清仓处理；纯停产（无库存）与清仓不入预警） */
 export async function getInventoryAlertSummaryAction() {
   const g = await requireInventory()
   if (!g.ok) return { ok: false as const, error: g.error }
