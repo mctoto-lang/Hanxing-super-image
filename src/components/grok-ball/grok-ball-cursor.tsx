@@ -127,8 +127,6 @@ export function GrokBallCursor() {
     let disposed = false
     let engine: GrokBallEngine | null = null
     let revertTimer: ReturnType<typeof setTimeout> | null = null
-    /** 业务自动联动占用中（期间压制 idle 待机） */
-    let autoActive = false
     /** 引擎 idle 已自动切到放空/睡眠 */
     let idleAuto = false
 
@@ -144,7 +142,6 @@ export function GrokBallCursor() {
     setPlacement(computePlacement(pos))
 
     const applyManual = () => {
-      autoActive = false
       idleAuto = false
       if (revertTimer) {
         clearTimeout(revertTimer)
@@ -157,7 +154,7 @@ export function GrokBallCursor() {
       if (!engine) return
       engine.resetIdle()
       if (idleAuto) {
-        // 从待机/睡眠醒来：恢复手动表情（autoActive 期间 idle 被压制，不会走到这）
+        // 从待机/睡眠醒来：恢复手动表情
         idleAuto = false
         engine.setEmotion(manualIdRef.current)
       }
@@ -204,13 +201,11 @@ export function GrokBallCursor() {
           clearTimeout(revertTimer)
           revertTimer = null
         }
-        autoActive = true
         idleAuto = false
         engine.setEmotion(event.emotionId)
         if (event.duration > 0) {
           revertTimer = setTimeout(() => {
             revertTimer = null
-            autoActive = false
             engine?.setEmotion(manualIdRef.current)
           }, event.duration)
         }

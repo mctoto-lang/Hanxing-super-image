@@ -26,7 +26,6 @@ vi.mock("next/cache", () => ({ revalidatePath: () => {} }))
 
 let entId: string
 let userId: string
-let mainWhId: string
 let p1: string
 let p2: string
 
@@ -67,11 +66,6 @@ beforeAll(async () => {
   await db
     .insert(inventoryWarehouses)
     .values([{ enterpriseId: entId, code: "main", name: "主仓", sort: 0 }])
-  const whs = await db
-    .select()
-    .from(inventoryWarehouses)
-    .where(eq(inventoryWarehouses.enterpriseId, entId))
-  mainWhId = whs.find((w) => w.code === "main")!.id
 
   for (const code of ["X9001", "X9002"]) {
     const [row] = await db

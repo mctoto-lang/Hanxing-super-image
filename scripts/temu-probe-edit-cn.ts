@@ -5,7 +5,6 @@ try {
 } catch {}
 
 const STORE_NAME = "RoseBlanche"
-const PRODUCT_ID = "4666287147"
 const GOODS_ID = "601105768830302"
 
 const CALLS: Array<[string, string, Record<string, unknown>]> = [

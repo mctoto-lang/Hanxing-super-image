@@ -850,7 +850,11 @@ class ThinkingEffortSliderElement extends HTMLElementBase {
   }
 
   set open(nextOpen: boolean) {
-    nextOpen ? this.openPanel() : this.close()
+    if (nextOpen) {
+      this.openPanel()
+    } else {
+      this.close()
+    }
   }
 
   get disabled() {
@@ -893,7 +897,11 @@ class ThinkingEffortSliderElement extends HTMLElementBase {
 
   toggle() {
     if (this.disabled) return
-    this.open ? this.close() : this.openPanel()
+    if (this.open) {
+      this.close()
+    } else {
+      this.openPanel()
+    }
   }
 
   /** 面板锚定：左缘对齐触发按钮左缘（钳制在视口内），底部在按钮上方 8px */

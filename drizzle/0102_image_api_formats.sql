@@ -7,11 +7,16 @@
 --   承载——搬迁前对 use_ratio_param=true 且 extraConfig 尚无 sizeMode 的行补写
 --   "ratio"，保证行为不变；此后枚举值 gemini 专指 Gemini 官方原生协议
 --   （:generateContent + responseModalities IMAGE + imageConfig.aspectRatio 比例生图）。
+--   注意：比较/赋值一律走 ::text（text→enum 用 I/O 转换），不能直接写枚举字面量——
+--   drizzle 迁移器把全部待应用迁移放在同一事务，全新库上整个链条在一个未提交事务里
+--   执行，本事务新增的枚举值在提交前不可引用（unsafe use of new value）。
 ALTER TYPE "public"."api_format" ADD VALUE IF NOT EXISTS 'chat';--> statement-breakpoint
 ALTER TYPE "public"."api_format" ADD VALUE IF NOT EXISTS 'midjourney';--> statement-breakpoint
 UPDATE "model"
    SET extra_config = jsonb_set(COALESCE(extra_config, '{}'::jsonb), '{sizeMode}', '"ratio"'::jsonb)
- WHERE api_format = 'gemini'
+ WHERE api_format::text = 'gemini'
    AND use_ratio_param = true
    AND NOT COALESCE(extra_config, '{}'::jsonb) ? 'sizeMode';--> statement-breakpoint
-UPDATE "model" SET api_format = 'openai' WHERE api_format = 'gemini';
+UPDATE "model"
+   SET api_format = 'openai'::text::"public"."api_format"
+ WHERE api_format::text = 'gemini';

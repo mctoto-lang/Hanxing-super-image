@@ -43,6 +43,8 @@ export type { ColumnDef }
 
 declare module "@tanstack/react-table" {
   // eslint-disable-next-line @typescript-eslint/no-empty-object-type
+  // TValue 须与 react-table 原声明同名保留（接口合并要求），本增强未用到
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   interface ColumnMeta<TData extends RowData, TValue> {
     /** 数字列右对齐（tabular-nums 由调用方在 cell 内自带） */
     align?: "left" | "right"
