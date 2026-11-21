@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { and, eq, isNotNull, sql } from "drizzle-orm"
+import { and, eq, isNull, isNotNull, lt, or, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import {
   temuAdsDailies,
@@ -24,6 +24,8 @@ import {
   type TemuCallContext,
 } from "@/lib/temu-api/client"
 import { getDemoCredential, getTemuAppCredential } from "@/lib/temu-api/app-config"
+import { adsRateCtx, toAdProductIdList } from "@/lib/temu-api/ad-params"
+import { DEMO_APP_KEY } from "@/lib/temu-api/demo-api"
 import { getStorage } from "@/lib/storage"
 import { invalidateTemuCache } from "@/server/services/temu-cache"
 import { temuDayOfTs, temuDayStr } from "@/server/services/temu-time"
@@ -742,19 +744,23 @@ async function syncAdsReports(storeId: string, ctx: TemuCallContext): Promise<nu
     .map((r) => r.productId as string)
     .filter((v, i, a) => v && a.indexOf(v) === i)
   const AD_DETAIL_BATCH = 20
+  // 广告族接口（detail/goods.query）走 ads:${appKey} 聚合限速桶（同工作台
+  // adsRateCtx 口径）：官方频控按应用计，默认 store 桶 qps=3 拦不住同应用
+  // 多店全店扇出同步的跨店叠加
+  const adsCtx = adsRateCtx(ctx)
   const collectActive = async (): Promise<Array<string | number>> => {
     const active: Array<string | number> = []
-    for (let i = 0; i < onSaleIds.length; i += AD_DETAIL_BATCH) {
+    // 官方 LIST<INTEGER>：非数字/形变 ID 整批报 230012000，先净化再分批
+    // （演示 DPID 原样透传走 demo 拦截；本就单批容错跳过，净化减少在投名单缺口）
+    const adIds = toAdProductIdList(onSaleIds, ctx.appKey === DEMO_APP_KEY)
+    for (let i = 0; i < adIds.length; i += AD_DETAIL_BATCH) {
       if (i > 0) await new Promise((r) => setTimeout(r, 2000))
-      const batch = onSaleIds.slice(i, i + AD_DETAIL_BATCH).map((pid) => {
-        const n = Number(pid)
-        return Number.isFinite(n) ? n : pid
-      })
+      const batch = adIds.slice(i, i + AD_DETAIL_BATCH)
       try {
         const detail = await callTemuApi<{ adsDetail?: unknown[] }>(
           "bg.glo.searchrec.ad.detail.query",
           { productIdList: batch },
-          ctx,
+          adsCtx,
         )
         for (const d of Array.isArray(detail.result?.adsDetail) ? detail.result.adsDetail : []) {
           const pid = idStr((d as Record<string, unknown>).productId ?? (d as Record<string, unknown>).goodsId, 32)
@@ -786,7 +792,7 @@ async function syncAdsReports(storeId: string, ctx: TemuCallContext): Promise<nu
       const goods = await callTemuApi<AdsReportResult>(
         "bg.glo.searchrec.ad.reports.goods.query",
         { startTs, endTs, productId: Number.isFinite(Number(pid)) ? Number(pid) : pid },
-        ctx,
+        adsCtx,
       )
       return Array.isArray(goods.result?.reportInfo?.reportsItemList)
         ? withPid(goods.result.reportInfo.reportsItemList as Record<string, unknown>[])
@@ -797,7 +803,7 @@ async function syncAdsReports(storeId: string, ctx: TemuCallContext): Promise<nu
       const retry = await callTemuApi<AdsReportResult>(
         "bg.glo.searchrec.ad.reports.goods.query",
         { startTs, endTs, productId: Number.isFinite(Number(pid)) ? Number(pid) : pid },
-        ctx,
+        adsCtx,
       )
       return Array.isArray(retry.result.reportInfo?.reportsItemList)
         ? withPid(retry.result.reportInfo.reportsItemList as Record<string, unknown>[])
@@ -1249,14 +1255,23 @@ const SOURCES: Array<{ source: string; run: (storeId: string, ctx: TemuCallConte
 ]
 
 /** 同步单个店铺（手动按钮与 worker 循环共用）。token 失效会标记店铺并中止。 */
+/** 店铺级同步前置校验（不含应用凭证/token 解密）；手动排队入口与 syncStore 共用 */
+export function syncStorePreflight(
+  store:
+    | Pick<typeof temuStores.$inferSelect, "enabled" | "isDemo" | "accessTokenEncrypted">
+    | undefined,
+): { ok: true } | { ok: false; reason: string } {
+  if (!store) return { ok: false, reason: "店铺不存在" }
+  if (!store.enabled) return { ok: false, reason: "店铺已停用" }
+  if (store.isDemo) return { ok: false, reason: "演示店铺为内置虚拟数据，不参与同步" }
+  if (!store.accessTokenEncrypted) return { ok: false, reason: "未录入 access_token" }
+  return { ok: true }
+}
+
 export async function syncStore(storeId: string): Promise<StoreSyncOutcome> {
   const [store] = await db.select().from(temuStores).where(eq(temuStores.id, storeId)).limit(1)
-  if (!store) return { storeId, skipped: "店铺不存在" }
-  if (!store.enabled) return { storeId, skipped: "店铺已停用" }
-  if (store.isDemo) return { storeId, skipped: "演示店铺为内置虚拟数据，不参与同步" }
-  if (!store.accessTokenEncrypted) {
-    return { storeId, skipped: "未录入 access_token" }
-  }
+  const pre = syncStorePreflight(store)
+  if (!pre.ok) return { storeId, skipped: pre.reason }
 
   const built = await getTemuCallContext(store)
   if ("error" in built) return { storeId, skipped: built.error }
@@ -1324,7 +1339,15 @@ export async function syncStore(storeId: string): Promise<StoreSyncOutcome> {
   status.finishedAt = new Date().toISOString()
   await db
     .update(temuStores)
-    .set({ lastSyncAt: new Date(), lastSyncStatus: status, updatedAt: new Date() })
+    .set({
+      lastSyncAt: new Date(),
+      lastSyncStatus: status,
+      // 兜底清排队标记：若手动排队发生在本轮运行中，结束时数据已新鲜，请求视为已满足
+      syncRequestedAt: null,
+      // 释放运行认领（syncDueStores 的 CAS 互斥）：常规轮/排队轮收尾同处
+      syncStartedAt: null,
+      updatedAt: new Date(),
+    })
     .where(eq(temuStores.id, storeId))
   invalidateTemuCache(store.enterpriseId)
   return { storeId, status }
@@ -1437,39 +1460,103 @@ export async function verifyStoreToken(
 }
 
 /** worker 定时轮询入口：遍历启用同步且 token 正常的店铺 */
-export async function syncDueStores(maxAgeMs: number): Promise<StoreSyncOutcome[]> {
-  const rows = await db.select().from(temuStores)
-  const due = rows.filter(
+export async function syncDueStores(
+  maxAgeMs: number,
+  opts: { enterpriseId?: string } = {},
+): Promise<StoreSyncOutcome[]> {
+  const rows = await db
+    .select()
+    .from(temuStores)
+    .where(opts.enterpriseId ? eq(temuStores.enterpriseId, opts.enterpriseId) : undefined)
+  const eligible = (s: (typeof rows)[number]) =>
+    s.enabled && !!s.accessTokenEncrypted && s.tokenState !== "invalid"
+  // 手动排队（不要求 syncEnabled，「立即同步」语义即跑一次）优先于常规轮：
+  // 常规轮整轮串行且可能被官方 4000004 限流拖长（逐品退避），用户在等的
+  // 排队店铺若排在轮尾要等整轮结束才认领
+  const flagged = rows.filter((s) => eligible(s) && s.syncRequestedAt != null)
+  const intervalDue = rows.filter(
     (s) =>
-      s.enabled &&
+      eligible(s) &&
       s.syncEnabled &&
-      s.accessTokenEncrypted &&
-      s.tokenState !== "invalid" &&
       (!s.lastSyncAt || Date.now() - s.lastSyncAt.getTime() >= maxAgeMs),
   )
+  const due = [...flagged, ...intervalDue]
   const outcomes: StoreSyncOutcome[] = []
   for (const store of due) {
+    // 手动排队原子认领：清空成功才跑（防与常规轮/并发 tick 重复跑同一店）；
+    // 认领成功同时写运行标记 sync_started_at（与常规轮统一走 CAS 互斥释放）
+    if (store.syncRequestedAt != null) {
+      const claimed = await db
+        .update(temuStores)
+        .set({ syncRequestedAt: null, syncStartedAt: new Date() })
+        .where(and(eq(temuStores.id, store.id), isNotNull(temuStores.syncRequestedAt)))
+        .returning({ id: temuStores.id })
+      if (claimed.length === 0) continue
+    } else {
+      // 常规轮 CAS 认领：写 sync_started_at 成功才跑——多 worker 副本（docker-compose
+      // 默认 2 副本）与「正在运行的同步」互斥，防同店并发重复拉取；
+      // 认领超 30 分钟视为进程崩溃残留，可被重新抢占（超时自愈防卡死）
+      const claimed = await db
+        .update(temuStores)
+        .set({ syncStartedAt: new Date() })
+        .where(
+          and(
+            eq(temuStores.id, store.id),
+            or(
+              isNull(temuStores.syncStartedAt),
+              lt(temuStores.syncStartedAt, sql`now() - interval '30 minutes'`),
+            ),
+          ),
+        )
+        .returning({ id: temuStores.id })
+      if (claimed.length === 0) continue
+    }
     // 逐店隔离：单店异常（token 密文损坏等预期外错误）记为该店失败 outcome，
     // 不中断余下店铺的整轮同步
     try {
-      outcomes.push(await syncStore(store.id))
+      const outcome = await syncStore(store.id)
+      // skipped（演示店/凭证缺失等前置拦截）不走 syncStore 收尾更新，
+      // 补清运行认领防 30 分钟内被误锁
+      if (outcome.skipped) {
+        await db
+          .update(temuStores)
+          .set({ syncStartedAt: null })
+          .where(eq(temuStores.id, store.id))
+      }
+      outcomes.push(outcome)
     } catch (err) {
       console.error(
         `[temu-sync] 店铺 ${store.id} 同步异常：`,
         err instanceof Error ? err.message : err,
       )
-      outcomes.push({
-        storeId: store.id,
-        status: {
-          ok: false,
-          startedAt: "",
-          finishedAt: new Date().toISOString(),
-          // fatal 伪源位承载整店级异常（syncStore 未及落到 per-source 日志的场景）
-          sources: {
-            fatal: { ok: false, error: (err instanceof Error ? err.message : String(err)).slice(0, 500) },
-          },
+      // fatal 伪源位承载整店级异常（syncStore 未及落到 per-source 日志的场景）
+      const failedStatus: TemuSyncStatus = {
+        ok: false,
+        startedAt: "",
+        finishedAt: new Date().toISOString(),
+        sources: {
+          fatal: { ok: false, error: (err instanceof Error ? err.message : String(err)).slice(0, 500) },
         },
-      })
+      }
+      outcomes.push({ storeId: store.id, status: failedStatus })
+      // 落终态：排队用户的前端靠 lastSyncAt 推进 + lastSyncStatus 弹结果，
+      // 异常不落库会干等 8 分钟才超时；同时释放运行认领
+      try {
+        await db
+          .update(temuStores)
+          .set({
+            lastSyncAt: new Date(),
+            lastSyncStatus: failedStatus,
+            syncStartedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(temuStores.id, store.id))
+      } catch (dbErr) {
+        console.error(
+          `[temu-sync] 店铺 ${store.id} 异常终态落库失败（运行认领靠 30 分钟超时自愈）：`,
+          dbErr instanceof Error ? dbErr.message : dbErr,
+        )
+      }
     }
     // 多店连跑削峰：每店限速桶独立（官方口径 3qps/店铺），叠加突发会触发
     // 网关 SYSTEM_EXCEPTION（实测瞬时、重试即恢复）——店间稍作停顿平滑聚合速率

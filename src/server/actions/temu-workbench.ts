@@ -21,7 +21,10 @@ import {
   isTemuPermissionError,
   isTemuTokenExpired,
   type TemuCallContext,
+  type TemuEnvelope,
 } from "@/lib/temu-api/client"
+import { adsRateCtx, toAdProductIdList } from "@/lib/temu-api/ad-params"
+import { DEMO_APP_KEY } from "@/lib/temu-api/demo-api"
 import { getTemuCallContext } from "@/server/services/temu-sync"
 import { temuCached, invalidateTemuCache } from "@/server/services/temu-cache"
 import { temuDayStr } from "@/server/services/temu-time"
@@ -591,6 +594,30 @@ function adDetailMetric(detail: Record<string, unknown>, names: string[]): numbe
 /** 广告组频控削峰（实测背靠背两次调用即 4000004），分批 detail.query 间停顿 */
 const ADS_BATCH_SIZE = 20
 
+// 广告族限速 ctx（rateKey 按 appKey 聚合）已提取至 lib/temu-api/ad-params.ts
+// 的 adsRateCtx，与同步链路 syncAdsReports 共用同一桶
+
+/** 广告族调用 + 4000004（官方限流）退避重试：6s/12s 两轮后仍失败才抛出
+ *  （对齐同步链路 pullGoodsReport 的单次退避口径，多一轮应对扇出高峰） */
+async function callAdsApiWithRetry<T>(
+  apiType: string,
+  body: Record<string, unknown>,
+  ctx: TemuCallContext,
+): Promise<TemuEnvelope<T>> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await callTemuApi<T>(apiType, body, ctx)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (attempt < 2 && msg.includes("4000004")) {
+        await new Promise((r) => setTimeout(r, 6000 * (attempt + 1)))
+        continue
+      }
+      throw err
+    }
+  }
+}
+
 export interface TemuAdPlanRow {
   productId: string
   productName: string | null
@@ -643,6 +670,10 @@ export async function getTemuAdPlansAction(input: {
 async function loadAdPlans(
   store: StoreRow,
 ): Promise<{ ok: true; rows: TemuAdPlanRow[] } | { ok: false; error: string }> {
+  // 半托管店铺无全托广告数据面（对齐同步链路 api-ads-reports 的 semi 跳过
+  // 口径）：bg.glo.searchrec.ad.* 全托接口族对 semi mall 直接报参数错，
+  // 空行返回让全店扇出视图不再把半托店算进「部分店铺加载失败」
+  if (store.mallType === "semi") return { ok: true, rows: [] }
   // 【2026-11-18 升级】官方实时广告为主源：重授权 token 后后台手建广告对
   // API 可见（RoseBlanche 实测 79 在售中 58 条），本地 temu_ad 注册表降级为
   // 「本站创建记录」补充（官方未返回的行保留，预算/ROAS 用注册表快照）。
@@ -706,19 +737,20 @@ async function loadAdPlans(
   if (!built.ok) return built
 
   // detail.query 实时状态（候选商品分批；批量间停顿削峰；官方条目字段为
-  // productId，US 旧版 goodsId 兼容；非数字 ID（演示 DPID）原样回传对齐演示层）
+  // productId，US 旧版 goodsId 兼容；真实店铺 ID 净化为纯数字——官方
+  // LIST<INTEGER> 对非数字入参报 230012000，演示 DPID 原样透传走 demo 拦截）
   const details = new Map<string, Record<string, unknown>>()
   try {
-    const ids = unique.map((p) => {
-      const n = Number(p.productId)
-      return Number.isFinite(n) ? n : p.productId
-    })
+    const ids = toAdProductIdList(
+      unique.map((p) => p.productId),
+      built.ctx.appKey === DEMO_APP_KEY,
+    )
     for (let i = 0; i < ids.length; i += ADS_BATCH_SIZE) {
       if (i > 0) await new Promise((r) => setTimeout(r, 1500))
-      const envelope = await callTemuApi<{ adsDetail?: unknown }>(
+      const envelope = await callAdsApiWithRetry<{ adsDetail?: unknown }>(
         "bg.glo.searchrec.ad.detail.query",
         { productIdList: ids.slice(i, i + ADS_BATCH_SIZE) },
-        built.ctx,
+        adsRateCtx(built.ctx),
       )
       for (const d of asList(envelope.result?.adsDetail)) {
         const pid = idStr(d.productId ?? d.goodsId, 32)
@@ -726,7 +758,14 @@ async function loadAdPlans(
       }
     }
   } catch (err) {
-    return { ok: false, error: await toWorkbenchError(store.id, err) }
+    const message = await toWorkbenchError(store.id, err)
+    // 2026-11-19 生产 MISS FIREE 案实测：整批「非本 mall」商品 ID 官方即报
+    // 230012000 bad query params（批内混有本店 ID 时他店 ID 被静默忽略）——
+    // 指向 token 错绑或商品数据跨店串扰，非参数格式问题
+    const hint = message.includes("bad query params")
+      ? "（该店铺候选商品被官方整批拒绝：常见原因为 token 绑定到了其他店铺，请在店铺管理重新录入（保存时会自动探测错绑）；或商品数据跨店串扰，请管理员运行残留数据体检清理）"
+      : ""
+    return { ok: false, error: `${message}${hint}` }
   }
 
   const toRow = (
@@ -810,6 +849,10 @@ async function loadAdProducts(
 ): Promise<
   { ok: true; rows: TemuAdProductRow[]; grayListEmpty: boolean } | { ok: false; error: string }
 > {
+  // 半托管店铺无全托广告数据面（对齐 loadAdPlans 的 semi 跳过口径）：
+  // bg.glo.searchrec.ad.* 全托接口族对 semi mall 直接报参数错，空行返回
+  // 让全店扇出视图不再把半托店算进「部分店铺加载失败」
+  if (store.mallType === "semi") return { ok: true, rows: [], grayListEmpty: false }
   // 搜索下推 SQL：单店全量可达上千 SKC（api-goods-list 每店全量同步），
   // 「任意 60 行后再应用层过滤」会漏掉窗口外商品——q 命中 productName/
   // productSn 的 ilike 或 productId 精确匹配；稳定排序保证候选列表不抖动。
@@ -889,18 +932,19 @@ async function loadAdProducts(
   try {
     // 【2026-11-18 实证】单次传 60 个候选报 230012000「query goods over
     // limit」——goods.create.query 有批量上限（同组 roas.pred 官方标 50），
-    // 按 ADS_BATCH_SIZE 分批 + 批间停顿削峰（同 loadAdPlans）
-    const allIds = rows.map((r) => {
-      const n = Number(r.productId)
-      return Number.isFinite(n) ? n : r.productId
-    })
+    // 按 ADS_BATCH_SIZE 分批 + 批间停顿削峰（同 loadAdPlans）；ID 净化复用
+    // toAdProductIdList（补齐此路径的非数字剔除缺口，演示 DPID 透传）
+    const allIds = toAdProductIdList(
+      rows.map((r) => r.productId),
+      built.ctx.appKey === DEMO_APP_KEY,
+    )
     const grayEntries: Array<Record<string, unknown>> = []
     for (let i = 0; i < allIds.length; i += ADS_BATCH_SIZE) {
       if (i > 0) await new Promise((r) => setTimeout(r, 1500))
-      const envelope = await callTemuApi<{ goodsInfoList?: unknown }>(
+      const envelope = await callAdsApiWithRetry<{ goodsInfoList?: unknown }>(
         "bg.glo.searchrec.ad.goods.create.query",
         { productIdList: allIds.slice(i, i + ADS_BATCH_SIZE) },
-        built.ctx,
+        adsRateCtx(built.ctx),
       )
       grayEntries.push(...asList(envelope.result?.goodsInfoList))
     }
@@ -968,10 +1012,12 @@ export async function createTemuAdsAction(input: unknown): Promise<
             budget: it.budget,
             roas: Math.round(it.roas * 10000),
             roasType: AD_CREATE_ROAS_TYPE,
-          }
+          };
         }),
       },
-      built.ctx,
+      // 广告族接口走 ads:${appKey} 限速桶（同 loadAdPlans/loadAdProducts，
+      // 默认 store 桶 qps=3 拦不住同应用多店扇出的跨店叠加）
+      adsRateCtx(built.ctx),
     )
     const successIds = (Array.isArray(envelope.result?.successProductIdLists)
       ? envelope.result.successProductIdLists

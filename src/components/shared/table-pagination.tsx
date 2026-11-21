@@ -8,6 +8,7 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination"
+import { PageSizeSelect } from "@/components/shared/page-size-select"
 
 /**
  * 管理端表格底部分页（服务端组件，shadcn pagination 封装）
@@ -23,6 +24,7 @@ export function TablePagination({
   basePath,
   query = {},
   className,
+  pageSizeOptions,
 }: {
   /** 当前页（从 1 开始） */
   page: number
@@ -33,9 +35,11 @@ export function TablePagination({
   /** 需要保留的其它 query 参数（不含 page） */
   query?: Record<string, string | string[] | undefined>
   className?: string
+  /** 提供时渲染「每页数量」选择（URL 驱动，pageSize 也入 query；选项含默认值时才显示） */
+  pageSizeOptions?: number[]
 }) {
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
-  if (total <= pageSize) return null
+  if (total <= pageSize && !pageSizeOptions) return null
 
   const buildHref = (targetPage: number) => {
     const params = new URLSearchParams()
@@ -48,6 +52,11 @@ export function TablePagination({
       }
     }
     if (targetPage > 1) params.set("page", String(targetPage))
+    // 翻页时保留非默认每页数量（口径同 PageSizeSelect：默认值不落 URL）
+    params.delete("pageSize")
+    if (pageSizeOptions && pageSize !== pageSizeOptions[0]) {
+      params.set("pageSize", String(pageSize))
+    }
     const qs = params.toString()
     return qs ? `${basePath}?${qs}` : basePath
   }
@@ -74,8 +83,16 @@ export function TablePagination({
         className,
       )}
     >
-      <p className="text-xs text-muted-foreground">
+      <p className="flex items-center gap-2 text-xs text-muted-foreground">
         共 {total.toLocaleString("zh-CN")} 条 · 第 {page}/{totalPages} 页
+        {pageSizeOptions ? (
+          <PageSizeSelect
+            basePath={basePath}
+            query={query}
+            pageSize={pageSize}
+            options={pageSizeOptions}
+          />
+        ) : null}
       </p>
       <Pagination className="mx-0 w-auto justify-end">
         <PaginationContent>
@@ -122,6 +139,22 @@ export function parsePageParam(
   const value = Array.isArray(raw) ? raw[0] : raw
   const n = Number.parseInt(value ?? "1", 10)
   return Number.isFinite(n) && n >= 1 ? n : 1
+}
+
+/**
+ * 解析 searchParams 中的 pageSize 参数（带白名单；不在白名单时回退
+ * options[0]，options 为空数组时回退显式 fallback，避免 parseInt 失败
+ * 得到的 NaN 透传成 pageSize）
+ */
+export function parsePageSizeParam(
+  searchParams: Record<string, string | string[] | undefined>,
+  options: number[],
+  fallback = 24,
+): number {
+  const raw = searchParams.pageSize
+  const value = Array.isArray(raw) ? raw[0] : raw
+  const n = Number.parseInt(value ?? "", 10)
+  return options.includes(n) ? n : (options[0] ?? fallback)
 }
 
 /** 提取单值 query 参数（如 q） */

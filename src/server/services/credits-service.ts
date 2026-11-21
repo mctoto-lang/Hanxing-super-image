@@ -1,9 +1,10 @@
-import { and, eq, gte, ilike, lt, or, sql } from "drizzle-orm"
+import { and, eq, gte, ilike, inArray, lt, or, sql } from "drizzle-orm"
 import { db } from "@/db/client"
 import {
   creditTransactions,
   enterprises,
   generationTasks,
+  selectionTasks,
   taskSourceEnum,
   users,
   creditTxTypeEnum,
@@ -320,7 +321,12 @@ export async function allocateCreditsToUser(input: {
  *   3. 写一条 allocation_deduct 流水（关联 enterpriseId+userId+taskId）。
  */
 export async function deductUserCredits(
-  input: BaseTxInput & { amount: number; tx?: DbTx },
+  input: BaseTxInput & {
+    amount: number
+    tx?: DbTx
+    /** 流水类型（默认 allocation_deduct 生图消费；选品任务传 selection_deduct） */
+    type?: CreditTxType
+  },
 ): Promise<{ balanceAfter: number }> {
   const {
     enterpriseId,
@@ -328,6 +334,7 @@ export async function deductUserCredits(
     userId,
     taskId,
     remark,
+    type,
     tx: externalTx,
   } = input
   if (amount <= 0) throw new Error("扣减金额必须为正数")
@@ -363,7 +370,7 @@ export async function deductUserCredits(
     await tx.insert(creditTransactions).values({
       enterpriseId,
       userId,
-      type: "allocation_deduct",
+      type: type ?? "allocation_deduct",
       amount: -amount,
       balanceAfter: updated!.balance,
       taskId: taskId ?? null,
@@ -384,9 +391,14 @@ export async function deductUserCredits(
  * 原子提交）；不传则自开事务。
  */
 export async function refundUserCredits(
-  input: BaseTxInput & { amount: number; tx?: DbTx },
+  input: BaseTxInput & {
+    amount: number
+    tx?: DbTx
+    /** 流水类型（默认 allocation_refund；选品结算退还传 selection_refund） */
+    type?: CreditTxType
+  },
 ): Promise<{ balanceAfter: number }> {
-  const { enterpriseId, amount, userId, taskId, remark, tx: externalTx } = input
+  const { enterpriseId, amount, userId, taskId, remark, type, tx: externalTx } = input
   if (amount <= 0) throw new Error("退还金额必须为正数")
   if (!userId) throw new Error("退还个人配额必须提供 userId")
 
@@ -405,7 +417,7 @@ export async function refundUserCredits(
     await tx.insert(creditTransactions).values({
       enterpriseId,
       userId,
-      type: "allocation_refund",
+      type: type ?? "allocation_refund",
       amount,
       balanceAfter: updated.balance,
       taskId: taskId ?? null,
@@ -605,6 +617,11 @@ export async function listTransactions(opts: {
   }
   if (module === "chat") {
     conds.push(ilike(creditTransactions.remark, "AI 对话%"))
+  } else if (module === "selection") {
+    // 选品任务流水：taskId 关联 selection_task（generation_task join 不到）
+    conds.push(
+      inArray(creditTransactions.type, ["selection_deduct", "selection_refund"]),
+    )
   } else if (module) {
     conds.push(
       eq(
@@ -617,17 +634,21 @@ export async function listTransactions(opts: {
   if (toEnd) conds.push(lt(creditTransactions.createdAt, toEnd))
   const where = and(...conds)
 
+  // 模块推导：taskId → generation_task.source；join 不到再看 selection_task
+  const sourceExpr = sql<string | null>`coalesce(${generationTasks.source}::text, case when ${selectionTasks.id} is not null then 'selection' else null end)`
+
   const joinUsers = () =>
     db
       .select({
         tx: creditTransactions,
         name: users.name,
         username: users.username,
-        source: generationTasks.source,
+        source: sourceExpr,
       })
       .from(creditTransactions)
       .leftJoin(users, eq(creditTransactions.userId, users.id))
       .leftJoin(generationTasks, eq(creditTransactions.taskId, generationTasks.id))
+      .leftJoin(selectionTasks, eq(creditTransactions.taskId, selectionTasks.id))
 
   const [rows, [{ count }]] = await Promise.all([
     joinUsers()
@@ -640,6 +661,7 @@ export async function listTransactions(opts: {
       .from(creditTransactions)
       .leftJoin(users, eq(creditTransactions.userId, users.id))
       .leftJoin(generationTasks, eq(creditTransactions.taskId, generationTasks.id))
+      .leftJoin(selectionTasks, eq(creditTransactions.taskId, selectionTasks.id))
       .where(where),
   ])
 

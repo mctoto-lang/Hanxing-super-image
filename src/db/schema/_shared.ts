@@ -73,6 +73,8 @@ export const creditTxTypeEnum = pgEnum("credit_tx_type", [
   "allocation_deduct", // 个人配额消费（负，成员生图扣个人配额）
   "allocation_refund", // 个人配额退还（正，任务失败退还到成员个人配额）
   "plan_grant", // 套餐周期发放（正，订阅套餐每周期自动发放到企业池）
+  "selection_deduct", // 选品抓取预扣（负，成员发起选品任务扣个人配额；0104）
+  "selection_refund", // 选品按实际条数结算退还（正，预估-实际差额/失败全退；0104）
 ])
 export type CreditTxType = (typeof creditTxTypeEnum.enumValues)[number]
 
@@ -122,4 +124,24 @@ export const taskSourceEnum = pgEnum("task_source", [
   "weartry",
   "mockup",
   "agent",
+])
+
+/** 选品任务类型：discover=选品发现（平台原生热门/榜单）market=市场分析（关键词搜索）monitor=竞品监控（P2 定时重跑）review=评论洞察（P3） */
+export const selectionTaskTypeEnum = pgEnum("selection_task_type", [
+  "discover",
+  "market",
+  "monitor",
+  "review",
+])
+
+/**
+ * 选品任务状态：对齐生图任务状态机（queued/processing/completed/failed）+
+ * cancelled（用户可中途取消：worker 聚合 Apify 已产出的部分数据后按实际条数结算）。
+ */
+export const selectionTaskStatusEnum = pgEnum("selection_task_status", [
+  "queued", // 已扣积分待 worker 认领
+  "processing", // 已调用 Apify run，轮询中
+  "completed", // 结算完成（结果已入库）
+  "failed", // 失败（积分已全退或按实际条数结算）
+  "cancelled", // 用户取消（部分数据入库 + 按实际条数结算）
 ])

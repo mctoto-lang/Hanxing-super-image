@@ -1319,7 +1319,8 @@ export function ShipStaging({
           </p>
         </div>
       </CardHeader>
-      <CardContent className="min-h-0 flex-1 space-y-3 overflow-y-auto scrollbar-hide">
+      {/* 双轴滚动且滚动条可见（对齐商品信息页/发货单列表口径）：宽表横向拖滚动条查看 */}
+      <CardContent className="min-h-0 flex-1 space-y-3 overflow-x-auto overflow-y-auto">
         {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
 
         <div className="w-max min-w-full overflow-clip rounded-md border">

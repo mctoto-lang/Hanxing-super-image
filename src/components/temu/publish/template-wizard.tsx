@@ -36,6 +36,7 @@ import { cn } from "@/lib/utils"
 import { uploadTemuAsset } from "@/lib/upload/upload-image"
 import { ImageUploadField } from "./image-upload-field"
 import { materializeImageSources } from "./image-utils"
+import { clearDescendantSelections, filterChildValues, visibleAttrProps } from "./attr-visibility"
 
 /** 包装/工艺/SKU 分类枚举（包装值域 2026-10-20 实测；官方未公开名称） */
 const PACKAGE_SHAPE_OPTIONS = [
@@ -317,16 +318,22 @@ export function TemplateWizard({
     [attrTpl],
   )
 
+  /** 当前应显示的必填属性：子属性随父选值分支动态显隐（官方后台同款，如 材质=纸 时隐藏 木材类型/木种） */
+  const visibleProps = useMemo(
+    () => visibleAttrProps(requiredProps, selected),
+    [requiredProps, selected],
+  )
+
   /** 候选值按父子联动过滤：父属性已选时仅保留 parentVidList 含父 vid（或无约束）的值 */
   const valuesFor = (p: (typeof requiredProps)[number]) => {
     if (!p.parentTemplatePid) return p.values
     const parentSel = selected[p.parentTemplatePid]
     if (!parentSel) return p.values
-    return p.values.filter((v) => v.parentVidList.length === 0 || v.parentVidList.includes(parentSel.vid))
+    return filterChildValues(p.values, parentSel.vid)
   }
 
   const step2Valid =
-    requiredProps.every((p) =>
+    visibleProps.every((p) =>
       p.values.length > 0 ? selected[p.templatePid] != null : (typed[p.templatePid] ?? "").trim() !== "",
     ) && specParentId != null && specName.trim().length > 0
 
@@ -348,7 +355,8 @@ export function TemplateWizard({
 
   /** imgs/dim 为物化后的图源（save 时对存量 dataUrl 兜底转存换 URL 后传入） */
   const buildPayload = (imgs: string[], dim: string | null) => {
-    const attributes = requiredProps.map((p) => {
+    // 仅提交可见属性：隐藏子属性（父选值不属于该分支）不落 vid:0/空值行
+    const attributes = visibleProps.map((p) => {
       const sel = selected[p.templatePid]
       const typedVal = typed[p.templatePid]?.trim()
       return {
@@ -582,13 +590,13 @@ export function TemplateWizard({
                 <p className="text-sm text-destructive">{attrError}</p>
               ) : (
                 <>
-                  {requiredProps.length === 0 && (
+                  {visibleProps.length === 0 && (
                     <p className="flex items-center gap-2 text-sm text-muted-foreground">
                       <SearchX className="size-4" /> 该类目无必填属性。
                     </p>
                   )}
                   <div className="grid max-h-64 grid-cols-1 gap-3 overflow-y-auto sm:grid-cols-2">
-                    {requiredProps.map((p) => (
+                    {visibleProps.map((p) => (
                       <div key={p.templatePid} className="space-y-1">
                         <Label className="text-xs">
                           {p.name}
@@ -603,15 +611,14 @@ export function TemplateWizard({
                             onChange={(v) => {
                               const val = p.values.find((x) => String(x.vid) === v)
                               if (val)
-                                setSelected((prev) => {
-                                  const next = { ...prev, [p.templatePid]: { vid: val.vid, value: val.value } }
-                                  // 父属性改选后旧子属性值对新父 vid 可能非法（下拉只过滤
-                                  // options 不清 state），一并清除让用户重选
-                                  for (const child of requiredProps) {
-                                    if (child.parentTemplatePid === p.templatePid) delete next[child.templatePid]
-                                  }
-                                  return next
-                                })
+                                setSelected((prev) =>
+                                  // 父属性改选后旧子孙属性值对新父 vid 可能非法（下拉只过滤
+                                  // options 不清 state），递归清除让用户重选
+                                  clearDescendantSelections(p.templatePid, requiredProps, {
+                                    ...prev,
+                                    [p.templatePid]: { vid: val.vid, value: val.value },
+                                  }),
+                                )
                             }}
                             options={valuesFor(p).map((v) => ({ value: String(v.vid), label: v.value }))}
                             placeholder={`选择${p.name}`}

@@ -33,7 +33,6 @@ import {
   getShipPredictVolumeAction,
   packingMatchAction,
   sendPackingAction,
-  validateShipExpressNoAction,
   type TemuShipOrderRow,
   type TemuShipPackingMatchResult,
 } from "@/server/actions/temu-ship"
@@ -67,16 +66,17 @@ export async function requestShipBoxMark(store: string, sns: string[]): Promise<
 
 /** 「打印商品打包标签」补打（开官方打印页直出）：待仓库收货场景——件数已锁定，
  *  直接开打印页；deliveryOrderSnList 传多单时官方一个 dataKey 页含全部箱唧
- *  （组级=同批次多单，行级=单单补打）。与首打的 requestShipBoxMark（仅请求锁定）区分。 */
-export async function openShipBoxMarkPage(store: string, sns: string[]): Promise<void> {
-  if (sns.length === 0) return
+ *  （组级=同批次多单，行级=单单补打）。与首打的 requestShipBoxMark（仅请求锁定）区分。
+ *  返回是否成功打开打印页（true=已跳转官方页，调用方据此标「已打印」绿勾）。 */
+export async function openShipBoxMarkPage(store: string, sns: string[]): Promise<boolean> {
+  if (sns.length === 0) return false
   const w = window.open("", "_blank")
   try {
     const r = await getShipBoxMarkPrintUrlAction({ store, deliveryOrderSns: sns })
     if (!r.ok) {
       w?.close()
       toast.error(r.error, { duration: 8000 })
-      return
+      return false
     }
     if (w) w.location.href = r.url
     else window.open(r.url, "_blank", "noopener")
@@ -86,20 +86,23 @@ export async function openShipBoxMarkPage(store: string, sns: string[]): Promise
         : "已打开官方打印页（链接 10 分钟内单次有效）",
       { duration: 8000 },
     )
+    return true
   } catch (e) {
     w?.close()
     toast.error(e instanceof Error ? e.message : "打印页获取失败", { duration: 8000 })
+    return false
   }
 }
 
 /** 「打印商品条码」：按发货单 SKU 维度提交（labelv2 按供应商主体隔离，货号会打出别家
- *  条码；SKU id 是主体内精确键，服务端自动路由同企业已授权店铺 token），与箱唛同款
- *  同步开窗模式，10min 单次有效；跨主体批次会返回多个打印页（按主体分组各一页） */
-export async function openShipBarcodePrint(store: string, skuIds: Array<number | null | undefined>): Promise<void> {
+ *  条码；SKU id 是主体内精确键，服务端自动路由同企业已授权店铺 token），与箱唧同款
+ *  同步开窗模式，10min 单次有效；跨主体批次会返回多个打印页（按主体分组各一页）。
+ *  返回是否成功打开打印页（true=已跳转官方页，调用方据此标「已打印」绿勾）。 */
+export async function openShipBarcodePrint(store: string, skuIds: Array<number | null | undefined>): Promise<boolean> {
   const ids = [...new Set(skuIds.filter((v): v is number => v != null && v > 0))]
   if (ids.length === 0) {
     toast.error("所选单据缺少 SKU 明细，无法打印商品条码")
-    return
+    return false
   }
   const w = window.open("", "_blank")
   try {
@@ -107,7 +110,7 @@ export async function openShipBarcodePrint(store: string, skuIds: Array<number |
     if (!r.ok) {
       w?.close()
       toast.error(r.error, { duration: 8000 })
-      return
+      return false
     }
     const [first, ...rest] = r.urls
     if (w) w.location.href = first
@@ -116,303 +119,12 @@ export async function openShipBarcodePrint(store: string, skuIds: Array<number |
     if (r.urls.length > 1) {
       toast.success(`已打开 ${r.urls.length} 个官方打印页（发货单跨供应商主体，按主体分组；链接 10 分钟内单次有效）`, { duration: 10_000 })
     }
+    return true
   } catch (e) {
     w?.close()
     toast.error(e instanceof Error ? e.message : "打印页获取失败", { duration: 8000 })
+    return false
   }
-}
-
-/* ─── 三方式配送信息（「更换物流」弹窗用；装箱发货抽屉已固定方式 2） ─── */
-
-export type DeliverPayload =
-  | { deliverMethod: 1; driverName: string; plateNumber: string; expressPackageNum: number }
-  | {
-      deliverMethod: 2
-      expressCompanyId: number | null
-      /** 快递公司名称：官方方式2必填（2000000 实证），取自 logisticsmatch 推荐条目 */
-      expressCompanyName: string
-      predictTotalPackageWeight: number
-      expectPickUpGoodsTime?: number
-      pickupMethod?: number
-      predictId?: number
-      expressPackageNum: number
-      selfDeliverSitePhone?: string
-      selfDeliverSiteAddress?: string
-      selfDeliverSiteUserCode?: string
-      selfDeliverSiteCompanyCode?: string
-    }
-  | {
-      deliverMethod: 3
-      expressCompanyId: number | null
-      expressCompanyName: string
-      expressDeliverySn: string
-      expressPackageNum: number
-    }
-
-export function DeliverMethodTabs({
-  store,
-  value,
-  onChange,
-  thirdParty,
-  scheduleOptions,
-  disablePlatform,
-  weightKg: weightKgProp,
-  onWeightKgChange,
-}: {
-  store: string
-  value: DeliverPayload
-  onChange: (v: DeliverPayload) => void
-  /** 自行委托三方的可用物流名单（logistics.get） */
-  thirdParty: Array<{ expressCompanyId: number; expressCompanyName: string }>
-  /** 平台推荐方式的可预约揽收时段（value = 原值透传） */
-  scheduleOptions?: Array<{ label: string; value: number }>
-  /** 预检判定不可用平台推荐时置灰 */
-  disablePlatform?: boolean
-  /** 受控预估总重量（千克字符串）；不传则内部维护（改物流弹窗用法） */
-  weightKg?: string
-  onWeightKgChange?: (v: string) => void
-}) {
-  const [innerWeightKg, setInnerWeightKg] = React.useState(
-    String(Math.max(1, Math.round((value.deliverMethod === 2 ? value.predictTotalPackageWeight : 1000) / 1000))),
-  )
-  const weightKg = weightKgProp ?? innerWeightKg
-  const setWeight = (v: string) => {
-    if (onWeightKgChange) onWeightKgChange(v)
-    else setInnerWeightKg(v)
-  }
-  const [pkgNum, setPkgNum] = React.useState(String(value.expressPackageNum))
-  const method = value.deliverMethod
-
-  // 外部回填（装箱弹窗静默取 SKU 总重）到达时同步输入框；用户自己输入时收敛为同值不闪烁
-  const propWeight = value.deliverMethod === 2 ? value.predictTotalPackageWeight : 1000
-  const lastSyncedWeight = React.useRef(propWeight)
-  React.useEffect(() => {
-    if (value.deliverMethod === 2 && propWeight !== lastSyncedWeight.current) {
-      lastSyncedWeight.current = propWeight
-      const next = String(Math.max(1, Math.round(propWeight / 1000)))
-      if (onWeightKgChange) onWeightKgChange(next)
-      else setInnerWeightKg(next)
-    }
-  }, [value.deliverMethod, propWeight, onWeightKgChange])
-
-  const setPkg = (n: string) => {
-    setPkgNum(n)
-    const num = Math.max(1, Math.round(Number(n) || 1))
-    onChange({ ...value, expressPackageNum: num } as DeliverPayload)
-  }
-
-  const tabs: Array<{ m: 1 | 2 | 3; label: string }> = [
-    { m: 1, label: "自送" },
-    { m: 2, label: "平台推荐物流" },
-    { m: 3, label: "自行委托三方" },
-  ]
-
-  return (
-    <div className="space-y-3">
-      <div className="inline-flex h-8 items-center rounded-lg bg-muted p-1 text-muted-foreground">
-        {tabs.map((t) => (
-          <button
-            key={t.m}
-            type="button"
-            disabled={t.m === 2 && disablePlatform}
-            onClick={() => {
-              if (t.m === 1) onChange({ deliverMethod: 1, driverName: "", plateNumber: "", expressPackageNum: Math.max(1, Math.round(Number(pkgNum) || 1)) })
-              if (t.m === 2)
-                onChange({
-                  deliverMethod: 2,
-                  expressCompanyId: null,
-                  expressCompanyName: "",
-                  predictTotalPackageWeight: Math.max(1, Math.round(Number(weightKg) || 1)) * 1000,
-                  expressPackageNum: Math.max(1, Math.round(Number(pkgNum) || 1)),
-                  pickupMethod: 0,
-                })
-              if (t.m === 3) onChange({ deliverMethod: 3, expressCompanyId: null, expressCompanyName: "", expressDeliverySn: "", expressPackageNum: Math.max(1, Math.round(Number(pkgNum) || 1)) })
-            }}
-            className={`rounded-md px-3 py-1 text-xs font-medium transition-all disabled:opacity-40 ${
-              method === t.m ? "bg-background text-foreground shadow-sm" : "hover:text-foreground"
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {method === 1 && (
-        <div className="grid grid-cols-3 gap-3">
-          <div className="space-y-1">
-            <Label className="text-xs">司机姓名</Label>
-            <Input
-              className="h-8 text-xs"
-              value={value.driverName}
-              onChange={(e) => onChange({ ...value, driverName: e.target.value })}
-              placeholder="张三"
-            />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">车牌号</Label>
-            <Input
-              className="h-8 text-xs"
-              value={value.plateNumber}
-              onChange={(e) => onChange({ ...value, plateNumber: e.target.value })}
-              placeholder="粤A12345"
-            />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">发货总箱数</Label>
-            <Input className="h-8 rounded-md text-xs" type="number" min={1} value={pkgNum} onChange={(e) => setPkg(e.target.value)} />
-          </div>
-        </div>
-      )}
-
-      {method === 2 && (
-        <div className="space-y-3">
-          <div className="grid grid-cols-3 gap-3">
-            <div className="space-y-1">
-              <Label className="text-xs">预估总重量（千克，整数）</Label>
-              <Input
-                className="h-8 text-xs"
-                type="number"
-                inputMode="numeric"
-                min={1}
-                step={1}
-                value={weightKg}
-                onChange={(e) => {
-                  setWeight(e.target.value)
-                  const kg = Math.max(1, Math.round(Number(e.target.value) || 1))
-                  onChange({ ...value, predictTotalPackageWeight: kg * 1000 } as DeliverPayload)
-                }}
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">揽收方式</Label>
-              <Select
-                items={[
-                  { value: "0", label: "上门揽收" },
-                  { value: "1", label: "送至网点" },
-                ]}
-                value={String(value.pickupMethod ?? 0)}
-                onValueChange={(v) => {
-                  if (!v) return
-                  onChange({ ...value, pickupMethod: Number(v) } as DeliverPayload)
-                }}
-              >
-                <SelectTrigger className="h-8 text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="0">上门揽收</SelectItem>
-                  <SelectItem value="1">送至网点</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            {(scheduleOptions?.length ?? 0) > 0 && (
-              <div className="space-y-1">
-                <Label className="text-xs">预约揽收时段</Label>
-                <Select
-                  items={(scheduleOptions ?? []).map((s) => ({ value: String(s.value), label: s.label }))}
-                  value={value.expectPickUpGoodsTime != null ? String(value.expectPickUpGoodsTime) : ""}
-                  onValueChange={(v) => {
-                    if (!v) return
-                    onChange({ ...value, expectPickUpGoodsTime: Number(v) } as DeliverPayload)
-                  }}
-                >
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue placeholder="不预约" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(scheduleOptions ?? []).map((s) => (
-                      <SelectItem key={s.value} value={String(s.value)}>
-                        {s.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-          </div>
-          {value.pickupMethod === 1 && (
-            <div className="grid grid-cols-2 gap-3 rounded-md border border-dashed p-3">
-              <div className="space-y-1">
-                <Label className="text-xs">自送网点电话 *</Label>
-                <Input className="h-8 text-xs" value={value.selfDeliverSitePhone ?? ""} onChange={(e) => onChange({ ...value, selfDeliverSitePhone: e.target.value } as DeliverPayload)} />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs">自送网点地址 *</Label>
-                <Input className="h-8 text-xs" value={value.selfDeliverSiteAddress ?? ""} onChange={(e) => onChange({ ...value, selfDeliverSiteAddress: e.target.value } as DeliverPayload)} />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs">网点用户编码 *</Label>
-                <Input className="h-8 text-xs" value={value.selfDeliverSiteUserCode ?? ""} onChange={(e) => onChange({ ...value, selfDeliverSiteUserCode: e.target.value } as DeliverPayload)} />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs">网点公司编码 *</Label>
-                <Input className="h-8 text-xs" value={value.selfDeliverSiteCompanyCode ?? ""} onChange={(e) => onChange({ ...value, selfDeliverSiteCompanyCode: e.target.value } as DeliverPayload)} />
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {method === 3 && (
-        <div className="grid grid-cols-3 gap-3">
-          <div className="space-y-1">
-            <Label className="text-xs">物流公司</Label>
-            <Select
-              items={thirdParty.map((t) => ({ value: String(t.expressCompanyId), label: t.expressCompanyName }))}
-              value={value.expressCompanyId != null ? String(value.expressCompanyId) : ""}
-              onValueChange={(v) => {
-                if (!v) return
-                const c = thirdParty.find((t) => String(t.expressCompanyId) === v)
-                onChange({ ...value, expressCompanyId: Number(v), expressCompanyName: c?.expressCompanyName ?? "" } as DeliverPayload)
-              }}
-            >
-              <SelectTrigger className="h-8 text-xs">
-                <SelectValue placeholder="选择物流" />
-              </SelectTrigger>
-              <SelectContent>
-                {thirdParty.map((t) => (
-                  <SelectItem key={t.expressCompanyId} value={String(t.expressCompanyId)}>
-                    {t.expressCompanyName}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">物流单号</Label>
-            <div className="flex gap-1.5">
-              <Input className="h-8 text-xs" value={value.expressDeliverySn} onChange={(e) => onChange({ ...value, expressDeliverySn: e.target.value } as DeliverPayload)} placeholder="快递单号" />
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 text-xs"
-                disabled={!value.expressCompanyId || !value.expressDeliverySn}
-                onClick={async () => {
-                  const r = await validateShipExpressNoAction({
-                    store,
-                    shippingId: value.expressCompanyId!,
-                    expressNo: value.expressDeliverySn,
-                  }).catch(() => null)
-                  if (!r || !r.ok) {
-                    toast.error(r?.ok === false ? r.error : "校验失败", { duration: 6000 })
-                    return
-                  }
-                  if (r.valid) toast.success("单号校验通过")
-                  else toast.error(`单号不匹配：${r.message ?? "官方未返回原因"}`, { duration: 8000 })
-                }}
-              >
-                校验
-              </Button>
-            </div>
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">发货总箱数</Label>
-            <Input className="h-8 rounded-md text-xs" type="number" min={1} value={pkgNum} onChange={(e) => setPkg(e.target.value)} />
-          </div>
-        </div>
-      )}
-    </div>
-  )
 }
 
 /* ─── 装箱发货（右侧抽屉，官方样式） ─── */
@@ -459,9 +171,14 @@ export function PackingDialog({
   const [factoryDirect, setFactoryDirect] = React.useState(false)
 
   const sns = React.useMemo(() => rows.map((r) => r.deliveryOrderSn), [rows])
-  /** 每单包裹数：官方行字段在待装箱阶段常为 0，以打印箱唛拆分出的包裹号为准 */
+  /** 每单包裹数：官方应发包裹数 deliverPackageNum 优先（packageSns 服务端截断 10 个会低估；
+   *  待装箱阶段官方字段常为 0，回落打印箱唛拆分出的包裹号数，最后兜底 1） */
   const pkgCountOf = (r: TemuShipOrderRow) =>
-    r.packageSns.length > 0 ? r.packageSns.length : (r.deliverPackageNum ?? 1)
+    r.deliverPackageNum && r.deliverPackageNum > 0
+      ? r.deliverPackageNum
+      : r.packageSns.length > 0
+        ? r.packageSns.length
+        : 1
   const totalPackages = rows.reduce((acc, r) => acc + pkgCountOf(r), 0)
   const totalSkus = rows.reduce((acc, r) => acc + (r.deliverSkcNum ?? 0), 0)
   const receive = rows[0]?.receiveAddress ?? null

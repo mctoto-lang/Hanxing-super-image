@@ -44,6 +44,8 @@ import {
   temuShipCreateOrderSchema,
   temuShipExpressNoValidateSchema,
   temuShipListQuerySchema,
+  temuShipBatchRowsQuerySchema,
+  temuShipExpressOptionsSchema,
   temuShipLogisticsChangeSchema,
   temuShipLogisticsMatchSchema,
   temuShipMallAddressCreateSchema,
@@ -300,7 +302,7 @@ export interface TemuShipOrderRow {
   productSkuIds: number[]
   /** 商品名（left join temu_products） */
   productName: string | null
-  /** 主图（官方 BasicVO 外链优先，商品表转存图兜底） */
+  /** 主图（商品表 COS 转存优先不过期，官方 BasicVO 临时外链兜底） */
   productImageUrl: string | null
   subWarehouseId: number | null
   subWarehouseName: string | null
@@ -322,6 +324,10 @@ export interface TemuShipOrderRow {
   deliverSkcNum: number | null
   skcPurchaseNum: number | null
   isPrintBoxMark: boolean | null
+  /** 本站记录：成功打开官方打包标签打印页的时间（null=未打印；与官方 isPrintBoxMark 语义不同） */
+  boxMarkPrintedAt: string | null
+  /** 本站记录：成功打开官方商品条码打印页的时间（null=未打印） */
+  barcodePrintedAt: string | null
   driverName: string | null
   plateNumber: string | null
   /** 物流单拒收状态（0 无 / 1 待物流商处理 / 2 已处理；官方无轨迹状态，仅异常类） */
@@ -356,6 +362,68 @@ function shipOrderSkuIds(raw: Record<string, unknown> | null): number[] {
   ]
 }
 
+/** 本地发货单联查行（temu_ship_order + 商品名/主图 left join） */
+type ShipOrderViewRow = {
+  order: typeof temuShipOrders.$inferSelect
+  productName: string | null
+  mainImageCosUrl: string | null
+  mainImageUrl: string | null
+}
+
+/** 本地行 → 前端 TemuShipOrderRow（列表分页与换物流批次全量共用，口径合一：
+ *  包裹号按本地包表联查截断 10、地址标签缺失降级 null） */
+function mapShipOrderRows(
+  rows: ShipOrderViewRow[],
+  pkgMap: Map<string, string[]>,
+  addrLabels: Map<number, string>,
+): TemuShipOrderRow[] {
+  return rows.map<TemuShipOrderRow>(({ order: r, productName, mainImageCosUrl, mainImageUrl }) => ({
+    deliveryOrderSn: r.deliveryOrderSn,
+    subPurchaseOrderSn: r.subPurchaseOrderSn,
+    productSkcId: r.productSkcId,
+    skcExtCode: r.skcExtCode,
+    /** 本单 SKU 明细（raw.packageDetailList 提取；商品条码按 SKU 维度打印，见 getShipBarcodePrintUrlAction） */
+    productSkuIds: shipOrderSkuIds(r.raw),
+    productName,
+    // COS 转存（temu/ 前缀不过期）优先，kwcdn 官方外链是临时 URL 会过期——
+    // 放大查看走 /api/image/proxy 代理拉取，过期后报「图片已过期」（对齐商品页 temuImageSrc 口径）
+    productImageUrl: mainImageCosUrl ?? r.productSkcPicture ?? mainImageUrl,
+    subWarehouseId: r.subWarehouseId,
+    subWarehouseName: r.subWarehouseName,
+    status: r.status,
+    urgencyType: r.urgencyType,
+    isCustomProduct: r.isCustomProduct,
+    purchaseStockType: r.purchaseStockType,
+    fragileTag: r.fragileTag,
+    deliveryMethod: r.deliveryMethod,
+    expressBatchSn: r.expressBatchSn,
+    expressCompany: r.expressCompany,
+    expressCompanyId: r.expressCompanyId,
+    expressDeliverySn: r.expressDeliverySn,
+    deliveryAddressId: r.deliveryAddressId,
+    deliveryAddressLabel: r.deliveryAddressId != null ? (addrLabels.get(r.deliveryAddressId) ?? null) : null,
+    deliverPackageNum: r.deliverPackageNum,
+    deliverSkcNum: r.deliverSkcNum,
+    skcPurchaseNum: r.skcPurchaseNum,
+    isPrintBoxMark: r.isPrintBoxMark,
+    boxMarkPrintedAt: r.boxMarkPrintedAt?.toISOString() ?? null,
+    barcodePrintedAt: r.barcodePrintedAt?.toISOString() ?? null,
+    driverName: r.driverName,
+    plateNumber: r.plateNumber,
+    expressRejectStatus: r.expressRejectStatus,
+    expressWeightFeedbackStatus: r.expressWeightFeedbackStatus,
+    packageSns: (pkgMap.get(r.deliveryOrderSn) ?? []).slice(0, 10),
+    deliveryOrderCreateTime: r.deliveryOrderCreateTime?.toISOString() ?? null,
+    deliverTime: r.deliverTime?.toISOString() ?? null,
+    receiveTime: r.receiveTime?.toISOString() ?? null,
+    purchaseTime: r.purchaseTime?.toISOString() ?? null,
+    expectPickUpGoodsTime: r.expectPickUpGoodsTime?.toISOString() ?? null,
+    expectLatestPickTime: r.expectLatestPickTime?.toISOString() ?? null,
+    cancelDeadline: r.cancelDeadline?.toISOString() ?? null,
+    receiveAddress: r.receiveAddressInfo ?? null,
+  }))
+}
+
 export async function getTemuShipOrdersAction(input: unknown) {
   let q: typeof temuShipListQuerySchema._output
   try {
@@ -378,6 +446,16 @@ export async function getTemuShipOrdersAction(input: unknown) {
     conditions.push(eq(temuShipOrders.expressDeliverySn, q.expressDeliverySn.trim()))
   if (q.warehouseId != null)
     conditions.push(eq(temuShipOrders.deliveryAddressId, q.warehouseId))
+  if (q.expressCompanyId != null)
+    conditions.push(eq(temuShipOrders.expressCompanyId, q.expressCompanyId))
+  // 预约取货时间范围（北京日界半开区间，对齐库存变动口径；无预约时间的单被范围排除）
+  if (q.pickupFrom && q.pickupTo) {
+    const start = new Date(`${q.pickupFrom}T00:00:00+08:00`)
+    const end = new Date(`${q.pickupTo}T00:00:00+08:00`)
+    end.setUTCDate(end.getUTCDate() + 1)
+    conditions.push(gte(temuShipOrders.expectPickUpGoodsTime, start))
+    conditions.push(lt(temuShipOrders.expectPickUpGoodsTime, end))
+  }
   const where = and(...conditions)
 
   const fetchPage = async () => {
@@ -473,48 +551,75 @@ export async function getTemuShipOrdersAction(input: unknown) {
     pageSize: q.pageSize,
     ...(freshStats ? { freshStats } : {}),
     ...(freshWarning ? { freshWarning } : {}),
-    rows: rows.map<TemuShipOrderRow>(({ order: r, productName, mainImageCosUrl, mainImageUrl }) => ({
-      deliveryOrderSn: r.deliveryOrderSn,
-      subPurchaseOrderSn: r.subPurchaseOrderSn,
-      productSkcId: r.productSkcId,
-      skcExtCode: r.skcExtCode,
-      /** 本单 SKU 明细（raw.packageDetailList 提取；商品条码按 SKU 维度打印，见 getShipBarcodePrintUrlAction） */
-      productSkuIds: shipOrderSkuIds(r.raw),
-      productName,
-      productImageUrl: r.productSkcPicture ?? mainImageCosUrl ?? mainImageUrl,
-      subWarehouseId: r.subWarehouseId,
-      subWarehouseName: r.subWarehouseName,
-      status: r.status,
-      urgencyType: r.urgencyType,
-      isCustomProduct: r.isCustomProduct,
-      purchaseStockType: r.purchaseStockType,
-      fragileTag: r.fragileTag,
-      deliveryMethod: r.deliveryMethod,
-      expressBatchSn: r.expressBatchSn,
-      expressCompany: r.expressCompany,
-      expressCompanyId: r.expressCompanyId,
-      expressDeliverySn: r.expressDeliverySn,
-      deliveryAddressId: r.deliveryAddressId,
-      deliveryAddressLabel: r.deliveryAddressId != null ? (addrLabels.get(r.deliveryAddressId) ?? null) : null,
-      deliverPackageNum: r.deliverPackageNum,
-      deliverSkcNum: r.deliverSkcNum,
-      skcPurchaseNum: r.skcPurchaseNum,
-      isPrintBoxMark: r.isPrintBoxMark,
-      driverName: r.driverName,
-      plateNumber: r.plateNumber,
-      expressRejectStatus: r.expressRejectStatus,
-      expressWeightFeedbackStatus: r.expressWeightFeedbackStatus,
-      packageSns: (pkgMap.get(r.deliveryOrderSn) ?? []).slice(0, 10),
-      deliveryOrderCreateTime: r.deliveryOrderCreateTime?.toISOString() ?? null,
-      deliverTime: r.deliverTime?.toISOString() ?? null,
-      receiveTime: r.receiveTime?.toISOString() ?? null,
-      purchaseTime: r.purchaseTime?.toISOString() ?? null,
-      expectPickUpGoodsTime: r.expectPickUpGoodsTime?.toISOString() ?? null,
-      expectLatestPickTime: r.expectLatestPickTime?.toISOString() ?? null,
-      cancelDeadline: r.cancelDeadline?.toISOString() ?? null,
-      receiveAddress: r.receiveAddressInfo ?? null,
-    })),
+    rows: mapShipOrderRows(rows, pkgMap, addrLabels),
   }
+}
+
+/**
+ * 换物流弹窗批次全量行：按 expressBatchSn 拉本店该批次全部发货单（服务端全量，
+ * 无分页——前端当前页命中行只覆盖页内，跨页批次的比价/重量/箱数会低估）。
+ * 只读本地落库不打官方；企业隔离 = 店铺归属校验；行映射与列表共用 mapShipOrderRows。
+ */
+export async function getChangeLogisticsBatchAction(input: unknown) {
+  let q: { store: string; expressBatchSn: string }
+  try {
+    q = temuShipBatchRowsQuerySchema.parse(input)
+  } catch {
+    return { ok: false as const, error: "参数错误" }
+  }
+  const guard = await requireTemuStore(q.store, null)
+  if (!guard.ok) return { ok: false as const, error: guard.error }
+
+  const rows = await db
+    .select({
+      order: temuShipOrders,
+      productName: temuProducts.productName,
+      mainImageCosUrl: temuProducts.mainImageCosUrl,
+      mainImageUrl: temuProducts.mainImageUrl,
+    })
+    .from(temuShipOrders)
+    .leftJoin(
+      temuProducts,
+      and(
+        eq(temuProducts.storeId, temuShipOrders.storeId),
+        sql`cast(${temuShipOrders.productSkcId} as varchar) = ${temuProducts.productSkcId}`,
+      ),
+    )
+    .where(
+      and(
+        eq(temuShipOrders.storeId, guard.store.id),
+        eq(temuShipOrders.expressBatchSn, q.expressBatchSn.trim()),
+      ),
+    )
+    // 排序口径同列表：发货时间新→旧（批次行同批时间相近，仅保证展示稳定）
+    .orderBy(
+      sql`coalesce(${temuShipOrders.deliverTime}, ${temuShipOrders.deliveryOrderCreateTime}) desc nulls last`,
+      desc(temuShipOrders.deliveryOrderSn),
+    )
+  if (rows.length === 0) {
+    return { ok: false as const, error: "未找到该批次发货单（本地数据可能滞后，可稍后重试）" }
+  }
+
+  // 包裹号列表与地址标签口径同列表 fetchPage（本地包表联查 / mall.address 30s 缓存降级）
+  const sns = rows.map((r) => r.order.deliveryOrderSn)
+  const pkgMap = new Map<string, string[]>()
+  const pkgs = await db
+    .select({ sn: temuShipPackages.deliveryOrderSn, packageSn: temuShipPackages.packageSn })
+    .from(temuShipPackages)
+    .where(
+      and(eq(temuShipPackages.storeId, guard.store.id), inArray(temuShipPackages.deliveryOrderSn, sns)),
+    )
+  for (const p of pkgs) {
+    const list = pkgMap.get(p.sn) ?? []
+    list.push(p.packageSn)
+    pkgMap.set(p.sn, list)
+  }
+  const addrIds = [
+    ...new Set(rows.map((r) => r.order.deliveryAddressId).filter((v): v is number => v != null)),
+  ]
+  const addrLabels =
+    addrIds.length > 0 ? await loadMallAddressLabels(guard.store) : new Map<number, string>()
+  return { ok: true as const, rows: mapShipOrderRows(rows, pkgMap, addrLabels) }
 }
 
 /** 发货单列表「发货仓库」筛选选项：本店全部状态发货单出现过的卖家发货地址（addrId 去重）。
@@ -542,6 +647,49 @@ export async function getShipWarehouseOptionsAction(input: unknown) {
     .map((addrId) => ({ id: addrId, label: labelMap.get(addrId) ?? `地址 ${addrId}` }))
     .sort((a, b) => a.label.localeCompare(b.label, "zh-CN"))
   return { ok: true as const, rows }
+}
+
+/** 发货单列表「物流商」筛选选项：计数按传入的当前筛选上下文（「按结果显示数量」——
+ *  状态/预约取货日期/仓库与列表查询同款条件），GROUP BY 物流商聚合；name 缺失降级
+ *  「物流商 {id}」。自送单（deliverMethod=1 发货后仍无物流商）被 isNotNull 天然排除。 */
+export async function getShipExpressOptionsAction(input: unknown) {
+  let q: typeof temuShipExpressOptionsSchema._output
+  try {
+    q = temuShipExpressOptionsSchema.parse(input)
+  } catch {
+    return { ok: false as const, error: "参数错误" }
+  }
+  const guard = await requireTemuStore(q.store, null)
+  if (!guard.ok) return { ok: false as const, error: guard.error }
+
+  const conditions = [eq(temuShipOrders.storeId, guard.store.id)]
+  const statusList = q.statusPreset != null ? STATUS_PRESET[q.statusPreset] : undefined
+  if (statusList) conditions.push(inArray(temuShipOrders.status, statusList))
+  if (q.pickupFrom && q.pickupTo) {
+    const start = new Date(`${q.pickupFrom}T00:00:00+08:00`)
+    const end = new Date(`${q.pickupTo}T00:00:00+08:00`)
+    end.setUTCDate(end.getUTCDate() + 1)
+    conditions.push(gte(temuShipOrders.expectPickUpGoodsTime, start))
+    conditions.push(lt(temuShipOrders.expectPickUpGoodsTime, end))
+  }
+  if (q.warehouseId != null)
+    conditions.push(eq(temuShipOrders.deliveryAddressId, q.warehouseId))
+  conditions.push(isNotNull(temuShipOrders.expressCompanyId))
+
+  const rows = await db
+    .select({
+      id: temuShipOrders.expressCompanyId,
+      name: temuShipOrders.expressCompany,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(temuShipOrders)
+    .where(and(...conditions))
+    .groupBy(temuShipOrders.expressCompanyId, temuShipOrders.expressCompany)
+    .orderBy(desc(sql`count(*)`), temuShipOrders.expressCompany)
+  return {
+    ok: true as const,
+    rows: rows.map((r) => ({ id: r.id as number, name: r.name ?? `物流商 ${r.id}`, count: r.count })),
+  }
 }
 
 /* ─── 发货统计（概览页底部三卡） ─── */
@@ -2211,7 +2359,7 @@ export async function getSnNamesAction(input: { codes: string[] }) {
   return { ok: true as const, names }
 }
 
-/** 待装箱发货单「需要打印条码」标记（发货单列表行内徽标）：
+/** 待装箱/待仓库收货发货单「需要打印条码」标记（发货单列表行内徽标）：
  *  发货单行 skcExtCode 对应库存档案且未预贴条码（barcode_pre_pasted=false）→ 该单标记。
  *  未建档货号不标记（无法判断，沿用发货台「打印条码」按钮人工判断）。 */
 export async function getShipOrdersNeedingBarcodeAction(input: { sns: string[] }) {
@@ -2247,7 +2395,8 @@ export async function getShipOrdersNeedingBarcodeAction(input: { sns: string[] }
         and(
           inArray(temuShipOrders.storeId, storeIds),
           inArray(temuShipOrders.deliveryOrderSn, sns),
-          eq(temuShipOrders.status, 0),
+          // status=0 待装箱 + status=1 待仓库收货（收货后打印已无意义不再标记）
+          inArray(temuShipOrders.status, [0, 1]),
         ),
       ),
     db
@@ -2268,7 +2417,37 @@ export async function getShipOrdersNeedingBarcodeAction(input: { sns: string[] }
   return { ok: true as const, sns: [...result] }
 }
 
+/** 标记发货单「已打印」（操作列行级绿勾）：前端**成功打开官方打印页**后调用——
+ *  仅请求 dataKey 不开页的路径（待装箱两步确认 requestShipBoxMark）不算。
+ *  kind=boxMark 打包标签 / barcode 商品条码；只写本站展示态，不调官方接口。 */
+export async function markShipPrintedAction(input: {
+  store: string
+  sns: string[]
+  kind: "boxMark" | "barcode"
+}) {
+  const sns = (input?.sns ?? [])
+    .filter((s) => typeof s === "string" && s.trim())
+    .slice(0, 100)
+  if (input?.kind !== "boxMark" && input?.kind !== "barcode") {
+    return { ok: false as const, error: "参数错误" }
+  }
+  if (sns.length === 0) return { ok: true as const }
+  const guard = await requireTemuStore(input.store, "temu_ship")
+  if (!guard.ok) return guard
+  await db
+    .update(temuShipOrders)
+    .set(input.kind === "boxMark" ? { boxMarkPrintedAt: new Date() } : { barcodePrintedAt: new Date() })
+    .where(
+      and(
+        eq(temuShipOrders.storeId, guard.store.id),
+        inArray(temuShipOrders.deliveryOrderSn, sns),
+      ),
+    )
+  return { ok: true as const }
+}
+
 /* ─── 物流公司偏好配置（自动预约发货；企业级，迁移 0093） ─── */
+
 
 export type TemuLogisticsPrefItem = { expressCompanyId: number; expressCompanyName: string }
 

@@ -62,6 +62,21 @@ export const temuShipListQuerySchema = z.object({
   expressDeliverySn: z.string().max(64).optional(),
   /** 发货仓库（卖家发货地址 id，精确） */
   warehouseId: z.number().int().optional(),
+  /** 物流商（expressCompanyId 精确；自送单无物流商被天然排除） */
+  expressCompanyId: z.number().int().optional(),
+  /** 预约取货时间范围（北京日界半开区间 [from 00:00, to+1d 00:00)；待仓库收货视图筛选，两端同传生效） */
+  pickupFrom: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "日期格式 YYYY-MM-DD")
+    // regex 只校形状（2026-13-01 可过），下游 new Date 得 Invalid Date 后
+    // toISOString 抛 RangeError → 500——按下游同款构造口径校真实可解析
+    .refine((v) => !Number.isNaN(new Date(`${v}T00:00:00+08:00`).getTime()), "日期无效")
+    .optional(),
+  pickupTo: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "日期格式 YYYY-MM-DD")
+    .refine((v) => !Number.isNaN(new Date(`${v}T00:00:00+08:00`).getTime()), "日期无效")
+    .optional(),
   /** 实时核对：按当前页单号回查官方 shiporderv2 并落库；官方已移除的单本地置为已取消 */
   fresh: z.boolean().optional(),
 })
@@ -70,6 +85,35 @@ export type TemuShipListQuery = z.infer<typeof temuShipListQuerySchema>
 /** 发货单列表「发货仓库」筛选选项（本店出现过的卖家发货地址，去重） */
 export const temuShipWarehouseOptionsSchema = z.object({
   store: z.string().uuid(),
+})
+
+/** 换物流弹窗批次全量行查询：按 expressBatchSn 拉该批次本店全部发货单
+ *  （无分页——前端当前页命中行只覆盖页内，跨页批次比价/箱数会低估） */
+export const temuShipBatchRowsQuerySchema = z.object({
+  store: z.string().uuid(),
+  expressBatchSn: z.string().min(1).max(64),
+})
+
+/** 发货单列表「物流商」筛选选项：计数按传入的当前筛选上下文（「按结果显示数量」口径，
+ *  与列表查询同款条件），返回 {id, name, count} 供下拉徽标展示 */
+export const temuShipExpressOptionsSchema = z.object({
+  store: z.string().uuid(),
+  statusPreset: z
+    .enum(["pending", "shipping", "done", "partial", "closed", "all"])
+    .optional(),
+  pickupFrom: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "日期格式 YYYY-MM-DD")
+    // regex 只校形状（2026-13-01 可过），下游 new Date 得 Invalid Date 后
+    // toISOString 抛 RangeError → 500——按下游同款构造口径校真实可解析
+    .refine((v) => !Number.isNaN(new Date(`${v}T00:00:00+08:00`).getTime()), "日期无效")
+    .optional(),
+  pickupTo: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "日期格式 YYYY-MM-DD")
+    .refine((v) => !Number.isNaN(new Date(`${v}T00:00:00+08:00`).getTime()), "日期无效")
+    .optional(),
+  warehouseId: z.number().int().optional(),
 })
 
 // ---------- 发货五步向导（批次二写侧） ----------

@@ -19,7 +19,7 @@ const BACKGROUND_IMAGE_URL =
 const NAV_LINKS = [
   { id: "home", label: "首页" },
   { id: "features", label: "产品功能" },
-  { id: "pricing", label: "订阅套餐" },
+  { id: "pricing", label: "积分套餐" },
   { id: "testimonials", label: "用户评价" },
   { id: "help", label: "帮助中心" },
 ] as const
@@ -33,7 +33,7 @@ const PARTNERS = [
 ]
 
 /**
- * 登录前的营销首页：单页下拉式，五个锚点区块（首页 / 产品功能 / 订阅套餐 /
+ * 登录前的营销首页：单页下拉式，五个锚点区块（首页 / 产品功能 / 积分套餐 /
  * 用户评价 / 帮助中心），导航吸顶 + 点击平滑滚动 + 滚动高亮当前区块。
  */
 export default function LandingPage() {
@@ -300,12 +300,12 @@ export default function LandingPage() {
       {/* Logo 墙：电商平台 × AI 模型双行反向跑马灯（彩色 logo + 名称，无标题） */}
       <LogoMarqueeSection />
 
-      {/* 订阅套餐：四档定价（月付/年付切换 + 热门流光卡，Ultra 档高亮） */}
+      {/* 积分套餐：四档定价（月付/年付切换暂隐 + 热门流光卡，Ultra 档高亮） */}
       <section id="pricing" className="bg-neutral-950 px-6 py-24">
         <PricingSection
           plans={PLANS}
-          heading="订阅套餐"
-          description="按月或按年订阅，积分随套餐规模提升并叠加赠送，随时升级降级，无隐藏费用。"
+          heading="积分套餐"
+          description="积分随套餐规模提升并叠加赠送，随时升级降级，无隐藏费用。"
         />
       </section>
 

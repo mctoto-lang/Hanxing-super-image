@@ -78,6 +78,15 @@ const envSchema = z.object({
   // 存储图片强制「登录会话或 HMAC 令牌」；未配置视为宽限中。上线后将此值
   // 设为部署日 + 30 天，到期观察日志无无签名流量后保持强制。
   UPLOADS_UNSIGNED_GRACE_END: z.string().optional(),
+
+  // Apify（选品工具数据抓取；可选平台级兜底 token——企业可各自配置
+  // selection_provider 凭证，两者皆无的任务在认领后被结算为 failed 并给出
+  // 配置指引。选品双循环恒启动，不以此项作为启动门槛）
+  APIFY_API_TOKEN: z.string().optional(),
+  // 全局并发 Apify run 上限（worker 认领闸门；跨副本不共享，按副本数折算）
+  SELECTION_MAX_CONCURRENT_RUNS: z.coerce.number().int().min(1).max(50).default(5),
+  // 单任务轮询收割超时（毫秒）：超过后强制 abort，按实际抓取条数部分结算
+  SELECTION_TASK_TIMEOUT_MS: z.coerce.number().int().min(60_000).default(30 * 60_000),
 })
 
 export type Env = z.infer<typeof envSchema>

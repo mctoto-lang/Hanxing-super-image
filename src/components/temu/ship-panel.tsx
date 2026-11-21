@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { Printer, RefreshCw, TriangleAlert, Zap } from "lucide-react"
+import { Printer, PrinterCheck, RefreshCw, TriangleAlert, X, Zap } from "lucide-react"
 import { DashRing } from "@/components/ui/dash-ring"
 import {
   TableBody,
@@ -38,14 +38,15 @@ import { TemuSearchBar, type SearchBarField } from "@/components/temu/search-bar
 import { pickPrintLockedRows, shipListLoadOpts } from "@/components/temu/ship-panel-refresh"
 import {
   cancelShipOrderAction,
-  changeShipLogisticsAction,
   editShipPackagesAction,
+  getChangeLogisticsBatchAction,
   getShipExpressNoteAction,
   getShipOrdersNeedingBarcodeAction,
   getShipPackagesAction,
+  getShipExpressOptionsAction,
   getShipWarehouseOptionsAction,
   getTemuShipOrdersAction,
-  getThirdPartyLogisticsAction,
+  markShipPrintedAction,
   type TemuExpressNoteItem,
   type TemuShipOrderRow,
 } from "@/server/actions/temu-ship"
@@ -62,14 +63,16 @@ import {
 import { formatDateTime as fmtTs } from "@/lib/datetime"
 import { ShipStaging, PackageSplitTable, type ShipPackageDraft } from "./ship-staging"
 import {
-  DeliverMethodTabs,
   PackingDialog,
   openShipBarcodePrint,
   openShipBoxMarkPage,
   requestShipBoxMark,
-  type DeliverPayload,
 } from "./ship-packing"
 import { AutoReserveDialog } from "./ship-auto-reserve-dialog"
+import { ChangeLogisticsDialog } from "./ship-change-logistics-dialog"
+import { DateRangePicker } from "@/components/shared/date-range-picker"
+import { Combobox } from "@/components/ui/combobox"
+import type { DateRange } from "react-day-picker"
 import {
   Tooltip,
   TooltipContent,
@@ -274,6 +277,17 @@ function LogisticsInfoCell({ row }: { row: TemuShipOrderRow }) {
   )
 }
 
+/** 北京时区今日 00:00（与 TEMU 日口径同源，和部署时区解耦） */
+function bjToday(): Date {
+  const d = new Date()
+  return new Date(`${d.toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" })}T00:00:00+08:00`)
+}
+
+/** Date → 北京日期串 YYYY-MM-DD（服务端按 +08:00 日界拼半开区间） */
+function toBjDay(d: Date): string {
+  return d.toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" })
+}
+
 /** 官方链接式操作按钮 */
 function LinkButton({
   children,
@@ -297,6 +311,22 @@ function LinkButton({
   )
 }
 
+/** 「已打印」绿勾（操作列打印项后方）：本站记录的「成功打开过官方打印页」标记
+ *  （迁移 0107，企业内共享；悬停显示打印时间）。Trigger 渲染为 span——宿主
+ *  LinkButton 是 button，嵌 button 会破 HTML 结构。 */
+function PrintedMark({ at }: { at: string }) {
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger render={<span className="ml-0.5 inline-flex cursor-default align-middle" />}>
+          <PrinterCheck className="size-3.5 text-emerald-500" aria-label="已打印" />
+        </TooltipTrigger>
+        <TooltipContent>已于 {fmtTs(at)} 打印</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
+
 export function TemuShipPanel({ store, storeName }: { store?: string; storeName?: string | null }) {
   const [view, setView] = React.useState<"orders" | "staging">("staging")
   const [statusPreset, setStatusPreset] = React.useState("pending")
@@ -311,7 +341,15 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
   })
   /** 发货仓库筛选（null=全部；addrId=卖家发货地址 id）与选项（随店拉取） */
   const [warehouseId, setWarehouseId] = React.useState<number | null>(null)
+  /** 预约取货时间筛选（仅待仓库收货视图；默认今日，清空=全部；北京日界半开区间） */
+  const [pickupRange, setPickupRange] = React.useState<DateRange | undefined>(() => ({
+    from: bjToday(),
+    to: bjToday(),
+  }))
   const [warehouseOptions, setWarehouseOptions] = React.useState<Array<{ id: number; label: string }>>([])
+  /** 物流商筛选（null=全部；expressCompanyId 精确）与按当前筛选上下文计数的选项 */
+  const [expressCompanyId, setExpressCompanyId] = React.useState<number | null>(null)
+  const [expressOptions, setExpressOptions] = React.useState<Array<{ id: number; name: string; count: number }>>([])
   const [rows, setRows] = React.useState<TemuShipOrderRow[]>([])
   const [total, setTotal] = React.useState(0)
   const [error, setError] = React.useState<string | null>(null)
@@ -332,10 +370,8 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
   const [cancelPending, setCancelPending] = React.useState(false)
   const [pkgEdit, setPkgEdit] = React.useState<{ sn: string; skuIds: number[]; deliverNums: Record<number, number>; packages: ShipPackageDraft[] } | null>(null)
   const [pkgPending, startPkgPending] = React.useTransition()
-  const [changeTarget, setChangeTarget] = React.useState<TemuShipOrderRow | null>(null)
-  const [changeDeliver, setChangeDeliver] = React.useState<DeliverPayload>({ deliverMethod: 1, driverName: "", plateNumber: "", expressPackageNum: 1 })
-  const [changeThirdParty, setChangeThirdParty] = React.useState<Array<{ expressCompanyId: number; expressCompanyName: string }>>([])
-  const [changePending, startChangePending] = React.useTransition()
+  /** 更换物流弹窗（自动预约式，仅平台推荐物流）：批次全部行 */
+  const [changeLogisticsRows, setChangeLogisticsRows] = React.useState<TemuShipOrderRow[] | null>(null)
   /** 打印商品打包标签两步确认（图2：继续打印/先发货后打印；图3：件数锁定二次确认）；
    *  then=「批量装箱发货/自动预约发货」入口遇未打印单直弹图3（跳过图2），
    *  确认锁定并刷新后自动继续打开原弹窗（kind 标记目标；续接用刷新后的最新行，不用勾选快照） */
@@ -345,6 +381,11 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
   } | null>(null)
   const [shipAfterPrint, setShipAfterPrint] = React.useState(false)
 
+  /** 请求序号守卫：预约日期/仓库/状态筛选切换时 load 先以旧 expressCompanyId 发请求 A，
+   *  物流商选项 effect 重置选择后再发请求 B——乱序时 A 晚归不能覆盖 B 的结果，
+   *  仅最新序号的请求允许写回列表状态 */
+  const loadSeqRef = React.useRef(0)
+
   /** 查询发货单列表并 resolve 刷新后的行（打印锁定直弹路径据此取最新行开弹窗；
    *  startTransition 不回传结果，外层 Promise 兜底 resolve——异常也 resolve 空行，
    *  与「错误置空列表」口径一致，保证 await load(...) 不悬挂） */
@@ -352,6 +393,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
     void reloadTick // 创建发货单/装箱成功后靠 reloadTick 变化触发重查
     if (!store) return Promise.resolve([])
     const kw = appliedSearch.keyword.trim()
+    const seq = ++loadSeqRef.current
     return new Promise((resolve) => {
       startLoading(async () => {
         let out: TemuShipOrderRow[] = []
@@ -366,28 +408,40 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
             deliveryOrderSn: appliedSearch.field === "sn" && kw ? kw : undefined,
             expressDeliverySn: appliedSearch.field === "expressSn" && kw ? kw : undefined,
             warehouseId: warehouseId ?? undefined,
+            expressCompanyId: expressCompanyId ?? undefined,
+            // 预约取货时间范围仅待仓库收货视图生效（to 空选按单日处理）
+            pickupFrom:
+              statusPreset === "shipping" && pickupRange?.from
+                ? toBjDay(pickupRange.from)
+                : undefined,
+            pickupTo:
+              statusPreset === "shipping" && pickupRange?.from
+                ? toBjDay(pickupRange.to ?? pickupRange.from)
+                : undefined,
             fresh: opts?.fresh ? true : undefined,
           })
-          if (r.ok) {
-            out = r.rows
-            setRows(r.rows)
-            setTotal(r.total)
-            setError(null)
-            if (r.freshStats && r.freshStats.missing > 0) {
-              toast.info(`实时核对：${r.freshStats.missing} 单官方侧已移除，本地已置为「已取消」`)
+          if (r.ok) out = r.rows
+          if (seq === loadSeqRef.current) {
+            if (r.ok) {
+              setRows(r.rows)
+              setTotal(r.total)
+              setError(null)
+              if (r.freshStats && r.freshStats.missing > 0) {
+                toast.info(`实时核对：${r.freshStats.missing} 单官方侧已移除，本地已置为「已取消」`)
+              }
+              if (r.freshWarning) toast.warning(r.freshWarning, { duration: 8000 })
+            } else {
+              setRows([])
+              setTotal(0)
+              setError(r.error)
             }
-            if (r.freshWarning) toast.warning(r.freshWarning, { duration: 8000 })
-          } else {
-            setRows([])
-            setTotal(0)
-            setError(r.error)
           }
         } finally {
           resolve(out)
         }
       })
     })
-  }, [store, page, pageSize, statusPreset, appliedSearch, warehouseId, reloadTick])
+  }, [store, page, pageSize, statusPreset, appliedSearch, warehouseId, expressCompanyId, pickupRange, reloadTick])
 
   // 进入「发货单列表」即拉实时单（action 内：裸查最新一页落库 + 当前页单号核对；
   // 待装箱等新单无须等 15 分钟同步）；此后视图内翻页/状态筛选/仓库筛选/搜索提交、
@@ -404,10 +458,10 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
     setSelSns(new Set())
   }, [statusPreset, store, view])
 
-  // 待装箱行「需要打印条码」标记：发货单含已建档且条码为空（未预贴）的货号
+  // 待装箱/待仓库收货行「需要打印条码」标记：发货单含已建档且条码为空（未预贴）的货号
   React.useEffect(() => {
     const sns = Array.from(
-      new Set(rows.filter((r) => r.status === 0).map((r) => r.deliveryOrderSn)),
+      new Set(rows.filter((r) => r.status === 0 || r.status === 1).map((r) => r.deliveryOrderSn)),
     )
     if (sns.length === 0) {
       setBarcodeSns(new Set())
@@ -433,6 +487,33 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
       cancelled = true
     }
   }, [store])
+
+  // 物流商筛选选项（切店重置选择；计数按当前 状态/预约日期/仓库 筛选上下文联动刷新——
+  // 「按结果显示数量」口径，用户改筛选后徽标数随之变化）
+  React.useEffect(() => {
+    setExpressCompanyId(null)
+    if (!store) {
+      setExpressOptions([])
+      return
+    }
+    let cancelled = false
+    void getShipExpressOptionsAction({
+      store,
+      statusPreset,
+      pickupFrom:
+        statusPreset === "shipping" && pickupRange?.from ? toBjDay(pickupRange.from) : undefined,
+      pickupTo:
+        statusPreset === "shipping" && pickupRange?.from
+          ? toBjDay(pickupRange.to ?? pickupRange.from)
+          : undefined,
+      warehouseId: warehouseId ?? undefined,
+    }).then((r) => {
+      if (!cancelled && r.ok) setExpressOptions(r.rows)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [store, statusPreset, pickupRange, warehouseId])
 
   if (!store) {
     return (
@@ -487,16 +568,21 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
   const mixedWarehouse = selWarehouses.size > 1
   const isPendingView = statusPreset === "pending"
   const isShippingView = statusPreset === "shipping"
+  /** 聚簇渲染视图=已发货后各状态（含待仓库收货/已收货/部分收货/退货取消/全部）：
+   *  套用待仓库收货的字段标准（发货批次/物流信息/物流操作 + 批次聚簇）；
+   *  待装箱未发货无批次无物流，保持平铺结构不参与聚簇 */
+  const clusterView = !isPendingView
   /** 勾选列与批量条只在待装箱/待仓库收货出现（官方两视图才有批量操作） */
   const selectable = isPendingView || isShippingView
   const allPageSelected = rows.length > 0 && rows.every((r) => selSns.has(r.deliveryOrderSn))
   const somePageSelected = rows.some((r) => selSns.has(r.deliveryOrderSn))
 
-  /** 待仓库收货：按物流批次聚簇（保持首现顺序、组内原顺序；无批次号行各自成组）。
-   *  同批次多行时「发货批次/物流信息/物流操作」三列合并居中（官方两级结构），
-   *  行级列（发货单号/商品/发货信息/状态/操作）逐行独立——同批次可能含不同货号条码。 */
+  /** 聚簇视图（已发货后各状态）：按物流批次聚簇（保持首现顺序、组内原顺序；无批次号
+   *  行各自成组——「全部状态」里的待装箱单也走此兜底）。同批次多行时「发货批次/
+   *  物流信息/物流操作」三列合并居中（官方两级结构），行级列（发货单号/商品/发货
+   *  信息/包裹号/状态/操作）逐行独立——同批次可能含不同货号条码。 */
   const shippingGroups: TemuShipOrderRow[][] = (() => {
-    if (!isShippingView) return []
+    if (!clusterView) return []
     const groups: TemuShipOrderRow[][] = []
     const byKey = new Map<string, TemuShipOrderRow[]>()
     for (const r of rows) {
@@ -614,32 +700,28 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
     })
   }
 
+  /** 更换物流（自动预约式弹窗）：按批次号服务端拉该批次全部行——前端只按当前页
+   *  命中行组批会低估跨页批次的比价/重量/箱数；拉取失败回落当前页行并 toast 提示 */
   const openChange = (row: TemuShipOrderRow) => {
-    setChangeTarget(row)
-    setChangeDeliver({ deliverMethod: 1, driverName: "", plateNumber: "", expressPackageNum: Math.max(1, row.deliverPackageNum ?? 1) })
-    getThirdPartyLogisticsAction(store).then((r) => {
-      if (r.ok) setChangeThirdParty(r.rows)
-    })
-  }
-
-  const submitChange = () => {
-    if (!changeTarget) return
-    if (changeDeliver.deliverMethod !== 1 && changeDeliver.expressCompanyId == null) {
-      toast.error("请选择物流公司")
+    if (!row.expressBatchSn) {
+      setChangeLogisticsRows([row])
       return
     }
-    startChangePending(async () => {
-      const r = await changeShipLogisticsAction({
-        store,
-        expressBatchSn: changeTarget.expressBatchSn!,
-        deliveryAddressId: changeTarget.deliveryAddressId ?? 0,
-        payload: changeDeliver,
-      })
-      if (r.ok) {
-        toast.success("物流信息已修改（列表随后续同步刷新）")
-        setChangeTarget(null)
+    const expressBatchSn = row.expressBatchSn
+    /** 失败回落：当前页命中行（跨页批次成员不在页内时至少带上入口行） */
+    const fallbackRows = () => {
+      const batchRows = rows.filter((r) => r.expressBatchSn === expressBatchSn)
+      return batchRows.length > 0 ? batchRows : [row]
+    }
+    startLoading(async () => {
+      const r = await getChangeLogisticsBatchAction({ store, expressBatchSn }).catch(() => null)
+      if (r && r.ok) {
+        setChangeLogisticsRows(r.rows)
       } else {
-        toast.error(r.error, { duration: 8000 })
+        setChangeLogisticsRows(fallbackRows())
+        toast.warning(`批次全量行拉取失败，已按当前页行继续${r ? `（${r.error}）` : ""}`, {
+          duration: 8000,
+        })
       }
     })
   }
@@ -686,14 +768,46 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
     })
   }
 
+  /** 打印页成功打开后标记「已打印」绿勾（落库共享，企业内全设备可见）并本地行即时
+   *  刷新；标记落库失败不打断打印流程（下次加载自然回填） */
+  const markPrinted = (kind: "boxMark" | "barcode", sns: string[]) => {
+    if (sns.length === 0) return
+    const key = kind === "boxMark" ? "boxMarkPrintedAt" : "barcodePrintedAt"
+    const now = new Date().toISOString()
+    setRows((prev) =>
+      prev.map((r) => (sns.includes(r.deliveryOrderSn) ? { ...r, [key]: r[key] ?? now } : r)),
+    )
+    void markShipPrintedAction({ store, sns, kind }).catch(() => {})
+  }
+
+  /** 打开官方打包标签打印页（行级/组级/批量共用；成功打开才标绿勾） */
+  const printBoxMarkPage = async (sns: string[]) => {
+    if (await openShipBoxMarkPage(store, sns)) markPrinted("boxMark", sns)
+  }
+
+  /** 打开官方商品条码打印页（skuIds 所属单号由调用方传入；成功打开才标绿勾） */
+  const printBarcodePage = async (skuIds: number[], sns: string[]) => {
+    if (await openShipBarcodePrint(store, skuIds)) markPrinted("barcode", sns)
+  }
+
   const batchPrintBarcode = () => {
-    const ids = [...new Set(selectedRows.flatMap((r) => r.productSkuIds).filter((v) => v > 0))]
+    const contrib = selectedRows.filter((r) => r.productSkuIds.some((v) => v > 0))
+    const ids = [...new Set(contrib.flatMap((r) => r.productSkuIds).filter((v) => v > 0))]
     if (ids.length === 0) return
-    // schema productSkuIds 单次上限 200：先去重再分批打印（同步循环开窗避免弹窗拦截；
-    // 单批失败已在 openShipBarcodePrint 内 toast 该批错误并继续其余批）
-    for (let i = 0; i < ids.length; i += 200) {
-      void openShipBarcodePrint(store, ids.slice(i, i + 200))
-    }
+    // schema productSkuIds 单次上限 200：先去重再分批打印（顺序 await 开窗避免弹窗拦截；
+    // 单批失败已在 openShipBarcodePrint 内 toast 该批错误并继续其余批）。
+    // 绿勾按「该单全部 SKU 均已成功打开打印页」标记（同款 SKU 跨单去重共享）
+    void (async () => {
+      const done = new Set<number>()
+      for (let i = 0; i < ids.length; i += 200) {
+        const batch = ids.slice(i, i + 200)
+        if (await openShipBarcodePrint(store, batch)) batch.forEach((id) => done.add(id))
+      }
+      const marked = contrib
+        .filter((r) => r.productSkuIds.filter((v) => v > 0).every((id) => done.has(id)))
+        .map((r) => r.deliveryOrderSn)
+      if (marked.length > 0) markPrinted("barcode", marked)
+    })()
   }
 
   /** 打印运单标签：按快递单号去重（≤10/批分批）→ 服务端签名代理取内容 → 自渲染打印文档（非官方页跳转） */
@@ -867,6 +981,21 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
               ))}
             </SelectContent>
           </Select>
+          <Combobox
+            value={expressCompanyId != null ? String(expressCompanyId) : null}
+            onChange={(v) => {
+              setExpressCompanyId(v ? Number(v) : null)
+              setPage(1)
+            }}
+            options={expressOptions.map((o) => ({
+              value: String(o.id),
+              label: o.name,
+              badge: `${o.count} 单`,
+            }))}
+            placeholder="物流商（全部）"
+            searchPlaceholder="搜索物流商..."
+            className="h-8 w-44 text-xs"
+          />
           <TemuSearchBar
             fields={SHIP_SEARCH_FIELDS}
             field={searchField}
@@ -885,6 +1014,33 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
             className="w-72"
           />
           <div className="ml-auto flex items-center gap-2">
+            {isShippingView && (
+              <div className="flex items-center gap-1">
+                <DateRangePicker
+                  size="sm"
+                  className="h-8 text-xs"
+                  placeholder="预约取货日期"
+                  value={pickupRange}
+                  onChange={(range) => {
+                    setPickupRange(range)
+                    setPage(1)
+                  }}
+                />
+                {pickupRange && (
+                  <button
+                    type="button"
+                    aria-label="清除预约取货日期"
+                    className="text-muted-foreground transition-colors hover:text-foreground"
+                    onClick={() => {
+                      setPickupRange(undefined)
+                      setPage(1)
+                    }}
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                )}
+              </div>
+            )}
             {viewSwitch}
             <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => void load({ fresh: true })} disabled={loading}>
               {loading ? <DashRing className="size-3.5" /> : <RefreshCw className="size-3.5" />} 刷新
@@ -901,7 +1057,9 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
           进入本页与「刷新」会实时拉取官方最新单（最新一页落库 + 当前页单号核对并收敛已移除的单）；历史单据由后台同步兜底。共 {total} 单。
         </p>
       </CardHeader>
-      <CardContent className="min-h-0 flex-1 space-y-3 overflow-y-auto scrollbar-hide">
+      {/* 双轴滚动且滚动条可见（对齐商品信息页口径）：宽表横向拖滚动条查看，
+          横向溢出不再逃逸到页面级；表体保持 w-max+overflow-clip 保 sticky 吸顶锚定本容器 */}
+      <CardContent className="min-h-0 flex-1 space-y-3 overflow-x-auto overflow-y-auto">
         {error ? (
           <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
         ) : (
@@ -930,18 +1088,13 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                 })}
               </div>
             )}
-            {/* 批量操作条常驻（对齐发货台按钮行）：未勾选时按钮置灰，不再整条隐藏 */}
+            {/* 批量条与表格同包 w-max 容器：表格列超容器宽时批量条随表格宽度延伸（恒等宽，
+                修「批量条比表格短」）；表体自身保持 overflow-clip 非Scroll容器保 sticky 吸顶 */}
+            <div className="flex w-max min-w-full flex-col gap-3">
+            {/* 批量操作条常驻（对齐发货台按钮行）：按钮组靠左、「已选 N 单」靠右 */}
             {selectable && (
               <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 p-2.5 text-xs">
-                <span>
-                  已选 {selSns.size} 单
-                  {isPendingView && mixedWarehouse && (
-                    <span className="text-orange-600 dark:text-orange-400">
-                      {" "}· 跨收货仓（官方按同收货地址合并发货，请分批装箱）
-                    </span>
-                  )}
-                </span>
-                <div className="ml-auto flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <Button
                     variant="outline"
                     size="sm"
@@ -954,7 +1107,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                         // 单批失败已在 openShipBoxMarkPage 内 toast 该批错误并继续其余批）
                         const all = [...selSns]
                         for (let i = 0; i < all.length; i += 50) {
-                          void openShipBoxMarkPage(store, all.slice(i, i + 50))
+                          void printBoxMarkPage(all.slice(i, i + 50))
                         }
                       } else {
                         batchPrintBoxMark()
@@ -1012,6 +1165,14 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                     </>
                   )}
                 </div>
+                <span className="ml-auto whitespace-nowrap">
+                  已选 {selSns.size} 单
+                  {isPendingView && mixedWarehouse && (
+                    <span className="text-orange-600 dark:text-orange-400">
+                      {" "}· 跨收货仓（官方按同收货地址合并发货，请分批装箱）
+                    </span>
+                  )}
+                </span>
               </div>
             )}
             <div className="w-max min-w-full overflow-clip rounded-md border">
@@ -1037,29 +1198,30 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                         />
                       </TableHead>
                     )}
-                    {isShippingView && <TableHead className="w-36">发货批次</TableHead>}
-                    {isShippingView && <TableHead className="w-48">物流信息</TableHead>}
+                    {clusterView && <TableHead className="w-36">发货批次</TableHead>}
+                    {clusterView && <TableHead className="w-48">物流信息</TableHead>}
                     <TableHead className="w-44">发货单号</TableHead>
                     <TableHead className="min-w-64">商品信息</TableHead>
                     <TableHead className="w-44">发货信息</TableHead>
-                    {!isShippingView && <TableHead className="w-40">包裹号</TableHead>}
+                    <TableHead className="w-40">包裹号</TableHead>
                     <TableHead className="w-32">发货单状态</TableHead>
                     <TableHead className="w-52">操作</TableHead>
-                    {isShippingView && <TableHead className="w-40">物流操作</TableHead>}
+                    {clusterView && <TableHead className="w-40">物流操作</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {loading && rows.length === 0 ? (
-                    <TableSkeletonRows cols={selectable ? (isShippingView ? 10 : 8) : isShippingView ? 9 : 7} />
+                    <TableSkeletonRows cols={selectable ? (clusterView ? 10 : 8) : clusterView ? 9 : 7} />
                   ) : rows.length === 0 && !loading ? (
                     <TableRow>
-                      <TableCell colSpan={selectable ? (isShippingView ? 10 : 8) : isShippingView ? 9 : 7} className="h-20 text-center text-muted-foreground">
+                      <TableCell colSpan={selectable ? (clusterView ? 10 : 8) : clusterView ? 9 : 7} className="h-20 text-center text-muted-foreground">
                         暂无发货单（当前筛选下）；可在「发货台」创建新发货单，或点「刷新」实时拉取。
                       </TableCell>
                     </TableRow>
-                  ) : isShippingView ? (
-                    /* 待仓库收货：批次聚簇渲染——发货批次/物流信息/物流操作组内合并居中，
-                       行级列逐行独立（同批次可含不同货号条码，条码/单单补打必须行级） */
+                  ) : clusterView ? (
+                    /* 已发货后各状态（含待仓库收货）：批次聚簇渲染——发货批次/物流信息/
+                       物流操作组内合并居中，行级列逐行独立（同批次可含不同货号条码，
+                       条码/单单补打必须行级）；无批次单（如「全部状态」里的待装箱）自成单组 */
                     shippingGroups.flatMap((group) =>
                       group.map((r, gi) => {
                         const head = group[0]!
@@ -1148,11 +1310,14 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                             <TableCell>
                               <ProductInfoCell
                                 row={r}
-                                needBarcode={r.status === 0 && barcodeSns.has(r.deliveryOrderSn)}
+                                needBarcode={r.status <= 1 && barcodeSns.has(r.deliveryOrderSn)}
                               />
                             </TableCell>
                             <TableCell>
                               <DeliverInfoCell row={r} />
+                            </TableCell>
+                            <TableCell>
+                              <PackageCell row={r} />
                             </TableCell>
                             <TableCell>
                               <StatusBadge status={r.status} />
@@ -1161,15 +1326,17 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                               {/* 行级操作：打包标签=单单补打（件数已在首打锁定，直接开官方页）+ 行级条码 */}
                               <div className="flex flex-col items-start gap-0.5">
                                 {r.status !== 4 && r.status !== 5 && (
-                                  <LinkButton onClick={() => void openShipBoxMarkPage(store, [r.deliveryOrderSn])}>
+                                  <LinkButton onClick={() => void printBoxMarkPage([r.deliveryOrderSn])}>
                                     打印商品打包标签
+                                    {r.boxMarkPrintedAt && <PrintedMark at={r.boxMarkPrintedAt} />}
                                   </LinkButton>
                                 )}
                                 <LinkButton
-                                  onClick={() => void openShipBarcodePrint(store, r.productSkuIds)}
+                                  onClick={() => void printBarcodePage(r.productSkuIds, [r.deliveryOrderSn])}
                                   disabled={r.productSkuIds.length === 0}
                                 >
                                   打印商品条码
+                                  {r.barcodePrintedAt && <PrintedMark at={r.barcodePrintedAt} />}
                                 </LinkButton>
                               </div>
                             </TableCell>
@@ -1179,7 +1346,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                                 <div className="flex flex-col items-start gap-0.5">
                                   <LinkButton
                                     onClick={() =>
-                                      void openShipBoxMarkPage(store, group.map((g) => g.deliveryOrderSn))
+                                      void printBoxMarkPage(group.map((g) => g.deliveryOrderSn))
                                     }
                                   >
                                     合并打印商品打包标签
@@ -1246,10 +1413,11 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                               </LinkButton>
                             )}
                             <LinkButton
-                              onClick={() => void openShipBarcodePrint(store, r.productSkuIds)}
+                              onClick={() => void printBarcodePage(r.productSkuIds, [r.deliveryOrderSn])}
                               disabled={r.productSkuIds.length === 0}
                             >
                               打印商品条码
+                              {r.barcodePrintedAt && <PrintedMark at={r.barcodePrintedAt} />}
                             </LinkButton>
                             {r.status === 0 && r.isPrintBoxMark !== true && (
                               <LinkButton onClick={() => void openPkgEdit(r)}>调整备货信息</LinkButton>
@@ -1267,6 +1435,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                   )}
                 </TableBody>
               </table>
+            </div>
             </div>
           </>
         )}
@@ -1491,35 +1660,18 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
         </DialogContent>
       </Dialog>
 
-      {/* 更换物流（官方 logistics.change） */}
-      <Dialog open={changeTarget != null} onOpenChange={(v) => !v && setChangeTarget(null)}>
-        <DialogContent className="sm:max-w-xl">
-          <DialogHeader>
-            <DialogTitle>更换物流 · {changeTarget?.expressBatchSn}</DialogTitle>
-            <DialogDescription>
-              官方 logistics.change：按发货批次修改配送方式与承运信息（{changeTarget?.deliveryOrderSn}）。
-            </DialogDescription>
-          </DialogHeader>
-          {changeTarget && (
-            <div className="space-y-3">
-              <DeliverMethodTabs
-                store={store}
-                value={changeDeliver}
-                onChange={setChangeDeliver}
-                thirdParty={changeThirdParty}
-              />
-            </div>
-          )}
-          <DialogFooter className="gap-2">
-            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setChangeTarget(null)}>
-              取消
-            </Button>
-            <Button size="sm" className="h-8 text-xs" disabled={changePending} onClick={submitChange}>
-              {changePending ? "提交中…" : "保存修改"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* 更换物流（自动预约式 UI，仅平台推荐物流；官方 logistics.change 按批次提交） */}
+      {changeLogisticsRows && (
+        <ChangeLogisticsDialog
+          store={store}
+          rows={changeLogisticsRows}
+          onClose={() => setChangeLogisticsRows(null)}
+          onDone={() => {
+            setSelSns(new Set())
+            setReloadTick((t) => t + 1)
+          }}
+        />
+      )}
     </Card>
   )
 }

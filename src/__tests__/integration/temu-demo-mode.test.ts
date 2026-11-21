@@ -178,12 +178,19 @@ describe("演示模式判定与生命周期", () => {
     expect(overview.stores.some((s) => s.isDemo && s.name === DEMO_STORE_NAME)).toBe(true)
   })
 
-  it("手动同步拒绝演示店铺", async () => {
+  it("手动同步拒绝演示店铺（排队版 action 返回 skipped，不置排队标记）", async () => {
     const [demo] = await db
       .select({ id: temuStores.id })
       .from(temuStores)
       .where(and(eq(temuStores.enterpriseId, entId), eq(temuStores.isDemo, true)))
-    await expect(syncTemuStoreAction({ id: demo!.id })).rejects.toThrow("演示店铺")
+    const r = await syncTemuStoreAction({ id: demo!.id })
+    expect(r.queued).toBeUndefined()
+    expect(r.skipped).toContain("演示店铺")
+    const [after] = await db
+      .select({ flag: temuStores.syncRequestedAt })
+      .from(temuStores)
+      .where(eq(temuStores.id, demo!.id))
+    expect(after?.flag).toBeNull()
   })
 
   it("出现真实应用后：退出演示模式并清理演示店铺与数据", async () => {

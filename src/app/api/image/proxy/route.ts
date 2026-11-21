@@ -58,9 +58,16 @@ function isAllowedHost(url: URL, cfg: StorageConfig): boolean {
   if (matchesAllowedHost(url.hostname, cfg.allowedDownloadHosts ?? [])) {
     return true
   }
-  // TEMU 官方 CDN（img.kwcdn.com，商品主图回落外链）：表格 <img> 本就直连渲染，
-  // ImageViewer 放大/下载经本代理回源须放行——固定公共 CDN 域名，无 SSRF 面
+  // TEMU 官方 CDN（img.kwcdn.com / img.cdnfe.com，商品主图回落外链）：表格 <img> 本就直连渲染，
+  // ImageViewer 放大/下载经本代理回源须放行——固定公共 CDN 域名，无 SSRF 面。
+  // cdnfe 是发货单 subPurchaseOrderBasicVO.productSkcPicture 用的官方域
+  // （与 kwcdn 同族），未放行时放大查看一律 403 →「图片已过期」占位
   if (url.hostname === "kwcdn.com" || url.hostname.endsWith(".kwcdn.com")) {
+    return true
+  }
+  // TEMU 图片 CDN，仅放行实际使用的子域（发货单图片均为 img.cdnfe.com），
+  // 防域名易主后 SSRF——不再放行 cdnfe.com 裸域与其余子域
+  if (url.hostname === "img.cdnfe.com") {
     return true
   }
   return false
@@ -254,7 +261,12 @@ export async function GET(request: Request) {
       new URL(signUploadToken(targetUrl.toString())),
       cfg,
     )
-    const resp = await fetch(fetchUrl, { signal: upstream.signal })
+    // redirect:"error"：白名单只校验首跳 host，禁止上游 3xx 跨域重定向
+    // 把回源请求导向未校验的域（含内网），重定向时 fetch 直接抛错走 502
+    const resp = await fetch(fetchUrl, {
+      redirect: "error",
+      signal: upstream.signal,
+    })
     clearTimeout(headerTimer)
     if (!resp.ok) {
       return new NextResponse(`upstream ${resp.status}`, {

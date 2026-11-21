@@ -168,11 +168,14 @@ void (async () => {
       }
     }
 
-    // TEMU 官方 API 数据同步：低频（默认 15 分钟）遍历启用同步的店铺，
+    // TEMU 官方 API 数据同步：常规轮低频（默认 15 分钟）遍历启用同步的店铺，
     // 串行拉商品/生命周期/销售/售罄四源（3 qps 限速在 client 内）；
-    // syncDueStores 内部按 lastSyncAt 节流，手动同步过的店铺本轮自动跳过
+    // syncDueStores 内部按 lastSyncAt 节流，手动同步过的店铺本轮自动跳过。
+    // 「立即同步」=置 sync_requested_at 排队标记，由本循环认领后台执行
+    // （同步耗时数分钟，不能在 HTTP 请求内等待），故外层按 tick 短轮询
     const { syncDueStores } = await import("@/server/services/temu-sync")
     const temuSyncInterval = Number(process.env.TEMU_SYNC_INTERVAL_MS) || 15 * 60 * 1000
+    const temuSyncTick = Number(process.env.TEMU_SYNC_TICK_MS) || 30 * 1000
     const temuSyncLoop = async (): Promise<void> => {
       while (running) {
         try {
@@ -195,7 +198,7 @@ void (async () => {
             err instanceof Error ? err.message : err,
           )
         }
-        await sleep(temuSyncInterval)
+        await sleep(temuSyncTick)
       }
     }
 
@@ -222,6 +225,26 @@ void (async () => {
       }
     }
 
+    // 选品工具 Apify 抓取：启动（认领+startActorRun）与收割（轮询+入库+结算）
+    // 双循环。循环恒启动：企业可各自配置 selection_provider 凭证（无凭证的
+    // 任务在认领后被结算为 failed 并给出配置指引），平台级 APIFY_API_TOKEN
+    // 仅作兜底，不再作为启动门槛。
+    const selectionLoops: Promise<void>[] = []
+    {
+      const { runSelectionLoops } = await import(
+        "@/lib/queue/selection-processor"
+      )
+      selectionLoops.push(runSelectionLoops(() => running, interval))
+    }
+    // 竞品监控调度（0106）：30s 认领到期监控 → 创建重抓/评论任务（复用上方
+    // 启动/收割双循环执行与结算）
+    {
+      const { runSelectionMonitorLoop } = await import(
+        "@/server/services/selection-monitor-service"
+      )
+      selectionLoops.push(runSelectionMonitorLoop(() => running))
+    }
+
     await Promise.all([
       processQueueContinuous({ isRunning: () => running }),
       runLoop("chat", processChatQueueOnce),
@@ -235,6 +258,7 @@ void (async () => {
       subscriptionLoop(),
       temuSyncLoop(),
       inventorySnapshotLoop(),
+      ...selectionLoops,
     ])
 
     console.log("[worker] 已停止")

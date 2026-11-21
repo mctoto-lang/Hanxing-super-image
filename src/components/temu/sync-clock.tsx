@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog"
 import { formatCnDateTime } from "@/lib/datetime"
 import { cn } from "@/lib/utils"
+import type { TemuSyncStatus } from "@/db/schema"
 
 export interface TemuSyncStoreRow {
   id: string
@@ -20,28 +21,44 @@ export interface TemuSyncStoreRow {
   lastSyncAt: string | Date | null
   /** 最近一次同步结果（null = 有时间但无状态记录） */
   ok: boolean | null
+  /** 最近一次同步完整状态（失败行展示失败源摘要，免查库定位） */
+  status?: TemuSyncStatus | null
 }
 
-/** 同步状态行：状态点 + 店铺名 + 状态小字 + 右对齐全格式时间（服务可用性同款行布局） */
+/** 失败源摘要：第一个失败源（去 api- 前缀）+ 错误首段 */
+function firstFailureText(status: TemuSyncStatus | null | undefined): string | null {
+  if (!status) return null
+  const first = Object.entries(status.sources).find(([, v]) => !v.ok)
+  if (!first) return null
+  const [source, v] = first
+  const err = String(v.error ?? "").slice(0, 60)
+  return `${source.replace("api-", "")}${err ? ` — ${err}` : ""}`
+}
+
+/** 同步状态行：状态点 + 店铺名 + 状态小字 + 右对齐全格式时间（服务可用性同款行布局）；失败时下挂失败源摘要 */
 function SyncRow({ store }: { store: TemuSyncStoreRow }) {
   const never = store.lastSyncAt == null
   const ok = store.ok
+  const failure = ok === false ? firstFailureText(store.status) : null
   return (
-    <div className="flex flex-wrap items-center gap-4">
-      <span
-        aria-hidden
-        className={cn(
-          "size-2 shrink-0 rounded-full",
-          never ? "bg-muted-foreground/40" : ok === true ? "bg-emerald-500" : ok === false ? "bg-red-500" : "bg-muted-foreground/40",
-        )}
-      />
-      <span className="min-w-0 max-w-[10rem] truncate text-sm font-medium">{store.name}</span>
-      <span className="text-xs text-muted-foreground">
-        {never ? "从未同步" : ok === true ? "同步成功" : ok === false ? "同步失败" : "已同步"}
-      </span>
-      <span className="ml-auto text-xs tabular-nums text-muted-foreground">
-        {never ? "—" : formatCnDateTime(store.lastSyncAt)}
-      </span>
+    <div className="space-y-1">
+      <div className="flex flex-wrap items-center gap-4">
+        <span
+          aria-hidden
+          className={cn(
+            "size-2 shrink-0 rounded-full",
+            never ? "bg-muted-foreground/40" : ok === true ? "bg-emerald-500" : ok === false ? "bg-red-500" : "bg-muted-foreground/40",
+          )}
+        />
+        <span className="min-w-0 max-w-[10rem] truncate text-sm font-medium">{store.name}</span>
+        <span className="text-xs text-muted-foreground">
+          {never ? "从未同步" : ok === true ? "同步成功" : ok === false ? "同步失败" : "已同步"}
+        </span>
+        <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+          {never ? "—" : formatCnDateTime(store.lastSyncAt)}
+        </span>
+      </div>
+      {failure && <p className="pl-6 text-xs text-red-600 dark:text-red-400">{failure}</p>}
     </div>
   )
 }
@@ -83,7 +100,7 @@ export function TemuSyncClock({ stores }: { stores: TemuSyncStoreRow[] }) {
         <DialogHeader className="space-y-0">
           <DialogTitle>店铺同步时间</DialogTitle>
           <DialogDescription>
-            当前已开启店铺最近一次同步（默认 15 分钟一轮，手动同步即时更新）
+            当前已开启店铺最近一次同步（默认 15 分钟一轮；「立即同步」排队后由后台执行，完成后更新）
           </DialogDescription>
         </DialogHeader>
         {/* 内容区高约 5 行（行 ~32px + 行距 16px），超出隐藏滚动条滚动查看 */}

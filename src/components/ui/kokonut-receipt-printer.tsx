@@ -12,7 +12,9 @@
  *   不用 shadcn token，与 changelog-page 等营销组件一致）；纸张保持白底黑字；
  * - 文案中文化（状态 / 按钮 / sr-only）；
  * - API 扩展：code（替换条形码区块，如二维码占位）、footerText（底部致谢行）；
- *   quantity === 0 的明细行不显示「N ×」前缀、金额照常显示（免费权益 0.00）；
+ *   quantity === 0 的明细行不显示「N ×」前缀；金额不印 0——价格为 0/空的
+ *   明细行金额格显示「客服报价」，合计为 0 时合计行显示「以客服实际报价为准」
+ *   （营销小票未公开定价，与扫码联系客服充值口径一致）；
  *   tax === 0 时隐藏税费与小计行。
  * - 明细行保证单行不换行（名称 truncate 截断兜底），金额统一两位小数；
  * - 外层卡片容器仅作物理载体（出纸口裁切 / 掉落地板 / 拖拽坐标系），视觉透明。
@@ -143,18 +145,22 @@ function Receipt({
       >
         {"- ".repeat(40)}
       </p>
-      {items.map((item) => (
-        // 明细行恒单行：名称 truncate 兜底，金额恒在右侧
-        <p className="flex justify-between gap-3" key={item.name}>
-          <span className="truncate">
-            {item.quantity > 0 && `${item.quantity} × `}
-            {item.name}
-          </span>
-          <span className="shrink-0 tabular-nums">
-            {money(item.quantity > 0 ? item.quantity * item.price : item.price)}
-          </span>
-        </p>
-      ))}
+      {items.map((item) => {
+        // 明细行恒单行：名称 truncate 兜底，金额恒在右侧；
+        // 金额不印 0：价格为 0/空（未公开定价）时金额格显示文案
+        const amount = item.quantity > 0 ? item.quantity * item.price : item.price;
+        return (
+          <p className="flex justify-between gap-3" key={item.name}>
+            <span className="truncate">
+              {item.quantity > 0 && `${item.quantity} × `}
+              {item.name}
+            </span>
+            <span className="shrink-0 tabular-nums">
+              {amount > 0 ? money(amount) : "客服报价"}
+            </span>
+          </p>
+        );
+      })}
       <p
         aria-hidden="true"
         className="my-[7px] overflow-hidden whitespace-nowrap text-zinc-400"
@@ -176,8 +182,8 @@ function Receipt({
       <p className="mt-1 flex justify-between font-semibold text-[13px]">
         <span>合计</span>
         <span className="tabular-nums">
-          {currency}
-          {money(total)}
+          {/* 金额不印 0：合计为 0（未公开定价）时显示文案，不出现 ¥0.00 */}
+          {total > 0 ? `${currency}${money(total)}` : "以客服实际报价为准"}
         </span>
       </p>
       {code ?? (

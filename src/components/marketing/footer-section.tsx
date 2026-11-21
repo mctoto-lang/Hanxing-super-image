@@ -58,7 +58,7 @@ const FOOTER_SECTIONS: FooterSectionData[] = [
     label: "产品",
     links: [
       { title: "产品功能", href: "#features" },
-      { title: "订阅套餐", href: "#pricing" },
+      { title: "积分套餐", href: "#pricing" },
       { title: "用户评价", href: "#testimonials" },
       { title: "帮助中心", href: "#help" },
     ],

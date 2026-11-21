@@ -50,6 +50,7 @@ import { PickupTimePicker, parsePickupSlots } from "@/components/temu/pickup-tim
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import { formatDateTime } from "@/lib/datetime"
 import { chunkSns } from "./ship-packing"
+import { pickLogisticsOption } from "./ship-logistics-select"
 
 /**
  * 自动预约发货弹窗（待装箱发货勾选后一键预约）：PackingDialog 的自动版——
@@ -99,8 +100,14 @@ export function AutoReserveDialog({
   const [savingPref, startSavingPref] = React.useTransition()
 
   const sns = rows.map((r) => r.deliveryOrderSn)
+  /** 每单包裹数：官方应发包裹数 deliverPackageNum 优先（packageSns 服务端截断 10 个会低估；
+   *  待装箱阶段官方字段常为 0，回落打印箱唛拆分出的包裹号数，最后兜底 1） */
   const pkgCountOf = (r: TemuShipOrderRow) =>
-    r.packageSns.length > 0 ? r.packageSns.length : (r.deliverPackageNum ?? 1)
+    r.deliverPackageNum && r.deliverPackageNum > 0
+      ? r.deliverPackageNum
+      : r.packageSns.length > 0
+        ? r.packageSns.length
+        : 1
   const totalPackages = rows.reduce((acc, r) => acc + pkgCountOf(r), 0)
   const totalSkus = rows.reduce((acc, r) => acc + (r.deliverSkcNum ?? 0), 0)
   const selAddr = mallAddrs.find((a) => a.id === (addressId ?? rows[0]?.deliveryAddressId))
@@ -133,31 +140,23 @@ export function AutoReserveDialog({
     })
   }
 
-  /** 比价结果到达（或名单变化）后按「优先顺序+黑名单」自动选公司 */
+  /** 比价结果到达（或名单变化）后按「优先顺序+黑名单」自动选公司
+   *  （选司纯函数抽出至 ship-logistics-select，与更换物流弹窗共用） */
   const autoSelect = React.useCallback(
     (list: MatchOption[], pref: TemuLogisticsPrefItem[], black: TemuLogisticsPrefItem[], mostUsed: { expressCompanyId?: number | null } | null | undefined) => {
-      if (list.length === 0) return
-      const blackIds = new Set(black.map((b) => b.expressCompanyId))
-      const candidates = list.filter((o) => o.expressCompanyId != null && !blackIds.has(o.expressCompanyId))
-      if (candidates.length === 0) {
+      const r = pickLogisticsOption(list, pref, black, mostUsed)
+      if (r.option) {
+        setSelOption(r.option)
+        if (r.reason === "most-used") {
+          toast.info("优先名单内公司本次比价均不可用，已回落平台常用物流", { duration: 8000 })
+        } else if (r.reason === "first") {
+          toast.info("优先名单与平台常用均不可用，已选比价列表首个公司", { duration: 8000 })
+        }
+        return
+      }
+      if (r.reason === "all-blacklisted") {
         toast.warning("比价结果全部在黑名单中，请调整黑名单或重新比价", { duration: 8000 })
-        return
       }
-      const pick = pref.map((p) => candidates.find((o) => o.expressCompanyId === p.expressCompanyId)).find(Boolean)
-      if (pick) {
-        setSelOption(pick)
-        return
-      }
-      const used = mostUsed?.expressCompanyId != null
-        ? candidates.find((o) => o.expressCompanyId === mostUsed.expressCompanyId)
-        : undefined
-      if (used) {
-        setSelOption(used)
-        toast.info("优先名单内公司本次比价均不可用，已回落平台常用物流", { duration: 8000 })
-        return
-      }
-      setSelOption(candidates[0]!)
-      toast.info("优先名单与平台常用均不可用，已选比价列表首个公司", { duration: 8000 })
     },
     [],
   )

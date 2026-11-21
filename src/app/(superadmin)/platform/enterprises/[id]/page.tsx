@@ -50,6 +50,7 @@ import { EnterpriseConcurrencyDialog } from "@/components/superadmin/enterprise-
 import { ModulesDialog } from "@/components/superadmin/modules-dialog"
 import { MockupConfigDialog } from "@/components/superadmin/mockup-config-dialog"
 import { TemuAppManageDialog } from "@/components/superadmin/temu-app-manage-dialog"
+import { SelectionProviderDialog } from "@/components/superadmin/selection-provider-dialog"
 import { EnterpriseModelConfigDialog } from "@/components/superadmin/enterprise-model-config-dialog"
 
 export const dynamic = "force-dynamic"
@@ -62,6 +63,8 @@ const TX_TYPE_LABELS: Record<string, string> = {
   allocation: "分配下发",
   allocation_deduct: "个人消费",
   allocation_refund: "个人退还",
+  selection_deduct: "选品扣费",
+  selection_refund: "选品退还",
   plan_grant: "套餐发放",
 }
 
@@ -397,7 +400,7 @@ export default async function EnterpriseDetailPage({
         <CardHeader>
           <CardTitle className="text-base">企业配置</CardTitle>
           <CardDescription>
-            套餐 / 充值 / 并发 / 模块开关 / 样机服务 / TEMU 凭证 / 模型权限
+            套餐 / 充值 / 并发 / 模块开关 / 样机服务 / TEMU 凭证 / 选品凭证 / 模型权限
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -428,6 +431,10 @@ export default async function EnterpriseDetailPage({
               enterpriseName={detail.name}
             />
             <TemuAppManageDialog
+              enterpriseId={detail.id}
+              enterpriseName={detail.name}
+            />
+            <SelectionProviderDialog
               enterpriseId={detail.id}
               enterpriseName={detail.name}
             />

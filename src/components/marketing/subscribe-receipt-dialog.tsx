@@ -1,12 +1,13 @@
 "use client";
 
 /**
- * 「立即订阅」小票打印机弹窗（pricing-section 接线）。
+ * 「获取积分」小票打印机弹窗（pricing-section 接线）。
  *
- * 项目不接入在线支付：点击订阅改为弹出 ReceiptPrinter 打印一张订阅小票，
- * 原条形码位置换成**占位二维码**（确定性伪随机模块 + 三个定位角，不可扫描，
- * 后续接入真实客服码时替换 QrSlot 内的 SVG 即可），引导扫码联系平台客服
- * 充值订阅激活。配色沿用营销页深色口径（neutral-950 + white/xx）。
+ * 项目不接入在线支付：点击「获取积分」改为弹出 ReceiptPrinter 打印一张
+ * 积分套餐小票，原条形码位置换成**占位二维码**（确定性伪随机模块 + 三个
+ * 定位角，不可扫描，后续接入真实客服码时替换 QrSlot 内的 SVG 即可），
+ * 引导扫码联系平台客服充值激活积分套餐。配色沿用营销页深色口径
+ * （neutral-950 + white/xx）。
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -122,7 +123,7 @@ function QrSlot({ order }: { order: string }) {
     <div className="mt-3 flex flex-col items-center">
       <QrPlaceholder className="h-20 w-20" seed={order} />
       <p className="mt-1.5 text-center">扫码联系平台客服</p>
-      <p className="text-center text-zinc-500">充值订阅 · 激活服务</p>
+      <p className="text-center text-zinc-500">充值积分 · 激活服务</p>
     </div>
   );
 }
@@ -156,10 +157,13 @@ export default function SubscribeReceiptDialog({
     return null;
   }
 
-  // 套餐行 + 权益行（quantity 0：免费权益，小票上显 0.00；名称优先用 receipt 短标签保证单行）
+  // 套餐行 + 权益行（quantity 0：免费权益；价格为 0 时组件金额格显示「客服报价」
+  // 而非 0.00；名称优先用 receipt 短标签保证单行）
+  // 「· 月付/年付」周期后缀随定价区计费周期切换一并暂时隐藏（恢复点：
+  // pricing-section.tsx 的 SHOW_BILLING_TOGGLE）
   const items: ReceiptItem[] = [
     {
-      name: `${plan.name} · ${frequency === "monthly" ? "月付" : "年付"}`,
+      name: `${plan.name}`,
       quantity: 1,
       price: plan.price[frequency],
     },
@@ -175,10 +179,10 @@ export default function SubscribeReceiptDialog({
       <DialogContent className="gap-3 bg-neutral-950 p-4 text-white ring-white/15 sm:max-w-[21rem]">
         <DialogHeader>
           <DialogTitle className="pr-8 text-white">
-            订阅 · {plan.name}
+            获取积分 · {plan.name}
           </DialogTitle>
           <DialogDescription className="text-left text-white/60">
-            平台暂未接入在线支付——小票打印完成后，扫描二维码联系平台客服，充值后即可激活订阅。
+            平台暂未接入在线支付——小票打印完成后，扫描二维码联系平台客服，充值后即可激活积分套餐。
           </DialogDescription>
         </DialogHeader>
         <div className="flex justify-center">
@@ -187,7 +191,7 @@ export default function SubscribeReceiptDialog({
             code={<QrSlot order={order} />}
             currency="¥"
             date={formatDateTime(new Date())}
-            footerText="感谢订阅 · 充值后激活"
+            footerText="感谢购买 · 充值后激活"
             items={items}
             merchant={SITE_NAME}
             order={order}

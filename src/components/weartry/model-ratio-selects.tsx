@@ -1,5 +1,6 @@
 "use client"
 
+import { useMemo } from "react"
 import { Label } from "@/components/ui/label"
 import {
   Select,
@@ -8,6 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { resolveSizePresets } from "@/lib/image-sizes"
 import type { WeartryModelRow } from "@/lib/weartry/types"
 
 /**
@@ -29,13 +31,15 @@ export function ModelRatioSelects({
 }) {
   const selectedModel = models.find((m) => m.id === modelId) ?? null
   const modelLabel = selectedModel?.displayName || "选择模型"
+  /** 归一化预设（ratio 优先、滤停用项——原始 presets 的 label 已被 0103 迁移收敛进 ratio，直接读会空白） */
+  const sizePresets = useMemo(
+    () => resolveSizePresets(selectedModel?.sizePresets),
+    [selectedModel?.sizePresets],
+  )
   /** 未选 → 通用比例；已选 → 模型预设比例名 */
   const ratioValueLabel = () => {
     if (!size) return "通用比例"
-    const preset = selectedModel?.sizePresets?.find(
-      (p) => `${p.width}x${p.height}` === size,
-    )
-    return preset ? preset.label : size
+    return sizePresets.find((p) => p.value === size)?.label ?? size
   }
 
   return (
@@ -75,14 +79,11 @@ export function ModelRatioSelects({
             <SelectValue placeholder="通用比例">{ratioValueLabel()}</SelectValue>
           </SelectTrigger>
           <SelectContent>
-            {(selectedModel?.sizePresets ?? []).map((p) => {
-              const v = `${p.width}x${p.height}`
-              return (
-                <SelectItem key={v} value={v}>
-                  {p.label}
-                </SelectItem>
-              )
-            })}
+            {sizePresets.map((p) => (
+              <SelectItem key={p.value} value={p.value}>
+                {p.label}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </div>

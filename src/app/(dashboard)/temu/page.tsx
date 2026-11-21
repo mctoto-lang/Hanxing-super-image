@@ -220,6 +220,7 @@ export default async function TemuPage({
                 name: s.isDemo ? `${s.name}（演示）` : s.name,
                 lastSyncAt: s.lastSyncAt,
                 ok: s.lastSyncStatus?.ok ?? null,
+                status: s.lastSyncStatus,
               }))}
             />
           )}

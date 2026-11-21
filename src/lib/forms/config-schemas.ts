@@ -190,6 +190,13 @@ export const temuAppSettingFormSchema = z
     }
   })
 
+/** 选品抓取凭证（selection-provider-dialog；token 掩码回显原样提交=保留现值） */
+export const selectionProviderFormSchema = z.object({
+  name: z.string().trim().min(1, "请填写凭证名称").max(100, "凭证名称最多 100 字"),
+  token: z.string().max(200, "Apify Token 最多 200 字"),
+  enabled: z.boolean(),
+})
+
 /** 权限组成员整组转移（group-members-dialog） */
 export const groupMembersFormSchema = z.object({
   toGroupId: z.string().min(1, "请选择目标权限组"),

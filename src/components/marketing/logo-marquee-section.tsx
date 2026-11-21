@@ -10,7 +10,7 @@ import { SiAliexpress, SiEbay, SiEtsy, SiTiktok } from "@icons-pack/react-simple
 import { Claude, DeepSeek, Gemini, Grok, Kimi, OpenAI, Qwen, Zhipu } from "@lobehub/icons"
 import { cn } from "@/lib/utils"
 
-/* Logo 墙：双行反向跑马灯（电商平台 × AI 模型），位于 Bento 功能矩阵与订阅套餐之间。
+/* Logo 墙：双行反向跑马灯（电商平台 × AI 模型），位于 Bento 功能矩阵与积分套餐之间。
    图标全部来自组件库，无手绘 SVG：
    - AI 模型行：@lobehub/icons（官方彩色 .Color 变体；OpenAI/Grok 官方 logo 为黑色，深色底渲染白色）
    - 电商平台行：@icons-pack/react-simple-icons（simple-icons 封装，品牌色）

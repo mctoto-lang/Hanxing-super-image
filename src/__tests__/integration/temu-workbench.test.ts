@@ -560,6 +560,62 @@ describe("广告工作台", () => {
     expect(r.rows.some((x) => x.productId === "7003")).toBe(false)
   })
 
+  it("半托管店铺返回空行且不调全托广告接口（对齐同步链路 semi 跳过口径）", { timeout: 30_000 }, async () => {
+    const [semiStore] = await db
+      .insert(temuStores)
+      .values({
+        enterpriseId: entId,
+        name: "wb 半托测试店铺",
+        accessTokenEncrypted: encrypt("wb-semi-token"),
+        tokenState: "active",
+        mallType: "semi",
+      })
+      .returning()
+    await db.insert(temuProducts).values({
+      storeId: semiStore!.id,
+      productSkcId: "SKC-9001",
+      productId: "9001",
+      productName: "半托店铺在售商品",
+      productSn: "SN-9001",
+      skcStatus: 11,
+    })
+    const fetchMock = mockWorkbenchFetch({ "bg.glo.searchrec.ad.detail.query": AD_DETAIL })
+    vi.stubGlobal("fetch", fetchMock)
+    const r = await getTemuAdPlansAction({ store: semiStore!.id })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.rows).toEqual([])
+    // bg.glo.searchrec.ad.* 对 semi mall 直接报参数错，须在调用前短路
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("真实店铺非数字 productId 净化：detail.query 只发纯数字 ID（230012000 防御）", { timeout: 30_000 }, async () => {
+    // 2026-11-19 生产 MISS FIREE 案：官方 LIST<INTEGER> 对非数字入参报
+    // bad query params——库里混入脏值（如演示 DPID 串扰）时整批被拒
+    await db.insert(temuProducts).values({
+      storeId,
+      productSkcId: "SKC-7005",
+      productId: "DP-STRAY-1",
+      productName: "脏值测试商品",
+      productSn: "SN-7005",
+      skcStatus: 11,
+    })
+    const fetchMock = mockWorkbenchFetch({ "bg.glo.searchrec.ad.detail.query": AD_DETAIL })
+    vi.stubGlobal("fetch", fetchMock)
+    const r = await getTemuAdPlansAction({ store: storeId })
+    expect(r.ok).toBe(true)
+    const detailCall = fetchMock.mock.calls.find((c) => {
+      const body = JSON.parse(String(c[1]?.body)) as { type: string }
+      return body.type === "bg.glo.searchrec.ad.detail.query"
+    })
+    // 所有 productIdList 成员均为 number（DP-STRAY-1 被剔除，7001 保留）
+    const list = JSON.parse(String(detailCall?.[1]?.body)) as { productIdList: unknown[] }
+    expect(list.productIdList.length).toBeGreaterThan(0)
+    expect(list.productIdList.every((v) => typeof v === "number" && Number.isSafeInteger(v))).toBe(
+      true,
+    )
+  })
+
   it("修改广告（改预算）按官方 modifyAdDTO 包装并更新注册表", async () => {
     const fetchMock = mockWorkbenchFetch({})
     vi.stubGlobal("fetch", fetchMock)

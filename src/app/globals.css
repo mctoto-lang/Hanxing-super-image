@@ -508,7 +508,7 @@
   }
 }
 
-/* ===== 订阅套餐流光描边（marketing/pricing-section.tsx）=====
+/* ===== 积分套餐流光描边（marketing/pricing-section.tsx）=====
    光点沿卡片边框矩形路径（offset-path rect）匀速绕圈，
    替代模板中 framer-motion 的 offsetDistance 补间 */
 @keyframes borderTrail {

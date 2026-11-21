@@ -15,7 +15,7 @@ import {
   temuAdsProductDailies,
   temuApps,
 } from "@/db/schema/temu"
-import { syncStore, verifyStoreToken } from "@/server/services/temu-sync"
+import { syncStore, syncStorePreflight, syncDueStores, verifyStoreToken } from "@/server/services/temu-sync"
 import { encrypt } from "@/lib/crypto"
 
 /**
@@ -578,31 +578,29 @@ describe("ads 报表真实行形态落库（2026-11-18 jsonb 铁证）", () => {
         tokenState: "active",
       })
       .returning()
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (_url: string, init?: RequestInit) => {
-        const body = JSON.parse(String(init?.body)) as { type: string }
-        const result =
-          body.type === "bg.glo.goods.list.get"
-            ? GOODS_LIST_PAGE
-            : body.type === "bg.glo.product.search"
-              ? LIFECYCLE_PAGE
-              : body.type === "bg.goods.salesv2.get"
-                ? SALES_PAGE
-                : body.type === "bg.glo.searchrec.ad.reports.mall.query"
-                  ? ADS_MALL_REAL
-                  : body.type === "bg.glo.searchrec.ad.reports.goods.query"
-                    ? ADS_GOODS_REAL
-                    : body.type === "bg.glo.searchrec.ad.detail.query"
-                      ? { adsDetail: [{ productId: 7001, adShowStatus: 8 }] }
-                      : {}
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ result, success: true, errorCode: 1000000, errorMsg: "" }),
-        } as unknown as Response
-      }),
-    )
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { type: string }
+      const result =
+        body.type === "bg.glo.goods.list.get"
+          ? GOODS_LIST_PAGE
+          : body.type === "bg.glo.product.search"
+            ? LIFECYCLE_PAGE
+            : body.type === "bg.goods.salesv2.get"
+              ? SALES_PAGE
+              : body.type === "bg.glo.searchrec.ad.reports.mall.query"
+                ? ADS_MALL_REAL
+                : body.type === "bg.glo.searchrec.ad.reports.goods.query"
+                  ? ADS_GOODS_REAL
+                  : body.type === "bg.glo.searchrec.ad.detail.query"
+                    ? { adsDetail: [{ productId: 7001, adShowStatus: 8 }] }
+                    : {}
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ result, success: true, errorCode: 1000000, errorMsg: "" }),
+      } as unknown as Response
+    })
+    vi.stubGlobal("fetch", fetchMock)
     const outcome = await syncStore(realStore!.id)
     expect(outcome.status?.sources["api-ads-reports"]?.ok).toBe(true)
 
@@ -634,5 +632,63 @@ describe("ads 报表真实行形态落库（2026-11-18 jsonb 铁证）", () => {
     expect(mall?.orders).toBe(43)
     expect(mall?.impressions).toBe(14812)
     expect(mall?.clicks).toBe(665)
+
+    // detail.query 在投清单批（2026-11-19 净化）：productIdList 恒纯数字
+    // （官方 LIST<INTEGER>，非数字整批 230012000）
+    const detailCalls = fetchMock.mock.calls.filter((c) => {
+      const body = JSON.parse(String(c[1]?.body)) as { type: string }
+      return body.type === "bg.glo.searchrec.ad.detail.query"
+    })
+    expect(detailCalls.length).toBeGreaterThan(0)
+    for (const c of detailCalls) {
+      const body = JSON.parse(String(c[1]?.body)) as { productIdList: unknown[] }
+      expect(body.productIdList.every((v) => typeof v === "number")).toBe(true)
+    }
+  })
+})
+
+describe("手动同步排队（sync_requested_at 认领，2026-11-20）", () => {
+  it("syncStorePreflight：不存在/停用/演示/无 token 各自 skip 原因", () => {
+    expect(syncStorePreflight(undefined)).toEqual({ ok: false, reason: "店铺不存在" })
+    expect(
+      syncStorePreflight({ enabled: false, isDemo: false, accessTokenEncrypted: "x" }),
+    ).toEqual({ ok: false, reason: "店铺已停用" })
+    expect(
+      syncStorePreflight({ enabled: true, isDemo: true, accessTokenEncrypted: "x" }),
+    ).toEqual({ ok: false, reason: "演示店铺为内置虚拟数据，不参与同步" })
+    expect(
+      syncStorePreflight({ enabled: true, isDemo: false, accessTokenEncrypted: null }),
+    ).toEqual({ ok: false, reason: "未录入 access_token" })
+    expect(
+      syncStorePreflight({ enabled: true, isDemo: false, accessTokenEncrypted: "x" }),
+    ).toEqual({ ok: true })
+  })
+
+  it("flag 置位 → syncDueStores 认领执行并在结束时清空（syncEnabled=false 仍可手动触发）", { timeout: 60_000 }, async () => {
+    vi.stubGlobal("fetch", mockTemuFetch())
+    // 本文件前面的用例刚全源同步过（lastSyncAt 新），常规轮不 due；
+    // 关掉定时同步再置手动排队标记——手动语义不受 syncEnabled 限制
+    await db
+      .update(temuStores)
+      .set({ syncEnabled: false, syncRequestedAt: new Date() })
+      .where(eq(temuStores.id, storeId))
+    const outcomes = await syncDueStores(15 * 60 * 1000, { enterpriseId: entId })
+    const mine = outcomes.filter((o) => o.storeId === storeId)
+    expect(mine).toHaveLength(1)
+    expect(mine[0]?.skipped).toBeUndefined()
+    expect(mine[0]?.status?.ok).toBe(true)
+    // 认领（进循环即清）+ syncStore 收尾兜底清，最终 flag 为空
+    const [after] = await db
+      .select({ flag: temuStores.syncRequestedAt })
+      .from(temuStores)
+      .where(eq(temuStores.id, storeId))
+    expect(after?.flag).toBeNull()
+    // 还原定时同步开关，不影响后续用例
+    await db.update(temuStores).set({ syncEnabled: true }).where(eq(temuStores.id, storeId))
+  })
+
+  it("无 flag 且未到间隔 → 不触发（并发认领由 UPDATE ... WHERE flag IS NOT NULL 原子保证）", { timeout: 30_000 }, async () => {
+    const outcomes = await syncDueStores(15 * 60 * 1000, { enterpriseId: entId })
+    expect(outcomes.filter((o) => o.storeId === storeId)).toHaveLength(0)
   })
 })

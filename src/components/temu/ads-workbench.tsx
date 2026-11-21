@@ -194,7 +194,9 @@ export function TemuAdsWorkbench({
       }
       await Promise.all([worker(), worker()])
       setPlans(out)
-      setError(errs.length > 0 ? `部分店铺加载失败——${errs.join("；").slice(0, 300)}` : null)
+      // 截断放宽到 800：单店错误最长 300 字符（toWorkbenchError），两店即可能
+      // 超 300——原先会把 230012000 的处置指引文案截掉，用户看不到修复提示
+      setError(errs.length > 0 ? `部分店铺加载失败——${errs.join("；").slice(0, 800)}` : null)
     })
   }, [store, stores])
 

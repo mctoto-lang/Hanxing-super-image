@@ -729,6 +729,34 @@
       "when": 1795488000000,
       "tag": "0103_size_preset_label_to_ratio",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1795574400000,
+      "tag": "0104_selection_core",
+      "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1795660800000,
+      "tag": "0105_temu_store_sync_requested",
+      "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1795747200000,
+      "tag": "0106_selection_monitor_reviews",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1795833600000,
+      "tag": "0107_temu_ship_print_marks",
+      "breakpoints": true
     }
   ]
 }

@@ -96,7 +96,13 @@ export function PublishDialog({
           `已发布到「${store.name}」${store.mallName && store.mallName !== store.name ? `（token 归属 ${store.mallName}）` : ""}，productId ${r.productId}（约 15 分钟内随同步出现在商品信息页）`,
           { duration: 8000 },
         )
-        if (r.dimensionCheck) {
+        // 已知官方识别服务隐性门槛：一律「图片md5获取失败」（§8.14），
+        // 无行动价值不弹；其余真实结论（如尺寸图合规问题）保留提示。
+        // 归一化小写后匹配：官方措辞大小写不定（如 MD5/MD5获取失败）
+        if (
+          r.dimensionCheck &&
+          !r.dimensionCheck.message.toLowerCase().includes("md5获取失败")
+        ) {
           toast(`尺寸图校验（参考性）：${r.dimensionCheck.message}${r.dimensionCheck.imageType != null ? `（imageType=${r.dimensionCheck.imageType}）` : ""}`, {
             duration: 8000,
           })

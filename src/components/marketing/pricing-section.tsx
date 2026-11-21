@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils"
 import SubscribeReceiptDialog from "./subscribe-receipt-dialog"
 
 /**
- * 订阅套餐区块（marketing 落地页「订阅套餐」锚点）
+ * 积分套餐区块（marketing 落地页「积分套餐」锚点）
  *
  * 改写自 Launch UI pricing 模板：原版依赖 framer-motion（月/年切换滑块的
  * layoutId 动画、BorderTrail 的 offsetDistance 补间），这里全部换成纯 CSS——
@@ -25,7 +25,7 @@ const FREQUENCIES: { value: Frequency; label: string }[] = [
 interface PlanFeature {
   text: string
   tooltip?: string
-  /** 订阅小票上的短标签（保证单行不换行；缺省回退 text） */
+  /** 积分小票上的短标签（保证单行不换行；缺省回退 text） */
   receipt?: string
 }
 
@@ -35,16 +35,18 @@ export interface Plan {
   /** 年付价为月付 ×12 打 88 折（与折扣徽章的计算保持一致） */
   price: { monthly: number; yearly: number }
   features: PlanFeature[]
-  /** 按钮文案（点击弹订阅小票弹窗，无跳转） */
+  /** 按钮文案（点击弹积分小票弹窗，无跳转） */
   btn: { text: string }
   highlighted?: boolean
 }
 
 /**
- * 暂时隐藏售价：月付/年付均显示 ¥0（「省 %」徽标同步隐藏）。
- * 恢复时把各档 monthly 改回原月价，yearly 恢复 88 折公式：
- * Math.round(月价 * 12 * 0.88)。
+ * 暂时隐藏售价与计费周期：月付/年付均显示 ¥0（「省 %」徽标同步隐藏），
+ * 月付/年付切换与「/月|/年」价格单位随 SHOW_BILLING_TOGGLE 一并隐藏。
+ * 恢复时把各档 monthly 改回原月价（yearly 恢复 88 折公式
+ * Math.round(月价 * 12 * 0.88)），并将 SHOW_BILLING_TOGGLE 改回 true。
  */
+const SHOW_BILLING_TOGGLE = false
 export const PLANS: Plan[] = [
   {
     name: "Lite",
@@ -68,7 +70,7 @@ export const PLANS: Plan[] = [
       },
       { text: "7×24 小时技术支持", receipt: "7×24 技术支持" },
     ],
-    btn: { text: "立即订阅" },
+    btn: { text: "获取积分" },
   },
   {
     name: "Pro",
@@ -92,7 +94,7 @@ export const PLANS: Plan[] = [
       },
       { text: "7×24 小时技术支持", receipt: "7×24 技术支持" },
     ],
-    btn: { text: "立即订阅" },
+    btn: { text: "获取积分" },
   },
   {
     name: "Ultra",
@@ -116,7 +118,7 @@ export const PLANS: Plan[] = [
       },
       { text: "7×24 小时技术支持", receipt: "7×24 技术支持" },
     ],
-    btn: { text: "立即订阅" },
+    btn: { text: "获取积分" },
     highlighted: true,
   },
   {
@@ -141,7 +143,7 @@ export const PLANS: Plan[] = [
       },
       { text: "7×24 小时技术支持", receipt: "7×24 技术支持" },
     ],
-    btn: { text: "立即订阅" },
+    btn: { text: "获取积分" },
   },
 ]
 
@@ -159,7 +161,7 @@ export default function PricingSection({
   className,
 }: PricingSectionProps) {
   const [frequency, setFrequency] = useState<Frequency>("monthly")
-  // 点「立即订阅」弹小票打印机弹窗（无在线支付，扫码联系客服激活）
+  // 点「获取积分」弹小票打印机弹窗（无在线支付，扫码联系客服激活）
   const [selectedPlan, setSelectedPlan] = useState<Plan | null>(null)
 
   return (
@@ -179,7 +181,10 @@ export default function PricingSection({
           </p>
         )}
       </div>
-      <FrequencyToggle frequency={frequency} onChange={setFrequency} />
+      {/* 暂时隐藏月付/年付切换（恢复点：SHOW_BILLING_TOGGLE） */}
+      {SHOW_BILLING_TOGGLE && (
+        <FrequencyToggle frequency={frequency} onChange={setFrequency} />
+      )}
       <div className="mx-auto grid w-full max-w-6xl grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
         {plans.map((plan) => (
           <PricingCard
@@ -250,7 +255,9 @@ function PricingCard({
   frequency: Frequency
   onSubscribe: () => void
 }) {
-  // 暂时隐藏售价（monthly=0）时无折扣可言，置 0 并由渲染处隐藏徽标
+  // 暂时隐藏售价（monthly/yearly=0）时无折扣可言，置 0 并由渲染处隐藏徽标
+  // （恢复定价若只改回 monthly，yearly 仍为 0 会算出「省 100%」——徽标守卫
+  // 同时要求 monthly、yearly 均 > 0）
   const yearlyDiscount =
     plan.price.monthly > 0
       ? Math.round(
@@ -286,7 +293,7 @@ function PricingCard({
               热门
             </p>
           )}
-          {frequency === "yearly" && plan.price.monthly > 0 && (
+          {frequency === "yearly" && plan.price.monthly > 0 && plan.price.yearly > 0 && (
             <p className="flex items-center gap-1 rounded-md border border-white bg-white px-2 py-0.5 text-xs font-medium text-neutral-900">
               省 {yearlyDiscount}%
             </p>
@@ -295,17 +302,23 @@ function PricingCard({
 
         <div className="text-lg font-medium text-white">{plan.name}</div>
         <p className="text-sm font-normal text-white/50">{plan.info}</p>
-        <h3 className="mt-2 flex items-end gap-1">
-          <span className="text-3xl font-bold text-white">
-            <span className="mr-0.5 align-top text-xl font-semibold">
-              ¥
+        {/* 价格=0（暂时隐藏售价）时整块不渲染，避免卡片露「¥0」；恢复定价后自动回来 */}
+        {plan.price[frequency] > 0 && (
+          <h3 className="mt-2 flex items-end gap-1">
+            <span className="text-3xl font-bold text-white">
+              <span className="mr-0.5 align-top text-xl font-semibold">
+                ¥
+              </span>
+              {plan.price[frequency].toLocaleString("zh-CN")}
             </span>
-            {plan.price[frequency].toLocaleString("zh-CN")}
-          </span>
-          <span className="pb-0.5 text-sm text-white/50">
-            /{frequency === "monthly" ? "月" : "年"}
-          </span>
-        </h3>
+            {/* 暂时隐藏「/月|/年」价格单位（恢复点：SHOW_BILLING_TOGGLE） */}
+            {SHOW_BILLING_TOGGLE && (
+              <span className="pb-0.5 text-sm text-white/50">
+                /{frequency === "monthly" ? "月" : "年"}
+              </span>
+            )}
+          </h3>
+        )}
       </div>
 
       {/* 特性列表：带 tooltip 的项虚线下划线 + 纯 CSS 悬停气泡 */}
@@ -329,7 +342,7 @@ function PricingCard({
         ))}
       </div>
 
-      {/* 底部按钮：mt-auto 保证三卡等高时按钮贴底；点击弹订阅小票弹窗 */}
+      {/* 底部按钮：mt-auto 保证三卡等高时按钮贴底；点击弹积分小票弹窗 */}
       <div className="mt-auto w-full border-t border-white/10 p-3">
         <button
           type="button"

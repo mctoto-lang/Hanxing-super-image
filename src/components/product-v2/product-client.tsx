@@ -56,6 +56,7 @@ import {
   SuiteStructureConfig,
   type StructureCategoryState,
 } from "./structure-config"
+import { resolveSizePresets } from "@/lib/image-sizes"
 import { SuiteCardReview } from "./card-review"
 import { BatchView } from "./batch-view"
 import { HistoryDateRangePicker } from "./history-date-range-picker"
@@ -346,13 +347,15 @@ export function ProductClient({
     selectedModel?.displayName || "选择模型"
   const sizeSpecLabel =
     platformSpecs.find((s) => s.id === sizeSpecId)?.label ?? "规范尺寸"
+  /** 模型尺寸预设（归一化：ratio 优先、滤停用项——与创作页/穿戴页同口径；原始 presets 的 label 已被 0103 迁移收敛进 ratio，直接读会空白） */
+  const modelSizePresets = useMemo(
+    () => resolveSizePresets(selectedModel?.sizePresets),
+    [selectedModel?.sizePresets],
+  )
   /** 非详情 tab 的比例显示名：未选 → 通用比例；已选 → 模型预设比例名 */
   const ratioValueLabel = () => {
     if (!size) return "通用比例"
-    const preset = selectedModel?.sizePresets?.find(
-      (p) => `${p.width}x${p.height}` === size,
-    )
-    return preset ? preset.label : size
+    return modelSizePresets.find((p) => p.value === size)?.label ?? size
   }
 
   /** 任务数与积分预估 */
@@ -386,8 +389,8 @@ export function ProductClient({
     }
     // 复刻/精修已无「跟随/保持原图」选项：未选比例时预选模型第一个预设
     if ((next === "replicate" || next === "refine") && !size) {
-      const first = selectedModel?.sizePresets?.[0]
-      if (first) setSize(`${first.width}x${first.height}`)
+      const first = modelSizePresets[0]
+      if (first) setSize(first.value)
     }
     // 离开套图时丢弃卡片确认阶段（配置/模型可能已变，避免陈旧卡片误提交）
     if (next !== "suite" && tab === "suite" && suiteStage === "cards") {
@@ -704,9 +707,7 @@ export function ProductClient({
       )
       return
     }
-    const fallbackSize = selectedModel?.sizePresets?.[0]
-      ? `${selectedModel.sizePresets[0].width}x${selectedModel.sizePresets[0].height}`
-      : undefined
+    const fallbackSize = modelSizePresets[0]?.value
     setSubmitting(true)
     try {
       await postSubmit({
@@ -760,9 +761,7 @@ export function ProductClient({
     // replicate：无方向字段
 
     // 比例兜底：未选比例时取模型第一个预设；两者皆无则留空（服务端兜底 1024x1024）
-    const fallbackSize = selectedModel?.sizePresets?.[0]
-      ? `${selectedModel.sizePresets[0].width}x${selectedModel.sizePresets[0].height}`
-      : undefined
+    const fallbackSize = modelSizePresets[0]?.value
 
     return {
       mode: tab as ProductMode,
@@ -1160,14 +1159,11 @@ export function ProductClient({
                       </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
-                      {(selectedModel?.sizePresets ?? []).map((p) => {
-                        const v = `${p.width}x${p.height}`
-                        return (
-                          <SelectItem key={v} value={v}>
-                            {p.label}
-                          </SelectItem>
-                        )
-                      })}
+                      {modelSizePresets.map((p) => (
+                        <SelectItem key={p.value} value={p.value}>
+                          {p.label}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 )}

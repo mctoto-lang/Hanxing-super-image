@@ -28,6 +28,7 @@ import {
   updateTemuStoreAction,
   setTemuStoreTokenAction,
   syncTemuStoreAction,
+  refreshTemuStoresAction,
   toggleTemuStoreSyncAction,
   toggleTemuStoreAction,
   deleteTemuStoreAction,
@@ -40,6 +41,7 @@ import {
   type TemuTokenIdentityMismatch,
   type TemuResidualReport,
 } from "@/server/actions/temu"
+import type { TemuSyncStatus } from "@/db/schema"
 import { MAX_STORES_PER_APP } from "@/lib/temu-api/constants"
 import { useDragSort, DragHandle } from "@/hooks/use-drag-sort"
 import { formatDateTime } from "@/lib/datetime"
@@ -66,6 +68,22 @@ async function run(message: string, fn: () => Promise<unknown>): Promise<boolean
     const msg = (e instanceof Error ? e.message : String(e)).slice(0, 120)
     toast.error(msg || "操作失败，请稍后重试")
     return false
+  }
+}
+
+/** 同步结果 toast（成功=各源条数；失败=首个失败源摘要）——手动排队完成后调用 */
+function toastSyncOutcome(name: string, status: TemuSyncStatus) {
+  if (status.ok) {
+    const parts = Object.entries(status.sources)
+      .map(([k, v]) => `${k.replace("api-", "")} ${v.count ?? 0}`)
+      .join(" · ")
+    toast.success(`「${name}」同步完成：${parts || "无数据"}`)
+  } else {
+    const firstErr = Object.entries(status.sources).find(([, v]) => !v.ok)
+    toast.error(
+      `「${name}」部分同步失败${firstErr ? `：${firstErr[0].replace("api-", "")} — ${String(firstErr[1].error ?? "").slice(0, 90)}` : ""}`,
+      { duration: 6000 },
+    )
   }
 }
 
@@ -139,7 +157,7 @@ export function TemuStoreManager({
   const realStores = stores.filter((s) => !s.isDemo)
   const demoStores = stores.filter((s) => s.isDemo)
   const [adding, setAdding] = React.useState<AddingForm | null>(null)
-  const [pending] = React.useTransition()
+  const [pending, startTransition] = React.useTransition()
   /** 新增弹窗：token 提交后走验证（不中断弹窗，验证失败留在弹窗提示） */
   const [submitting, setSubmitting] = React.useState(false)
   /** 新增流程 token 身份不一致待确认（店铺已创建、token 未落库） */
@@ -211,6 +229,11 @@ export function TemuStoreManager({
     }))
   }
 
+  /**
+   * 手动同步：action 只置排队标记（单店全量同步含官方限速冷却实测要数分钟，
+   * HTTP 请求内等待会被前置反代超时掐断报 unexpected response），由 worker
+   * tick 认领后台执行；本组件轮询页面数据，检测到该店 lastSyncAt 更新即弹结果
+   */
   const doSync = (store: { id: string; name: string }) => {
     void (async () => {
       try {
@@ -219,25 +242,76 @@ export function TemuStoreManager({
           toast.warning(`「${store.name}」未同步：${r.skipped}`)
           return
         }
-        if (r.status && r.status.ok) {
-          const parts = Object.entries(r.status.sources)
-            .map(([k, v]) => `${k.replace("api-", "")} ${v.count ?? 0}`)
-            .join(" · ")
-          toast.success(`「${store.name}」同步完成：${parts || "无数据"}`)
+        if (r.queued) {
+          const cur = stores.find((s) => s.id === store.id)
+          const baseline = cur?.lastSyncAt ? new Date(cur.lastSyncAt).getTime() : 0
+          setSyncAwaiting((prev) => ({ ...prev, [store.id]: { baseline, t0: Date.now() } }))
+          toast.info(`「${store.name}」已加入同步队列，完成后自动刷新`)
         } else {
-          const firstErr = r.status
-            ? Object.entries(r.status.sources).find(([, v]) => !v.ok)
-            : undefined
-          toast.error(
-            `「${store.name}」部分同步失败${firstErr ? `：${firstErr[0].replace("api-", "")} — ${String(firstErr[1].error ?? "").slice(0, 90)}` : ""}`,
-            { duration: 6000 },
-          )
+          toast.error(`「${store.name}」同步排队失败，请稍后重试`)
         }
       } catch (e) {
         toast.error((e instanceof Error ? e.message : String(e)).slice(0, 150) || "同步失败")
       }
     })()
   }
+
+  /** 手动同步等待中：storeId → { baseline=入队时该店 lastSyncAt 时间戳, t0=入队时刻 } */
+  const [syncAwaiting, setSyncAwaiting] = React.useState<
+    Record<string, { baseline: number; t0: number }>
+  >({})
+
+  // 等待期间每 5s 拉一次最新页面数据供完成检测比对：走 server action 通道
+  // （revalidatePath 随响应回传新鲜 RSC）。须包 startTransition——action 响应的
+  // 路由树更新只在 transition 上下文里被 React 应用（站内其他 action 同款）；
+  // router.refresh() 在部分内嵌 webview 不生效（实测请求成功返回新数据但界面不动）。
+  // 隐藏页定时器会被冻结：回前台时立即补一拉，完成检测马上兑现
+  React.useEffect(() => {
+    if (Object.keys(syncAwaiting).length === 0) return
+    const poll = () =>
+      startTransition(() => {
+        void refreshTemuStoresAction().catch(() => {})
+      })
+    const timer = setInterval(poll, 5000)
+    const onVisible = () => {
+      if (!document.hidden) poll()
+    }
+    document.addEventListener("visibilitychange", onVisible)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener("visibilitychange", onVisible)
+    }
+  }, [syncAwaiting])
+
+  // 完成检测：该店 lastSyncAt 新于入队基线即弹同步结果；8 分钟未完成提示仍在后台
+  React.useEffect(() => {
+    const entries = Object.entries(syncAwaiting)
+    if (entries.length === 0) return
+    const finished: string[] = []
+    for (const [id, aw] of entries) {
+      const s = stores.find((x) => x.id === id)
+      if (!s) {
+        // 店铺已删除等：放弃等待
+        finished.push(id)
+        continue
+      }
+      const at = s.lastSyncAt ? new Date(s.lastSyncAt).getTime() : 0
+      if (at > aw.baseline) {
+        finished.push(id)
+        if (s.lastSyncStatus) toastSyncOutcome(s.name, s.lastSyncStatus)
+      } else if (Date.now() - aw.t0 > 8 * 60_000) {
+        finished.push(id)
+        toast.warning(`「${s.name}」同步仍在后台进行，可稍后刷新查看结果`)
+      }
+    }
+    if (finished.length > 0) {
+      setSyncAwaiting((prev) => {
+        const next = { ...prev }
+        for (const id of finished) delete next[id]
+        return next
+      })
+    }
+  }, [stores, syncAwaiting])
 
   const submitAdding = () => {
     if (!adding) return
@@ -341,6 +415,7 @@ export function TemuStoreManager({
             app={app}
             stores={realStores.filter((s) => s.appId === app.id)}
             pending={pending}
+            syncingIds={syncAwaiting}
             onGroupReorder={commitGroupOrder}
             onSync={doSync}
           />
@@ -354,6 +429,7 @@ export function TemuStoreManager({
               app={{ id: "", name: "未归属应用", testMode: false, storeCount: orphan.length }}
               stores={orphan}
               pending={pending}
+              syncingIds={syncAwaiting}
               onGroupReorder={commitGroupOrder}
               onSync={doSync}
             />
@@ -609,12 +685,15 @@ function AppGroup({
   app,
   stores,
   pending,
+  syncingIds,
   onGroupReorder,
   onSync,
 }: {
   app: TemuAppBrief
   stores: TemuStoreBrief[]
   pending: boolean
+  /** 手动同步排队中的店铺 id（按钮转「同步中…」） */
+  syncingIds: Record<string, unknown>
   onGroupReorder: (appId: string | null, newIds: string[]) => Promise<{ ok: boolean; error?: string | null }>
   onSync: (store: { id: string; name: string }) => void
 }) {
@@ -639,7 +718,13 @@ function AppGroup({
       <div className="space-y-2 p-3">
         {ordered.map((s) => (
           <div key={s.id} {...rowProps(s.id, "")}>
-            <StoreFormCard store={s} pending={pending} onSync={onSync} handleProps={handleProps(s.id)} />
+            <StoreFormCard
+              store={s}
+              pending={pending}
+              syncing={Boolean(syncingIds[s.id])}
+              onSync={onSync}
+              handleProps={handleProps(s.id)}
+            />
           </div>
         ))}
         {stores.length === 0 && (
@@ -656,11 +741,14 @@ function AppGroup({
 function StoreFormCard({
   store,
   pending,
+  syncing,
   onSync,
   handleProps,
 }: {
   store: TemuStoreBrief
   pending: boolean
+  /** 手动同步已排队、worker 后台执行中 */
+  syncing: boolean
   onSync: (store: { id: string; name: string }) => void
   handleProps: React.HTMLAttributes<HTMLSpanElement> & {
     "aria-label"?: string
@@ -809,9 +897,9 @@ function StoreFormCard({
             >
               {store.tokenState === "none" ? "录入 Token" : "重录 Token"}
             </Button>
-            <Button size="sm" variant="outline" disabled={pending} onClick={() => onSync(store)}>
-              <RefreshCw className="size-3.5" />
-              立即同步
+            <Button size="sm" variant="outline" disabled={pending || syncing} onClick={() => onSync(store)}>
+              <RefreshCw className={cn("size-3.5", syncing && "animate-spin")} />
+              {syncing ? "同步中…" : "立即同步"}
             </Button>
             <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
               定时同步

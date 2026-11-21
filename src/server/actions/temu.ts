@@ -43,7 +43,11 @@ import {
 } from "@/server/schemas/temu"
 import { temuCached, invalidateTemuCache } from "@/server/services/temu-cache"
 import { ensureDemoStores } from "@/server/services/temu-demo"
-import { probeStoreTokenIdentity, syncStore } from "@/server/services/temu-sync"
+import {
+  getTemuCallContext,
+  probeStoreTokenIdentity,
+  syncStorePreflight,
+} from "@/server/services/temu-sync"
 import { TEMU_TZ, previousPeriodRanges, temuDayStr, temuStartOfToday, temuYesterdayStr } from "@/server/services/temu-time"
 
 /**
@@ -1680,22 +1684,46 @@ export async function setTemuStoreTokenAction(input: {
   return { ok: true, mallType, mallId: newMallId }
 }
 
-/** 手动触发单店同步（worker 15 分钟循环之外立即拉一次官方 API） */
+/**
+ * 手动触发单店同步：只做前置校验并置排队标记（sync_requested_at），
+ * worker tick 认领后后台执行。单店全量同步含官方限速冷却实测要数分钟，
+ * 在 HTTP 请求内同步等待会被前置反代超时掐断返回 HTML 504，
+ * 前端即报 "An unexpected response was received from the server."
+ */
 export async function syncTemuStoreAction(
   input: { id: string },
-): Promise<{ ok: boolean; skipped?: string; status?: TemuSyncStatus }> {
+): Promise<{ ok: boolean; skipped?: string; queued?: boolean }> {
   const ctx = await requireEnterpriseAdmin()
   const { enterpriseId } = getCurrentEnterpriseScope(ctx)
   const id = String(input.id || "")
   const guard = await requireRealStore(enterpriseId, id)
-  if (!guard.ok) throw new Error(guard.error)
-  const outcome = await syncStore(id)
-  revalidatePath("/temu")
-  return {
-    ok: !outcome.skipped && (outcome.status?.ok ?? true),
-    skipped: outcome.skipped,
-    status: outcome.status,
+  if (!guard.ok) return { ok: false, skipped: guard.error }
+  const [store] = await db.select().from(temuStores).where(eq(temuStores.id, guard.id)).limit(1)
+  const pre = syncStorePreflight(store)
+  if (!pre.ok) return { ok: false, skipped: pre.reason }
+  if (store.tokenState === "invalid") {
+    return { ok: false, skipped: "token 已失效，请重新录入后再同步" }
   }
+  // 应用关联/token 解密预检（纯 DB+解密无网络调用）：不可恢复的问题排队前立刻反馈
+  const built = await getTemuCallContext(store)
+  if ("error" in built) return { ok: false, skipped: built.error }
+  await db
+    .update(temuStores)
+    .set({ syncRequestedAt: new Date(), updatedAt: new Date() })
+    .where(eq(temuStores.id, guard.id))
+  revalidatePath("/temu")
+  return { ok: true, queued: true }
+}
+
+/**
+ * 手动同步等待期轮询刷新：仅 revalidate /temu 让 action 响应携带新鲜页面 RSC。
+ * 不用客户端 router.refresh()——部分内嵌 webview 对其流式响应不应用
+ * （请求发出且服务端返回新数据但界面不更新），action 通道与本站其他写操作同机制，实测可靠。
+ */
+export async function refreshTemuStoresAction(): Promise<{ ok: true }> {
+  await requireEnterpriseContext()
+  revalidatePath("/temu")
+  return { ok: true }
 }
 
 /** 同步开关（关掉后不参与定时轮询，手动同步不受影响） */

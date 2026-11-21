@@ -47,6 +47,16 @@ import {
   updateTemuApp,
   deleteTemuApp,
 } from "@/lib/temu-api/app-config"
+import {
+  countProviderTasks,
+  decryptSelectionToken,
+  deleteSelectionProvider,
+  encryptSelectionToken,
+  getSelectionProvider,
+  isMaskedSelectionToken,
+  maskSelectionToken,
+  saveSelectionProvider,
+} from "@/lib/selection/provider-config"
 import { listTransactions, rechargeCredits } from "@/server/services/credits-service"
 import {
   createEnterpriseSchema,
@@ -1759,6 +1769,102 @@ export async function deleteTemuAppAction(input: {
     }
   }
   await deleteTemuApp(input.appId)
+  revalidatePath("/platform/enterprises")
+  return { ok: true, error: null }
+}
+
+/* ─── 企业级选品抓取凭证（selection_provider：每企业一行 Apify Token，未配置回退平台 APIFY_API_TOKEN） ─── */
+
+/** 选品凭证视图（token 回显掩码；taskCount 供删除前置提示） */
+export interface SelectionProviderView {
+  id: string
+  name: string
+  token: string
+  enabled: boolean
+  taskCount: number
+}
+
+export async function listSelectionProvidersAction(
+  enterpriseId: string,
+): Promise<SelectionProviderView[]> {
+  await requireSuperAdmin()
+  const provider = await getSelectionProvider(enterpriseId)
+  if (!provider) return []
+  const taskCount = await countProviderTasks(provider.id)
+  return [
+    {
+      id: provider.id,
+      name: provider.name,
+      token: maskSelectionToken(decryptSelectionToken(provider.tokenEncrypted)),
+      enabled: provider.enabled,
+      taskCount,
+    },
+  ]
+}
+
+/** 保存企业凭证（每企业 upsert 单行；token 掩码原样提交=保留旧值） */
+export async function saveSelectionProviderAction(input: {
+  enterpriseId: string
+  name: string
+  token: string
+  enabled: boolean
+}): Promise<{ ok: boolean; error: string | null }> {
+  await requireSuperAdmin()
+
+  const enterpriseId = String(input.enterpriseId ?? "").trim()
+  if (!/^[0-9a-f-]{36}$/i.test(enterpriseId)) {
+    return { ok: false, error: "企业 ID 非法" }
+  }
+  const [ent] = await db
+    .select({ id: enterprises.id })
+    .from(enterprises)
+    .where(eq(enterprises.id, enterpriseId))
+    .limit(1)
+  if (!ent) return { ok: false, error: "企业不存在" }
+
+  const name = String(input.name ?? "").trim()
+  if (!name) return { ok: false, error: "请填写凭证名称" }
+  if (name.length > 100) return { ok: false, error: "凭证名称过长（≤100 字符）" }
+
+  const current = await getSelectionProvider(enterpriseId)
+  // 掩码=保留现值；其余以输入为准（空串=清除，任务提交将回退平台兜底或报错）
+  const masked = isMaskedSelectionToken(String(input.token ?? ""))
+  const plainToken = masked
+    ? decryptSelectionToken(current?.tokenEncrypted ?? "")
+    : String(input.token ?? "").trim()
+  if (masked && !plainToken) {
+    // 掩码=保留旧值，但旧值缺失或解密失败（ENCRYPTION_KEY 轮换）时不能
+    // 静默 encrypt("") 清空落库，要求重新粘贴明文令牌
+    return { ok: false, error: "原令牌解密失败，请重新粘贴明文令牌" }
+  }
+  if (plainToken && plainToken.length < 10) {
+    return { ok: false, error: "Apify Token 格式异常（过短）" }
+  }
+
+  await saveSelectionProvider(enterpriseId, {
+    name,
+    tokenEncrypted: encryptSelectionToken(plainToken),
+    enabled: input.enabled,
+  })
+  revalidatePath("/platform/enterprises")
+  return { ok: true, error: null }
+}
+
+/** 删除企业凭证（仍有任务引用时拒绝——历史任务的收割依赖该凭证同账号读 dataset） */
+export async function deleteSelectionProviderAction(input: {
+  enterpriseId: string
+}): Promise<{ ok: boolean; error: string | null }> {
+  await requireSuperAdmin()
+  const provider = await getSelectionProvider(input.enterpriseId)
+  if (!provider) return { ok: false, error: "该企业未配置选品凭证" }
+  const taskCount = await countProviderTasks(provider.id)
+  if (taskCount > 0) {
+    return {
+      ok: false,
+      error: `仍有 ${taskCount} 个历史任务引用该凭证，删除后这些任务无法收割；建议改为停用`,
+    }
+  }
+  await deleteSelectionProvider(provider.id)
   revalidatePath("/platform/enterprises")
   return { ok: true, error: null }
 }

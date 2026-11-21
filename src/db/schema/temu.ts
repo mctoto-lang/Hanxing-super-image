@@ -91,6 +91,11 @@ export const temuStores = pgTable(
     tokenExpiresAt: timestamp("token_expires_at", { withTimezone: true }),
     /** 是否参与定时同步 */
     syncEnabled: boolean("sync_enabled").default(true).notNull(),
+    /** 手动同步排队标记（「立即同步」置位，worker 认领后清空；长耗时同步不在 HTTP 请求内等待） */
+    syncRequestedAt: timestamp("sync_requested_at", { withTimezone: true }),
+    /** 同步运行认领标记（worker CAS 写入、syncStore 收尾清空；多副本互斥，
+     *  超 30 分钟视为残留认领可被重新抢占——进程崩溃自愈） */
+    syncStartedAt: timestamp("sync_started_at", { withTimezone: true }),
     /** 最近一次同步时间 */
     lastSyncAt: timestamp("last_sync_at", { withTimezone: true }),
     /** 最近一次同步结果（{ ok, startedAt, finishedAt, sources: { [source]: { ok, count, error } } }） */
@@ -794,6 +799,10 @@ export const temuShipOrders = pgTable(
     deliverSkcNum: integer("deliver_skc_num"),
     /** 官方「可打箱唛」标记（打印按钮显隐） */
     isPrintBoxMark: boolean("is_print_box_mark"),
+    /** 本站记录：成功打开官方打包标签打印页的时间（行级/合并/批量打印均更新；仅请求 dataKey 不开页不算） */
+    boxMarkPrintedAt: timestamp("box_mark_printed_at", { withTimezone: true }),
+    /** 本站记录：成功打开官方商品条码打印页的时间 */
+    barcodePrintedAt: timestamp("barcode_printed_at", { withTimezone: true }),
     supplierId: bigint("supplier_id", { mode: "number" }),
     isClothCategory: boolean("is_cloth_category"),
     ifCanOperateDeliver: boolean("if_can_operate_deliver"),
