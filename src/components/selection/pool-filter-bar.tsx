@@ -3,39 +3,22 @@
 import * as React from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { format } from "date-fns"
-import { X } from "lucide-react"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+import { LayoutGrid, List, X } from "lucide-react"
 import { Switch } from "@/components/ui/switch"
 import { DateRangePicker } from "@/components/shared/date-range-picker"
 import { TemuSearchBar } from "@/components/temu/search-bar"
-import { SELECTION_PLATFORMS, countryLabel } from "@/lib/selection/platforms"
-import { platformLabel } from "@/components/selection/labels"
+import { FilterSelect } from "@/components/selection/filter-select"
+import { countryLabel } from "@/lib/selection/platforms"
+import { poolQuery, type PoolFilterState } from "@/lib/selection/pool-url"
+import { cn } from "@/lib/utils"
 
 /**
- * 数据池筛选工具栏（选品发现/市场分析页，URL 驱动对齐 TEMU 商品页口径）
+ * 数据池筛选工具栏（选品发现 / 市场分析的平台标签视图共用）
  *
- * 关键词/平台/国家/类型/抓取日期范围/来源任务/排序/去重开关；任一变更重置
- * 回第 1 页。国家与来源任务选项来自 getSelectionPoolMetaAction（企业内已出
- * 现的数据）。marketProps 存在时 = 市场分析页口径（社媒平台聚焦 + 类型锁定）。
+ * 平台由页面标签条决定，工具栏不再有平台下拉。关键词 / 国家 / 类型 / 来源任务 /
+ * 排序 / 抓取日期范围 / 去重开关 / 视图切换全部 URL 驱动；任一变更重置回第 1 页。
+ * 国家与来源任务选项来自 getSelectionPoolMetaAction（当前平台内已出现的数据）。
  */
-
-export interface PoolFilterState {
-  platform: string
-  country: string
-  taskType: string
-  task: string
-  q: string
-  sort: string
-  dedupe: boolean
-  dateFrom: string
-  dateTo: string
-}
 
 export interface PoolMetaTask {
   id: string
@@ -47,80 +30,38 @@ export interface PoolMetaTask {
   completedAt: Date | null
 }
 
-const SORT_OPTIONS = [
-  { value: "newest", label: "最新抓取" },
-  { value: "sales_desc", label: "销量优先" },
-  { value: "price_asc", label: "价格从低到高" },
-  { value: "price_desc", label: "价格从高到低" },
-  { value: "rating_desc", label: "评分优先" },
-  { value: "likes_desc", label: "点赞优先" },
-  { value: "comments_desc", label: "评论优先" },
-  { value: "views_desc", label: "浏览优先" },
+const TASK_TYPE_OPTIONS = [
+  { value: "", label: "全部类型" },
+  { value: "discover", label: "发现" },
+  { value: "market", label: "市场" },
+  { value: "monitor", label: "监控" },
 ]
-
-/** 市场分析页排序（社媒帖子口径） */
-const SOCIAL_SORT_OPTIONS = [
-  { value: "newest", label: "最新抓取" },
-  { value: "likes_desc", label: "点赞优先" },
-  { value: "comments_desc", label: "评论优先" },
-  { value: "views_desc", label: "浏览优先" },
-]
-
-const SEARCH_FIELDS = [
-  { value: "title", label: "标题/内容", placeholder: "搜索标题或帖子内容" },
-]
-
-function FilterSelect({
-  value,
-  onChange,
-  ariaLabel,
-  items,
-  placeholder,
-  width = "w-28",
-}: {
-  value: string
-  onChange: (v: string) => void
-  ariaLabel: string
-  items: Array<{ value: string; label: string }>
-  placeholder: string
-  width?: string
-}) {
-  return (
-    <Select
-      items={items}
-      value={value || null}
-      onValueChange={(v) => onChange(v ?? "")}
-    >
-      <SelectTrigger size="sm" aria-label={ariaLabel} className={`${width} text-xs`}>
-        <SelectValue placeholder={placeholder} />
-      </SelectTrigger>
-      <SelectContent>
-        {items.map((o) => (
-          <SelectItem key={o.value} value={o.value}>
-            {o.label}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  )
-}
 
 export function PoolFilterBar({
   state,
   countries,
   tasks,
   basePath,
-  category,
+  sortOptions,
+  showTaskFilters = false,
+  showViewToggle = false,
+  dedupeLabel,
 }: {
   state: PoolFilterState
   countries: string[]
   tasks: PoolMetaTask[]
   basePath: string
-  /** 页面口径：ecommerce=选品发现（平台仅电商）/ social=市场分析（平台仅社媒、社媒排序、隐藏类型与来源任务筛选） */
-  category?: "ecommerce" | "social"
+  /** 当前平台可用的排序项（见 platform-views） */
+  sortOptions: Array<{ value: string; label: string }>
+  /** 是否显示类型 / 来源任务筛选（选品发现页） */
+  showTaskFilters?: boolean
+  /** 是否显示卡片 / 表格视图切换（电商有表格视图） */
+  showViewToggle?: boolean
+  dedupeLabel: string
 }) {
   const router = useRouter()
   const searchParams = useSearchParams()
+  const [pending, startTransition] = React.useTransition()
   const [keyword, setKeyword] = React.useState(state.q)
 
   React.useEffect(() => {
@@ -129,90 +70,66 @@ export function PoolFilterBar({
 
   const pushState = (patch: Partial<PoolFilterState>) => {
     const next = { ...state, ...patch }
-    const params = new URLSearchParams()
-    if (next.platform) params.set("platform", next.platform)
-    if (next.country) params.set("country", next.country)
-    if (category !== 'social' && next.taskType) params.set("taskType", next.taskType)
-    if (category !== 'social' && next.task) params.set("task", next.task)
-    if (next.q) params.set("q", next.q)
-    if (next.sort && next.sort !== "newest") params.set("sort", next.sort)
-    if (next.dateFrom) params.set("dateFrom", next.dateFrom)
-    if (next.dateTo) params.set("dateTo", next.dateTo)
-    if (!next.dedupe) params.set("dedupe", "0")
+    const params = new URLSearchParams(
+      Object.entries(poolQuery(next)).filter((pair): pair is [string, string] => pair[1] != null),
+    )
     // 筛选跳转（重置回第 1 页）时保留用户选择的每页数量
     const pageSize = searchParams.get("pageSize")
     if (pageSize) params.set("pageSize", pageSize)
     const qs = params.toString()
-    router.push(qs ? `${basePath}?${qs}` : basePath)
+    startTransition(() => {
+      router.push(qs ? `${basePath}?${qs}` : basePath)
+    })
   }
 
-  const platformItems = category
-    ? [
-        { value: "", label: category === "social" ? "全部社媒" : "全部电商" },
-        ...SELECTION_PLATFORMS.filter((p) =>
-          category === "social"
-            ? ["instagram", "tiktok", "pinterest", "reddit", "x", "facebook"].includes(p)
-            : ["amazon", "etsy", "temu", "shopify"].includes(p),
-        ).map((p) => ({ value: p, label: platformLabel(p) })),
-      ]
-    : [
-        { value: "", label: "全部平台" },
-        ...SELECTION_PLATFORMS.map((p) => ({ value: p, label: platformLabel(p) })),
-      ]
-
-  const hasDate = state.dateFrom || state.dateTo
+  const hasDate = Boolean(state.dateFrom || state.dateTo)
+  const activeSort = sortOptions.some((o) => o.value === state.sort) ? state.sort : "newest"
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div
+      className={cn(
+        "flex flex-wrap items-center gap-2 transition-opacity",
+        pending && "opacity-70",
+      )}
+    >
       <TemuSearchBar
-        fields={SEARCH_FIELDS}
+        fields={[{ value: "title", label: "标题/内容", placeholder: "搜索标题或内容" }]}
         field="title"
         onFieldChange={() => {}}
         keyword={keyword}
         onKeywordChange={setKeyword}
         onSearch={(_f, kw) => pushState({ q: kw })}
         maxLength={120}
-        className="w-64"
+        className="w-56"
       />
-      <FilterSelect
-        ariaLabel="平台筛选"
-        placeholder={category === "social" ? "全部社媒" : category === "ecommerce" ? "全部电商" : "全部平台"}
-        value={state.platform}
-        onChange={(v) => pushState({ platform: v })}
-        items={platformItems}
-        width="w-32"
-      />
-      <FilterSelect
-        ariaLabel="国家筛选"
-        placeholder="全部国家"
-        value={state.country}
-        onChange={(v) => pushState({ country: v })}
-        items={[
-          { value: "", label: "全部国家" },
-          ...countries.map((c) => ({ value: c, label: `${countryLabel(c)} ${c}` })),
-        ]}
-        width="w-30"
-      />
-      {category !== 'social' ? (
+      {countries.length > 0 ? (
+        <FilterSelect
+          ariaLabel="国家筛选"
+          placeholder="全部国家"
+          value={state.country}
+          onChange={(v) => pushState({ country: v })}
+          items={[
+            { value: "", label: "全部国家" },
+            ...countries.map((c) => ({ value: c, label: `${countryLabel(c)} ${c}` })),
+          ]}
+          width="w-30"
+        />
+      ) : null}
+      {showTaskFilters ? (
         <FilterSelect
           ariaLabel="类型筛选"
           placeholder="全部类型"
           value={state.taskType}
           onChange={(v) => pushState({ taskType: v })}
-          items={[
-            { value: "", label: "全部类型" },
-            { value: "discover", label: "发现" },
-            { value: "market", label: "市场" },
-            { value: "monitor", label: "监控" },
-          ]}
+          items={TASK_TYPE_OPTIONS}
         />
       ) : null}
       <FilterSelect
         ariaLabel="排序"
         placeholder="最新抓取"
-        value={state.sort || "newest"}
+        value={activeSort}
         onChange={(v) => pushState({ sort: v })}
-        items={category === 'social' ? SOCIAL_SORT_OPTIONS : SORT_OPTIONS}
+        items={sortOptions}
         width="w-36"
       />
       {/* 抓取日期范围（全站共用日历范围选择器；含端点） */}
@@ -243,7 +160,7 @@ export function PoolFilterBar({
           </button>
         ) : null}
       </div>
-      {category !== 'social' && tasks.length > 0 ? (
+      {showTaskFilters && tasks.length > 0 ? (
         <FilterSelect
           ariaLabel="来源任务"
           placeholder="全部任务"
@@ -251,21 +168,48 @@ export function PoolFilterBar({
           onChange={(v) => pushState({ task: v })}
           items={[
             { value: "", label: "全部任务" },
-            ...tasks.slice(0, 20).map((t) => ({
+            ...tasks.slice(0, 30).map((t) => ({
               value: t.id,
-              label: `${platformLabel(t.platform)}「${(t.keyword ?? "").slice(0, 12)}」${t.fetchedCount}条`,
+              label: `${t.taskType === "discover" ? "发现" : t.taskType === "market" ? "市场" : t.taskType}「${(t.keyword ?? "").slice(0, 12)}」${t.fetchedCount}条`,
             })),
           ]}
-          width="w-44"
+          width="w-48"
         />
       ) : null}
-      <label className="ml-auto flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
-        <Switch
-          checked={state.dedupe}
-          onCheckedChange={(v) => pushState({ dedupe: Boolean(v) })}
-        />
-        {category === 'social' ? "按帖子去重" : "按商品去重"}
-      </label>
+
+      <div className="ml-auto flex items-center gap-2">
+        {showViewToggle ? (
+          <div className="flex items-center rounded-md border p-0.5" role="group" aria-label="视图切换">
+            {[
+              { view: "card", Icon: LayoutGrid, label: "卡片视图" },
+              { view: "table", Icon: List, label: "表格视图" },
+            ].map(({ view, Icon, label }) => (
+              <button
+                key={view}
+                type="button"
+                aria-label={label}
+                aria-pressed={state.view === view}
+                className={cn(
+                  "flex h-7 w-8 items-center justify-center rounded-[5px] transition-colors",
+                  state.view === view
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                )}
+                onClick={() => pushState({ view: view as PoolFilterState["view"] })}
+              >
+                <Icon className="size-4" />
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+          <Switch
+            checked={state.dedupe}
+            onCheckedChange={(v) => pushState({ dedupe: Boolean(v) })}
+          />
+          {dedupeLabel}
+        </label>
+      </div>
     </div>
   )
 }

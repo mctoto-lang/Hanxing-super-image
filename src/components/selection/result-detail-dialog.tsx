@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import Link from "next/link"
-import { BadgeCheck, ExternalLink, Loader2, MessageSquareQuote, Star, ThumbsUp } from "lucide-react"
+import { Crosshair, ExternalLink, Star } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -10,101 +10,135 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { SmartImage } from "@/components/ui/smart-image"
 import { Button } from "@/components/ui/button"
-import { compactNumber, platformLabel } from "@/components/selection/labels"
-import {
-  CountryFlag,
-  PlatformInlineIcon,
-} from "@/components/selection/platform-badges"
-import { getResultReviewsAction } from "@/server/actions/selection-monitor"
+import { DashRing } from "@/components/ui/dash-ring"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { CountryFlag, PlatformInlineIcon } from "@/components/selection/platform-badges"
+import { MediaGallery } from "@/components/selection/detail/media-gallery"
+import { EcommerceSections } from "@/components/selection/detail/ecommerce-sections"
+import { SocialSections } from "@/components/selection/detail/social-sections"
+import { ReviewSection } from "@/components/selection/detail/review-section"
+import { Metric, Section } from "@/components/selection/detail/detail-shared"
+import { canMonitorItem, isSocialPlatform } from "@/components/selection/result-card"
+import { compactNumber, formatPrice, platformLabel } from "@/components/selection/labels"
+import { getResultRawDataAction } from "@/server/actions/selection"
 import { formatDateTime } from "@/lib/datetime"
 import { countryLabel } from "@/lib/selection/platforms"
 import type { SelectionPoolItem } from "@/lib/selection/pool-types"
 import { cn } from "@/lib/utils"
 
 /**
- * 数据池结果详情弹窗：左图集（主图 + 缩略图切换）、右指标网格 + 来源任务 +
- * 源链接，正文 + 抓取评论区（监控抓取的评论按 sourceUrl 关联展示）+ 底部
- * rawData 折叠（原始 JSON，调试/溯源用）。
+ * 数据池结果详情弹窗：媒体区（视频 + 图集）+ 平台专属分区 + 来源 / 收藏 / 监控操作 +
+ * 评论洞察（含一次性抓评论）+ 按需加载的原始 JSON。
+ * 电商与社媒走各自的分区组件；社媒正文全文在社媒分区里展示（修复：此前社媒帖子
+ * 因无标题导致正文不渲染）。
  */
-
-interface DialogReview {
-  id: string
-  platform: string
-  authorName: string | null
-  rating: string | null
-  content: string | null
-  likesCount: number | null
-  verified: boolean | null
-  publishedAt: Date | null
-  scrapedAt: Date
-}
-
-function Metric({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className="rounded-lg bg-muted/40 px-2.5 py-1.5">
-      <p className="text-[10px] text-muted-foreground">{label}</p>
-      <p className="text-sm font-medium tabular-nums">{value}</p>
-    </div>
-  )
-}
-
 export function ResultDetailDialog({
   item,
   open,
   onOpenChange,
   bookmarked,
   onToggleBookmark,
+  monitored,
+  onAddMonitor,
 }: {
   item: SelectionPoolItem | null
   open: boolean
   onOpenChange: (open: boolean) => void
   bookmarked: boolean
   onToggleBookmark: (id: string) => void
+  /** 该目标是否已在竞品监控中 */
+  monitored?: boolean
+  /** 加入竞品监控（传了才显示按钮） */
+  onAddMonitor?: (item: SelectionPoolItem) => void
 }) {
-  const images = item?.images ?? []
-  const [active, setActive] = React.useState(0)
+  // 列表项不带 rawData；「原始数据」展开时按需拉取。state 带 id：A 的请求未返回就
+  // 关掉弹窗点开 B 时，晚到的 A 响应按 id 比对丢弃，不会把 A 的数据写进 B 的弹窗
+  const [raw, setRaw] = React.useState<{
+    id: string | null
+    loading: boolean
+    /** 本次拉取已完成（区分「未拉取」与「拉到 jsonb null」） */
+    fetched: boolean
+    data: Record<string, unknown> | null
+    error: string | null
+  }>({ id: null, loading: false, fetched: false, data: null, error: null })
   React.useEffect(() => {
-    setActive(0)
+    setRaw({ id: item?.id ?? null, loading: false, fetched: false, data: null, error: null })
   }, [item?.id])
 
-  // 抓取评论（监控抓取的评论按 sourceUrl 关联；弹窗打开时拉取）
-  const [reviews, setReviews] = React.useState<{
-    loading: boolean
-    total: number
-    items: DialogReview[]
-  }>({ loading: false, total: 0, items: [] })
-  React.useEffect(() => {
-    if (!open || !item?.id) return
-    let cancelled = false
-    setReviews({ loading: true, total: 0, items: [] })
-    void (async () => {
-      try {
-        const res = await getResultReviewsAction(item.id)
-        if (!cancelled) setReviews({ loading: false, total: res.total, items: res.items })
-      } catch {
-        if (!cancelled) setReviews({ loading: false, total: 0, items: [] })
-      }
-    })()
-    return () => {
-      cancelled = true
+  const loadRaw = async (force = false) => {
+    if (!item) return
+    if (!force && raw.id === item.id && (raw.fetched || raw.loading)) return
+    const id = item.id
+    setRaw({ id, loading: true, fetched: false, data: null, error: null })
+    try {
+      const res = await getResultRawDataAction(id)
+      // 拉取期间弹窗已切到另一条（或关闭）：丢弃过期响应
+      setRaw((s) =>
+        s.id === id
+          ? {
+              id,
+              loading: false,
+              fetched: true,
+              // 失败返回不再把 {error} 塞进 data（会被缓存且展示成 JSON 串）
+              data: res.ok ? res.rawData : null,
+              error: res.ok ? null : res.error,
+            }
+          : s,
+      )
+    } catch {
+      setRaw((s) =>
+        s.id === id ? { id, loading: false, fetched: true, data: null, error: "加载失败" } : s,
+      )
     }
-  }, [open, item?.id])
+  }
 
   if (!item) return null
-
+  const isSocial = isSocialPlatform(item.platform)
+  const ex = item.extras ?? {}
   const price = item.price != null ? Number(item.price) : null
   const originalPrice = item.originalPrice != null ? Number(item.originalPrice) : null
   const rating = item.rating != null ? Number(item.rating) : null
-  const discounted = price != null && originalPrice != null && originalPrice > price
+  const taskTypeName =
+    item.taskType === "discover" ? "发现" : item.taskType === "monitor" ? "监控" : item.taskType === "market" ? "市场" : ""
+  const poolBase = isSocial ? "/selection/market" : "/selection/discover"
+
+  /** 指标格（按平台口径） */
+  const metrics: Array<{ label: string; value: React.ReactNode }> = []
+  if (rating != null) metrics.push({ label: "评分", value: rating.toFixed(1) })
+  if (item.reviewCount != null) metrics.push({ label: "评论数", value: compactNumber(item.reviewCount) })
+  if (!isSocial && item.salesCount != null) {
+    metrics.push({ label: item.platform === "amazon" ? "月购买" : "销量", value: compactNumber(item.salesCount) })
+  }
+  if (!isSocial && item.rank != null) {
+    metrics.push({
+      label: item.platform === "amazon" ? "BSR / 名次" : "名次",
+      value: `#${item.rank}`,
+    })
+  }
+  if (!isSocial && item.likesCount != null && rating == null) {
+    metrics.push({ label: item.platform === "etsy" ? "收藏" : "赞", value: compactNumber(item.likesCount) })
+  }
+  if (isSocial) {
+    if (item.viewsCount != null) metrics.push({ label: "浏览", value: compactNumber(item.viewsCount) })
+    if (item.likesCount != null) {
+      metrics.push({ label: item.platform === "pinterest" ? "保存" : item.platform === "reddit" ? "获赞" : "点赞", value: compactNumber(item.likesCount) })
+    }
+    if (item.commentsCount != null) metrics.push({ label: "评论", value: compactNumber(item.commentsCount) })
+    if (item.sharesCount != null) metrics.push({ label: "转发", value: compactNumber(item.sharesCount) })
+    if (ex.tiktok?.collectCount != null) metrics.push({ label: "收藏", value: compactNumber(ex.tiktok.collectCount) })
+    if (ex.x?.quoteCount != null) metrics.push({ label: "引用", value: compactNumber(ex.x.quoteCount) })
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[85vh] flex-col overflow-y-auto sm:max-w-[680px]">
+      <DialogContent
+        data-testid="result-detail-dialog"
+        className="flex max-h-[88vh] flex-col overflow-y-auto sm:max-w-[780px]"
+      >
         <DialogHeader>
           <DialogTitle className="line-clamp-2 pr-6 text-left text-base leading-snug">
-            {item.title ?? item.content ?? "（无标题）"}
+            {item.title ?? (isSocial ? "社媒帖子详情" : "（无标题）")}
           </DialogTitle>
           <DialogDescription className="flex flex-wrap items-center gap-1.5 text-xs">
             <span className="flex items-center gap-1.5 rounded bg-muted px-1.5 py-0.5 font-medium text-foreground">
@@ -117,228 +151,165 @@ export function ResultDetailDialog({
                 {countryLabel(item.country)}（{item.country}）
               </span>
             ) : null}
-            {item.taskType ? (
-              <span className="rounded bg-muted px-1.5 py-0.5">
-                {item.taskType === "discover" ? "发现" : item.taskType === "monitor" ? "监控" : "市场"}
-              </span>
-            ) : null}
-            {item.sellerName ? <span>卖家 {item.sellerName}</span> : null}
-            {item.scrapedAt ? (
-              <span>抓取于 {item.scrapedAt.toLocaleString("zh-CN", { hour12: false })}</span>
-            ) : null}
+            {taskTypeName ? <span className="rounded bg-muted px-1.5 py-0.5">{taskTypeName}</span> : null}
+            {item.sellerName && !isSocial ? <span>卖家 {item.sellerName}</span> : null}
+            {item.scrapedAt ? <span>抓取于 {formatDateTime(item.scrapedAt)}</span> : null}
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-4 sm:grid-cols-[220px_1fr]">
-          {/* 图集 */}
-          <div className="space-y-2">
-            <div className="aspect-square overflow-hidden rounded-lg border bg-muted">
-              {images[active] ? (
-                <SmartImage
-                  src={images[active]}
-                  alt={item.title ?? ""}
-                  className="h-full w-full object-cover"
-                />
-              ) : (
-                <div className="flex h-full w-full items-center justify-center text-sm text-muted-foreground">
-                  无图
-                </div>
-              )}
-            </div>
-            {images.length > 1 ? (
-              <div className="flex flex-wrap gap-1.5">
-                {images.slice(0, 8).map((src, i) => (
-                  <button
-                    key={src + i}
-                    type="button"
-                    className={cn(
-                      "size-11 overflow-hidden rounded-md border bg-muted",
-                      i === active && "border-primary ring-1 ring-primary",
-                    )}
-                    onClick={() => setActive(i)}
-                  >
-                    <SmartImage src={src} alt="" className="h-full w-full object-cover" />
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
+        <div
+          className={cn(
+            "grid gap-4",
+            isSocial ? "grid-cols-1 sm:grid-cols-[minmax(0,300px)_minmax(0,1fr)]" : "sm:grid-cols-[220px_minmax(0,1fr)]",
+          )}
+        >
+          <MediaGallery item={item} />
 
-          {/* 指标 */}
-          <div className="space-y-3">
+          <div className="min-w-0 space-y-3">
+            {/* 价格行 + 操作 */}
             <div className="flex flex-wrap items-baseline gap-2">
-              {price != null ? (
-                <span className="text-xl font-bold tabular-nums">
-                  {item.currency && item.currency !== "USD" ? `${item.currency} ` : "$"}
-                  {price % 1 === 0 ? price.toFixed(0) : price.toFixed(2)}
-                </span>
-              ) : (
-                <span className="text-xl text-muted-foreground">—</span>
-              )}
-              {discounted ? (
-                <span className="text-sm text-muted-foreground line-through tabular-nums">
-                  {originalPrice!.toFixed(2)}
-                </span>
-              ) : null}
-              <button
-                type="button"
-                onClick={() => onToggleBookmark(item.id)}
-                className={cn(
-                  "ml-auto inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors",
-                  bookmarked
-                    ? "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <Star className={cn("size-3.5", bookmarked && "fill-current")} />
-                {bookmarked ? "已收藏" : "收藏"}
-              </button>
-            </div>
-
-            <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
-              {rating != null ? <Metric label="评分" value={rating.toFixed(1)} /> : null}
-              {item.reviewCount != null ? (
-                <Metric label="评论数" value={compactNumber(item.reviewCount)} />
-              ) : null}
-              {item.salesCount != null ? (
-                <Metric label="销量" value={compactNumber(item.salesCount)} />
-              ) : null}
-              {item.likesCount != null ? (
-                <Metric label="点赞" value={compactNumber(item.likesCount)} />
-              ) : null}
-              {item.commentsCount != null ? (
-                <Metric label="评论" value={compactNumber(item.commentsCount)} />
-              ) : null}
-              {item.sharesCount != null ? (
-                <Metric label="转发" value={compactNumber(item.sharesCount)} />
-              ) : null}
-              {item.viewsCount != null ? (
-                <Metric label="浏览" value={compactNumber(item.viewsCount)} />
-              ) : null}
-              {item.publishedAt ? (
-                <Metric
-                  label="发布时间"
-                  value={item.publishedAt.toLocaleDateString("zh-CN")}
-                />
-              ) : null}
-            </div>
-
-            {item.categoryPath?.length ? (
-              <p className="text-xs text-muted-foreground">
-                类目：{item.categoryPath.join(" / ")}
-              </p>
-            ) : item.category ? (
-              <p className="text-xs text-muted-foreground">类目：{item.category}</p>
-            ) : null}
-
-            {item.tags?.length || item.hashtags?.length ? (
-              <div className="flex flex-wrap gap-1">
-                {[...(item.tags ?? []), ...(item.hashtags ?? [])]
-                  .slice(0, 12)
-                  .map((t, i) => (
-                    <span
-                      key={t + i}
-                      className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
-                    >
-                      {t}
+              {!isSocial ? (
+                <>
+                  <span className="text-xl font-bold tabular-nums">
+                    {formatPrice(price, item.currency)}
+                  </span>
+                  {originalPrice != null && price != null && originalPrice > price ? (
+                    <span className="text-sm text-muted-foreground line-through tabular-nums">
+                      {originalPrice.toFixed(2)}
                     </span>
-                  ))}
-              </div>
-            ) : null}
-
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              {item.sourceUrl ? (
+                  ) : null}
+                </>
+              ) : null}
+              <div className="ml-auto flex flex-wrap items-center gap-1.5">
+                {onAddMonitor && canMonitorItem(item) ? (
+                  <Tooltip>
+                    {/* Trigger 挂 span：禁用态 Button 带 pointer-events-none，title/悬浮事件挂按钮上永不触发 */}
+                    <TooltipTrigger render={<span className="inline-flex" />}>
+                      <Button
+                        variant={monitored ? "secondary" : "outline"}
+                        size="sm"
+                        className="h-7 text-xs"
+                        disabled={monitored}
+                        onClick={() => onAddMonitor(item)}
+                      >
+                        <Crosshair className="size-3.5" />
+                        {monitored ? "监控中" : "加入监控"}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {monitored ? "已在竞品监控中（到监控页管理）" : "加入竞品监控（周期重抓+评论追踪）"}
+                    </TooltipContent>
+                  </Tooltip>
+                ) : null}
                 <Button
                   variant="outline"
                   size="sm"
-                  nativeButton={false}
-                  render={<a href={item.sourceUrl} target="_blank" rel="noreferrer" />}
+                  className={cn("h-7 text-xs", bookmarked && "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400")}
+                  onClick={() => onToggleBookmark(item.id)}
                 >
-                  <ExternalLink className="size-3.5" />
-                  查看来源
+                  <Star className={cn("size-3.5", bookmarked && "fill-current")} />
+                  {bookmarked ? "已收藏" : "收藏"}
                 </Button>
-              ) : null}
-              {item.taskId ? (
+                {item.sourceUrl ? (
+                  <Button variant="outline" size="sm" className="h-7 text-xs" nativeButton={false} render={<a href={item.sourceUrl} target="_blank" rel="noreferrer" />}>
+                    <ExternalLink className="size-3.5" />
+                    查看来源
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+
+            {metrics.length > 0 ? (
+              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+                {metrics.map((m) => (
+                  <Metric key={m.label} label={m.label} value={m.value} />
+                ))}
+              </div>
+            ) : null}
+
+            {!isSocial && item.categoryPath?.length ? (
+              <p className="text-xs text-muted-foreground">类目：{item.categoryPath.join(" / ")}</p>
+            ) : null}
+            {!isSocial && item.category && !item.categoryPath?.length ? (
+              <p className="text-xs text-muted-foreground">类目：{item.category}</p>
+            ) : null}
+
+            {isSocial ? <SocialSections item={item} /> : <EcommerceSections item={item} />}
+
+            {!isSocial && item.tags?.length ? (
+              <div className="flex flex-wrap gap-1">
+                {item.tags.slice(0, 12).map((t, i) => (
+                  <span key={t + i} className={cn("rounded px-1.5 py-0.5 text-[10px]", t === "广告" ? "bg-muted text-muted-foreground" : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400")}>
+                    {t}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+
+            {/* 来源任务：按平台类别跳到对应的平台标签视图 */}
+            {item.taskId ? (
+              <div className="flex flex-wrap items-center gap-2 pt-1">
                 <Button
                   variant="ghost"
                   size="sm"
+                  className="h-7 text-xs"
                   nativeButton={false}
                   render={
                     <Link
-                      href={`/selection/discover?task=${item.taskId}${item.country ? `&country=${item.country}` : ""}`}
+                      href={`${poolBase}?platform=${item.platform}&task=${item.taskId}`}
                     />
                   }
                 >
                   来源任务：{item.taskKeyword || "查看"}
                 </Button>
-              ) : null}
-            </div>
+              </div>
+            ) : null}
           </div>
         </div>
 
-        {item.content && item.title ? (
-          <div className="rounded-lg bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">
-            {item.content}
-          </div>
+        {/* 电商正文（商品描述）；社媒正文在上方社媒分区 */}
+        {!isSocial && item.content ? (
+          <Section title="描述">
+            <p className="text-xs leading-relaxed whitespace-pre-wrap text-muted-foreground">{item.content}</p>
+          </Section>
         ) : null}
 
-        {/* 抓取评论（竞品监控抓取的评论，按来源链接关联） */}
-        <div className="rounded-lg border">
-          <p className="flex items-center gap-1.5 border-b px-3 py-2 text-xs font-medium">
-            <MessageSquareQuote className="size-3.5 text-primary" />
-            抓取评论{reviews.total > 0 ? `（${reviews.total}）` : ""}
-            {reviews.loading ? <Loader2 className="size-3 animate-spin text-muted-foreground" /> : null}
-          </p>
-          {reviews.loading && reviews.items.length === 0 ? (
-            <p className="px-3 py-3 text-xs text-muted-foreground">评论加载中…</p>
-          ) : reviews.items.length === 0 ? (
-            <p className="px-3 py-3 text-xs text-muted-foreground">
-              暂无抓取评论——在卡片上点准星按钮加入竞品监控，支持评论的平台会自动抓取评论并在此展示。
-            </p>
-          ) : (
-            <div className="max-h-64 divide-y overflow-y-auto">
-              {reviews.items.map((r) => (
-                <div key={r.id} className="px-3 py-2">
-                  <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-                    <span className="inline-flex items-center gap-1 font-medium text-foreground">
-                      <PlatformInlineIcon platform={r.platform} size={12} />
-                      {r.authorName ?? "匿名"}
-                    </span>
-                    {r.rating != null ? (
-                      <span className="inline-flex items-center gap-0.5 text-amber-500">
-                        <Star className="size-3 fill-current" />
-                        {Number(r.rating).toFixed(1)}
-                      </span>
-                    ) : null}
-                    {r.verified ? (
-                      <span className="inline-flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400">
-                        <BadgeCheck className="size-3" /> 已验证
-                      </span>
-                    ) : null}
-                    {r.likesCount != null ? (
-                      <span className="inline-flex items-center gap-0.5">
-                        <ThumbsUp className="size-3" />
-                        {compactNumber(r.likesCount)}
-                      </span>
-                    ) : null}
-                    <span className="ml-auto">
-                      {r.publishedAt ? formatDateTime(r.publishedAt) : `抓取 ${formatDateTime(r.scrapedAt)}`}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-xs leading-relaxed">{r.content ?? "（无正文）"}</p>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <ReviewSection item={item} />
 
-        <details className="group rounded-lg border px-3 py-2">
+        <details
+          className="group rounded-lg border px-3 py-2"
+          onToggle={(e) => {
+            if ((e.currentTarget as HTMLDetailsElement).open) void loadRaw()
+          }}
+        >
           <summary className="cursor-pointer text-xs text-muted-foreground select-none">
             原始数据（JSON，调试/溯源）
           </summary>
-          <pre className="mt-2 max-h-56 overflow-auto rounded bg-muted/50 p-2 text-[10px] leading-relaxed">
-            {JSON.stringify(item.rawData ?? { note: "无原始数据" }, null, 2)}
-          </pre>
+          {raw.loading ? (
+            <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <DashRing className="size-3.5" /> 加载中…
+            </p>
+          ) : raw.data ? (
+            <pre className="mt-2 max-h-56 overflow-auto rounded bg-muted/50 p-2 text-[10px] leading-relaxed">
+              {JSON.stringify(raw.data, null, 2)}
+            </pre>
+          ) : raw.error ? (
+            <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+              <span className="text-destructive">
+                原始数据加载失败{raw.error !== "加载失败" ? `（${raw.error}）` : ""}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 px-2 text-[11px]"
+                onClick={() => void loadRaw(true)}
+              >
+                重试
+              </Button>
+            </div>
+          ) : raw.fetched ? (
+            <p className="mt-2 text-xs text-muted-foreground">（该行无原始数据）</p>
+          ) : null}
         </details>
       </DialogContent>
     </Dialog>

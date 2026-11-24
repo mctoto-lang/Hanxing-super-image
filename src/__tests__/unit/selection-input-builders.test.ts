@@ -7,22 +7,39 @@ import { buildActorInput } from "@/lib/selection/input-builders"
  */
 
 describe("市场分析入参", () => {
-  it("amazon：searchQueries + 价格区间", () => {
+  it("amazon：junglee/Amazon-crawler 搜索 URL 入口（站点决定域名、价格区间进 URL）", () => {
     const b = buildActorInput({
       platform: "amazon",
       taskType: "market",
       params: { keyword: "earbuds", country: "DE", minPrice: 10, maxPrice: 50 },
       maxResults: 100,
     })
-    expect(b.actorId).toBe("santamaria-automations/amazon-search-scraper")
+    expect(b.actorId).toBe("junglee/Amazon-crawler")
+    // 不传 countryCode/zipCode（配送地定位每条多 $0.06）；不抓 offers / sellers
     expect(b.runInput).toEqual({
-      searchQueries: ["earbuds"],
-      maxResultsPerQuery: 100,
-      country: "DE",
-      minPrice: 10,
-      maxPrice: 50,
+      categoryOrProductUrls: [
+        { url: "https://www.amazon.de/s?k=earbuds&low-price=10&high-price=50" },
+      ],
+      maxItemsPerStartUrl: 100,
+      scrapeProductDetails: true,
+      maxOffers: 0,
+      scrapeSellers: false,
     })
     expect(b.keyword).toBe("earbuds")
+    expect(b.country).toBe("DE")
+  })
+
+  it("amazon 市场：非法站点回落美国，无价格区间则不带价格参数", () => {
+    const b = buildActorInput({
+      platform: "amazon",
+      taskType: "market",
+      params: { keyword: "phone case", country: "XX" },
+      maxResults: 30,
+    })
+    expect((b.runInput.categoryOrProductUrls as Array<{ url: string }>)[0]!.url).toBe(
+      "https://www.amazon.com/s?k=phone+case",
+    )
+    expect(b.country).toBeNull()
   })
 
   it("etsy：结果数下限 30、关详情富化（计费红线）", () => {
@@ -93,19 +110,68 @@ describe("市场分析入参", () => {
 })
 
 describe("发现页入参", () => {
-  it("amazon：Best Sellers 榜单 URL + count", () => {
+  it("amazon：junglee/amazon-bestsellers 畅销榜（站点 × 品类，带详情，超时放宽）", () => {
     const b = buildActorInput({
       platform: "amazon",
       taskType: "discover",
-      params: { categoryUrl: "https://www.amazon.com/gp/bestsellers/electronics" },
+      params: { listType: "bestsellers", country: "US", category: "electronics" },
       maxResults: 60,
     })
-    expect(b.actorId).toBe("curious_coder/amazon-scraper")
+    expect(b.actorId).toBe("junglee/amazon-bestsellers")
     expect(b.runInput).toEqual({
-      urls: [{ url: "https://www.amazon.com/gp/bestsellers/electronics" }],
-      count: 60,
+      categoryUrls: ["https://www.amazon.com/gp/bestsellers/electronics"],
+      maxItemsPerStartUrl: 60,
+      depthOfCrawl: 1,
+      detailedInformation: true,
     })
-    expect(b.keyword).toBe("消费电子")
+    expect(b.keyword).toBe("畅销榜·美国·消费电子")
+    expect(b.country).toBe("US")
+    expect(b.timeoutSecs).toBe(1500)
+  })
+
+  it("amazon：新品榜 + 英国站，条数钳到每类目硬上限 100", () => {
+    const b = buildActorInput({
+      platform: "amazon",
+      taskType: "discover",
+      params: { listType: "new-releases", country: "UK", category: "kitchen" },
+      maxResults: 500,
+    })
+    expect(b.runInput).toMatchObject({
+      categoryUrls: ["https://www.amazon.co.uk/gp/new-releases/kitchen"],
+      maxItemsPerStartUrl: 100,
+    })
+    expect(b.keyword).toBe("新品榜·英国·厨房餐厅")
+    expect(b.country).toBe("UK")
+  })
+
+  it("amazon 榜单：站点 × 品类不在实测支持矩阵内 → 抛错（飙升榜 / 德国站同理）", () => {
+    // 英国站没有运动户外榜单
+    expect(() =>
+      buildActorInput({
+        platform: "amazon",
+        taskType: "discover",
+        params: { listType: "bestsellers", country: "UK", category: "sporting-goods" },
+        maxResults: 10,
+      }),
+    ).toThrow(/暂不支持/)
+    // 德国站榜单 actor 不识别
+    expect(() =>
+      buildActorInput({
+        platform: "amazon",
+        taskType: "discover",
+        params: { listType: "bestsellers", country: "DE", category: "electronics" },
+        maxResults: 10,
+      }),
+    ).toThrow(/暂不支持/)
+    // 飙升榜实测不支持
+    expect(() =>
+      buildActorInput({
+        platform: "amazon",
+        taskType: "discover",
+        params: { listType: "movers-and-shakers", country: "US", category: "electronics" },
+        maxResults: 10,
+      }),
+    ).toThrow(/暂不支持/)
   })
 
   it("temu：销量榜 discover 与市场共用 CRW actor，sort 固定 top_sales", () => {

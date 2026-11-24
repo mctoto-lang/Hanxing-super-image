@@ -757,6 +757,20 @@
       "when": 1795833600000,
       "tag": "0107_temu_ship_print_marks",
       "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1795920000000,
+      "tag": "0108_selection_platform_views",
+      "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1796006400000,
+      "tag": "0109_selection_data_backfills",
+      "breakpoints": true
     }
   ]
 }

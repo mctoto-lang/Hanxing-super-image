@@ -1,7 +1,8 @@
 /**
  * 发货单列表重查口径（纯函数，供 ship-panel 与单测共用）：
  * 1) shipListLoadOpts——进「发货单列表」视图拉实时单（fresh），视图内翻页/筛选/
- *    搜索/操作后 reloadTick、以及切店引起的 load 身份变化走本地重查（不打官方）；
+ *    搜索、以及切店引起的 load 身份变化走本地重查（不打官方）；装箱/自动预约/
+ *    换物流/改包裹/打印成功后的回调由面板直调 load({ fresh: true })（等价于点「刷新」）；
  * 2) pickPrintLockedRows——「批量装箱/自动预约」遇未打印单直弹锁定确认后，
  *    用刷新返回的最新行按单号挑出目标单继续打开原弹窗（打印前快照 packageSns
  *    为空、deliverPackageNum 常为 0，会让箱数预填与比价 totalPackageNum 低估）。

@@ -1500,6 +1500,8 @@ export function ShipStaging({
         onCreated={() => {
           setStagingSel(new Set())
           loadStaging()
+          // 转告面板：切到「发货单列表·待装箱发货」并实时拉取（此前漏调，创建后一直停在发货台）
+          onCreated()
         }}
       />
     )}

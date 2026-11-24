@@ -19,7 +19,27 @@
  * includeComments 单任务带回评论）。Etsy/TEMU 无商品页直抓入口 → Etsy 仅评论
  * 追踪、TEMU 不支持监控。Pinterest 市场搜索 2026-11-21 换 automation-lab（2.2k
  * 用户，saves/评论数字段更全 + pinUrls 监控入口）。
+ *
+ * 2026-11-24 Amazon 换 junglee 家族 + TEMU 补单品监控（探针实测口径）：
+ *   - amazon 市场 → junglee/Amazon-crawler（33k 用户）：搜索 URL 入口、每条带商品页
+ *     详情（BSR/月购买量/五点/规格/变体/官方 AI 评论摘要）；Amazon 搜索约 7 页封顶，
+ *     单任务上限收到 200；$0.005/条。绝不传 countryCode/zipCode（每条多 $0.06）
+ *   - amazon 发现 → junglee/amazon-bestsellers（榜单）：畅销榜 / 新品榜 × 美英日加法 ×
+ *     品类（支持矩阵见 amazon-lists.ts）；带详情模式约 3.8s/条，run 超时放宽
+ *   - amazon 监控 → junglee/amazon-asins-scraper（ASIN 直抓，出参与商品页同族）
+ *   - amazon 评论：productUrls 必须是 [{url}] 对象数组；免费版 Apify 每次运行最多
+ *     10 条、最低 $0.50/次
+ *   - temu 监控 → hypebridge/temu-scraper（1.5k 用户，URL 直抓用户数最多）：带 SKU/库存/
+ *     规格/图集/视频，但出参无销量与市场价；约 $0.046/次，按次 10 积分
  */
+import {
+  AMAZON_DEFAULT_CATEGORY,
+  AMAZON_LIST_SITES,
+  AMAZON_LIST_TYPES,
+  AMAZON_MARKET_SITES,
+  AMAZON_SITE_LABELS,
+  amazonCategoryOptionData,
+} from "./amazon-lists"
 
 export const SELECTION_PLATFORMS = [
   "amazon",
@@ -37,12 +57,24 @@ export type SelectionPlatform = (typeof SELECTION_PLATFORMS)[number]
 
 export type PlatformCategory = "ecommerce" | "social"
 
+/** 该类别下的平台（顺序即展示顺序：标签条、下拉、表格均由此派生） */
+export function platformsForCategory(category: PlatformCategory): SelectionPlatform[] {
+  return SELECTION_PLATFORMS.filter(
+    (p) => SELECTION_PLATFORM_CONFIGS[p].category === category,
+  )
+}
+
 /** 结果卡片/表格侧重：决定展示哪些列 */
 export type ResultKind = "product" | "post" | "store" | "trend"
 
 export interface PlatformFieldOption {
   value: string
   label: string
+  /**
+   * 条件显示：仅当同表单 `field` 的当前值在 `in` 里时该选项可选（如 Amazon 榜单品类
+   * 随站点变化）。服务端 sanitizeParams 按同一条件校验，绕过前端提交不支持组合会被拒。
+   */
+  showWhen?: { field: string; in: string[] }
 }
 
 /** 平台动态表单字段（市场/发现模式的差异都通过字段声明表达） */
@@ -58,6 +90,8 @@ export interface PlatformField {
   max?: number
   defaultValue?: string | number
   help?: string
+  /** 发现模式的主输入（类目 / 版块等非关键词型任务的主选择）；声明后不再补关键词框 */
+  primary?: boolean
 }
 
 export interface DiscoverModeConfig {
@@ -73,6 +107,12 @@ export interface DiscoverModeConfig {
   creditsPerResult?: number
   /** 国家来源（缺省继承市场模式配置） */
   countrySource?: CountrySource
+  /** Apify 侧 run 超时秒数（缺省 600；慢 actor 如 Amazon 榜单带详情放宽） */
+  timeoutSecs?: number
+  /** 发现模式结果数上限 / 默认值 / 最小值（缺省沿用平台级配置） */
+  maxResultsPerTask?: number
+  defaultResults?: number
+  minResults?: number
 }
 
 /**
@@ -115,31 +155,44 @@ export interface SelectionPlatformConfig {
 /**
  * 竞品监控能力（2026-11-21 Apify Store 按使用人数选型）：
  *   metricsActorId  指标重抓 Actor（URL 直抓入口）——null = 无 URL 入口
- *                   （Etsy 搜索型无商品页直抓、TEMU 仅关键词），仍可仅评论追踪
+ *                   （Etsy 搜索型无商品页直抓，仍可仅评论追踪）
  *   reviewActorId   评论/回复抓取 Actor——null = 平台无评论抓取能力
  * reddit 特例：metrics 与评论同一 Actor 单任务带回（urls + includeComments）。
  */
 export interface MonitorModeConfig {
   metricsActorId: string | null
   reviewActorId: string | null
+  /**
+   * 指标重抓按次积分（0108）：缺省沿用市场每条费率；单价与条数无关的 actor
+   * （TEMU 单品详情约 $0.046/次）在此单独定价
+   */
+  metricsCreditsPerRun?: number
+  /** 该平台重抓不提供的指标说明（监控页展示，如 TEMU 单品抓取不含销量） */
+  metricsNote?: string
   /** 每条评论积分费率 */
   reviewCreditsPerResult: number
   /** 单次评论抓取条数上限 */
   reviewMaxPerTask: number
 }
 
-const AMAZON_BESTSELLER_URLS: PlatformFieldOption[] = [
-  { value: "https://www.amazon.com/gp/bestsellers", label: "全站总榜" },
-  { value: "https://www.amazon.com/gp/bestsellers/electronics", label: "消费电子" },
-  { value: "https://www.amazon.com/gp/bestsellers/home-kitchen", label: "家居厨房" },
-  { value: "https://www.amazon.com/gp/bestsellers/kitchen", label: "厨房餐厅" },
-  { value: "https://www.amazon.com/gp/bestsellers/fashion", label: "服装鞋履" },
-  { value: "https://www.amazon.com/gp/bestsellers/beauty", label: "美妆护肤" },
-  { value: "https://www.amazon.com/gp/bestsellers/sports-outdoors", label: "运动户外" },
-  { value: "https://www.amazon.com/gp/bestsellers/toys-and-games", label: "玩具游戏" },
-  { value: "https://www.amazon.com/gp/bestsellers/pet-supplies", label: "宠物用品" },
-  { value: "https://www.amazon.com/gp/bestsellers/office-products", label: "办公用品" },
-]
+/** Amazon 关键词搜索站点选项（国家码 = 站点） */
+const AMAZON_SITE_OPTIONS: PlatformFieldOption[] = AMAZON_MARKET_SITES.map((s) => ({
+  value: s,
+  label: AMAZON_SITE_LABELS[s],
+}))
+
+/** Amazon 榜单站点选项（德国站实测不被榜单 actor 识别） */
+const AMAZON_LIST_SITE_OPTIONS: PlatformFieldOption[] = AMAZON_LIST_SITES.map((s) => ({
+  value: s,
+  label: AMAZON_SITE_LABELS[s],
+}))
+
+/** Amazon 榜单品类选项（仅显示所选站点实测可用的品类） */
+const AMAZON_CATEGORY_OPTIONS: PlatformFieldOption[] = amazonCategoryOptionData().map((c) => ({
+  value: c.value,
+  label: c.label,
+  showWhen: { field: "country", in: c.sites },
+}))
 
 export const SELECTION_PLATFORM_CONFIGS: Record<
   SelectionPlatform,
@@ -149,38 +202,51 @@ export const SELECTION_PLATFORM_CONFIGS: Record<
     key: "amazon",
     label: "Amazon",
     category: "ecommerce",
-    marketActorId: "santamaria-automations/amazon-search-scraper",
+    // junglee/Amazon-crawler（2026-11-24 换 santamaria 搜索 actor）：搜索 URL 入口，
+    // 每条带商品页详情；Amazon 搜索约 7 页封顶，上限 1000→200
+    marketActorId: "junglee/Amazon-crawler",
     creditsPerResult: 2,
-    maxResultsPerTask: 1000,
-    defaultResults: 100,
+    maxResultsPerTask: 200,
+    defaultResults: 60,
     minResults: 1,
     resultKind: "product",
     countrySource: { field: "country" },
     fields: [
       { key: "country", label: "站点", type: "select", defaultValue: "US",
-        options: [{ value: "US", label: "美国" }, { value: "DE", label: "德国" }, { value: "UK", label: "英国" }, { value: "JP", label: "日本" }, { value: "CA", label: "加拿大" }, { value: "FR", label: "法国" }] },
-      { key: "minPrice", label: "最低价", type: "number", min: 0, placeholder: "如 10（美元）" },
-      { key: "maxPrice", label: "最高价", type: "number", min: 0, placeholder: "如 100（美元）" },
+        options: AMAZON_SITE_OPTIONS },
+      { key: "minPrice", label: "最低价", type: "number", min: 0, placeholder: "如 10（站点币种）" },
+      { key: "maxPrice", label: "最高价", type: "number", min: 0, placeholder: "如 100（站点币种）" },
     ],
     discover: {
-      actorId: "curious_coder/amazon-scraper",
-      label: "Best Sellers 榜单",
-      description: "按类目抓取亚马逊官方畅销榜（BSR），发现类目头部商品。",
+      // junglee/amazon-bestsellers：畅销榜 / 新品榜 × 多站点 × 品类（见 amazon-lists.ts）
+      actorId: "junglee/amazon-bestsellers",
+      label: "榜单",
+      description: "抓取亚马逊官方畅销榜 / 新品榜（含商品页详情：BSR、月购买量、品牌、评分分布），发现类目头部与新品。",
       resultKind: "product",
       creditsPerResult: 2,
-      // BSR 榜单 URL 均为 amazon.com
-      countrySource: { fixed: "US" },
+      countrySource: { field: "country" },
+      // 带详情模式约 3.8s/条，100 条约 6~7 分钟，run 超时放到 25 分钟
+      timeoutSecs: 1500,
+      // Amazon 榜单每类目硬上限 100 条
+      maxResultsPerTask: 100,
+      defaultResults: 48,
       fields: [
-        { key: "categoryUrl", label: "榜单类目", type: "select", defaultValue: AMAZON_BESTSELLER_URLS[0].value, options: AMAZON_BESTSELLER_URLS },
+        { key: "listType", label: "榜单类型", type: "select", defaultValue: "bestsellers",
+          options: AMAZON_LIST_TYPES },
+        { key: "country", label: "站点", type: "select", defaultValue: "US",
+          options: AMAZON_LIST_SITE_OPTIONS },
+        { key: "category", label: "品类", type: "select", primary: true,
+          defaultValue: AMAZON_DEFAULT_CATEGORY, options: AMAZON_CATEGORY_OPTIONS },
       ],
     },
     monitor: {
-      // 商品页直抓复用发现模式 Actor（urls 入参，出参同 BSR 行）
-      metricsActorId: "curious_coder/amazon-scraper",
+      // junglee/amazon-asins-scraper：ASIN 直抓（入参 asins+amazonDomain），出参与商品页同族
+      metricsActorId: "junglee/amazon-asins-scraper",
       // Apify 官方，18k 用户（2026-11-21 选型 usage 最高）
       reviewActorId: "junglee/amazon-reviews-scraper",
       reviewCreditsPerResult: 2,
-      reviewMaxPerTask: 100,
+      // 免费版 Apify 每次运行最多返回 10 条、最低 $0.50/次；上限 50 避免预扣过高
+      reviewMaxPerTask: 50,
     },
   },
   etsy: {
@@ -249,7 +315,17 @@ export const SELECTION_PLATFORM_CONFIGS: Record<
       // sort 由 input-builder 固定为 top_sales，用户无需选
       fields: [],
     },
-    // CRW actor 仅关键词入参（region 仅 US、无 URL 直抓）→ 不支持监控
+    monitor: {
+      // hypebridge/temu-scraper（2026-11-24）：URL 直抓里使用人数最多（1.5k）；
+      // crw 仅关键词入参不能监控。出参无销量/市场价，监控展示价格/评分/评论数/库存
+      metricsActorId: "hypebridge/temu-scraper",
+      reviewActorId: null,
+      // 单次约 $0.046（启动费 $0.03 + 详情 $0.016），按 TEMU 关键词同口径（2 分 = $0.01）定 10 分
+      metricsCreditsPerRun: 10,
+      metricsNote: "TEMU 单品抓取不含销量与市场价，监控跟踪价格、评分、评论数与库存",
+      reviewCreditsPerResult: 2,
+      reviewMaxPerTask: 100,
+    },
   },
   shopify: {
     key: "shopify",
@@ -465,7 +541,7 @@ export const SELECTION_PLATFORM_CONFIGS: Record<
   },
 }
 
-/** 任务计费费率（发现模式可覆盖；评论任务走 monitor.reviewCreditsPerResult） */
+/** 任务计费费率（发现模式可覆盖；评论任务走 monitor.reviewCreditsPerResult；按次计费的指标重抓走 monitor.metricsCreditsPerRun） */
 export function creditsPerResultFor(
   platform: SelectionPlatform,
   taskType: "discover" | "market" | "monitor" | "review",
@@ -477,6 +553,9 @@ export function creditsPerResultFor(
   if (taskType === "review" && cfg.monitor) {
     return cfg.monitor.reviewCreditsPerResult
   }
+  if (taskType === "monitor" && cfg.monitor?.metricsCreditsPerRun != null) {
+    return cfg.monitor.metricsCreditsPerRun
+  }
   return cfg.creditsPerResult
 }
 
@@ -484,6 +563,15 @@ export function creditsPerResultFor(
 export function isMonitorablePlatform(platform: SelectionPlatform): boolean {
   const m = SELECTION_PLATFORM_CONFIGS[platform].monitor
   return Boolean(m && (m.metricsActorId || m.reviewActorId))
+}
+
+/**
+ * 该平台的评论随指标重抓任务一并带回（单任务带回，不另建独立 review 任务、
+ * 不单独计评论费）。服务端建任务与「添加监控」弹窗的费用预估共用，避免两处
+ * 特判漂移。当前仅 reddit（urls + includeComments）。
+ */
+export function hasInlineReviews(platform: SelectionPlatform): boolean {
+  return platform === "reddit"
 }
 
 /** 积分预估（表单实时显示/提交时预扣共用口径） */
@@ -495,13 +583,36 @@ export function estimateCredits(
   return Math.max(1, maxResults) * creditsPerResultFor(platform, taskType)
 }
 
+/**
+ * 某平台某任务类型的结果数上下限与默认值（表单范围与提交钳制共用；发现模式
+ * 未单独声明时沿用平台级配置）
+ */
+export function resultLimitsFor(
+  platform: SelectionPlatform,
+  taskType: "discover" | "market",
+): { min: number; max: number; default: number } {
+  const cfg = SELECTION_PLATFORM_CONFIGS[platform]
+  const d = taskType === "discover" ? cfg.discover : undefined
+  return {
+    min: d?.minResults ?? cfg.minResults,
+    max: d?.maxResultsPerTask ?? cfg.maxResultsPerTask,
+    default: d?.defaultResults ?? cfg.defaultResults,
+  }
+}
+
 /** 每用户每日任务数上限（全局常量；后续需要可挪到权限组/企业配置） */
 export const SELECTION_DAILY_TASK_LIMIT = 30
 
 /**
+ * 详情弹窗「抓取评论」的默认条数：评论类 actor 多有每次运行最低消费
+ * （Amazon 免费版 $0.50/次），条数太少不划算，默认取 50 条。
+ */
+export const SELECTION_REVIEW_SCRAPE_DEFAULT_MAX = 50
+
+/**
  * 组装完整表单字段（含主输入）：市场模式统一关键词开头（Shopify 例外=店铺
- * 域名），发现模式主输入由各模式声明（Amazon=榜单类目、Reddit=版块），
- * 未声明主输入的话题类平台补一个关键词框。
+ * 域名），发现模式主输入由各模式声明（Amazon=榜单品类、Reddit=版块，带 primary
+ * 标记；兼容旧的 categoryUrl/subreddit 键），未声明主输入的话题类平台补一个关键词框。
  */
 export function getFormFields(
   platform: SelectionPlatform,
@@ -509,8 +620,8 @@ export function getFormFields(
 ): PlatformField[] {
   const cfg = SELECTION_PLATFORM_CONFIGS[platform]
   if (taskType === "discover" && cfg.discover) {
-    const hasPrimary = cfg.discover.fields.some((f) =>
-      ["categoryUrl", "subreddit"].includes(f.key),
+    const hasPrimary = cfg.discover.fields.some(
+      (f) => f.primary || ["categoryUrl", "subreddit"].includes(f.key),
     )
     if (hasPrimary) return cfg.discover.fields
     const optional = platform === "pinterest"
@@ -547,6 +658,7 @@ export function isSelectionPlatform(v: string): v is SelectionPlatform {
 /**
  * 从表单参数解析任务国家（ISO 码大写；无国家概念的平台返回 null）。
  * 提交时快照到 selection_task.country，入库时传播到 selection_result.country。
+ * field 取值缺失时回落该字段的注册表默认值（如 Amazon 榜单默认美国站）。
  */
 export function countryFor(
   platform: SelectionPlatform,
@@ -561,6 +673,9 @@ export function countryFor(
   if (source.field) {
     const v = params[source.field]
     if (typeof v === "string" && v.trim()) return v.trim().toUpperCase()
+    const fields = taskType === "discover" ? (cfg.discover?.fields ?? []) : cfg.fields
+    const fallback = fields.find((f) => f.key === source.field)?.defaultValue
+    if (typeof fallback === "string" && fallback.trim()) return fallback.trim().toUpperCase()
   }
   return null
 }

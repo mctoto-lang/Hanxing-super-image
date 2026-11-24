@@ -43,6 +43,7 @@ import {
   TrendAreaChart,
 } from "@/components/platform/charts"
 import { PageHeader } from "@/components/shared/page-header"
+import { PageTabs } from "@/components/shared/page-tabs"
 import { StatCard } from "@/components/shared/stat-card"
 import { TableEmpty } from "@/components/shared/table-empty"
 
@@ -92,26 +93,17 @@ export default async function PlatformPage({
         description={`超级管理员 · ${ctx.user.username} · 平台数据看板`}
       />
 
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        {/* 看板 Tab（Link 驱动，样式对齐 shadcn Tabs） */}
-        <div className="inline-flex h-9 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground">
-          {tabs.map((t) => (
-            <Link
-              key={t.value}
-              href={t.href}
-              className={cn(
-                "inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1 text-sm font-medium whitespace-nowrap transition-all",
-                tab === t.value
-                  ? "bg-background text-foreground shadow-sm"
-                  : "hover:text-foreground",
-              )}
-            >
-              <t.icon className="size-4" />
-              {t.label}
-            </Link>
-          ))}
-        </div>
-
+      {/* 看板 Tab（Link 驱动，宽度自适应：与右侧时间范围挤不下一行即折叠为单 tab 下拉） */}
+      <PageTabs
+        className="gap-2"
+        tabs={tabs.map((t) => ({
+          value: t.value,
+          label: t.label,
+          href: t.href,
+          icon: <t.icon className="size-4" />,
+        }))}
+        value={tab}
+      >
         {/* 时间范围切换（趋势图窗口，两个看板同步） */}
         <div className="inline-flex h-9 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground">
           {RANGE_OPTIONS.map((r) => (
@@ -129,7 +121,7 @@ export default async function PlatformPage({
             </Link>
           ))}
         </div>
-      </div>
+      </PageTabs>
 
       {tab === "image" ? <ImageDashboard range={range} /> : <ChatDashboard range={range} />}
     </div>

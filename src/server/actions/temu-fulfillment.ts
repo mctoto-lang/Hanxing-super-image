@@ -10,6 +10,7 @@ import {
   getCurrentEnterpriseScope,
 } from "@/lib/auth/session"
 import { MODULE_LABELS } from "@/lib/modules"
+import { bjDayRangeToInclusiveMs } from "@/lib/temu-bj-day"
 import {
   callTemuApi,
   isTemuPermissionError,
@@ -25,6 +26,9 @@ import {
   temuStockableQuerySchema,
   temuStockApplyBatchSchema,
   temuAutoStockSchema,
+  temuBjDaySchema,
+  checkTemuDayRange,
+  checkTemuDayRangePair,
 } from "@/server/schemas/temu"
 
 /**
@@ -627,6 +631,9 @@ const temuQcListQuerySchema = z.object({
   /** 1-合格 2-不合格；缺省=全部 */
   skuQcResult: z.union([z.literal(1), z.literal(2)]).optional(),
   pageNo: z.coerce.number().int().min(1).max(500).default(1),
+  /** 结果更新时间范围（两端含，北京日界 YYYY-MM-DD）；缺省=全部时间 */
+  dateFrom: temuBjDaySchema.optional(),
+  dateTo: temuBjDaySchema.optional(),
   /** 搜索：采购单号（官方 purchaseNo[]，逗号分隔多值） */
   purchaseNo: z.string().max(200).optional(),
   /** 搜索：SKU ID（官方 skuIdList[]，逗号分隔多值） */
@@ -634,6 +641,8 @@ const temuQcListQuerySchema = z.object({
   /** 搜索：SKC ID（官方 skcIdList[]，逗号分隔多值） */
   skcId: z.string().max(200).optional(),
 }).superRefine((val, ctx) => {
+  if (!checkTemuDayRangePair(val, ctx)) return
+  checkTemuDayRange(val, ctx)
   // 搜索串口径：token >50 或 ID 族含非纯数字时直接报错——静默丢弃过滤条件会让列表退化成未过滤全量
   for (const [key, label, idOnly] of [
     ["purchaseNo", "采购单号", false],
@@ -663,6 +672,9 @@ export async function getTemuQualityInspectionsAction(input: {
   purchaseNo?: string
   skuId?: string
   skcId?: string
+  /** 结果更新时间范围（两端含，北京日界 YYYY-MM-DD）；缺省=全部时间 */
+  dateFrom?: string
+  dateTo?: string
 }): Promise<{ ok: true; rows: TemuQcInspectionRow[]; total: number } | { ok: false; error: string }> {
   const parsed = temuQcListQuerySchema.safeParse(input)
   if (!parsed.success) {
@@ -672,13 +684,18 @@ export async function getTemuQualityInspectionsAction(input: {
   if (!guard.ok) return guard
   const { store } = guard
   const { skuQcResult, pageNo, purchaseNo, skuId, skcId } = parsed.data
+  // 生效时间范围进缓存键：同一页换日期不得命中旧范围缓存
+  const dateRange =
+    parsed.data.dateFrom && parsed.data.dateTo
+      ? bjDayRangeToInclusiveMs(parsed.data.dateFrom, parsed.data.dateTo)
+      : null
   const purchaseNos = splitSearchList(purchaseNo)
   // schema 已保证 ID token 全为纯数字（安全整数），此处无需再过滤
   const skuIds = splitSearchList(skuId).map(Number)
   const skcIds = splitSearchList(skcId).map(Number)
   // 缓存键带 enterpriseId 前缀：写路径按企业前缀整体失效（同 stockable 键）
   return temuCached(
-    `${store.enterpriseId}:qc-list:${store.id}:${skuQcResult ?? "all"}:${pageNo}:${purchaseNos.join(",")}:${skuIds.join(",")}:${skcIds.join(",")}`,
+    `${store.enterpriseId}:qc-list:${store.id}:${skuQcResult ?? "all"}:${pageNo}:${parsed.data.dateFrom ?? "all"}:${parsed.data.dateTo ?? "-"}:${purchaseNos.join(",")}:${skuIds.join(",")}:${skcIds.join(",")}`,
     async () => {
     const built = await getTemuCallContext(store)
     if ("error" in built) return { ok: false as const, error: built.error }
@@ -688,6 +705,9 @@ export async function getTemuQualityInspectionsAction(input: {
         {
           pageInfo: { pageNo, pageSize: 20 },
           ...(skuQcResult ? { skuQcResult } : {}),
+          ...(dateRange
+            ? { qcResultUpdateTimeBegin: dateRange.start, qcResultUpdateTimeEnd: dateRange.end }
+            : {}),
           ...(purchaseNos.length ? { purchaseNo: purchaseNos } : {}),
           ...(skuIds.length ? { skuIdList: skuIds } : {}),
           ...(skcIds.length ? { skcIdList: skcIds } : {}),

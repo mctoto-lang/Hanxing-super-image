@@ -266,16 +266,18 @@ describe("退供包裹列表", () => {
       expect(body.supplierId).toBe(SUPPLIER_ID)
       expect(body.pageNo).toBe(1)
       expect(body.pageSize).toBe(20)
-      // 默认 90 天有界时间窗（epoch 毫秒，end-start 恰为 90 天）
-      expect(body.outboundTimeEnd).toBeGreaterThan(Date.now() - 60_000)
+      // 缺省近 7 天有界时间窗（入参恒带时间窗——无界查询官方报 100000001）：
+      // 北京日界两端含——start = 6 天前北京 00:00（UTC 毫秒日内 16 点），end = 今日 24:00 前 1ms
+      expect((body.outboundTimeStart as number) % 86_400_000).toBe(16 * 3_600_000)
       expect(
         (body.outboundTimeEnd as number) - (body.outboundTimeStart as number),
-      ).toBe(90 * 86_400_000)
+      ).toBe(7 * 86_400_000 - 1)
+      expect(body.outboundTimeEnd).toBeGreaterThan(Date.now() - 60_000)
     },
   )
 
   it(
-    "状态与筛选数组映射：status 枚举 + 逗号分隔多值 → 官方数组参数",
+    "状态与筛选数组映射：status 枚举 + 逗号分隔多值 → 官方数组参数；日期范围按北京日界两端含下发",
   { timeout: 30_000 },
     async () => {
       mockSession.userId = ownerId
@@ -284,18 +286,52 @@ describe("退供包裹列表", () => {
       const r = await getTemuReturnPackagesAction({
         store: storeId,
         status: "1",
-        window: "30",
+        dateFrom: "2026-10-01",
+        dateTo: "2026-10-30",
         expressDeliverySn: "SF1234567890",
         purchaseSubOrderSn: "WB2611010001, WB2611010002",
       })
       expect(r.ok).toBe(true)
       const body = firstBody(fn)
       expect(body.status).toBe(1)
+      expect(body.outboundTimeStart).toBe(Date.parse("2026-10-01T00:00:00+08:00"))
+      expect(body.outboundTimeEnd).toBe(Date.parse("2026-10-31T00:00:00+08:00") - 1)
       expect(
         (body.outboundTimeEnd as number) - (body.outboundTimeStart as number),
-      ).toBe(30 * 86_400_000)
+      ).toBe(30 * 86_400_000 - 1)
       expect(body.expressDeLiverySns).toEqual(["SF1234567890"])
       expect(body.purchaseSubOrderSns).toEqual(["WB2611010001", "WB2611010002"])
+    },
+  )
+
+  it(
+    "出库时间范围校验：只传一端 / 起始晚于结束 / 不存在的日期 → 友好错误",
+  { timeout: 30_000 },
+    async () => {
+      mockSession.userId = ownerId
+      vi.stubGlobal("fetch", mockReturnFetch())
+      const oneSide = await getTemuReturnPackagesAction({
+        store: storeId,
+        dateFrom: "2026-11-01",
+      })
+      expect(oneSide.ok).toBe(false)
+      if (!oneSide.ok) expect(oneSide.error).toContain("同时填写")
+
+      const reversed = await getTemuReturnPackagesAction({
+        store: storeId,
+        dateFrom: "2026-11-10",
+        dateTo: "2026-11-01",
+      })
+      expect(reversed.ok).toBe(false)
+      if (!reversed.ok) expect(reversed.error).toContain("不能晚于")
+
+      const bogus = await getTemuReturnPackagesAction({
+        store: storeId,
+        dateFrom: "2026-02-30",
+        dateTo: "2026-03-01",
+      })
+      expect(bogus.ok).toBe(false)
+      if (!bogus.ok) expect(bogus.error).toContain("YYYY-MM-DD")
     },
   )
 
@@ -380,21 +416,32 @@ describe("退供包裹详情（SKC 明细）", () => {
 
 describe("退供 SKU 明细列表", () => {
   it(
-    "时间窗必填下发 + sku_map 两跳反查货号",
+    "出库时间范围必填且上限 31 天 + sku_map 两跳反查货号",
   { timeout: 30_000 },
     async () => {
       mockSession.userId = ownerId
       const fn = mockReturnFetch()
       vi.stubGlobal("fetch", fn)
-      // SKU 明细窗口上限 31 天（真实店实测 100000004），schema 拒绝 90/365
-      // （类型层已非法，经参数类型断言走运行时校验）
-      const badInput = { store: storeId, window: "365" } as unknown as Parameters<
-        typeof getTemuReturnSkuDetailAction
-      >[0]
-      const rejected = await getTemuReturnSkuDetailAction(badInput)
-      expect(rejected.ok).toBe(false)
+      // SKU 明细窗口必填、上限 31 天（真实店实测 100000004）：缺日期 / 超 31 天均被 schema 拒绝
+      const noDates = await getTemuReturnSkuDetailAction(
+        // 只缺日期：store 已给，首个校验错误必然落在 dateFrom/dateTo 上
+        { store: storeId } as Parameters<typeof getTemuReturnSkuDetailAction>[0],
+      )
+      expect(noDates.ok).toBe(false)
 
-      const r = await getTemuReturnSkuDetailAction({ store: storeId, window: "31" })
+      const tooWide = await getTemuReturnSkuDetailAction({
+        store: storeId,
+        dateFrom: "2026-10-01",
+        dateTo: "2026-11-02",
+      })
+      expect(tooWide.ok).toBe(false)
+      if (!tooWide.ok) expect(tooWide.error).toContain("最多 31 天")
+
+      const r = await getTemuReturnSkuDetailAction({
+        store: storeId,
+        dateFrom: "2026-10-01",
+        dateTo: "2026-10-31",
+      })
       expect(r.ok).toBe(true)
       if (!r.ok) return
       expect(r.rows).toHaveLength(1)
@@ -407,9 +454,11 @@ describe("退供 SKU 明细列表", () => {
 
       const body = firstBody(fn)
       expect(body.supplierId).toBe(SUPPLIER_ID)
+      // 两端 31 天（含首尾）：北京日界，end = 次日 00:00 前 1ms
+      expect(body.outboundTimeStart).toBe(Date.parse("2026-10-01T00:00:00+08:00"))
       expect(
         (body.outboundTimeEnd as number) - (body.outboundTimeStart as number),
-      ).toBe(31 * 86_400_000)
+      ).toBe(31 * 86_400_000 - 1)
     },
   )
 })

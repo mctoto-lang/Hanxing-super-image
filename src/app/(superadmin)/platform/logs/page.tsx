@@ -1,4 +1,3 @@
-import Link from "next/link"
 import { FileText, LogIn } from "lucide-react"
 import { requireSuperAdmin } from "@/lib/auth/session"
 import { formatDateTime } from "@/lib/datetime"
@@ -6,7 +5,7 @@ import {
   listAllTaskLogsAction,
   listAllLoginLogsAction,
 } from "@/server/actions/platform-logs"
-import { cn } from "@/lib/utils"
+import { PageTabs } from "@/components/shared/page-tabs"
 import {
   Card,
   CardAction,
@@ -71,24 +70,16 @@ export default async function PlatformLogsPage({
 
   return (
     <div className="space-y-4">
-      {/* Tab（Link 驱动，样式对齐 shadcn Tabs） */}
-      <div className="inline-flex h-9 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground">
-        {tabs.map((t) => (
-          <Link
-            key={t.value}
-            href={t.href}
-            className={cn(
-              "inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1 text-sm font-medium whitespace-nowrap transition-all",
-              tab === t.value
-                ? "bg-background text-foreground shadow-sm"
-                : "hover:text-foreground",
-            )}
-          >
-            <t.icon className="size-4" />
-            {t.label}
-          </Link>
-        ))}
-      </div>
+      {/* Tab（Link 驱动，宽度自适应：放不下即折叠为单 tab 下拉） */}
+      <PageTabs
+        tabs={tabs.map((t) => ({
+          value: t.value,
+          label: t.label,
+          href: t.href,
+          icon: <t.icon className="size-4" />,
+        }))}
+        value={tab}
+      />
 
       {tab === "tasks" ? (
         <TasksSection

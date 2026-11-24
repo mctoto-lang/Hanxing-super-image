@@ -597,6 +597,52 @@ describe("质检（bg.goods.qualityinspection.*，参数表 docs §8.17）", () 
     expect(temuCacheKeys[0]).toContain("111,222")
   })
 
+  it("结果更新时间范围：北京日界两端含下发 qcResultUpdateTimeBegin/End（缓存键含日期）", async () => {
+    mockSession.userId = ownerId
+    const fn = mockFulfillmentFetch({
+      "bg.goods.qualityinspection.get": { total: 0, skuList: [] },
+    })
+    vi.stubGlobal("fetch", fn)
+    temuCacheKeys.length = 0
+    const r = await getTemuQualityInspectionsAction({
+      store: storeId,
+      dateFrom: "2026-11-17",
+      dateTo: "2026-11-23",
+    })
+    expect(r.ok).toBe(true)
+    const body = JSON.parse(String(fn.mock.calls[0]![1]!.body)) as Record<string, unknown>
+    // 起始日北京 00:00 ~ 结束日次日北京 00:00 前 1ms
+    expect(body.qcResultUpdateTimeBegin).toBe(Date.parse("2026-11-17T00:00:00+08:00"))
+    expect(body.qcResultUpdateTimeEnd).toBe(Date.parse("2026-11-24T00:00:00+08:00") - 1)
+    // 缓存键拼入日期：换日期不得命中旧范围缓存
+    expect(temuCacheKeys[0]).toContain("2026-11-17:2026-11-23")
+
+    // 不传日期=全部时间（不下发时间窗）
+    fn.mockClear()
+    const all = await getTemuQualityInspectionsAction({ store: storeId, pageNo: 2 })
+    expect(all.ok).toBe(true)
+    const allBody = JSON.parse(String(fn.mock.calls[0]![1]!.body)) as Record<string, unknown>
+    expect(allBody.qcResultUpdateTimeBegin).toBeUndefined()
+    expect(allBody.qcResultUpdateTimeEnd).toBeUndefined()
+
+    // 只传一端 / 起始晚于结束：参数错误，不发官方请求
+    fn.mockClear()
+    const oneSide = await getTemuQualityInspectionsAction({
+      store: storeId,
+      dateFrom: "2026-11-17",
+    })
+    expect(oneSide.ok).toBe(false)
+    if (!oneSide.ok) expect(oneSide.error).toContain("同时填写")
+    const reversed = await getTemuQualityInspectionsAction({
+      store: storeId,
+      dateFrom: "2026-11-23",
+      dateTo: "2026-11-17",
+    })
+    expect(reversed.ok).toBe(false)
+    if (!reversed.ok) expect(reversed.error).toContain("不能晚于")
+    expect(fn.mock.calls).toHaveLength(0)
+  })
+
   it("搜索入参：非数字/超量 token 报参数错误，绝不静默丢过滤条件退化为全量", async () => {
     mockSession.userId = ownerId
     const fn = mockFulfillmentFetch({

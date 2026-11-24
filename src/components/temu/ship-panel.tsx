@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { Printer, PrinterCheck, RefreshCw, TriangleAlert, X, Zap } from "lucide-react"
+import { Printer, PrinterCheck, RefreshCw, TriangleAlert, Zap } from "lucide-react"
 import { DashRing } from "@/components/ui/dash-ring"
 import {
   TableBody,
@@ -68,11 +68,12 @@ import {
   openShipBoxMarkPage,
   requestShipBoxMark,
 } from "./ship-packing"
-import { AutoReserveDialog } from "./ship-auto-reserve-dialog"
+import { AutoShipDialog } from "./ship-auto-ship-dialog"
 import { ChangeLogisticsDialog } from "./ship-change-logistics-dialog"
-import { DateRangePicker } from "@/components/shared/date-range-picker"
+import { TemuDateRangeFilter } from "./date-range-filter"
 import { Combobox } from "@/components/ui/combobox"
 import type { DateRange } from "react-day-picker"
+import { bjToday, toBjDay } from "@/lib/temu-bj-day"
 import {
   Tooltip,
   TooltipContent,
@@ -277,17 +278,6 @@ function LogisticsInfoCell({ row }: { row: TemuShipOrderRow }) {
   )
 }
 
-/** 北京时区今日 00:00（与 TEMU 日口径同源，和部署时区解耦） */
-function bjToday(): Date {
-  const d = new Date()
-  return new Date(`${d.toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" })}T00:00:00+08:00`)
-}
-
-/** Date → 北京日期串 YYYY-MM-DD（服务端按 +08:00 日界拼半开区间） */
-function toBjDay(d: Date): string {
-  return d.toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" })
-}
-
 /** 官方链接式操作按钮 */
 function LinkButton({
   children,
@@ -354,15 +344,14 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
   const [total, setTotal] = React.useState(0)
   const [error, setError] = React.useState<string | null>(null)
   const [loading, startLoading] = React.useTransition()
-  /** 创建发货单/装箱成功后强制刷新列表的信号 */
-  const [reloadTick, setReloadTick] = React.useState(0)
   /** 待装箱发货单「需要打印条码」标记（含未预贴码货号=档案条码为空的单号集合） */
   const [barcodeSns, setBarcodeSns] = React.useState<Set<string>>(new Set())
 
   // 待装箱/待仓库收货勾选批量操作
   const [selSns, setSelSns] = React.useState<Set<string>>(new Set())
   const [packingRows, setPackingRows] = React.useState<TemuShipOrderRow[] | null>(null)
-  /** 自动预约发货弹窗行（复用装箱三道拦截；与 PackingDialog 平行的自动版） */
+  /** 自动发货向导行（仅拦待装箱；可跨收货仓——弹窗内按收货仓分组逐组合并发货，
+   *  未打印单在确认发货后先请求打印锁定，入口不再弹件数确认） */
   const [reserveRows, setReserveRows] = React.useState<TemuShipOrderRow[] | null>(null)
 
   // 行内操作
@@ -373,11 +362,12 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
   /** 更换物流弹窗（自动预约式，仅平台推荐物流）：批次全部行 */
   const [changeLogisticsRows, setChangeLogisticsRows] = React.useState<TemuShipOrderRow[] | null>(null)
   /** 打印商品打包标签两步确认（图2：继续打印/先发货后打印；图3：件数锁定二次确认）；
-   *  then=「批量装箱发货/自动预约发货」入口遇未打印单直弹图3（跳过图2），
-   *  确认锁定并刷新后自动继续打开原弹窗（kind 标记目标；续接用刷新后的最新行，不用勾选快照） */
+   *  then=「批量装箱发货」入口遇未打印单直弹图3（跳过图2），确认锁定并刷新后自动
+   *  继续打开原弹窗（kind 标记目标；续接用刷新后的最新行，不用勾选快照）。
+   *  自动预约发货不再走这里——件数锁定移到向导内点「自动发货」之后执行 */
   const [boxMarkConfirm, setBoxMarkConfirm] = React.useState<{
     sns: string[]
-    then?: { kind: "reserve" | "packing" }
+    then?: { kind: "packing" }
   } | null>(null)
   const [shipAfterPrint, setShipAfterPrint] = React.useState(false)
 
@@ -390,7 +380,6 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
    *  startTransition 不回传结果，外层 Promise 兜底 resolve——异常也 resolve 空行，
    *  与「错误置空列表」口径一致，保证 await load(...) 不悬挂） */
   const load = React.useCallback((opts?: { fresh?: boolean }): Promise<TemuShipOrderRow[]> => {
-    void reloadTick // 创建发货单/装箱成功后靠 reloadTick 变化触发重查
     if (!store) return Promise.resolve([])
     const kw = appliedSearch.keyword.trim()
     const seq = ++loadSeqRef.current
@@ -441,11 +430,12 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
         }
       })
     })
-  }, [store, page, pageSize, statusPreset, appliedSearch, warehouseId, expressCompanyId, pickupRange, reloadTick])
+  }, [store, page, pageSize, statusPreset, appliedSearch, warehouseId, expressCompanyId, pickupRange])
 
   // 进入「发货单列表」即拉实时单（action 内：裸查最新一页落库 + 当前页单号核对；
-  // 待装箱等新单无须等 15 分钟同步）；此后视图内翻页/状态筛选/仓库筛选/搜索提交、
-  // 装箱/预约/改包裹成功后的 reloadTick、以及切店，都靠 load 身份变化触发本地重查（不打官方）
+  // 待装箱等新单无须等 15 分钟同步）；此后视图内翻页/状态筛选/仓库筛选/搜索提交与切店
+  // 靠 load 身份变化触发本地重查（不打官方）。装箱/自动预约/换物流/改包裹/打印成功后的
+  // 回调直调 load({ fresh: true })——等价于点「刷新」，官方侧变更即时回列表
   const prevViewRef = React.useRef<"orders" | "staging" | null>(null)
   React.useEffect(() => {
     const opts = shipListLoadOpts(prevViewRef.current, view)
@@ -553,12 +543,12 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
         store={store}
         storeName={storeName}
         viewSwitch={viewSwitch}
-        onCreated={() => {
-          setView("orders")
-          setStatusPreset("pending")
-          setPage(1)
-          setReloadTick((t) => t + 1)
-        }}
+      onCreated={() => {
+        // 切到列表视图即触发一次实时拉取（shipListLoadOpts：进入视图 fresh）
+        setView("orders")
+        setStatusPreset("pending")
+        setPage(1)
+      }}
       />
     )
   }
@@ -638,8 +628,16 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
     try {
       const r = await cancelShipOrderAction({ store, deliveryOrderSn: sn })
       if (r.ok && r.warning) toast.warning(r.warning, { duration: 8000 })
-      else if (r.ok) toast.success(`已取消 ${sn}`)
-      else
+      else if (r.ok) {
+        toast.success(`已取消 ${sn}`)
+        // 已取消的单移出勾选，避免「已选 N 单」虚高
+        setSelSns((s) => {
+          if (!s.has(sn)) return s
+          const n = new Set(s)
+          n.delete(sn)
+          return n
+        })
+      } else
         toast.error(`${r.error}（本地状态可能滞后于官方，已实时核对并刷新列表）`, { duration: 8000 })
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "操作失败", { duration: 6000 })
@@ -693,7 +691,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
         if (r.warning) toast.warning(r.warning, { duration: 8000 })
         else toast.success("包裹已调整")
         setPkgEdit(null)
-        setReloadTick((t) => t + 1)
+        void load({ fresh: true })
       } else {
         toast.error(r.error, { duration: 8000 })
       }
@@ -780,14 +778,46 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
     void markShipPrintedAction({ store, sns, kind }).catch(() => {})
   }
 
-  /** 打开官方打包标签打印页（行级/组级/批量共用；成功打开才标绿勾） */
-  const printBoxMarkPage = async (sns: string[]) => {
-    if (await openShipBoxMarkPage(store, sns)) markPrinted("boxMark", sns)
+  /** 打开官方打包标签打印页（行级/组级/批量共用；成功打开才标绿勾，返回是否成功打开）；
+   *  打印成功后实时刷新（等价于点「刷新」，拿回官方 isPrintBoxMark 等最新状态）；
+   *  refresh=false 供批量分批路径抑制每批各自的标绿勾+刷新，由调用方在全部批次完成后统一补一次 */
+  const printBoxMarkPage = async (sns: string[], refresh = true): Promise<boolean> => {
+    if (await openShipBoxMarkPage(store, sns)) {
+      if (refresh) {
+        markPrinted("boxMark", sns)
+        void load({ fresh: true })
+      }
+      return true
+    }
+    return false
+  }
+
+  /** 待仓库收货批量补打打包标签：件数已锁定（首打完成），无需确认弹窗，直接开官方打印页（多单一页）；
+   *  schema deliveryOrderSns 单次上限 50：分批各开一页（同步循环开窗避免拦截，单批失败已在
+   *  openShipBoxMarkPage 内 toast 该批错误并继续其余批）；全部批次结束后任一批成功则统一
+   *  标绿勾+实时刷新一次（避免每批各自拉取同一份数据、连弹多条「实时拉取失败」） */
+  const batchPrintBoxMarkPage = () => {
+    const all = [...selSns]
+    const batches: Array<{ sns: string[]; ok: Promise<boolean> }> = []
+    for (let i = 0; i < all.length; i += 50) {
+      const sns = all.slice(i, i + 50)
+      batches.push({ sns, ok: printBoxMarkPage(sns, false) })
+    }
+    void Promise.all(batches.map((b) => b.ok)).then((oks) => {
+      const marked = batches.flatMap((b, i) => (oks[i] ? b.sns : []))
+      if (marked.length > 0) {
+        markPrinted("boxMark", marked)
+        void load({ fresh: true })
+      }
+    })
   }
 
   /** 打开官方商品条码打印页（skuIds 所属单号由调用方传入；成功打开才标绿勾） */
   const printBarcodePage = async (skuIds: number[], sns: string[]) => {
-    if (await openShipBarcodePrint(store, skuIds)) markPrinted("barcode", sns)
+    if (await openShipBarcodePrint(store, skuIds)) {
+      markPrinted("barcode", sns)
+      void load({ fresh: true })
+    }
   }
 
   const batchPrintBarcode = () => {
@@ -807,6 +837,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
         .filter((r) => r.productSkuIds.filter((v) => v > 0).every((id) => done.has(id)))
         .map((r) => r.deliveryOrderSn)
       if (marked.length > 0) markPrinted("barcode", marked)
+      if (done.size > 0) void load({ fresh: true })
     })()
   }
 
@@ -885,6 +916,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
       } else {
         toast.success(`已获取 ${okN} 张运单标签并打开打印预览`)
       }
+      void load({ fresh: true })
     })
   }
 
@@ -909,22 +941,13 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
     setPackingRows(sel)
   }
 
-  /** 自动预约发货入口：拦截口径与 openPacking 完全一致（同收货仓/仅待装箱；未打印箱唧同样直弹锁定确认后自动继续） */
+  /** 自动预约发货入口：仅拦「须为待装箱」。可跨收货仓多选（弹窗内按收货仓分组逐组合并发货）；
+   *  未打印箱唛的单不在入口锁定——确认发货后由向导先请求打印（件数锁定）再发货 */
   const openAutoReserve = () => {
-    if (mixedWarehouse) {
-      toast.error("勾选了多个收货仓的单据；官方按同收货地址合并发货，请分批装箱", { duration: 8000 })
-      return
-    }
     const sel = rows.filter((r) => selSns.has(r.deliveryOrderSn))
     if (sel.length === 0) return
     if (sel.some((r) => r.status !== 0)) {
       toast.error("仅「待装箱发货」状态的单据可装箱发货")
-      return
-    }
-    // 未打印箱唧：与 openPacking 同口径——直弹「先发货后打印」件数锁定确认，确认后自动继续
-    if (sel.some((r) => r.isPrintBoxMark !== true)) {
-      setBoxMarkConfirm({ sns: sel.map((r) => r.deliveryOrderSn), then: { kind: "reserve" } })
-      setShipAfterPrint(true)
       return
     }
     setReserveRows(sel)
@@ -1015,31 +1038,14 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
           />
           <div className="ml-auto flex items-center gap-2">
             {isShippingView && (
-              <div className="flex items-center gap-1">
-                <DateRangePicker
-                  size="sm"
-                  className="h-8 text-xs"
-                  placeholder="预约取货日期"
-                  value={pickupRange}
-                  onChange={(range) => {
-                    setPickupRange(range)
-                    setPage(1)
-                  }}
-                />
-                {pickupRange && (
-                  <button
-                    type="button"
-                    aria-label="清除预约取货日期"
-                    className="text-muted-foreground transition-colors hover:text-foreground"
-                    onClick={() => {
-                      setPickupRange(undefined)
-                      setPage(1)
-                    }}
-                  >
-                    <X className="size-3.5" />
-                  </button>
-                )}
-              </div>
+              <TemuDateRangeFilter
+                placeholder="预约取货日期"
+                value={pickupRange}
+                onChange={(range) => {
+                  setPickupRange(range)
+                  setPage(1)
+                }}
+              />
             )}
             {viewSwitch}
             <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => void load({ fresh: true })} disabled={loading}>
@@ -1102,13 +1108,8 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                     disabled={loading || selSns.size === 0}
                     onClick={() => {
                       if (isShippingView) {
-                        // 待仓库收货：件数已锁定（首打完成），无需确认弹窗，直接开官方打印页补打（多单一页）；
-                        // schema deliveryOrderSns 单次上限 50：分批各开一页（同步循环开窗避免拦截，
-                        // 单批失败已在 openShipBoxMarkPage 内 toast 该批错误并继续其余批）
-                        const all = [...selSns]
-                        for (let i = 0; i < all.length; i += 50) {
-                          void printBoxMarkPage(all.slice(i, i + 50))
-                        }
+                        // 待仓库收货：分批开官方打印页补打，全部批次结束后统一标绿勾+实时刷新一次
+                        batchPrintBoxMarkPage()
                       } else {
                         batchPrintBoxMark()
                       }
@@ -1149,7 +1150,8 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                         size="sm"
                         className="h-8 text-xs"
                         onClick={openAutoReserve}
-                        disabled={loading || mixedWarehouse || selectedRows.length === 0}
+                        // 可跨收货仓：仅他页有勾选时当前页无可发货行，置灰而非点击静默返回
+                        disabled={loading || selectedRows.length === 0}
                       >
                         <Zap className="size-3.5" /> 自动预约发货
                       </Button>
@@ -1157,7 +1159,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                         size="sm"
                         className="h-8 text-xs"
                         onClick={openPacking}
-                        // 与「自动预约发货」同口径：仅他页有勾选时当前页无可装箱行，置灰而非点击静默返回
+                        // 批量装箱发货仍要求同收货仓；仅他页有勾选时当前页无可装箱行，置灰而非点击静默返回
                         disabled={loading || mixedWarehouse || selectedRows.length === 0}
                       >
                         批量装箱发货
@@ -1169,7 +1171,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                   已选 {selSns.size} 单
                   {isPendingView && mixedWarehouse && (
                     <span className="text-orange-600 dark:text-orange-400">
-                      {" "}· 跨收货仓（官方按同收货地址合并发货，请分批装箱）
+                      {" "}· 跨收货仓（自动预约发货将按收货仓分组合并发货；批量装箱发货须分批）
                     </span>
                   )}
                 </span>
@@ -1462,19 +1464,19 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
         onOpenChange={(v) => !v && setPackingRows(null)}
         onDone={() => {
           setSelSns(new Set())
-          setReloadTick((t) => t + 1)
+          void load({ fresh: true })
         }}
       />
 
-      {/* 自动预约发货（拦截口径同装箱；优先顺序/黑名单自动选公司 + 时段手选 + 库存联动开关） */}
+      {/* 自动预约发货（自动发货向导：按收货仓分组预览 → 严格口径选物流 → 逐组合并发货带进度） */}
       {reserveRows && (
-        <AutoReserveDialog
+        <AutoShipDialog
           store={store}
           rows={reserveRows}
           onClose={() => setReserveRows(null)}
           onDone={() => {
             setSelSns(new Set())
-            setReloadTick((t) => t + 1)
+            void load({ fresh: true })
           }}
         />
       )}
@@ -1584,8 +1586,7 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
                             { duration: 8000 },
                           )
                         }
-                        if (then.kind === "reserve") setReserveRows(picked.rows)
-                        else setPackingRows(picked.rows)
+                        setPackingRows(picked.rows)
                       }
                     : undefined,
                 )
@@ -1668,7 +1669,8 @@ export function TemuShipPanel({ store, storeName }: { store?: string; storeName?
           onClose={() => setChangeLogisticsRows(null)}
           onDone={() => {
             setSelSns(new Set())
-            setReloadTick((t) => t + 1)
+            // 实时刷新：换物流只清缓存不回写本地库，非 fresh 重查拿到的仍是旧物流
+            void load({ fresh: true })
           }}
         />
       )}

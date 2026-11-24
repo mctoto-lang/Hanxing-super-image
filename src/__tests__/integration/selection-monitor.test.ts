@@ -25,6 +25,7 @@ import {
   createMonitorRunTasks,
   runDueMonitorsOnce,
 } from "@/server/services/selection-monitor-service"
+import { createSelectionTask } from "@/server/services/selection-task-service"
 import { ingestSelectionResults } from "@/server/services/selection-service"
 
 /**
@@ -89,7 +90,8 @@ beforeAll(async () => {
       passwordHash: "$2a$10$dummyhashfortestonlyxxxxxxxxxxxxxxxxxxxxxx",
       enterpriseId: testEnterpriseId,
       groupId: group!.id,
-      creditsBalance: 500,
+      // 多轮建任务用例（amazon 102/轮、etsy 300/轮）累计扣减，余额给足
+      creditsBalance: 5000,
     })
     .returning()
   testUserId = user!.id
@@ -128,22 +130,24 @@ afterAll(async () => {
 describe("竞品监控调度与计费", () => {
   it("到期认领：runDueMonitorsOnce 创建 monitor+review 双任务并预扣积分", async () => {
     const monitor = await insertMonitor()
-    const { ran } = await runDueMonitorsOnce()
+    // 传夹具企业过滤：只认领本企业的到期监控，不产生跨租户认领/建任务/扣积分副作用
+    const { ran } = await runDueMonitorsOnce({ enterpriseId: testEnterpriseId })
     expect(ran).toBeGreaterThanOrEqual(1)
 
     const tasks = await db
       .select()
       .from(selectionTasks)
       .where(eq(selectionTasks.monitorId, monitor.id))
-    // amazon：monitor（指标 1×2 分）+ review（50×2 分）
+    // amazon：monitor（ASIN 直抓，指标 1×2 分）+ review（50×2 分）
     const metricsTask = tasks.find((t) => t.taskType === "monitor")
     const reviewTask = tasks.find((t) => t.taskType === "review")
     expect(metricsTask).toMatchObject({
       platform: "amazon",
-      actorId: "curious_coder/amazon-scraper",
+      actorId: "junglee/amazon-asins-scraper",
       estimatedCredits: 2,
       status: "queued",
     })
+    expect(reviewTask!.searchParams).toMatchObject({ reviewSort: "recent" })
     expect(reviewTask).toMatchObject({
       actorId: "junglee/amazon-reviews-scraper",
       maxResults: 50,
@@ -160,10 +164,8 @@ describe("竞品监控调度与计费", () => {
     expect(after!.lastRunAt).not.toBeNull()
     expect(after!.nextRunAt.getTime()).toBeGreaterThan(Date.now())
 
-    // 二轮不再重复认领本监控（nextRunAt 已推进）。runDueMonitorsOnce 全库扫，
-    // ran 总数受库内其他企业到期监控影响不可断言——改按本监控维度判定：
-    // 任务数不增加 + runCount 未被再次推进
-    await runDueMonitorsOnce()
+    // 二轮不再重复认领本监控（nextRunAt 已推进）：任务数不增加 + runCount 未被再次推进
+    await runDueMonitorsOnce({ enterpriseId: testEnterpriseId })
     const tasksAfter = await db
       .select({ id: selectionTasks.id })
       .from(selectionTasks)
@@ -224,6 +226,126 @@ describe("竞品监控调度与计费", () => {
     expect(tasks).toHaveLength(1)
     expect(tasks[0]!.taskType).toBe("monitor")
     expect(tasks[0]!.searchParams).toMatchObject({ reviewMax: 50 })
+  })
+
+  it("在途检查：已有 queued/processing 任务时不重复建任务（连点/调度撞车兜底）", async () => {
+    const monitor = await insertMonitor()
+    expect(await createMonitorRunTasks(monitor.id)).toBe("ran")
+    const afterFirst = await db
+      .select({ id: selectionTasks.id })
+      .from(selectionTasks)
+      .where(eq(selectionTasks.monitorId, monitor.id))
+    expect(afterFirst).toHaveLength(2)
+    // 首轮任务仍排队中：再次触发（连点「添加监控/立即抓取」、调度撞车）必须跳过，
+    // 否则会再建一套任务并再扣一轮积分
+    expect(await createMonitorRunTasks(monitor.id)).toBe("skipped")
+    const afterSecond = await db
+      .select({ id: selectionTasks.id })
+      .from(selectionTasks)
+      .where(eq(selectionTasks.monitorId, monitor.id))
+    expect(afterSecond).toHaveLength(2)
+  })
+
+  it("入参解析失败（确定性错误）：立即暂停并写明原因，不再每轮静默丢一轮", async () => {
+    const monitor = await insertMonitor({
+      externalId: null,
+      targetUrl: "https://www.amazon.com/gp/some-non-product-page",
+    })
+    expect(await createMonitorRunTasks(monitor.id)).toBe("paused")
+    const [after] = await db
+      .select()
+      .from(selectionMonitors)
+      .where(eq(selectionMonitors.id, monitor.id))
+    expect(after!.status).toBe("paused")
+    expect(after!.pauseReason).toContain("ASIN")
+    const tasks = await db
+      .select({ id: selectionTasks.id })
+      .from(selectionTasks)
+      .where(eq(selectionTasks.monitorId, monitor.id))
+    expect(tasks).toHaveLength(0)
+  })
+
+  it("调度企业过滤：只认领传入企业的到期监控（不跨租户建任务扣积分）", async () => {
+    const [other] = await db
+      .insert(enterprises)
+      .values({
+        name: "选品监控测试企业B",
+        slug: `${TEST_SLUG}-b-${randomUUID().slice(0, 6)}`,
+        creditsBalance: 0,
+        maxConcurrent: 100,
+      })
+      .returning()
+    const otherId = other!.id
+    const [m] = await db
+      .insert(selectionMonitors)
+      .values({
+        enterpriseId: otherId,
+        userId: testUserId,
+        platform: "amazon",
+        targetUrl: `https://www.amazon.com/dp/B0OTHER${randomUUID().slice(0, 3)}`,
+        externalId: `B0OTHER${randomUUID().slice(0, 3)}`,
+        title: "其他企业到期监控",
+        country: "US",
+        intervalHours: 24,
+        trackReviews: false,
+        reviewMax: 50,
+        status: "active",
+        // 排在最前（一年前到期）：若企业过滤失效，本轮必先认领它
+        nextRunAt: new Date(Date.now() - 365 * 24 * 3600_000),
+      })
+      .returning()
+    try {
+      // 本企业内其他用例留下的到期监控也可能被本轮认领（有在途任务会被跳过），
+      // ran 数量不在此断言——只断言其他企业的监控未被认领、未建任务
+      await runDueMonitorsOnce({ enterpriseId: testEnterpriseId })
+      const [after] = await db
+        .select({ runCount: selectionMonitors.runCount })
+        .from(selectionMonitors)
+        .where(eq(selectionMonitors.id, m!.id))
+      expect(after!.runCount).toBe(0)
+      const tasks = await db
+        .select({ id: selectionTasks.id })
+        .from(selectionTasks)
+        .where(eq(selectionTasks.monitorId, m!.id))
+      expect(tasks).toHaveLength(0)
+    } finally {
+      await db.delete(selectionMonitors).where(eq(selectionMonitors.id, m!.id))
+      await db.delete(enterprises).where(eq(enterprises.id, otherId))
+    }
+  })
+
+  it("日限只数手动任务 + 配额不足返回可读错误", async () => {
+    // 塞满当日 30 条监控自动任务（monitor/review 不应占用手动任务每日额度）
+    await db.insert(selectionTasks).values(
+      Array.from({ length: 30 }, (_, i) => ({
+        enterpriseId: testEnterpriseId,
+        userId: brokeUserId,
+        taskType: "monitor" as const,
+        platform: "amazon",
+        actorId: "junglee/amazon-asins-scraper",
+        searchParams: {},
+        keyword: `自动任务占位${i}`,
+        maxResults: 1,
+        estimatedCredits: 1,
+        status: "completed" as const,
+      })),
+    )
+    // broke 用户余额 1 分 < 预估 2 分：若日限把自动任务算进来会先报「今日任务数
+    // 已上限」；修复后应放行到扣费环节并返回可读的「个人配额不足」
+    const res = await createSelectionTask({
+      userId: brokeUserId,
+      enterpriseId: testEnterpriseId,
+      platform: "amazon",
+      taskType: "market",
+      params: { keyword: "phone case" },
+      maxResults: 1,
+      label: "Amazon",
+    })
+    expect(res.ok).toBe(false)
+    if (!res.ok) {
+      expect(res.error).toContain("个人配额不足")
+      expect(res.error).not.toContain("今日任务数已达上限")
+    }
   })
 })
 

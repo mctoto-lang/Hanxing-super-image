@@ -7,7 +7,7 @@ describe("shipListLoadOpts（发货单列表重查触发口径）", () => {
     expect(shipListLoadOpts("staging", "orders")).toEqual({ fresh: true })
   })
 
-  it("视图内 load 身份变化（翻页/筛选/搜索/reloadTick/切店）：本地重查（非 fresh）", () => {
+  it("视图内 load 身份变化（翻页/筛选/搜索/切店）：本地重查（非 fresh）", () => {
     expect(shipListLoadOpts("orders", "orders")).toEqual({ fresh: false })
   })
 

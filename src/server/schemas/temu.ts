@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { bjDayRangeToMs, isBjDayString } from "@/lib/temu-bj-day"
 
 /**
  * Temu 面板 zod schemas
@@ -890,25 +891,72 @@ export const temuAutoStockSchema = z.object({
 
 // ---------- 退货工作台（退供三件套，实时拉取不落库；docs §8.17） ----------
 
-/** 出库时间窗预设（天）。退供接口查询结果超 5 万条报 100000001，
- *  无界查询不可用，强制有界窗口（returnpackage.get 可选窗 / returnpackagelist.get 必填窗）。
- *  returnpackagelist.get（SKU 明细）窗口上限 31 天——2026-10-29 真实店实测
- *  100000004「Participation time exceeds 31 day」，预设独立收窄 */
-export const temuReturnWindowSchema = z.enum(["30", "90", "365"])
-export const temuReturnSkuWindowSchema = z.enum(["7", "30", "31"])
+/** 北京日界日期串（YYYY-MM-DD 且为真实日历日） */
+export const temuBjDaySchema = z
+  .string()
+  .refine(isBjDayString, "日期格式须为 YYYY-MM-DD")
 
-/** 退供包裹列表（bg.refund.returnpackage.get：supplierId 必填来自本地 ship_order，分页 1~200） */
-export const temuReturnListQuerySchema = z.object({
-  store: z.string().uuid(),
-  /** 1-待提货 2-已出库；缺省=全部 */
-  status: z.enum(["1", "2"]).optional(),
-  window: temuReturnWindowSchema.default("90"),
-  /** 精确筛选（逗号分隔多值 → 官方数组参数），三参数独立映射不做模糊合一 */
-  expressDeliverySn: z.string().trim().max(256).optional(),
-  purchaseSubOrderSn: z.string().trim().max(256).optional(),
-  returnSupplierPackageNo: z.string().trim().max(256).optional(),
-  pageNo: z.coerce.number().int().min(1).max(200).default(1),
-})
+/** 起止日期须成对；缺一则报在缺失的一侧 */
+export function checkTemuDayRangePair(
+  v: { dateFrom?: string; dateTo?: string },
+  ctx: z.RefinementCtx,
+): boolean {
+  if ((v.dateFrom == null) === (v.dateTo == null)) return true
+  ctx.addIssue({
+    code: "custom",
+    path: [v.dateFrom == null ? "dateFrom" : "dateTo"],
+    message: "起止日期须同时填写",
+  })
+  return false
+}
+
+/** 起止日期范围校验（两端含，北京日界）：日期须合法、from ≤ to、可选跨度上限。
+ *  必填/成对由各 schema 自行约束（缺省值跳过） */
+export function checkTemuDayRange(
+  v: { dateFrom?: string; dateTo?: string },
+  ctx: z.RefinementCtx,
+  maxSpanDays?: number,
+): void {
+  if (!v.dateFrom || !v.dateTo) return
+  const ms = bjDayRangeToMs(v.dateFrom, v.dateTo)
+  if (!ms) {
+    ctx.addIssue({ code: "custom", path: ["dateFrom"], message: "日期格式须为 YYYY-MM-DD" })
+    return
+  }
+  const span = (ms.end - ms.start) / 86_400_000
+  if (span < 1) {
+    ctx.addIssue({ code: "custom", path: ["dateFrom"], message: "开始日期不能晚于结束日期" })
+    return
+  }
+  if (maxSpanDays != null && span > maxSpanDays) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["dateTo"],
+      message: `时间范围最多 ${maxSpanDays} 天（当前 ${span} 天）`,
+    })
+  }
+}
+
+/** 退供包裹列表（bg.refund.returnpackage.get：supplierId 必填来自本地 ship_order，分页 1~200）。
+ *  出库时间范围两端可选，缺省由 action 按近 7 天补齐——入参恒带时间窗：
+ *  无界查询官方报 100000001（结果超 5 万条），UI 也不提供清空 */
+export const temuReturnListQuerySchema = z
+  .object({
+    store: z.string().uuid(),
+    /** 1-待提货 2-已出库；缺省=全部 */
+    status: z.enum(["1", "2"]).optional(),
+    /** 出库时间范围（两端含，北京日界） */
+    dateFrom: temuBjDaySchema.optional(),
+    dateTo: temuBjDaySchema.optional(),
+    /** 精确筛选（逗号分隔多值 → 官方数组参数），三参数独立映射不做模糊合一 */
+    expressDeliverySn: z.string().trim().max(256).optional(),
+    purchaseSubOrderSn: z.string().trim().max(256).optional(),
+    returnSupplierPackageNo: z.string().trim().max(256).optional(),
+    pageNo: z.coerce.number().int().min(1).max(200).default(1),
+  })
+  .superRefine((v, ctx) => {
+    if (checkTemuDayRangePair(v, ctx)) checkTemuDayRange(v, ctx)
+  })
 
 /** 退供包裹详情（bg.refund.returnpackagedetail.get：supplierId + 退供包裹号） */
 export const temuReturnDetailQuerySchema = z.object({
@@ -916,12 +964,16 @@ export const temuReturnDetailQuerySchema = z.object({
   returnSupplierPackageNo: z.string().trim().min(1).max(64),
 })
 
-/** 退供包裹 SKU 明细列表（bg.refund.returnpackagelist.get：出库时间窗必填，≤31 天） */
-export const temuReturnSkuQuerySchema = z.object({
-  store: z.string().uuid(),
-  window: temuReturnSkuWindowSchema.default("30"),
-  returnSupplierPackageNo: z.string().trim().max(256).optional(),
-  purchaseSubOrderSn: z.string().trim().max(256).optional(),
-  pageNo: z.coerce.number().int().min(1).max(200).default(1),
-})
+/** 退供包裹 SKU 明细列表（bg.refund.returnpackagelist.get：出库时间范围必填且 ≤31 天——
+ *  2026-10-29 真实店实测超窗报 100000004「Participation time exceeds 31 day」） */
+export const temuReturnSkuQuerySchema = z
+  .object({
+    store: z.string().uuid(),
+    dateFrom: temuBjDaySchema,
+    dateTo: temuBjDaySchema,
+    returnSupplierPackageNo: z.string().trim().max(256).optional(),
+    purchaseSubOrderSn: z.string().trim().max(256).optional(),
+    pageNo: z.coerce.number().int().min(1).max(200).default(1),
+  })
+  .superRefine((v, ctx) => checkTemuDayRange(v, ctx, 31))
 

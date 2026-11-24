@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest"
-import { pickLogisticsOption, type LogisticsOptionLike } from "@/components/temu/ship-logistics-select"
+import {
+  pickLogisticsOption,
+  pickPriorityLogisticsOption,
+  type LogisticsOptionLike,
+} from "@/components/temu/ship-logistics-select"
 
 /**
  * 物流公司自动选择（自动预约发货 / 更换物流弹窗共用）：
@@ -77,5 +81,53 @@ describe("pickLogisticsOption", () => {
       null,
     )
     expect(r.option?.expressCompanyId).toBe(5)
+  })
+})
+
+/**
+ * 严格口径（自动发货）：剔除黑名单后必须命中「优先顺序」内公司，
+ * 不回落平台常用 / 列表首个——保证自动发货只用企业明确配置过的公司。
+ */
+describe("pickPriorityLogisticsOption", () => {
+  it("命中优先顺序：取名单中第一个本次可用的公司", () => {
+    const r = pickPriorityLogisticsOption(
+      [opt(1, "A"), opt(2, "B"), opt(3, "C")],
+      [pref(3, "C"), pref(1, "A")],
+      [],
+    )
+    expect(r.option?.expressCompanyId).toBe(3)
+    expect(r.reason).toBe("priority")
+  })
+
+  it("优先名单内公司本次不可用：阻断（即使平台常用 / 列表首个可用也不回落）", () => {
+    const list = [opt(1, "A"), opt(2, "B")]
+    expect(pickPriorityLogisticsOption(list, [], [])).toEqual({
+      option: null,
+      reason: "no-priority",
+    })
+    expect(pickPriorityLogisticsOption(list, [pref(9, "X")], [])).toEqual({
+      option: null,
+      reason: "no-priority",
+    })
+  })
+
+  it("优先名单内公司全被拉黑：剩余都是未配置公司 → 阻断而非选未配置公司", () => {
+    const r = pickPriorityLogisticsOption(
+      [opt(1, "A"), opt(2, "B")],
+      [pref(1, "A")],
+      [pref(1, "A")],
+    )
+    expect(r).toEqual({ option: null, reason: "no-priority" })
+  })
+
+  it("全部在黑名单 / 空列表：阻断", () => {
+    expect(pickPriorityLogisticsOption([opt(1, "A")], [], [pref(1, "A")])).toEqual({
+      option: null,
+      reason: "all-blacklisted",
+    })
+    expect(pickPriorityLogisticsOption([], [pref(1, "A")], [])).toEqual({
+      option: null,
+      reason: "empty",
+    })
   })
 })

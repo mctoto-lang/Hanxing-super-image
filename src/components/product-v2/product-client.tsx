@@ -33,7 +33,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { PageTabs } from "@/components/shared/page-tabs"
 import { ReferenceImageUpload } from "@/components/product/reference-image-upload"
 import {
   aiAssistSellingPointsAction,
@@ -84,7 +84,7 @@ import type { GenerateProductV2Input } from "@/server/schemas/product-v2"
 
 const TAB_MODES: ProductMode[] = ["suite", "detail", "replicate", "refine"]
 
-/** 各功能 tab 图标（TabsTrigger 自动将 svg 缩放为 size-4） */
+/** 各功能 tab 图标（PageTabs 的 tab 项自动将 svg 缩放为 size-4） */
 const MODE_ICONS: Record<ProductMode, LucideIcon> = {
   suite: Images,
   detail: LayoutTemplate,
@@ -911,81 +911,72 @@ export function ProductClient({
   return (
     /* 7rem = inset 侧栏上下 m-2(各8px) + 顶栏 h-16(64px) + 内容区 p-4(上下各16px)，改壳层高度需同步 */
     <div className="flex flex-col gap-4 lg:h-[calc(100svh-7rem)] lg:overflow-hidden">
-      {/* 顶部行：左侧功能 tab（固定，不随面板滚动）+ 右侧生成历史入口 */}
-      <div className="flex shrink-0 items-center justify-between gap-4">
-        <Tabs
-          value={tab}
-          onValueChange={(v) => handleTabChange(v as string)}
-          className="min-w-0"
+      {/* 顶部行：左侧功能 tab（固定，不随面板滚动）+ 右侧生成历史入口；
+          宽度自适应：tab 与右侧工具挤不下一行即折叠为单 tab 下拉 */}
+      <PageTabs
+        size="sm"
+        className="shrink-0"
+        value={tab}
+        onValueChange={handleTabChange}
+        tabs={TAB_MODES.map((m) => {
+          const Icon = MODE_ICONS[m]
+          return { value: m, label: PRODUCT_MODE_LABELS[m], icon: <Icon /> }
+        })}
+      >
+        {tab === "history" && (
+          <>
+            <HistoryDateRangePicker
+              value={historyDateRange}
+              onChange={setHistoryDateRange}
+            />
+            <Select
+              value={historyModeFilter}
+              onValueChange={(v) =>
+                setHistoryModeFilter((v as "all" | ProductMode) ?? "all")
+              }
+            >
+              <SelectTrigger aria-label="筛选生成类型">
+                <SelectValue>
+                  {HISTORY_FILTER_ITEMS.find(
+                    (i) => i.value === historyModeFilter,
+                  )?.label ?? "全部"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent className="min-w-32">
+                {HISTORY_FILTER_ITEMS.map((i) => (
+                  <SelectItem key={i.value} value={i.value}>
+                    {i.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              type="button"
+              variant="outline"
+              size="default"
+              disabled={historyLoading}
+              onClick={() => void refreshHistory()}
+            >
+              {historyLoading ? (
+                <MorphingInfinity className="mr-1 size-3.5" />
+              ) : (
+                <RefreshCw className="mr-1 size-3.5" />
+              )}
+              刷新
+            </Button>
+          </>
+        )}
+        <Button
+          type="button"
+          variant={tab === "history" ? "default" : "outline"}
+          size="default"
+          className="shrink-0"
+          onClick={() => handleTabChange("history")}
         >
-          <TabsList>
-            {TAB_MODES.map((m) => {
-              const Icon = MODE_ICONS[m]
-              return (
-                <TabsTrigger key={m} value={m} className="px-3">
-                  <Icon />
-                  {PRODUCT_MODE_LABELS[m]}
-                </TabsTrigger>
-              )
-            })}
-          </TabsList>
-        </Tabs>
-        <div className="flex shrink-0 items-center gap-2">
-          {tab === "history" && (
-            <>
-              <HistoryDateRangePicker
-                value={historyDateRange}
-                onChange={setHistoryDateRange}
-              />
-              <Select
-                value={historyModeFilter}
-                onValueChange={(v) =>
-                  setHistoryModeFilter((v as "all" | ProductMode) ?? "all")
-                }
-              >
-                <SelectTrigger aria-label="筛选生成类型">
-                  <SelectValue>
-                    {HISTORY_FILTER_ITEMS.find(
-                      (i) => i.value === historyModeFilter,
-                    )?.label ?? "全部"}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent className="min-w-32">
-                  {HISTORY_FILTER_ITEMS.map((i) => (
-                    <SelectItem key={i.value} value={i.value}>
-                      {i.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button
-                type="button"
-                variant="outline"
-                size="default"
-                disabled={historyLoading}
-                onClick={() => void refreshHistory()}
-              >
-                {historyLoading ? (
-                  <MorphingInfinity className="mr-1 size-3.5" />
-                ) : (
-                  <RefreshCw className="mr-1 size-3.5" />
-                )}
-                刷新
-              </Button>
-            </>
-          )}
-          <Button
-            type="button"
-            variant={tab === "history" ? "default" : "outline"}
-            size="default"
-            className="shrink-0"
-            onClick={() => handleTabChange("history")}
-          >
-            <History />
-            生成历史
-          </Button>
-        </div>
-      </div>
+          <History />
+          生成历史
+        </Button>
+      </PageTabs>
 
       {tab === "history" ? (
         <div className="min-h-0 flex-1 overflow-y-auto scrollbar-hide">

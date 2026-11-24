@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { RefreshCw } from "lucide-react"
+import type { DateRange } from "react-day-picker"
 import { DashRing } from "@/components/ui/dash-ring"
 import {
   TableBody,
@@ -41,6 +42,8 @@ import { TableSkeletonRows } from "@/components/temu/table-skeleton"
 import { TruncTip } from "@/components/temu/trunc-tip"
 import { qcBadgeResult } from "@/components/temu/qc-badge-result"
 import { TemuSearchBar, type SearchBarField } from "@/components/temu/search-bar"
+import { TemuDateRangeFilter } from "@/components/temu/date-range-filter"
+import { localDayString, localLastDays } from "@/lib/temu-bj-day"
 
 /** 质检共享搜索条字段（官方入参，逗号分隔多值） */
 const QC_SEARCH_FIELDS: SearchBarField[] = [
@@ -51,7 +54,7 @@ const QC_SEARCH_FIELDS: SearchBarField[] = [
 
 /**
  * 质检工作台（bg.goods.qualityinspection.get/detail，实时 + 30s 缓存）：
- * 平台仓质检结果跟进——列表（默认筛不合格）+ 详情（质检历史/疵点/尺码表）。
+ * 平台仓质检结果跟进——列表（默认筛不合格、结果更新时间默认近一周）+ 详情（质检历史/疵点/尺码表）。
  * 参数表 2026-10-21 官方文档站实证（docs §8.17）：必填分页是 pageInfo 包装。
  */
 export function TemuQualityPanel({ store }: { store?: string }) {
@@ -64,6 +67,15 @@ export function TemuQualityPanel({ store }: { store?: string }) {
     keyword: "",
   })
   const [pageNo, setPageNo] = React.useState(1)
+  /** 结果更新时间范围（官方 qcResultUpdateTimeBegin/End，两端含）：默认近一周，清除=全部时间 */
+  const [dateRange, setDateRange] = React.useState<DateRange | undefined>()
+  /** 默认范围是否就绪：挂载后 layout effect 取默认值（渲染期取当前日期会与 SSR 不一致），
+   *  首次 load 待就绪后再发，不多发请求 */
+  const [dateReady, setDateReady] = React.useState(false)
+  React.useLayoutEffect(() => {
+    setDateRange(localLastDays(new Date(), 7))
+    setDateReady(true)
+  }, [])
   const [rows, setRows] = React.useState<TemuQcInspectionRow[]>([])
   /** 当前 rows 实际查询所用的筛选（响应落地时写入）：徽章以它推导——切换筛选后、
    *  新响应返回前，旧行若按「当前选中 filter」推导会短暂错标合格/不合格 */
@@ -84,7 +96,7 @@ export function TemuQualityPanel({ store }: { store?: string }) {
   }
 
   const load = React.useCallback(() => {
-    if (!store) return
+    if (!store || !dateReady) return
     const kw = appliedSearch.keyword.trim()
     startLoading(async () => {
       const reqId = ++loadReqRef.current
@@ -92,6 +104,12 @@ export function TemuQualityPanel({ store }: { store?: string }) {
         store,
         ...(filter === "all" ? {} : { skuQcResult: Number(filter) as 1 | 2 }),
         pageNo,
+        ...(dateRange?.from
+          ? {
+              dateFrom: localDayString(dateRange.from),
+              dateTo: localDayString(dateRange.to ?? dateRange.from),
+            }
+          : {}),
         ...(appliedSearch.field === "purchaseNo" && kw ? { purchaseNo: kw } : {}),
         ...(appliedSearch.field === "skuId" && kw ? { skuId: kw } : {}),
         ...(appliedSearch.field === "skcId" && kw ? { skcId: kw } : {}),
@@ -107,7 +125,7 @@ export function TemuQualityPanel({ store }: { store?: string }) {
         setError(r.error)
       }
     })
-  }, [store, filter, appliedSearch, pageNo])
+  }, [store, filter, appliedSearch, pageNo, dateRange, dateReady])
 
   React.useEffect(load, [load])
 
@@ -161,6 +179,15 @@ export function TemuQualityPanel({ store }: { store?: string }) {
               <SelectItem value="all">全部结果</SelectItem>
             </SelectContent>
           </Select>
+          <TemuDateRangeFilter
+            value={dateRange ?? undefined}
+            placeholder="结果更新日期"
+            resetOnSelect
+            onChange={(range) => {
+              setDateRange(range ?? undefined)
+              setPageNo(1)
+            }}
+          />
           <Button variant="outline" size="sm" className="h-8 text-xs" onClick={load} disabled={loading} aria-label="刷新质检列表">
             {loading ? <DashRing className="size-4" /> : <RefreshCw className="size-4" />}
             刷新

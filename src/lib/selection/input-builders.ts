@@ -3,12 +3,25 @@ import {
   countryFor,
   type SelectionPlatform,
 } from "./platforms"
+import {
+  AMAZON_DEFAULT_CATEGORY,
+  AMAZON_LIST_TYPE_LABELS,
+  AMAZON_SITE_LABELS,
+  amazonAsinFromUrl,
+  amazonCategoryLabel,
+  amazonDomainForSite,
+  amazonListUrl,
+  canonicalAmazonUrl,
+  isAmazonSite,
+} from "./amazon-lists"
+import { canonicalTemuUrl } from "./monitor-target"
 
 /**
  * 表单参数 → Apify Actor runInput（server-only）
  *
- * 入参形状全部经 2026-11-19 实际试抓验证；换 Actor 时只改本文件与
- * normalizers.ts。params 已由 action 层 zod 清洗（字符串 trim、数字安全）。
+ * 入参形状全部经实际试抓验证（2026-11-19 各平台、2026-11-24 junglee Amazon 家族 +
+ * hypebridge TEMU）；换 Actor 时只改本文件与 normalizers.ts。params 已由 action
+ * 层 zod 清洗（字符串 trim、数字安全）。
  */
 
 export interface BuiltActorInput {
@@ -18,6 +31,43 @@ export interface BuiltActorInput {
   keyword: string
   /** 国家快照（ISO 大写；无国家概念的平台 null），落 selection_task.country */
   country: string | null
+  /** Apify 侧 run 超时秒数（缺省 600；慢 actor 由注册表放宽） */
+  timeoutSecs?: number
+  /**
+   * 申请的运行内存 MB（缺省用 actor 默认，junglee 家族为 4096）。账户所有运行
+   * 合计有内存上限（免费版 16GB），实测峰值很小的轻量任务调小以免互相挤占。
+   */
+  memoryMB?: number
+}
+
+/** 单品监控 / 评论抓取的运行内存（实测峰值 0.12~0.3GB，留足余量取 1024） */
+const LIGHT_RUN_MEMORY_MB = 1024
+
+/**
+ * 入参解析/校验类确定性错误（ASIN 解析失败、旧版入参键残留、站点品类组合不支持等）：
+ * 重试也不会自愈。调度侧据此立即暂停监控并写明原因，与瞬时故障（网络/数据库）
+ * 的「回拨时钟重试」区分开（见 selection-monitor-service）。
+ */
+export class SelectionInputError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "SelectionInputError"
+  }
+}
+
+/**
+ * 旧版 Amazon 发现入参（categoryUrl，已下线）残留检测：有旧键且无新 category 键
+ * 时无法安全执行——静默回落默认品类会抓错类目并按原条数扣积分，调用方应直接拒绝
+ * （提交入口与重试入口共用，见 selection-task-service）。
+ */
+export function hasLegacyAmazonCategoryUrl(
+  params: Record<string, unknown> | null | undefined,
+): boolean {
+  if (params == null || typeof params !== "object") return false
+  const legacy = params.categoryUrl
+  if (legacy == null || String(legacy).trim() === "") return false
+  const next = params.category
+  return next == null || String(next).trim() === ""
 }
 
 function str(params: Record<string, unknown>, key: string): string | undefined {
@@ -46,19 +96,6 @@ function normalizeDomain(v: string): string {
   return v.trim().replace(/^https?:\/\//i, "").replace(/\/.*$/, "")
 }
 
-const AMAZON_CATEGORY_LABELS: Record<string, string> = {
-  "https://www.amazon.com/gp/bestsellers": "全站总榜",
-  "https://www.amazon.com/gp/bestsellers/electronics": "消费电子",
-  "https://www.amazon.com/gp/bestsellers/home-kitchen": "家居厨房",
-  "https://www.amazon.com/gp/bestsellers/kitchen": "厨房餐厅",
-  "https://www.amazon.com/gp/bestsellers/fashion": "服装鞋履",
-  "https://www.amazon.com/gp/bestsellers/beauty": "美妆护肤",
-  "https://www.amazon.com/gp/bestsellers/sports-outdoors": "运动户外",
-  "https://www.amazon.com/gp/bestsellers/toys-and-games": "玩具游戏",
-  "https://www.amazon.com/gp/bestsellers/pet-supplies": "宠物用品",
-  "https://www.amazon.com/gp/bestsellers/office-products": "办公用品",
-}
-
 export function buildActorInput(args: {
   platform: SelectionPlatform
   taskType: "discover" | "market" | "monitor" | "review"
@@ -71,14 +108,24 @@ export function buildActorInput(args: {
         ? buildMonitorInputRaw(args.platform, args.params, args.maxResults)
         : buildReviewInputRaw(args.platform, args.params, args.maxResults)
     // 国家沿用监控目标快照（params.country 由任务创建时写入）
+    // 单品监控 / 评论抓取都是单目标轻量运行；仅对实测过峰值的 actor 调小内存
+    //（Amazon ASIN / 评论、TEMU 单品），其余保持 actor 默认
+    const lightMemory =
+      args.platform === "amazon" || args.platform === "temu"
     return {
       ...built,
       country: (str(args.params, "country") ?? null)?.toUpperCase() ?? null,
+      memoryMB: built.memoryMB ?? (lightMemory ? LIGHT_RUN_MEMORY_MB : undefined),
     }
   }
+  const country = countryFor(args.platform, args.taskType, args.params)
   return {
     ...buildActorInputRaw({ ...args, taskType: args.taskType as "discover" | "market" }),
-    country: countryFor(args.platform, args.taskType, args.params),
+    // Amazon 入参按站点决定域名，非法站点码在入参侧回落美国——国家快照随之置空，
+    // 避免「抓的是美国站、快照却写着非法码」的不一致（正常表单提交走不到这里：
+    // sanitizeParams 已拒绝非法选项）
+    country:
+      args.platform === "amazon" && country != null && !isAmazonSite(country) ? null : country,
   }
 }
 
@@ -95,16 +142,35 @@ function buildMonitorInputRaw(
   const targetUrl = str(params, "targetUrl") ?? ""
   const actorId = cfg.monitor?.metricsActorId
   if (!actorId) {
-    throw new Error(`平台 ${platform} 无指标重抓能力（metricsActorId 未配置）`)
+    throw new SelectionInputError(`平台 ${platform} 无指标重抓能力（metricsActorId 未配置）`)
   }
   const keyword = str(params, "keyword") ?? "监控重抓"
   switch (platform) {
-    case "amazon":
+    case "amazon": {
+      // junglee/amazon-asins-scraper：ASIN 直抓（externalId 优先，缺则从目标链接解析）
+      const fromId = (str(params, "externalId") ?? "").trim().toUpperCase()
+      const asin = /^[A-Z0-9]{10}$/.test(fromId) ? fromId : amazonAsinFromUrl(targetUrl)
+      if (!asin) {
+        throw new SelectionInputError("无法从监控目标解析 Amazon ASIN（目标链接不是商品详情页）")
+      }
+      const site = str(params, "country")
       return {
         actorId,
-        runInput: { urls: [{ url: targetUrl }], count: Math.max(1, maxResults) },
+        runInput: { asins: [asin], amazonDomain: amazonDomainForSite(site ?? "US") },
         keyword,
       }
+    }
+    case "temu": {
+      // hypebridge/temu-scraper：商品页 URL 直抓（链接带追踪参数时按 goodsId 重建规范链接）
+      const url =
+        canonicalTemuUrl(targetUrl) ?? canonicalTemuUrl(str(params, "externalId"))
+      if (!url) throw new SelectionInputError("无法从监控目标解析 TEMU 商品 ID")
+      return {
+        actorId,
+        runInput: { startUrls: [{ url }], maxItems: 1, getProductDetails: true },
+        keyword,
+      }
+    }
     case "shopify":
       return {
         actorId,
@@ -154,7 +220,7 @@ function buildMonitorInputRaw(
         keyword,
       }
     default:
-      throw new Error(`平台 ${platform} 无指标重抓能力`)
+      throw new SelectionInputError(`平台 ${platform} 无指标重抓能力`)
   }
 }
 
@@ -172,14 +238,21 @@ function buildReviewInputRaw(
   const externalId = str(params, "externalId")
   const actorId = cfg.monitor?.reviewActorId
   if (!actorId) {
-    throw new Error(`平台 ${platform} 无评论抓取能力（reviewActorId 未配置）`)
+    throw new SelectionInputError(`平台 ${platform} 无评论抓取能力（reviewActorId 未配置）`)
   }
   const keyword = str(params, "keyword") ?? "评论抓取"
   const max = Math.max(1, maxResults)
   switch (platform) {
-    case "amazon":
-      // junglee/amazon-reviews-scraper：productUrls 数组 + maxReviews
-      return { actorId, runInput: { productUrls: [targetUrl], maxReviews: max }, keyword }
+    case "amazon": {
+      // junglee/amazon-reviews-scraper：productUrls 必须是 [{url}] 对象数组（字符串数组
+      // 会被入参校验拒绝）；周期监控抓最新（recent），一次性抓取取最有用（helpful）
+      const asin = /^[A-Z0-9]{10}$/i.test(externalId ?? "")
+        ? externalId!.toUpperCase()
+        : amazonAsinFromUrl(targetUrl)
+      const productUrl = canonicalAmazonUrl({ asin, url: targetUrl }) ?? targetUrl
+      const sort = str(params, "reviewSort") === "helpful" ? "helpful" : "recent"
+      return { actorId, runInput: { productUrls: [{ url: productUrl }], maxReviews: max, sort }, keyword }
+    }
     case "etsy":
       // khadinakbar/etsy-reviews-scraper：listing URL + maxReviewsPerListing
       return { actorId, runInput: { productUrls: [targetUrl], maxReviewsPerListing: max }, keyword }
@@ -199,7 +272,7 @@ function buildReviewInputRaw(
     case "facebook":
       return { actorId, runInput: { startUrls: [targetUrl], resultsLimit: max }, keyword }
     default:
-      throw new Error(`平台 ${platform} 无评论抓取能力`)
+      throw new SelectionInputError(`平台 ${platform} 无评论抓取能力`)
   }
 }
 
@@ -217,12 +290,32 @@ function buildActorInputRaw(args: {
   if (taskType === "discover" && cfg.discover) {
     switch (platform) {
       case "amazon": {
-        const categoryUrl =
-          str(params, "categoryUrl") ?? "https://www.amazon.com/gp/bestsellers"
+        // junglee/amazon-bestsellers：畅销榜 / 新品榜 × 站点 × 品类（支持矩阵见
+        // amazon-lists.ts）；带详情模式拿商品页全量字段，每类目 Amazon 硬上限 100 条。
+        // 旧版 categoryUrl 入参已下线：残留旧键且无新 category 键时拒绝执行，
+        // 绝不静默回落默认品类（美妆→消费电子）抓错类目并扣积分
+        if (hasLegacyAmazonCategoryUrl(params)) {
+          throw new SelectionInputError(
+            "旧版 Amazon 榜单入参（categoryUrl）已下线，请重新选择站点与品类后提交",
+          )
+        }
+        const site = str(params, "country") ?? "US"
+        const listType = str(params, "listType") ?? "bestsellers"
+        const category = str(params, "category") ?? AMAZON_DEFAULT_CATEGORY
+        const listUrl = amazonListUrl(site, listType, category)
+        if (!listUrl) {
+          throw new SelectionInputError("该站点 / 品类的 Amazon 榜单暂不支持，请更换站点或品类")
+        }
         return {
           actorId: cfg.discover.actorId,
-          runInput: { urls: [{ url: categoryUrl }], count: maxResults },
-          keyword: AMAZON_CATEGORY_LABELS[categoryUrl] ?? "Best Sellers",
+          runInput: {
+            categoryUrls: [listUrl],
+            maxItemsPerStartUrl: Math.min(maxResults, 100),
+            depthOfCrawl: 1,
+            detailedInformation: true,
+          },
+          keyword: `${AMAZON_LIST_TYPE_LABELS[listType as keyof typeof AMAZON_LIST_TYPE_LABELS]}·${AMAZON_SITE_LABELS[isAmazonSite(site) ? site : "US"]}·${amazonCategoryLabel(category)}`,
+          timeoutSecs: cfg.discover.timeoutSecs,
         }
       }
       case "temu": {
@@ -312,18 +405,29 @@ function buildActorInputRaw(args: {
 
   // 市场分析（关键词搜索）
   switch (platform) {
-    case "amazon":
+    case "amazon": {
+      // junglee/Amazon-crawler：搜索页 URL 入口（站点由域名决定），每条抓商品页详情。
+      // 不传 countryCode/zipCode（配送地定位每条多 $0.06，默认按域名自动选代理）
+      const siteRaw = str(params, "country") ?? "US"
+      const site = isAmazonSite(siteRaw) ? siteRaw : "US"
+      const search = new URL(`https://www.${amazonDomainForSite(site)}/s`)
+      search.searchParams.set("k", keyword)
+      const minPrice = num(params, "minPrice")
+      const maxPrice = num(params, "maxPrice")
+      if (minPrice != null) search.searchParams.set("low-price", String(minPrice))
+      if (maxPrice != null) search.searchParams.set("high-price", String(maxPrice))
       return {
         actorId: cfg.marketActorId,
         runInput: {
-          searchQueries: [keyword],
-          maxResultsPerQuery: maxResults,
-          country: str(params, "country") ?? "US",
-          ...(num(params, "minPrice") != null ? { minPrice: num(params, "minPrice") } : {}),
-          ...(num(params, "maxPrice") != null ? { maxPrice: num(params, "maxPrice") } : {}),
+          categoryOrProductUrls: [{ url: search.toString() }],
+          maxItemsPerStartUrl: maxResults,
+          scrapeProductDetails: true,
+          maxOffers: 0,
+          scrapeSellers: false,
         },
         keyword,
       }
+    }
     case "etsy":
       return {
         actorId: cfg.marketActorId,

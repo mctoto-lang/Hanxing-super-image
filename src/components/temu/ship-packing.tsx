@@ -64,6 +64,21 @@ export async function requestShipBoxMark(store: string, sns: string[]): Promise<
   return true
 }
 
+/** 「打印商品打包标签」静默版（自动发货执行用）：与 requestShipBoxMark 同一请求
+ *  （dataKey 即按官方口径标记已打印、锁定件数），但不弹 toast、返回错误文案——
+ *  逐组逐批执行时由进度区逐行展示结果，避免成串 toast 淹没真正的失败信息。 */
+export async function requestShipBoxMarkQuiet(
+  store: string,
+  sns: string[],
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (sns.length === 0) return { ok: false, error: "没有可打印的发货单" }
+  const r = await getShipBoxMarkPrintUrlAction({ store, deliveryOrderSns: sns }).catch(
+    (e: unknown) =>
+      ({ ok: false as const, error: e instanceof Error ? e.message : "打印请求失败" }) as const,
+  )
+  return r.ok ? { ok: true } : { ok: false, error: r.error }
+}
+
 /** 「打印商品打包标签」补打（开官方打印页直出）：待仓库收货场景——件数已锁定，
  *  直接开打印页；deliveryOrderSnList 传多单时官方一个 dataKey 页含全部箱唧
  *  （组级=同批次多单，行级=单单补打）。与首打的 requestShipBoxMark（仅请求锁定）区分。

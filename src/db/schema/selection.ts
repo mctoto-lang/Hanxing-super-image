@@ -163,6 +163,8 @@ export const selectionResults = pgTable(
     commentsCount: integer("comments_count"),
     sharesCount: integer("shares_count"),
     viewsCount: integer("views_count"),
+    /** 平台名次（0108）：Amazon BSR / 榜单名次；其余平台 null，供标签内排序与表格列 */
+    rank: integer("rank"),
     sellerName: varchar("seller_name", { length: 255 }),
     images: jsonb("images").$type<string[]>(),
     videos: jsonb("videos").$type<string[]>(),
@@ -188,6 +190,7 @@ export const selectionResults = pgTable(
     index("sr_ent_created").on(t.enterpriseId, t.createdAt),
     index("sr_ent_platform").on(t.enterpriseId, t.platform, t.createdAt),
     index("sr_platform_external").on(t.platform, t.externalId),
+    index("sr_ent_platform_rank").on(t.enterpriseId, t.platform, t.rank),
     uniqueIndex("sr_task_dedupe").on(t.taskId, t.dedupeKey),
   ],
 )
@@ -259,6 +262,11 @@ export const selectionMonitors = pgTable(
     lastReviewCount: integer("last_review_count"),
     lastLikesCount: integer("last_likes_count"),
     lastCommentsCount: integer("last_comments_count"),
+    // ── 0108 扩列：社媒播放/转发、Amazon BSR/榜单名次、币种（原实现恒按 $ 展示） ──
+    lastViewsCount: integer("last_views_count"),
+    lastSharesCount: integer("last_shares_count"),
+    lastRank: integer("last_rank"),
+    lastCurrency: varchar("last_currency", { length: 8 }),
     lastMetricsAt: timestamp("last_metrics_at", { withTimezone: true }),
     /** 重抓间隔（小时；6/12/24/48/72） */
     intervalHours: integer("interval_hours").default(24).notNull(),
@@ -337,6 +345,7 @@ export const selectionReviews = pgTable(
  * AI 分析结果（0106，内部 AI 生成、平台承担成本不扣积分）：
  *   kind='monitor'：单监控目标评论汇总（每目标一行，重抓后覆盖刷新）
  *   kind='digest' ：社媒平台日汇总（enterprise+platform+day 一行，任务完成后覆盖刷新）
+ *   kind='target' ：一次性抓评论的目标级汇总（0108，无监控目标时按 enterprise+target_url 归并）
  * summary 形状 { sentiment, sentimentScore, pros[], cons[], keywords[], quotes[], suggestion, hotTopics? }
  */
 export const selectionAiSummaries = pgTable(
@@ -350,6 +359,8 @@ export const selectionAiSummaries = pgTable(
     monitorId: uuid("monitor_id").references(() => selectionMonitors.id, {
       onDelete: "cascade",
     }),
+    /** kind='target' 的归并键：被评论对象的来源链接 */
+    targetUrl: text("target_url"),
     day: date("day"),
     platform: varchar("platform", { length: 32 }),
     modelName: varchar("model_name", { length: 255 }),
@@ -370,6 +381,9 @@ export const selectionAiSummaries = pgTable(
     uniqueIndex("sas_digest")
       .on(t.enterpriseId, t.platform, t.day)
       .where(sql`kind = 'digest'`),
+    uniqueIndex("sas_target")
+      .on(t.enterpriseId, t.targetUrl)
+      .where(sql`kind = 'target' AND ${t.targetUrl} IS NOT NULL`),
   ],
 )
 

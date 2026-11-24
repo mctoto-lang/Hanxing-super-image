@@ -2,6 +2,8 @@
 
 import * as React from "react"
 import { RefreshCw } from "lucide-react"
+import type { DateRange } from "react-day-picker"
+import { toast } from "sonner"
 import { DashRing } from "@/components/ui/dash-ring"
 import {
   TableBody,
@@ -43,26 +45,12 @@ import { EmptyHint } from "@/components/temu/products-table"
 import { TruncTip } from "@/components/temu/trunc-tip"
 import { TableSkeletonRows } from "@/components/temu/table-skeleton"
 import { normalizeSearchForSkuView } from "@/components/temu/return-search-normalize"
+import { TemuDateRangeFilter } from "@/components/temu/date-range-filter"
+import { localAddDays, localDaySpan, localDayString, localLastDays } from "@/lib/temu-bj-day"
 
-/** 出库时间窗预设按视图区分：退供包裹 30/90/365；SKU 明细上限 31 天（官方 100000004） */
-const PKG_WINDOWS = [
-  { value: "30", label: "近30天" },
-  { value: "90", label: "近90天" },
-  { value: "365", label: "近365天" },
-] as const
-const SKU_WINDOWS = [
-  { value: "7", label: "近7天" },
-  { value: "30", label: "近30天" },
-  { value: "31", label: "近31天" },
-] as const
-type Win = "30" | "90" | "365" | "7" | "31"
-const WIN_LABEL: Record<Win, string> = {
-  "7": "近7天",
-  "30": "近30天",
-  "31": "近31天",
-  "90": "近90天",
-  "365": "近365天",
-}
+/** SKU 明细视图出库时间范围上限（官方 returnpackagelist.get 超窗报 100000004
+ *  「Participation time exceeds 31 day」——2026-10-29 真实店实测）；包裹主列表不受此限 */
+const SKU_RANGE_MAX_DAYS = 31
 
 /** 共享搜索条字段：包裹视图三字段 / SKU 视图两字段（官方入参，逗号分隔多值） */
 const RETURN_PKG_SEARCH_FIELDS: SearchBarField[] = [
@@ -85,7 +73,13 @@ export function TemuReturnPanel({ store }: { store?: string }) {
   /** 视图：退供包裹（官方包裹粒度）/ SKU 明细（出库时间窗内 SKU 件数粒度） */
   const [view, setView] = React.useState<"packages" | "sku">("packages")
   const [status, setStatus] = React.useState<"all" | "1" | "2">("all")
-  const [win, setWin] = React.useState<Win>("90")
+  /** 出库时间范围（两端含）：默认近一周；两视图都恒带范围——官方无界查询报 100000001
+   *  （结果超 5 万条）、SKU 明细窗口必填，故不提供清除。null=尚未初始化：挂载后
+   *  layout effect 取默认值（渲染期取当前日期会与 SSR 不一致） */
+  const [dateRange, setDateRange] = React.useState<DateRange | null>(null)
+  React.useLayoutEffect(() => {
+    setDateRange((r) => (r === null ? localLastDays(new Date(), 7) : r))
+  }, [])
   /** 精确筛选（共享搜索条）：草稿态（输入中不触发），按钮/回车提交后才进查询 */
   const [draft, setDraft] = React.useState<{ field: string; keyword: string }>({
     field: "sub",
@@ -114,23 +108,21 @@ export function TemuReturnPanel({ store }: { store?: string }) {
   }
 
   const load = React.useCallback(() => {
-    if (!store) return
-    // SKU 视图窗口上限 31 天：状态切换时已收敛，这里兜底窄化给 action 签名
-    const skuWin: "7" | "30" | "31" = SKU_WINDOWS.some((o) => o.value === win)
-      ? (win as "7" | "30" | "31")
-      : "30"
-    const pkgWin: "30" | "90" | "365" = PKG_WINDOWS.some((o) => o.value === win)
-      ? (win as "30" | "90" | "365")
-      : "90"
+    // 日历单选（只点了起始日）按单日处理，与发货单列表「预约取货日期」同口径
+    if (!store || dateRange === null || !dateRange.from) return
+    const base = {
+      store,
+      pageNo,
+      dateFrom: localDayString(dateRange.from),
+      dateTo: localDayString(dateRange.to ?? dateRange.from),
+    }
     startLoading(async () => {
       const reqId = ++loadReqRef.current
-      const base = { store, pageNo }
       const kw = applied.keyword.trim()
       const r =
         view === "packages"
           ? await getTemuReturnPackagesAction({
               ...base,
-              window: pkgWin,
               ...(status === "all" ? {} : { status }),
               ...(view === "packages" && applied.field === "express" && kw
                 ? { expressDeliverySn: kw }
@@ -140,7 +132,6 @@ export function TemuReturnPanel({ store }: { store?: string }) {
             })
           : await getTemuReturnSkuDetailAction({
               ...base,
-              window: skuWin,
               ...(applied.field === "sub" && kw ? { purchaseSubOrderSn: kw } : {}),
               ...(applied.field === "pkg" && kw ? { returnSupplierPackageNo: kw } : {}),
             })
@@ -157,7 +148,30 @@ export function TemuReturnPanel({ store }: { store?: string }) {
         setError(r.error)
       }
     })
-  }, [store, view, status, win, applied, pageNo])
+  }, [store, view, status, dateRange, applied, pageNo])
+
+  /** 改日期范围。日历已开 resetOnSelect（两步选区模型）：从完整范围点新的一天先得到
+   *  只有起始日的中间态——原样保存（立即补结束日会让下一次点击变成「重新开始选」而
+   *  选不出多天），中间态按单日查询（30s 缓存兜底）；空选区（点同一天取消）保持原范围。
+   *  不开 resetOnSelect 时点击只会延长/截短现有范围，31 天满窗被截断逻辑原样弹回，
+   *  窗口永远挪不到后面的月份。SKU 明细视图选满后超 31 天截到第 31 天并提示（官方窗口上限） */
+  const onDateRangeChange = (range: DateRange | undefined) => {
+    if (range?.from) {
+      if (
+        view === "sku" &&
+        range.to &&
+        localDaySpan(range.from, range.to) > SKU_RANGE_MAX_DAYS
+      ) {
+        toast.info(`SKU 明细时间范围最多 ${SKU_RANGE_MAX_DAYS} 天，已截到第 ${SKU_RANGE_MAX_DAYS} 天`, {
+          duration: 6000,
+        })
+        setDateRange({ from: range.from, to: localAddDays(range.from, SKU_RANGE_MAX_DAYS - 1) })
+      } else {
+        setDateRange(range)
+      }
+      setPageNo(1)
+    }
+  }
 
   React.useEffect(load, [load])
 
@@ -196,16 +210,22 @@ export function TemuReturnPanel({ store }: { store?: string }) {
               if (v === "packages" || v === "sku") {
                 setView(v)
                 setPageNo(1)
-                // 视图切换后时间窗预设集合不同（SKU 上限 31 天），越界回落默认
-                setWin((w) =>
-                  v === "sku"
-                    ? SKU_WINDOWS.some((o) => o.value === w)
-                      ? w
-                      : "30"
-                    : PKG_WINDOWS.some((o) => o.value === w)
-                      ? w
-                      : "90",
-                )
+                // SKU 明细视图窗口上限 31 天：已有范围越界时截到第 31 天
+                if (
+                  v === "sku" &&
+                  dateRange?.from &&
+                  dateRange.to &&
+                  localDaySpan(dateRange.from, dateRange.to) > SKU_RANGE_MAX_DAYS
+                ) {
+                  toast.info(
+                    `SKU 明细时间范围最多 ${SKU_RANGE_MAX_DAYS} 天，已截到第 ${SKU_RANGE_MAX_DAYS} 天`,
+                    { duration: 6000 },
+                  )
+                  setDateRange({
+                    from: dateRange.from,
+                    to: localAddDays(dateRange.from, SKU_RANGE_MAX_DAYS - 1),
+                  })
+                }
                 // SKU 视图无运单号字段：运单号原样改作采购子单号过滤几乎必然查空且
                 // 无提示——字段归一到采购子单号并清空关键词（sub/pkg 两视图通用，保留）
                 if (v === "sku") {
@@ -237,18 +257,15 @@ export function TemuReturnPanel({ store }: { store?: string }) {
               </SelectContent>
             </Select>
           )}
-          <Select value={win} onValueChange={(v) => v && setWin(v as Win)}>
-            <SelectTrigger className="h-8 w-28 text-xs" aria-label="出库时间窗">
-              <SelectValue>{WIN_LABEL[win]}</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {(view === "packages" ? PKG_WINDOWS : SKU_WINDOWS).map((o) => (
-                <SelectItem key={o.value} value={o.value}>
-                  {o.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {/* 出库时间范围（默认近一周；SKU 明细视图选满后最多 31 天；resetOnSelect
+              保证满窗时点新的一天能重开选区挪窗，见 onDateRangeChange 注释） */}
+          <TemuDateRangeFilter
+            value={dateRange ?? undefined}
+            placeholder="出库日期"
+            clearable={false}
+            resetOnSelect
+            onChange={onDateRangeChange}
+          />
           {/* 精确筛选（共享搜索条，逗号分隔多值 → 官方数组参数）；按钮/回车触发 */}
           <TemuSearchBar
             fields={view === "packages" ? RETURN_PKG_SEARCH_FIELDS : RETURN_SKU_SEARCH_FIELDS}

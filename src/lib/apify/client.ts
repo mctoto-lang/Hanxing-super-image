@@ -141,10 +141,21 @@ function apifyPost<T>(
   return apifyIdempotent<T>("POST", path, opts)
 }
 
+/** 账户级并发内存已满（Apify 402 actor-memory-limit-exceeded）：属瞬时状况，退回队列稍后重试 */
+export function isApifyMemoryLimitError(err: unknown): boolean {
+  return (
+    err instanceof ApifyError &&
+    err.status === 402 &&
+    err.message.includes("actor-memory-limit-exceeded")
+  )
+}
+
 /**
  * 启动 Actor run（异步）。run options 里传 timeout（Apify 侧强制终止，兜底
  * 计费）与 maxItems（pay-per-result 按结果计费 Actor 的计费条数闸门，
  * 与用户预扣的 maxResults 对齐）。不重试（见文件头红线）。
+ * memoryMB：显式申请的运行内存；账户所有运行合计有内存上限（免费版 16GB，
+ * Actor 默认各申请 4096MB），轻量任务（单品监控 / 评论抓取）调小可减少排队。
  */
 export async function startActorRun(input: {
   actorId: string
@@ -152,6 +163,8 @@ export async function startActorRun(input: {
   maxResults: number
   /** Apify 侧最长运行秒数（默认 10 分钟） */
   timeoutSecs?: number
+  /** 申请的运行内存（MB；缺省用 Actor 默认值） */
+  memoryMB?: number
   /** 调用凭证（provider-config 解析；run 与后续收割必须同 token） */
   token: string
 }): Promise<{ runId: string; datasetId: string | null }> {
@@ -162,6 +175,7 @@ export async function startActorRun(input: {
     timeout: String(input.timeoutSecs ?? 600),
     maxItems: String(input.maxResults),
   })
+  if (input.memoryMB != null) qs.set("memory", String(input.memoryMB))
   const data = (await apifyFetch(
     `/acts/${actorPath}/runs?${qs.toString()}`,
     {

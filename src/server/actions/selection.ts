@@ -15,26 +15,26 @@ import {
   requireEnterpriseContext,
   type UserContext,
 } from "@/lib/auth/session"
-import { deductUserCredits } from "@/server/services/credits-service"
 import { settleSelectionTask } from "@/server/services/selection-service"
-import { buildActorInput } from "@/lib/selection/input-builders"
+import { createSelectionTask } from "@/server/services/selection-task-service"
 import {
   SELECTION_DAILY_TASK_LIMIT,
-  SELECTION_KEYWORD_MAX_LEN,
   SELECTION_PLATFORM_CONFIGS,
-  estimateCredits,
-  getFormFields,
   isSelectionPlatform,
-  type PlatformField,
+  platformsForCategory,
+  type PlatformCategory,
   type SelectionPlatform,
 } from "@/lib/selection/platforms"
-import { resolveSelectionToken } from "@/lib/selection/provider-config"
-import { parseUuid, parseUuidList } from "@/lib/selection/ids"
+import { platformView } from "@/lib/selection/platform-views"
 import {
-  POOL_SORTS,
+  isPoolSort,
   rawPoolRowToItem,
-  type SelectionPoolItem,
+  resultRowToItem,
+  type PoolSort,
+  type PoolStats,
 } from "@/lib/selection/pool-types"
+import { parseUuid, parseUuidList } from "@/lib/selection/ids"
+import { isCalendarDate } from "@/lib/selection/pool-url"
 
 /**
  * 选品工具 Server Actions（0104）
@@ -50,152 +50,12 @@ function requireSelection(ctx: UserContext): UserContext {
   return ctx
 }
 
-/** 按注册表字段声明清洗表单参数（必填/枚举/数字范围），越权键丢弃 */
-function sanitizeParams(
-  fields: PlatformField[],
-  raw: unknown,
-): { ok: true; params: Record<string, string | number> } | { ok: false; error: string } {
-  if (raw != null && typeof raw !== "object") {
-    return { ok: false, error: "参数格式错误" }
-  }
-  const input = (raw ?? {}) as Record<string, unknown>
-  const out: Record<string, string | number> = {}
-  for (const f of fields) {
-    const v = input[f.key]
-    if (v == null || v === "") {
-      if (f.required) return { ok: false, error: `请填写「${f.label}」` }
-      if (f.defaultValue != null) out[f.key] = f.defaultValue
-      continue
-    }
-    if (f.type === "number") {
-      const n = Number(v)
-      if (!Number.isFinite(n)) return { ok: false, error: `「${f.label}」须为数字` }
-      if (f.min != null && n < f.min) return { ok: false, error: `「${f.label}」不得小于 ${f.min}` }
-      if (f.max != null && n > f.max) return { ok: false, error: `「${f.label}」不得大于 ${f.max}` }
-      out[f.key] = n
-      continue
-    }
-    const s = String(v).trim()
-    if (s.length === 0) {
-      if (f.required) return { ok: false, error: `请填写「${f.label}」` }
-      continue
-    }
-    if (s.length > SELECTION_KEYWORD_MAX_LEN) {
-      return { ok: false, error: `「${f.label}」过长（≤${SELECTION_KEYWORD_MAX_LEN} 字符）` }
-    }
-    if (f.type === "select" && f.options && !f.options.some((o) => o.value === s)) {
-      return { ok: false, error: `「${f.label}」取值无效` }
-    }
-    out[f.key] = s
-  }
-  return { ok: true, params: out }
-}
-
 const createTaskSchema = z.object({
   platform: z.string().min(1),
   taskType: z.enum(["discover", "market"]),
   maxResults: z.number().int().min(1).max(2000),
   params: z.record(z.string(), z.unknown()).optional(),
 })
-
-/** 创建核心（create 与 retry 共用）：校验/清洗/日限 → 单事务入库+预扣 */
-async function createTaskCore(
-  ctx: UserContext,
-  input: {
-    platform: SelectionPlatform
-    taskType: "discover" | "market"
-    params: Record<string, unknown>
-    maxResults: number
-    label: string
-  },
-): Promise<{ ok: true; taskId: string; estimatedCredits: number } | { ok: false; error: string }> {
-  const enterpriseId = ctx.user.enterpriseId!
-  // 凭证解析（企业 provider → 平台 APIFY_API_TOKEN 兜底）；providerId 快照到
-  // 任务行，worker 启动/收割按快照取同一 token（dataset 归属启动账号）
-  const cred = await resolveSelectionToken({ enterpriseId })
-  if (!cred) {
-    return {
-      ok: false as const,
-      error: "企业未配置选品抓取凭证（请联系超管在平台管理配置 Apify Token）",
-    }
-  }
-  const cfg = SELECTION_PLATFORM_CONFIGS[input.platform]
-
-  const fields = getFormFields(input.platform, input.taskType)
-  const sanitized = sanitizeParams(fields, input.params)
-  if (!sanitized.ok) return { ok: false as const, error: sanitized.error }
-  const params = sanitized.params
-
-  const maxResults = Math.min(
-    Math.max(input.maxResults, cfg.minResults),
-    cfg.maxResultsPerTask,
-  )
-
-  const built = buildActorInput({
-    platform: input.platform,
-    taskType: input.taskType,
-    params,
-    maxResults,
-  })
-  const estimatedCredits = estimateCredits(input.platform, input.taskType, maxResults)
-
-  const outcome = await db
-    .transaction(async (tx) => {
-      // 每日任务数上限（自然日，服务器本地时区）：count+insert 放进同一事务，
-      // 前置 pg advisory 事务锁串行化同用户并发创建（盐隔离其他用途的锁；
-      // 锁随事务结束自动释放），避免先查后插被并发突破日限
-      await tx.execute(
-        sql`select pg_advisory_xact_lock(hashtext(${ctx.user.id} || ':selection:daily'))`,
-      )
-      const dayStart = new Date()
-      dayStart.setHours(0, 0, 0, 0)
-      const [{ count: todayCount }] = await tx
-        .select({ count: sql<number>`count(*)::int` })
-        .from(selectionTasks)
-        .where(
-          and(
-            eq(selectionTasks.userId, ctx.user.id),
-            gte(selectionTasks.createdAt, dayStart),
-          ),
-        )
-      if (todayCount >= SELECTION_DAILY_TASK_LIMIT) {
-        return {
-          ok: false as const,
-          error: `今日任务数已达上限（${SELECTION_DAILY_TASK_LIMIT} 个/天）`,
-        }
-      }
-      const [t] = await tx
-        .insert(selectionTasks)
-        .values({
-          enterpriseId,
-          userId: ctx.user.id,
-          taskType: input.taskType,
-          platform: input.platform,
-          actorId: built.actorId,
-          searchParams: params,
-          keyword: built.keyword.slice(0, SELECTION_KEYWORD_MAX_LEN),
-          country: built.country,
-          providerId: cred.providerId,
-          maxResults,
-          estimatedCredits,
-          status: "queued",
-        })
-        .returning({ id: selectionTasks.id })
-      await deductUserCredits({
-        enterpriseId,
-        userId: ctx.user.id,
-        amount: estimatedCredits,
-        taskId: t!.id,
-        type: "selection_deduct",
-        remark: `选品任务：${input.label}「${built.keyword.slice(0, 60)}」×${maxResults}`,
-        tx,
-      })
-      return { ok: true as const, taskId: t!.id }
-    })
-
-  if (!outcome.ok) return outcome
-  return { ok: true as const, taskId: outcome.taskId, estimatedCredits }
-}
 
 /** 创建抓取任务（权限/日限/参数清洗 → 单事务入库+预扣积分） */
 export async function createSelectionTaskAction(input: unknown) {
@@ -210,7 +70,9 @@ export async function createSelectionTaskAction(input: unknown) {
   if (!isSelectionPlatform(platform)) {
     return { ok: false as const, error: "不支持的平台" }
   }
-  return createTaskCore(ctx, {
+  return createSelectionTask({
+    userId: ctx.user.id,
+    enterpriseId: ctx.user.enterpriseId!,
     platform,
     taskType,
     params: q.data.params ?? {},
@@ -239,10 +101,24 @@ export async function retrySelectionTaskAction(taskId: string) {
   if (task.status !== "failed" && task.status !== "cancelled") {
     return { ok: false as const, error: "仅失败/已取消的任务可重新提交" }
   }
+  // 监控/评论任务不支持一键重试：原任务参数按市场字段集清洗后会变成「用监控标题
+  // 当关键词的市场分析任务」并立即预扣积分——监控失败由周期调度自然重抓，一次性
+  // 评论回详情弹窗重新发起（有 1 小时冷却）
+  if (task.taskType === "monitor" || task.taskType === "review") {
+    return {
+      ok: false as const,
+      error:
+        task.taskType === "monitor"
+          ? "监控任务不支持重试：监控由周期调度自动重抓，可在竞品监控页点「立即抓取」"
+          : "评论任务不支持重试：请在数据池详情弹窗重新发起「抓取评论」",
+    }
+  }
   if (!isSelectionPlatform(task.platform)) {
     return { ok: false as const, error: "任务平台已下线" }
   }
-  return createTaskCore(ctx, {
+  return createSelectionTask({
+    userId: ctx.user.id,
+    enterpriseId: ctx.user.enterpriseId!,
     platform: task.platform,
     taskType: task.taskType === "discover" ? "discover" : "market",
     params: task.searchParams ?? {},
@@ -322,34 +198,60 @@ export async function cancelSelectionTaskAction(taskId: string) {
   return { ok: false as const, error: "任务已结束，无需取消" }
 }
 
-/** 任务列表（企业共享；status=active 含 queued+processing） */
-export async function getSelectionTasksAction(opts?: {
-  status?: "active" | "completed" | "failed" | "cancelled" | "all"
-  platform?: string
-  page?: number
-  pageSize?: number
-}) {
-  const ctx = await requireEnterpriseContext()
-  await requireSelection(ctx)
-  const page = Math.max(1, Math.floor(opts?.page ?? 1))
-  const pageSize = Math.min(50, Math.max(1, Math.floor(opts?.pageSize ?? 20)))
+const taskListSchema = z.object({
+  status: z.enum(["active", "completed", "failed", "cancelled", "all"]).optional(),
+  platform: z.string().optional(),
+  taskType: z.enum(["discover", "market", "monitor", "review"]).optional(),
+  q: z.string().max(120).optional(),
+  page: z.number().int().min(1).optional(),
+  pageSize: z.number().int().min(1).max(100).optional(),
+})
 
-  const conds = [eq(selectionTasks.enterpriseId, ctx.user.enterpriseId!)]
-  const status = opts?.status ?? "all"
+/** 任务列表筛选条件（列表与计数共用） */
+function taskListConds(
+  enterpriseId: string,
+  userId: string,
+  opts: z.infer<typeof taskListSchema> | { onlyMine?: boolean },
+) {
+  const conds: SQL[] = [eq(selectionTasks.enterpriseId, enterpriseId)]
+  if ("onlyMine" in opts && opts.onlyMine) conds.push(eq(selectionTasks.userId, userId))
+  const status = "status" in opts ? (opts.status ?? "all") : "all"
   if (status === "active") {
-    conds.push(inArray(selectionTasks.status, ["queued", "processing"]))
+    conds.push(sql`${selectionTasks.status} in ('queued', 'processing')`)
   } else if (status !== "all") {
+    conds.push(sql`${selectionTasks.status}::text = ${status}`)
+  }
+  const platform = "platform" in opts ? opts.platform : undefined
+  if (platform && isSelectionPlatform(platform)) {
+    conds.push(eq(selectionTasks.platform, platform))
+  }
+  const taskType = "taskType" in opts ? opts.taskType : undefined
+  if (taskType) {
+    conds.push(sql`${selectionTasks.taskType}::text = ${taskType}`)
+  }
+  const q = "q" in opts ? opts.q : undefined
+  if (q && q.trim()) {
+    const like = `%${q.trim()}%`
     conds.push(
-      eq(
-        selectionTasks.status,
-        status as (typeof selectionTasks.$inferSelect)["status"],
-      ),
+      sql`(${selectionTasks.keyword} ilike ${like} or ${selectionTasks.errorMessage} ilike ${like})`,
     )
   }
-  if (opts?.platform && isSelectionPlatform(opts.platform)) {
-    conds.push(eq(selectionTasks.platform, opts.platform))
-  }
-  const where = and(...conds)
+  return and(...conds)
+}
+
+/**
+ * 任务列表（企业共享；URL 驱动筛选 + 分页）。status 枚举列用 ::text 比较，
+ * 避开全新库单事务迁移里枚举字面量的 unsafe use 坑。
+ */
+export async function getSelectionTasksAction(input?: unknown) {
+  const ctx = await requireEnterpriseContext()
+  await requireSelection(ctx)
+  const q = taskListSchema.safeParse(input ?? {})
+  if (!q.success) return { ok: false as const, error: "参数错误" }
+  const enterpriseId = ctx.user.enterpriseId!
+  const page = Math.max(1, Math.floor(q.data.page ?? 1))
+  const pageSize = Math.min(50, Math.max(1, Math.floor(q.data.pageSize ?? 20)))
+  const where = taskListConds(enterpriseId, ctx.user.id, q.data)
 
   const [rows, [{ count }]] = await Promise.all([
     db
@@ -382,6 +284,55 @@ export async function getSelectionTasksAction(opts?: {
   }
 }
 
+/**
+ * 任务页概览：各状态任务数（状态标签角标）+ 当前用户今日已用任务数
+ * （新建弹窗展示每日剩余额度，与 createTaskCore 的日限同口径）。
+ */
+export async function getSelectionTaskOverviewAction() {
+  const ctx = await requireEnterpriseContext()
+  await requireSelection(ctx)
+  const enterpriseId = ctx.user.enterpriseId!
+  const dayStart = new Date()
+  dayStart.setHours(0, 0, 0, 0)
+
+  const [statusRows, [{ todayUsed }]] = await Promise.all([
+    db
+      .select({
+        status: sql<string>`case when ${selectionTasks.status}::text in ('queued','processing') then 'active' else ${selectionTasks.status}::text end`,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(selectionTasks)
+      .where(eq(selectionTasks.enterpriseId, enterpriseId))
+      .groupBy(
+        sql`case when ${selectionTasks.status}::text in ('queued','processing') then 'active' else ${selectionTasks.status}::text end`,
+      ),
+    db
+      .select({ todayUsed: sql<number>`count(*)::int` })
+      .from(selectionTasks)
+      .where(
+        and(
+          eq(selectionTasks.userId, ctx.user.id),
+          gte(selectionTasks.createdAt, dayStart),
+          // 只数手动提交的任务：竞品监控自动生成的 monitor/review 任务不占每日
+          // 额度（与 createTaskCore 的日限同口径，弹窗「今日剩余」不再被监控顶满）
+          inArray(selectionTasks.taskType, ["discover", "market"]),
+        ),
+      ),
+  ])
+  const counts: Record<string, number> = { active: 0, completed: 0, failed: 0, cancelled: 0, all: 0 }
+  for (const r of statusRows) {
+    counts[r.status] = r.count
+    counts.all += r.count
+  }
+  return {
+    ok: true as const,
+    counts,
+    todayUsed,
+    dailyLimit: SELECTION_DAILY_TASK_LIMIT,
+    creditsBalance: ctx.user.creditsBalance,
+  }
+}
+
 /** 轻量状态轮询（任务页进度条/市场页横幅共用） */
 export async function getSelectionTaskStatusesAction(ids: string[]) {
   const ctx = await requireEnterpriseContext()
@@ -406,55 +357,6 @@ export async function getSelectionTaskStatusesAction(ids: string[]) {
       ),
     )
   return { ok: true as const, items: rows }
-}
-
-/** 任务结果分页（企业隔离校验） */
-export async function getSelectionTaskResultsAction(
-  taskId: string,
-  opts?: { page?: number; pageSize?: number; order?: "default" | "sales" | "price_asc" | "price_desc" | "likes" },
-) {
-  const ctx = await requireEnterpriseContext()
-  await requireSelection(ctx)
-  if (parseUuid(taskId) == null) return { ok: false as const, error: "参数错误" }
-  const [task] = await db
-    .select({ id: selectionTasks.id, platform: selectionTasks.platform })
-    .from(selectionTasks)
-    .where(
-      and(
-        eq(selectionTasks.id, taskId),
-        eq(selectionTasks.enterpriseId, ctx.user.enterpriseId!),
-      ),
-    )
-    .limit(1)
-  if (!task) return { ok: false as const, error: "任务不存在" }
-
-  const page = Math.max(1, Math.floor(opts?.page ?? 1))
-  const pageSize = Math.min(100, Math.max(1, Math.floor(opts?.pageSize ?? 50)))
-  const order =
-    opts?.order === "sales"
-      ? desc(sql`coalesce(${selectionResults.salesCount}, 0)`)
-      : opts?.order === "price_asc"
-        ? sql`${selectionResults.price} asc nulls last`
-        : opts?.order === "price_desc"
-          ? sql`${selectionResults.price} desc nulls last`
-          : opts?.order === "likes"
-            ? desc(sql`coalesce(${selectionResults.likesCount}, 0)`)
-            : desc(selectionResults.createdAt)
-
-  const [rows, [{ count }]] = await Promise.all([
-    db
-      .select()
-      .from(selectionResults)
-      .where(eq(selectionResults.taskId, taskId))
-      .orderBy(order)
-      .limit(pageSize)
-      .offset((page - 1) * pageSize),
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(selectionResults)
-      .where(eq(selectionResults.taskId, taskId)),
-  ])
-  return { ok: true as const, items: rows, total: count, page, pageSize }
 }
 
 /** 收藏/取消收藏（toggle） */
@@ -543,28 +445,70 @@ export async function removeSelectionBookmarksAction(resultIds: string[]) {
   return { ok: true as const }
 }
 
-/** 我的收藏列表（join 结果行） */
-export async function listSelectionBookmarksAction(opts?: {
-  collectionName?: string
-  page?: number
-  pageSize?: number
-}) {
-  const ctx = await requireEnterpriseContext()
-  await requireSelection(ctx)
-  const page = Math.max(1, Math.floor(opts?.page ?? 1))
-  const pageSize = Math.min(100, Math.max(1, Math.floor(opts?.pageSize ?? 24)))
+const bookmarkListSchema = z.object({
+  /** 集合名；空串 = 未分组；缺省 = 全部 */
+  collectionName: z.string().optional(),
+  platform: z.string().optional(),
+  priority: z.enum(["high", "medium", "low"]).optional(),
+  q: z.string().max(120).optional(),
+  sort: z.enum(["newest", "price_asc", "price_desc", "sales_desc", "likes_desc"]).optional(),
+  page: z.number().int().min(1).optional(),
+  pageSize: z.number().int().min(1).max(100).optional(),
+})
 
-  const conds = [
-    eq(selectionBookmarks.userId, ctx.user.id),
-    eq(selectionResults.enterpriseId, ctx.user.enterpriseId!),
+/** 收藏列表筛选条件（列表 / 计数共用；按用户隔离） */
+function bookmarkConds(userId: string, enterpriseId: string, q: z.infer<typeof bookmarkListSchema>) {
+  const conds: SQL[] = [
+    eq(selectionBookmarks.userId, userId),
+    eq(selectionResults.enterpriseId, enterpriseId),
   ]
-  if (opts?.collectionName != null && opts.collectionName !== "") {
-    conds.push(eq(selectionBookmarks.collectionName, opts.collectionName))
-  } else if (opts?.collectionName === "") {
+  if (q.collectionName != null && q.collectionName !== "") {
+    conds.push(eq(selectionBookmarks.collectionName, q.collectionName))
+  } else if (q.collectionName === "") {
     // 空字符串 = 未分组集合
     conds.push(sql`${selectionBookmarks.collectionName} is null`)
   }
-  const where = and(...conds)
+  if (q.platform && isSelectionPlatform(q.platform)) {
+    conds.push(eq(selectionResults.platform, q.platform))
+  }
+  if (q.priority) {
+    conds.push(eq(selectionBookmarks.priority, q.priority))
+  }
+  if (q.q && q.q.trim()) {
+    const like = `%${q.q.trim()}%`
+    conds.push(
+      sql`(${selectionResults.title} ilike ${like} or ${selectionResults.content} ilike ${like} or ${selectionBookmarks.notes} ilike ${like})`,
+    )
+  }
+  return and(...conds)
+}
+
+function bookmarkOrder(q: z.infer<typeof bookmarkListSchema>) {
+  switch (q.sort) {
+    case "price_asc":
+      return sql`${selectionResults.price} asc nulls last, ${selectionBookmarks.createdAt} desc`
+    case "price_desc":
+      return sql`${selectionResults.price} desc nulls last, ${selectionBookmarks.createdAt} desc`
+    case "sales_desc":
+      return sql`coalesce(${selectionResults.salesCount}, 0) desc, ${selectionBookmarks.createdAt} desc`
+    case "likes_desc":
+      return sql`coalesce(${selectionResults.likesCount}, 0) desc, ${selectionBookmarks.createdAt} desc`
+    default:
+      return desc(selectionBookmarks.createdAt)
+  }
+}
+
+/** 我的收藏列表（join 结果行；URL 驱动筛选 + 分页，结果投影 extras 不带 rawData） */
+export async function listSelectionBookmarksAction(input?: unknown) {
+  const ctx = await requireEnterpriseContext()
+  await requireSelection(ctx)
+  const parsed = bookmarkListSchema.safeParse(input ?? {})
+  if (!parsed.success) return { ok: false as const, error: "参数错误" }
+  const q = parsed.data
+  const enterpriseId = ctx.user.enterpriseId!
+  const page = Math.max(1, Math.floor(q.page ?? 1))
+  const pageSize = Math.min(100, Math.max(1, Math.floor(q.pageSize ?? 24)))
+  const where = bookmarkConds(ctx.user.id, enterpriseId, q)
 
   const rowsQuery = (targetPage: number) =>
     db
@@ -572,7 +516,7 @@ export async function listSelectionBookmarksAction(opts?: {
       .from(selectionBookmarks)
       .innerJoin(selectionResults, eq(selectionBookmarks.resultId, selectionResults.id))
       .where(where)
-      .orderBy(desc(selectionBookmarks.createdAt))
+      .orderBy(bookmarkOrder(q))
       .limit(pageSize)
       .offset((targetPage - 1) * pageSize)
 
@@ -593,11 +537,59 @@ export async function listSelectionBookmarksAction(opts?: {
 
   return {
     ok: true as const,
-    items: finalRows.map((r) => ({ ...r.bookmark, result: r.result })),
+    items: finalRows.map((r) => ({
+      id: r.bookmark.id,
+      resultId: r.bookmark.resultId,
+      notes: r.bookmark.notes,
+      customTags: r.bookmark.customTags,
+      collectionName: r.bookmark.collectionName,
+      priority: r.bookmark.priority,
+      createdAt: r.bookmark.createdAt,
+      updatedAt: r.bookmark.updatedAt,
+      result: resultRowToItem(r.result),
+    })),
     total: count,
     page: actualPage,
     pageSize,
   }
+}
+
+const batchBookmarkSchema = z.object({
+  resultIds: z.array(z.string()).min(1).max(200),
+  /** 归入集合（空串 = 移出分组）；缺省不改 */
+  collectionName: z.string().max(100).optional(),
+  /** 设优先级；缺省不改 */
+  priority: z.enum(["high", "medium", "low"]).nullable().optional(),
+})
+
+/** 批量整理收藏：归入集合 / 设优先级（我的选品批量条） */
+export async function batchUpdateSelectionBookmarksAction(input: unknown) {
+  const ctx = await requireEnterpriseContext()
+  await requireSelection(ctx)
+  const q = batchBookmarkSchema.safeParse(input)
+  if (!q.success) {
+    return { ok: false as const, error: q.error.issues[0]?.message ?? "参数错误" }
+  }
+  const validIds = parseUuidList(q.data.resultIds)
+  if (validIds.length === 0) return { ok: false as const, error: "未选择收藏项" }
+  const set: { updatedAt: Date; collectionName?: string | null; priority?: "high" | "medium" | "low" | null } = {
+    updatedAt: new Date(),
+  }
+  if (q.data.collectionName != null) {
+    set.collectionName = q.data.collectionName.trim() || null
+  }
+  if (q.data.priority !== undefined) set.priority = q.data.priority
+  const updated = await db
+    .update(selectionBookmarks)
+    .set(set)
+    .where(
+      and(
+        eq(selectionBookmarks.userId, ctx.user.id),
+        inArray(selectionBookmarks.resultId, validIds),
+      ),
+    )
+    .returning({ id: selectionBookmarks.id })
+  return { ok: true as const, updated: updated.length }
 }
 
 /** 集合清单（名称 + 计数） */
@@ -615,31 +607,30 @@ export async function listSelectionCollectionsAction() {
   return { ok: true as const, items: rows }
 }
 
-/** 收藏导出（ExcelJS base64，对齐库存导出形态） */
+/** 收藏导出（ExcelJS base64，对齐库存导出形态）；入参与列表筛选同构（见 bookmarkListSchema） */
 export async function exportSelectionBookmarksExcelAction(opts?: {
   collectionName?: string
+  platform?: string
+  priority?: "high" | "medium" | "low"
+  q?: string
+  sort?: "newest" | "price_asc" | "price_desc" | "sales_desc" | "likes_desc"
 }): Promise<
   { ok: true; base64: string; filename: string } | { ok: false; error: string }
 > {
   const ctx = await requireEnterpriseContext()
   await requireSelection(ctx)
-
-  const conds = [
-    eq(selectionBookmarks.userId, ctx.user.id),
-    eq(selectionResults.enterpriseId, ctx.user.enterpriseId!),
-  ]
-  if (opts?.collectionName != null && opts.collectionName !== "") {
-    conds.push(eq(selectionBookmarks.collectionName, opts.collectionName))
-  } else if (opts?.collectionName === "") {
-    conds.push(sql`${selectionBookmarks.collectionName} is null`)
-  }
+  // 复用列表的筛选与排序口径：此前只认集合名，按平台/优先级/关键词筛完导出的
+  // 是全部收藏，与「导出」按钮的禁用态（按筛选后条数）相矛盾
+  const parsed = bookmarkListSchema.safeParse(opts ?? {})
+  if (!parsed.success) return { ok: false, error: "参数错误" }
+  const q = parsed.data
 
   const rows = await db
     .select({ bookmark: selectionBookmarks, result: selectionResults })
     .from(selectionBookmarks)
     .innerJoin(selectionResults, eq(selectionBookmarks.resultId, selectionResults.id))
-    .where(and(...conds))
-    .orderBy(desc(selectionBookmarks.createdAt))
+    .where(bookmarkConds(ctx.user.id, ctx.user.enterpriseId!, q))
+    .orderBy(bookmarkOrder(q))
     .limit(5000)
 
   const platformLabel = (p: string) =>
@@ -688,133 +679,171 @@ export async function exportSelectionBookmarksExcelAction(opts?: {
   }
 }
 
-/* ── 数据池（选品发现：跨任务综合展示，商品维度去重） ─────────── */
+/* ── 数据池（选品发现 / 市场分析：平台标签视图，商品 / 帖子维度去重） ─────── */
 
-function drizzleResultToItem(r: typeof selectionResults.$inferSelect): SelectionPoolItem {
-  return {
-    id: r.id,
-    taskId: r.taskId,
-    platform: r.platform,
-    country: r.country,
-    taskType: r.taskType,
-    externalId: r.externalId,
-    sourceUrl: r.sourceUrl,
-    title: r.title,
-    content: r.content,
-    price: r.price,
-    originalPrice: r.originalPrice,
-    currency: r.currency,
-    rating: r.rating,
-    reviewCount: r.reviewCount,
-    salesCount: r.salesCount,
-    likesCount: r.likesCount,
-    commentsCount: r.commentsCount,
-    sharesCount: r.sharesCount,
-    viewsCount: r.viewsCount,
-    sellerName: r.sellerName,
-    images: r.images,
-    videos: r.videos,
-    category: r.category,
-    categoryPath: r.categoryPath,
-    tags: r.tags,
-    hashtags: r.hashtags,
-    publishedAt: r.publishedAt,
-    scrapedAt: r.scrapedAt,
-    createdAt: r.createdAt,
-    rawData: r.rawData as Record<string, unknown>,
-  }
-}
-
+/**
+ * 平台标签视图入口参数（两页共用）：平台必填（没有「全部平台」聚合视图），
+ * 传入 category 时校验平台属于该页面类别。
+ */
 const poolQuerySchema = z.object({
-  platform: z.string().optional(),
+  platform: z.string().min(1),
+  category: z.enum(["ecommerce", "social"]).optional(),
   country: z.string().max(16).optional(),
   taskType: z.enum(["discover", "market", "monitor"]).optional(),
   taskId: z.string().uuid().optional(),
   q: z.string().max(120).optional(),
-  sort: z.enum(POOL_SORTS).optional(),
+  sort: z.string().optional(),
   dedupe: z.boolean().optional(),
-  /** 抓取日期范围（YYYY-MM-DD，含端点；按 scraped_at 过滤） */
-  dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  /** 平台类别过滤：ecommerce=选品发现页（仅电商）、social=市场分析页（仅社媒） */
-  category: z.enum(["ecommerce", "social"]).optional(),
+  /** 抓取日期范围（YYYY-MM-DD，含端点；按 scraped_at 过滤；须为真实日期） */
+  dateFrom: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .refine(isCalendarDate, "日期不存在")
+    .optional(),
+  dateTo: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .refine(isCalendarDate, "日期不存在")
+    .optional(),
   page: z.number().int().min(1).optional(),
-  // 前端分页选项为 25/50/100，上限与之对齐（曾为 60，选 100 条/页会整页报参数错误）
+  // 前端分页选项为 25/50/100，上限与之对齐
   pageSize: z.number().int().min(1).max(100).optional(),
 })
 
+type PoolQuery = z.infer<typeof poolQuerySchema>
+
+interface ResolvedPoolQuery {
+  q: PoolQuery
+  platform: SelectionPlatform
+  /** 排序键：只接受该平台视图声明的项，其余回落「最新抓取」 */
+  sort: PoolSort
+  page: number
+  pageSize: number
+  dedupeOn: boolean
+}
+
+type PoolQueryResult =
+  | ({ ok: true } & ResolvedPoolQuery)
+  | { ok: false; error: string }
+
+/** 解析 + 校验平台标签视图参数（列表 / 统计共用口径） */
+function resolvePoolQuery(input: unknown): PoolQueryResult {
+  const parsed = poolQuerySchema.safeParse(input ?? {})
+  if (!parsed.success) return { ok: false, error: "参数错误" }
+  const q = parsed.data
+  if (!isSelectionPlatform(q.platform)) return { ok: false, error: "不支持的平台" }
+  if (q.category && !platformsForCategory(q.category).includes(q.platform)) {
+    return { ok: false, error: "平台与页面类别不匹配" }
+  }
+  const view = platformView(q.platform)
+  const sort: PoolSort =
+    q.sort && isPoolSort(q.sort) && view.sorts.includes(q.sort) ? q.sort : "newest"
+  return {
+    ok: true,
+    q,
+    platform: q.platform,
+    sort,
+    page: Math.max(1, Math.floor(q.page ?? 1)),
+    pageSize: Math.min(100, Math.max(1, Math.floor(q.pageSize ?? 25))),
+    dedupeOn: q.dedupe !== false,
+  }
+}
+
 /**
- * 数据池分页查询（选品发现页）：
- * 企业域跨任务合并；dedupe=true（默认）按（平台, externalId‖dedupeKey）开窗
- * 取最新一条——同款商品多任务重复抓取只出一张卡。
- * 去重查询走原生 SQL 窗口函数（drizzle 构造器表达不了 row_number）。
+ * 数据池筛选条件（列表 / KPI 统计共用）。按平台过滤恒在最前——标签视图内
+ * 只看当前平台的数据。
+ */
+function poolConds(enterpriseId: string, platform: string, q: PoolQuery): SQL[] {
+  const conds: SQL[] = [
+    sql`sr.enterprise_id = ${enterpriseId}`,
+    sql`sr.platform = ${platform}`,
+  ]
+  if (q.country) {
+    conds.push(sql`sr.country = ${q.country.toUpperCase()}`)
+  }
+  if (q.taskType) {
+    conds.push(sql`sr.task_type = ${q.taskType}`)
+  }
+  if (q.taskId) {
+    conds.push(sql`sr.task_id = ${q.taskId}`)
+  }
+  if (q.q && q.q.trim()) {
+    const like = `%${q.q.trim()}%`
+    conds.push(sql`(sr.title ilike ${like} or sr.content ilike ${like})`)
+  }
+  if (q.dateFrom) {
+    conds.push(sql`sr.scraped_at >= ${q.dateFrom}::date`)
+  }
+  if (q.dateTo) {
+    conds.push(sql`sr.scraped_at < (${q.dateTo}::date + interval '1 day')`)
+  }
+  return conds
+}
+
+/**
+ * 去重子查询：按（平台, external_id‖dedupe_key）开窗取一条——同款商品多任务
+ * 重复抓取只出一张卡。发现 / 市场任务行优先于监控重抓行（后者字段较少，如 TEMU
+ * 单品详情无销量），同类按入库时间取最新。
+ */
+function dedupedInnerSql(conds: SQL[], dedupeOn: boolean): SQL {
+  const whereSql = sql.join(conds, sql` and `)
+  return dedupeOn
+    ? sql`select sr.*, row_number() over (partition by sr.platform, coalesce(sr.external_id, sr.dedupe_key) order by coalesce(sr.task_type = 'monitor', false) asc, sr.created_at desc) as rn from selection_result sr where ${whereSql}`
+    : sql`select sr.* from selection_result sr where ${whereSql}`
+}
+
+function poolOrderSql(sort: PoolSort): SQL {
+  // 每个分支末尾统一追加 t.id 作唯一兜底键：同一任务的结果行整批入库、created_at
+  // 完全相同，指标并列时无兜底键的分页排序每页不同（后页重复前页卡片、部分行翻不到）
+  switch (sort) {
+    case "rank_asc":
+      return sql`t.rank asc nulls last, t.created_at desc, t.id`
+    case "sales_desc":
+      return sql`coalesce(t.sales_count, 0) desc, t.id`
+    case "price_asc":
+      return sql`t.price asc nulls last, t.id`
+    case "price_desc":
+      return sql`t.price desc nulls last, t.id`
+    case "rating_desc":
+      return sql`t.rating desc nulls last, t.id`
+    case "reviews_desc":
+      return sql`coalesce(t.review_count, 0) desc, t.id`
+    case "likes_desc":
+      return sql`coalesce(t.likes_count, 0) desc, t.id`
+    case "comments_desc":
+      return sql`coalesce(t.comments_count, 0) desc, t.id`
+    case "shares_desc":
+      return sql`coalesce(t.shares_count, 0) desc, t.id`
+    case "views_desc":
+      return sql`coalesce(t.views_count, 0) desc, t.id`
+    default:
+      return sql`t.created_at desc, t.id`
+  }
+}
+
+/**
+ * 数据池分页查询（选品发现 / 市场分析平台标签视图）。列表项由服务端投影 extras、
+ * 不携带 rawData（原始行在详情弹窗按需拉取，见 getResultRawDataAction）。
  */
 export async function getSelectionResultsPoolAction(input: unknown) {
   const ctx = await requireEnterpriseContext()
   await requireSelection(ctx)
-  const q = poolQuerySchema.safeParse(input ?? {})
-  if (!q.success) return { ok: false as const, error: "参数错误" }
+  const resolved = resolvePoolQuery(input)
+  if (!resolved.ok) return { ok: false as const, error: resolved.error }
   const enterpriseId = ctx.user.enterpriseId!
-  const page = q.data.page ?? 1
-  const pageSize = q.data.pageSize ?? 24
+  const { q, platform, sort, page, pageSize, dedupeOn } = resolved
   const offset = (page - 1) * pageSize
-  const dedupeOn = q.data.dedupe !== false
-
-  const conds: SQL[] = [sql`sr.enterprise_id = ${enterpriseId}`]
-  if (q.data.platform && isSelectionPlatform(q.data.platform)) {
-    conds.push(sql`sr.platform = ${q.data.platform}`)
-  }
-  if (q.data.country) {
-    conds.push(sql`sr.country = ${q.data.country.toUpperCase()}`)
-  }
-  if (q.data.taskType) {
-    conds.push(sql`sr.task_type = ${q.data.taskType}`)
-  }
-  if (q.data.taskId) {
-    conds.push(sql`sr.task_id = ${q.data.taskId}`)
-  }
-  if (q.data.q && q.data.q.trim()) {
-    const like = `%${q.data.q.trim()}%`
-    conds.push(sql`(sr.title ilike ${like} or sr.content ilike ${like})`)
-  }
-  if (q.data.category) {
-    conds.push(
-      q.data.category === "ecommerce"
-        ? sql`sr.platform in ('amazon','etsy','temu','shopify')`
-        : sql`sr.platform in ('instagram','tiktok','pinterest','reddit','x','facebook')`,
-    )
-  }
-  if (q.data.dateFrom) {
-    conds.push(sql`sr.scraped_at >= ${q.data.dateFrom}::date`)
-  }
-  if (q.data.dateTo) {
-    conds.push(sql`sr.scraped_at < (${q.data.dateTo}::date + interval '1 day')`)
-  }
-  const whereSql = sql.join(conds, sql` and `)
-
-  const innerSql = dedupeOn
-    ? sql`select sr.*, row_number() over (partition by sr.platform, coalesce(sr.external_id, sr.dedupe_key) order by sr.created_at desc) as rn from selection_result sr where ${whereSql}`
-    : sql`select sr.* from selection_result sr where ${whereSql}`
-
-  const orderSql =
-    q.data.sort === "sales_desc"
-      ? sql`coalesce(t.sales_count, 0) desc`
-      : q.data.sort === "price_asc"
-        ? sql`t.price asc nulls last`
-        : q.data.sort === "price_desc"
-          ? sql`t.price desc nulls last`
-          : q.data.sort === "rating_desc"
-            ? sql`t.rating desc nulls last`
-            : q.data.sort === "likes_desc"
-              ? sql`coalesce(t.likes_count, 0) desc`
-              : q.data.sort === "comments_desc"
-                ? sql`coalesce(t.comments_count, 0) desc`
-                : q.data.sort === "views_desc"
-                  ? sql`coalesce(t.views_count, 0) desc`
-                  : sql`t.created_at desc`
+  const whereSql = sql.join(poolConds(enterpriseId, platform, q), sql` and `)
+  const innerSql = dedupedInnerSql(poolConds(enterpriseId, platform, q), dedupeOn)
 
   const rowsRaw = (await db.execute(
-    sql`select t.* from (${innerSql}) t ${dedupeOn ? sql`where t.rn = 1` : sql``} order by ${orderSql} limit ${pageSize} offset ${offset}`,
+    sql`select t.id, t.task_id, t.platform, t.country, t.task_type, t.external_id, t.source_url,
+        t.dedupe_key, t.title, t.content, t.price, t.original_price, t.currency, t.rating,
+        t.review_count, t.sales_count, t.likes_count, t.comments_count, t.shares_count,
+        t.views_count, t.rank, t.seller_name, t.images, t.videos, t.category, t.category_path,
+        t.tags, t.hashtags, t.published_at, t.scraped_at, t.created_at, t.raw_data
+      from (${innerSql}) t ${dedupeOn ? sql`where t.rn = 1` : sql``}
+      order by ${poolOrderSql(sort)} limit ${pageSize} offset ${offset}`,
   )) as unknown as Array<Record<string, unknown>>
   const countRes = (await db.execute(
     dedupeOn
@@ -823,32 +852,31 @@ export async function getSelectionResultsPoolAction(input: unknown) {
   )) as unknown as Array<{ count: number }>
   const total = Number(countRes[0]?.count ?? 0)
 
-  const items = rowsRaw.map(rawPoolRowToItem)
+  const items = rowsRaw.map((row) => rawPoolRowToItem(row))
 
   // 来源任务关键词（详情弹窗「来源任务」展示）+ 当前页收藏态
+  const resultIds = items.map((i) => i.id)
+  const taskIds = [...new Set(items.map((i) => i.taskId))]
   const [keywordRows, bookmarkRows] = await Promise.all([
-    items.length
+    taskIds.length
       ? db
           .select({ id: selectionTasks.id, keyword: selectionTasks.keyword })
           .from(selectionTasks)
           .where(
-            inArray(
-              selectionTasks.id,
-              [...new Set(items.map((i) => i.taskId))],
+            and(
+              eq(selectionTasks.enterpriseId, enterpriseId),
+              inArray(selectionTasks.id, taskIds),
             ),
           )
       : Promise.resolve([] as Array<{ id: string; keyword: string | null }>),
-    items.length
+    resultIds.length
       ? db
           .select({ resultId: selectionBookmarks.resultId })
           .from(selectionBookmarks)
           .where(
             and(
               eq(selectionBookmarks.userId, ctx.user.id),
-              inArray(
-                selectionBookmarks.resultId,
-                items.map((i) => i.id),
-              ),
+              inArray(selectionBookmarks.resultId, resultIds),
             ),
           )
       : Promise.resolve([] as Array<{ resultId: string }>),
@@ -857,12 +885,12 @@ export async function getSelectionResultsPoolAction(input: unknown) {
   for (const item of items) item.taskKeyword = keywordMap.get(item.taskId) ?? null
   const bookmarkedIds = new Set(bookmarkRows.map((r) => r.resultId))
 
-  // 企业内已监控目标 URL（卡片「竞品监控」按钮态）
+  // 企业内已监控目标（卡片「竞品监控」按钮态）：按平台原生 ID 匹配
   const monitorRows = await db
-    .select({ targetUrl: selectionMonitors.targetUrl })
+    .select({ externalId: selectionMonitors.externalId, targetUrl: selectionMonitors.targetUrl })
     .from(selectionMonitors)
     .where(eq(selectionMonitors.enterpriseId, enterpriseId))
-    .limit(500)
+    .limit(1000)
 
   return {
     ok: true as const,
@@ -870,17 +898,144 @@ export async function getSelectionResultsPoolAction(input: unknown) {
     total,
     page,
     pageSize,
+    sort,
     bookmarkedIds: [...bookmarkedIds],
     monitoredUrls: monitorRows.map((r) => r.targetUrl),
+    monitoredIds: monitorRows.map((r) => r.externalId).filter((v): v is string => v != null),
     dedupe: dedupeOn,
   }
 }
 
-/** 数据池筛选元信息：已出现的国家 + 最近完成任务（来源任务下拉） */
-export async function getSelectionPoolMetaAction() {
+/** 详情弹窗「原始数据」按需拉取（列表项不携带 rawData） */
+export async function getResultRawDataAction(resultId: string) {
+  const ctx = await requireEnterpriseContext()
+  await requireSelection(ctx)
+  if (parseUuid(resultId) == null) return { ok: false as const, error: "参数错误" }
+  const [row] = await db
+    .select({ rawData: selectionResults.rawData })
+    .from(selectionResults)
+    .where(
+      and(
+        eq(selectionResults.id, resultId),
+        eq(selectionResults.enterpriseId, ctx.user.enterpriseId!),
+      ),
+    )
+    .limit(1)
+  if (!row) return { ok: false as const, error: "结果不存在" }
+  return { ok: true as const, rawData: row.rawData as Record<string, unknown> }
+}
+
+/**
+ * 平台标签视图 KPI 统计（随筛选联动）：条数 / 均价 / 平均评分 / 各互动列合计，
+ * 口径与列表去重一致。均价只按主币种（众数）计算，避免多站点数据把美元与
+ * 英镑混算。各平台取自己有意义的字段（见 platform-views）。
+ */
+export async function getSelectionPoolStatsAction(input: unknown) {
+  const ctx = await requireEnterpriseContext()
+  await requireSelection(ctx)
+  const resolved = resolvePoolQuery(input)
+  if (!resolved.ok) return { ok: false as const, error: resolved.error }
+  const enterpriseId = ctx.user.enterpriseId!
+  const innerSql = dedupedInnerSql(
+    poolConds(enterpriseId, resolved.platform, resolved.q),
+    resolved.dedupeOn,
+  )
+  const deduped = sql`(${innerSql}) t ${resolved.dedupeOn ? sql`where t.rn = 1` : sql``}`
+
+  const [rowsRaw, priceRows] = await Promise.all([
+    db.execute(
+      sql`select count(*)::int as count,
+        avg(t.rating)::float8 as avg_rating,
+        coalesce(sum(coalesce(t.review_count, 0)), 0)::bigint as sum_reviews,
+        coalesce(sum(coalesce(t.sales_count, 0)), 0)::bigint as sum_sales,
+        coalesce(sum(coalesce(t.likes_count, 0)), 0)::bigint as sum_likes,
+        coalesce(sum(coalesce(t.comments_count, 0)), 0)::bigint as sum_comments,
+        coalesce(sum(coalesce(t.shares_count, 0)), 0)::bigint as sum_shares,
+        coalesce(sum(coalesce(t.views_count, 0)), 0)::bigint as sum_views
+      from ${deduped}`,
+    ) as unknown as Promise<
+      Array<{
+        count: number
+        avg_rating: number | null
+        sum_reviews: string | number
+        sum_sales: string | number
+        sum_likes: string | number
+        sum_comments: string | number
+        sum_shares: string | number
+        sum_views: string | number
+      }>
+    >,
+    // 主币种（有价格的商品里出现最多的币种）及其均价；无价格为空。
+    // deduped 已带 where rn=1，这里再包一层子查询追加价格过滤
+    db.execute(
+      sql`select p.currency, avg(p.price)::float8 as avg_price
+        from (select coalesce(nullif(t.currency, ''), 'USD') as currency, t.price from ${deduped}) p
+        where p.price is not null
+        group by p.currency
+        order by count(*) desc, p.currency
+        limit 1`,
+    ) as unknown as Promise<Array<{ currency: string; avg_price: number | null }>>,
+  ])
+  const r = rowsRaw[0]
+  // 全空列（如社媒的销量）聚合为 0，按「无此指标」归一为 null
+  const sumOrNull = (v: string | number | null | undefined) => {
+    const n = Number(v ?? 0)
+    return n > 0 ? n : null
+  }
+  const stats: PoolStats = {
+    count: Number(r?.count ?? 0),
+    currency: priceRows[0]?.currency ?? null,
+    avgPrice:
+      priceRows[0]?.avg_price != null ? Math.round(priceRows[0].avg_price * 100) / 100 : null,
+    avgRating: r?.avg_rating != null ? Math.round(r.avg_rating * 100) / 100 : null,
+    sumReviews: sumOrNull(r?.sum_reviews),
+    sumSales: sumOrNull(r?.sum_sales),
+    sumLikes: sumOrNull(r?.sum_likes),
+    sumComments: sumOrNull(r?.sum_comments),
+    sumShares: sumOrNull(r?.sum_shares),
+    sumViews: sumOrNull(r?.sum_views),
+  }
+  return { ok: true as const, stats }
+}
+
+/**
+ * 各平台去重后的条数（平台标签角标 + 市场分析页缺省标签选择）。
+ * 按页面类别返回该类别全部平台，无数据为 0。
+ */
+export async function getSelectionPoolCountsAction(input?: unknown) {
   const ctx = await requireEnterpriseContext()
   await requireSelection(ctx)
   const enterpriseId = ctx.user.enterpriseId!
+  const category: PlatformCategory =
+    typeof input === "object" && input != null && "category" in input
+      ? ((input as { category: unknown }).category === "social" ? "social" : "ecommerce")
+      : "ecommerce"
+  const list = platformsForCategory(category)
+  const rowsRaw = (await db.execute(
+    sql`select t.platform, count(*)::int as count from (
+        select sr.platform, row_number() over (partition by sr.platform, coalesce(sr.external_id, sr.dedupe_key) order by coalesce(sr.task_type = 'monitor', false) asc, sr.created_at desc) as rn
+        from selection_result sr
+        where sr.enterprise_id = ${enterpriseId} and sr.platform in (${sql.join(list.map((p) => sql`${p}`), sql`, `)})
+      ) t where t.rn = 1 group by t.platform`,
+  )) as unknown as Array<{ platform: string; count: number }>
+  const counts: Record<string, number> = Object.fromEntries(list.map((p) => [p, 0]))
+  for (const r of rowsRaw) counts[r.platform] = Number(r.count)
+  return { ok: true as const, counts }
+}
+
+/**
+ * 数据池筛选元信息：当前平台已出现的国家 + 该平台最近完成的任务（来源任务
+ * 下拉）。社媒平台无国家维度（恒空），调用方据此隐藏国家筛选。
+ */
+export async function getSelectionPoolMetaAction(input?: unknown) {
+  const ctx = await requireEnterpriseContext()
+  await requireSelection(ctx)
+  const enterpriseId = ctx.user.enterpriseId!
+  const platform =
+    typeof input === "object" && input != null && "platform" in input
+      ? String((input as { platform: unknown }).platform)
+      : ""
+  if (!isSelectionPlatform(platform)) return { ok: false as const, error: "不支持的平台" }
 
   const [countryRows, taskRows] = await Promise.all([
     db
@@ -889,6 +1044,7 @@ export async function getSelectionPoolMetaAction() {
       .where(
         and(
           eq(selectionResults.enterpriseId, enterpriseId),
+          eq(selectionResults.platform, platform),
           isNotNull(selectionResults.country),
         ),
       ),
@@ -906,7 +1062,12 @@ export async function getSelectionPoolMetaAction() {
       .where(
         and(
           eq(selectionTasks.enterpriseId, enterpriseId),
+          eq(selectionTasks.platform, platform),
           eq(selectionTasks.status, "completed"),
+          // 只列会写入数据池的任务：评论任务只进 selection_review（选中后列表必为
+          // 空）、监控任务挤占 30 条名额，把用户真正的发现/市场任务顶出下拉
+          inArray(selectionTasks.taskType, ["discover", "market"]),
+          sql`${selectionTasks.fetchedCount} > 0`,
         ),
       )
       .orderBy(desc(selectionTasks.completedAt))
@@ -917,208 +1078,5 @@ export async function getSelectionPoolMetaAction() {
     ok: true as const,
     countries: countryRows.map((r) => r.country).filter((c): c is string => c != null),
     tasks: taskRows,
-  }
-}
-
-/**
- * 社媒帖子脉搏（市场分析页 KPI 条）：按筛选口径（平台/国家/日期/关键词/
- * 去重）聚合 帖子数/总点赞/总评论/总浏览。与数据池同构的 where 组装。
- */
-export async function getSelectionSocialPulseAction(input: unknown) {
-  const ctx = await requireEnterpriseContext()
-  await requireSelection(ctx)
-  const q = poolQuerySchema.safeParse({ ...(input as object), category: 'social' as const })
-  if (!q.success) return { ok: false as const, error: "参数错误" }
-  const enterpriseId = ctx.user.enterpriseId!
-  const dedupeOn = q.data.dedupe !== false
-
-  const conds: SQL[] = [sql`sr.enterprise_id = ${enterpriseId}`]
-  conds.push(
-    sql`sr.platform in ('instagram','tiktok','pinterest','reddit','x','facebook')`,
-  )
-  if (q.data.platform && isSelectionPlatform(q.data.platform)) {
-    conds.push(sql`sr.platform = ${q.data.platform}`)
-  }
-  if (q.data.country) {
-    conds.push(sql`sr.country = ${q.data.country.toUpperCase()}`)
-  }
-  if (q.data.q && q.data.q.trim()) {
-    const like = `%${q.data.q.trim()}%`
-    conds.push(sql`(sr.title ilike ${like} or sr.content ilike ${like})`)
-  }
-  if (q.data.dateFrom) {
-    conds.push(sql`sr.scraped_at >= ${q.data.dateFrom}::date`)
-  }
-  if (q.data.dateTo) {
-    conds.push(sql`sr.scraped_at < (${q.data.dateTo}::date + interval '1 day')`)
-  }
-  const whereSql = sql.join(conds, sql` and `)
-
-  const innerSql = dedupeOn
-    ? sql`select sr.*, row_number() over (partition by sr.platform, coalesce(sr.external_id, sr.dedupe_key) order by sr.created_at desc) as rn from selection_result sr where ${whereSql}`
-    : sql`select sr.* from selection_result sr where ${whereSql}`
-  const rowsRaw = (await db.execute(
-    sql`select coalesce(sum(1),0)::int as posts, coalesce(sum(coalesce(t.likes_count,0)),0)::bigint as likes, coalesce(sum(coalesce(t.comments_count,0)),0)::bigint as comments, coalesce(sum(coalesce(t.views_count,0)),0)::bigint as views from (${innerSql}) t ${dedupeOn ? sql`where t.rn = 1` : sql``}`,
-  )) as unknown as Array<{
-    posts: number
-    likes: string | number
-    comments: string | number
-    views: string | number
-  }>
-  const r = rowsRaw[0]
-  return {
-    ok: true as const,
-    posts: Number(r?.posts ?? 0),
-    likes: Number(r?.likes ?? 0),
-    comments: Number(r?.comments ?? 0),
-    views: Number(r?.views ?? 0),
-  }
-}
-
-/* ── 市场分析（任务维度聚合统计） ───────────────────────────── */
-
-/** 桶标签数字格式化（≥100 取整；否则保留一位小数去尾零） */
-function fmtBucketNum(n: number): string {
-  return n >= 100 ? String(Math.round(n)) : String(Math.round(n * 10) / 10)
-}
-
-/**
- * 单任务聚合统计：KPI（条数/价格区间/中位销量/评分）+ 价格分布 + 评分分布 +
- * 销量 TOP10。任务结果 ≤ maxResultsPerTask（≤1000），全量拉数值列 JS 聚合
- * （分桶口径灵活、免多轮 SQL）。
- */
-export async function getSelectionMarketStatsAction(taskId: string) {
-  const ctx = await requireEnterpriseContext()
-  await requireSelection(ctx)
-  if (parseUuid(taskId) == null) return { ok: false as const, error: "参数错误" }
-
-  const [task] = await db
-    .select()
-    .from(selectionTasks)
-    .where(
-      and(
-        eq(selectionTasks.id, taskId),
-        eq(selectionTasks.enterpriseId, ctx.user.enterpriseId!),
-      ),
-    )
-    .limit(1)
-  if (!task) return { ok: false as const, error: "任务不存在" }
-
-  const rows = await db
-    .select({
-      price: selectionResults.price,
-      currency: selectionResults.currency,
-      salesCount: selectionResults.salesCount,
-      rating: selectionResults.rating,
-      reviewCount: selectionResults.reviewCount,
-    })
-    .from(selectionResults)
-    .where(eq(selectionResults.taskId, taskId))
-
-  const prices = rows
-    .map((r) => Number(r.price))
-    .filter((n) => Number.isFinite(n) && n >= 0)
-  const sales = rows
-    .map((r) => r.salesCount)
-    .filter((n): n is number => n != null && Number.isFinite(n))
-  const ratings = rows
-    .map((r) => Number(r.rating))
-    .filter((n) => Number.isFinite(n) && n > 0 && n <= 5)
-  const reviewTotal = rows.reduce((s, r) => s + (r.reviewCount ?? 0), 0)
-
-  const sum = (arr: number[]) => arr.reduce((s, n) => s + n, 0)
-  const avg = (arr: number[]) => (arr.length ? sum(arr) / arr.length : null)
-  const sortedSales = [...sales].sort((a, b) => a - b)
-  const medianSales = sortedSales.length
-    ? sortedSales[Math.floor((sortedSales.length - 1) / 2)]
-    : null
-
-  // 主币种（众数）
-  const currencyCounts = new Map<string, number>()
-  for (const r of rows) {
-    if (r.currency) currencyCounts.set(r.currency, (currencyCounts.get(r.currency) ?? 0) + 1)
-  }
-  const currency = [...currencyCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
-
-  // 价格分布：等宽 8 桶（<2 个不同价格时退化为单桶）
-  let priceBuckets: Array<{ label: string; count: number }> | null = null
-  if (prices.length > 0) {
-    const min = Math.min(...prices)
-    const max = Math.max(...prices)
-    if (max > min) {
-      const bucketCount = 8
-      const width = (max - min) / bucketCount
-      const counts = new Array(bucketCount).fill(0)
-      for (const p of prices) {
-        const idx = Math.min(bucketCount - 1, Math.floor((p - min) / width))
-        counts[idx] += 1
-      }
-      priceBuckets = counts.map((c, i) => ({
-        label: `${fmtBucketNum(min + i * width)}~${fmtBucketNum(min + (i + 1) * width)}`,
-        count: c,
-      }))
-    } else {
-      priceBuckets = [{ label: fmtBucketNum(min), count: prices.length }]
-    }
-  }
-
-  // 评分分布：1~5 星（(i-1, i] 区间）+ 无评分
-  const ratingBuckets: Array<{ label: string; count: number }> = []
-  for (let i = 1; i <= 5; i++) {
-    ratingBuckets.push({
-      label: `${i}星`,
-      count: ratings.filter((r) => r > i - 1 && r <= i).length,
-    })
-  }
-  const unrated = rows.length - ratings.length
-  if (unrated > 0) ratingBuckets.push({ label: "无评分", count: unrated })
-
-  // 销量 TOP10 + 最新 10 条（完整行，复用数据池卡片渲染）
-  const [topRows, latestRows] = await Promise.all([
-    db
-      .select()
-      .from(selectionResults)
-      .where(eq(selectionResults.taskId, taskId))
-      .orderBy(desc(sql`coalesce(${selectionResults.salesCount}, 0)`), desc(selectionResults.createdAt))
-      .limit(10),
-    db
-      .select()
-      .from(selectionResults)
-      .where(eq(selectionResults.taskId, taskId))
-      .orderBy(desc(selectionResults.createdAt))
-      .limit(10),
-  ])
-
-  const round2 = (n: number | null) => (n == null ? null : Math.round(n * 100) / 100)
-
-  return {
-    ok: true as const,
-    task: {
-      id: task.id,
-      platform: task.platform,
-      taskType: task.taskType,
-      keyword: task.keyword,
-      country: task.country,
-      currency,
-      createdAt: task.createdAt,
-      completedAt: task.completedAt,
-    },
-    kpi: {
-      count: rows.length,
-      priceCount: prices.length,
-      avgPrice: round2(avg(prices)),
-      minPrice: prices.length ? round2(Math.min(...prices)) : null,
-      maxPrice: prices.length ? round2(Math.max(...prices)) : null,
-      ratingCount: ratings.length,
-      avgRating: round2(avg(ratings)),
-      reviewTotal,
-      salesCounted: sales.length,
-      medianSales,
-      totalSales: sales.length ? sum(sales) : null,
-    },
-    priceBuckets,
-    ratingBuckets,
-    salesTop: topRows.map(drizzleResultToItem),
-    latest: latestRows.map(drizzleResultToItem),
   }
 }

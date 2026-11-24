@@ -9,6 +9,7 @@ import {
   getCurrentEnterpriseScope,
 } from "@/lib/auth/session"
 import { MODULE_LABELS } from "@/lib/modules"
+import { bjDayRangeToInclusiveMs, lastDaysRange, toBjDay } from "@/lib/temu-bj-day"
 import {
   callTemuApi,
   isTemuPermissionError,
@@ -30,7 +31,7 @@ import {
  * temu-cache 30s 短缓存。接口口径 docs §8.17（参数表 2026-10-21 官方文档站实证）：
  * - 必填 supplierId（商家 id）来自本地 temu_ship_order 行级字段（shiporderv2
  *   同步落库，2026-10-23 真实店实证）；无发货数据的新店无法确定，友好报错
- * - 无界查询报 100000001（结果超 5 万条），入参一律带出库时间窗（默认 90 天）
+ * - 无界查询报 100000001（结果超 5 万条），入参恒带出库时间范围（缺省近 7 天）
  * - CN 网关直调（与质检同路径，无需 PA 注册）
  */
 
@@ -176,10 +177,20 @@ async function getStoreSupplierId(
   return { ok: true, supplierId: row.supplierId }
 }
 
-/** 出库时间窗（epoch ms）：滚动 now-天数 ~ now */
-function outboundWindow(days: number): { start: number; end: number } {
-  const end = Date.now()
-  return { start: end - days * 86_400_000, end }
+/** 出库时间范围缺省值：近 7 天（含今天），UI 默认值同口径 */
+const DEFAULT_RANGE_DAYS = 7
+
+/** 起止日期（两端含，北京日界）→ 官方出库时间毫秒端点；schema 已保证日期合法且 from ≤ to，
+ *  此处 null 仅类型收口（回落缺省范围，绝不发出无界查询） */
+function outboundRange(
+  dateFrom?: string,
+  dateTo?: string,
+): { from: string; to: string; start: number; end: number } {
+  const fallback = lastDaysRange(DEFAULT_RANGE_DAYS)
+  const from = dateFrom ?? toBjDay(fallback.from)
+  const to = dateTo ?? toBjDay(fallback.to)
+  const ms = bjDayRangeToInclusiveMs(from, to) ?? bjDayRangeToInclusiveMs(to, to)!
+  return { from, to, start: ms.start, end: ms.end }
 }
 
 /** SKC 级本地反查（货号/品名）：退供接口只回 ID，对账要按货号看 */
@@ -223,7 +234,9 @@ export interface TemuReturnPackageRow {
 export async function getTemuReturnPackagesAction(input: {
   store: string
   status?: "1" | "2"
-  window?: "30" | "90" | "365"
+  /** 出库时间范围（两端含，北京日界 YYYY-MM-DD）；缺省近 7 天 */
+  dateFrom?: string
+  dateTo?: string
   expressDeliverySn?: string
   purchaseSubOrderSn?: string
   returnSupplierPackageNo?: string
@@ -237,17 +250,19 @@ export async function getTemuReturnPackagesAction(input: {
   if (!guard.ok) return guard
   const { store } = guard
   const d = parsed.data
+  // 生效范围（含缺省补齐）进缓存键：同一页换日期不得命中旧范围缓存
+  const range = outboundRange(d.dateFrom, d.dateTo)
   const expressList = splitIds(d.expressDeliverySn)
   const subList = splitIds(d.purchaseSubOrderSn)
   const pkgList = splitIds(d.returnSupplierPackageNo)
   return temuCached(
-    `${store.enterpriseId}:return-list:${store.id}:${d.status ?? "all"}:${d.window}:${d.expressDeliverySn ?? "-"}:${d.purchaseSubOrderSn ?? "-"}:${d.returnSupplierPackageNo ?? "-"}:${d.pageNo}`,
+    `${store.enterpriseId}:return-list:${store.id}:${d.status ?? "all"}:${range.from}:${range.to}:${d.expressDeliverySn ?? "-"}:${d.purchaseSubOrderSn ?? "-"}:${d.returnSupplierPackageNo ?? "-"}:${d.pageNo}`,
     async () => {
       const supplier = await getStoreSupplierId(store)
       if (!supplier.ok) return { ok: false as const, error: supplier.error }
       const built = await getTemuCallContext(store)
       if ("error" in built) return { ok: false as const, error: built.error }
-      const { start, end } = outboundWindow(Number(d.window))
+      const { start, end } = range
       try {
         const envelope = await callTemuApi<{ total?: unknown; openReturnPackageDTOS?: unknown }>(
           "bg.refund.returnpackage.get",
@@ -363,7 +378,9 @@ export interface TemuReturnSkuRow {
 
 export async function getTemuReturnSkuDetailAction(input: {
   store: string
-  window?: "7" | "30" | "31"
+  /** 出库时间范围（两端含，北京日界 YYYY-MM-DD）；必填且跨度 ≤31 天（官方 100000004） */
+  dateFrom: string
+  dateTo: string
   returnSupplierPackageNo?: string
   purchaseSubOrderSn?: string
   pageNo?: number
@@ -376,16 +393,17 @@ export async function getTemuReturnSkuDetailAction(input: {
   if (!guard.ok) return guard
   const { store } = guard
   const d = parsed.data
+  const range = outboundRange(d.dateFrom, d.dateTo)
   const pkgList = splitIds(d.returnSupplierPackageNo)
   const subList = splitIds(d.purchaseSubOrderSn)
   return temuCached(
-    `${store.enterpriseId}:return-sku:${store.id}:${d.window}:${d.returnSupplierPackageNo ?? "-"}:${d.purchaseSubOrderSn ?? "-"}:${d.pageNo}`,
+    `${store.enterpriseId}:return-sku:${store.id}:${range.from}:${range.to}:${d.returnSupplierPackageNo ?? "-"}:${d.purchaseSubOrderSn ?? "-"}:${d.pageNo}`,
     async () => {
       const supplier = await getStoreSupplierId(store)
       if (!supplier.ok) return { ok: false as const, error: supplier.error }
       const built = await getTemuCallContext(store)
       if ("error" in built) return { ok: false as const, error: built.error }
-      const { start, end } = outboundWindow(Number(d.window))
+      const { start, end } = range
       try {
         const envelope = await callTemuApi<{ total?: unknown; packageDetailDTOList?: unknown }>(
           "bg.refund.returnpackagelist.get",

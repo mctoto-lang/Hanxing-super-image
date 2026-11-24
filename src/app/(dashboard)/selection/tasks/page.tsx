@@ -1,28 +1,32 @@
-import Link from "next/link"
-import { and, desc, eq, inArray } from "drizzle-orm"
-import { db } from "@/db/client"
-import { selectionTasks, users } from "@/db/schema"
 import { requireUserContext } from "@/lib/auth/session"
 import { hasSelectionToken } from "@/lib/selection/provider-config"
 import { NoPermission } from "@/components/shared/no-permission"
 import { PageHeader } from "@/components/shared/page-header"
+import { TablePagination, parsePageParam } from "@/components/shared/table-pagination"
+import { PageTabs } from "@/components/shared/page-tabs"
 import { TaskCreateDialog } from "@/components/selection/task-create-dialog"
+import { TaskToolbar } from "@/components/selection/task-toolbar"
 import { SelectionTaskTable } from "@/components/selection/task-table"
-import { cn } from "@/lib/utils"
+import { compactNumber } from "@/components/selection/labels"
+import { isSelectionPlatform } from "@/lib/selection/platforms"
+import { TASK_STATUS_TABS, TASK_TYPE_OPTIONS, buildTaskQuery, isTaskStatusKey } from "@/lib/selection/task-links"
+import {
+  getSelectionTaskOverviewAction,
+  getSelectionTasksAction,
+} from "@/server/actions/selection"
 
 export const dynamic = "force-dynamic"
 
-const STATUS_FILTERS = [
-  { key: "active", label: "进行中" },
-  { key: "completed", label: "已完成" },
-  { key: "failed", label: "失败" },
-  { key: "cancelled", label: "已取消" },
-  { key: "all", label: "全部" },
-] as const
+const PAGE_SIZE_OPTIONS = [10, 20, 50]
+
+function first(v: string | string[] | undefined): string {
+  return (Array.isArray(v) ? v[0] : v) ?? ""
+}
 
 /**
- * 数据任务 = 唯一抓取入口：新建任务弹窗 + 任务表格（状态/进度/结算/查看数据
- * 跳数据池），企业内共享。
+ * 数据任务 = 唯一抓取入口：新建任务弹窗 + 状态标签 + 筛选 + 任务表（企业内共享）。
+ * 状态 / 平台 / 类型 / 关键词 / 分页全部 URL 驱动；其它页面可用
+ * ?new=1&platform=X&type=Y 直接打开预置好的新建弹窗。
  */
 export default async function SelectionTasksPage({
   searchParams,
@@ -34,72 +38,118 @@ export default async function SelectionTasksPage({
   const enterpriseId = ctx.user.enterpriseId!
 
   const sp = await searchParams
-  const statusParam = (Array.isArray(sp.status) ? sp.status[0] : sp.status) ?? "active"
-  const status = (STATUS_FILTERS.find((s) => s.key === statusParam)?.key ??
-    "active") as (typeof STATUS_FILTERS)[number]["key"]
+  const statusRaw = first(sp.status)
+  const status = isTaskStatusKey(statusRaw) ? statusRaw : "active"
+  const platformRaw = first(sp.platform)
+  const platform = isSelectionPlatform(platformRaw) ? platformRaw : ""
+  const taskTypeRaw = first(sp.type)
+  const taskType = TASK_TYPE_OPTIONS.some((t) => t.value === taskTypeRaw) ? taskTypeRaw : ""
+  const q = first(sp.q).slice(0, 120)
+  const page = parsePageParam(sp)
+  const pageSizeRaw = Number(first(sp.pageSize))
+  const pageSize = PAGE_SIZE_OPTIONS.includes(pageSizeRaw) ? pageSizeRaw : PAGE_SIZE_OPTIONS[0]!
+  // ?new=1 且带平台 → 直接打开预置的新建弹窗
+  const presetPlatform = first(sp.platform)
+  const autoOpen = first(sp.new) === "1" && isSelectionPlatform(presetPlatform)
 
-  const conds = [eq(selectionTasks.enterpriseId, enterpriseId)]
-  if (status === "active") {
-    conds.push(inArray(selectionTasks.status, ["queued", "processing"]))
-  } else if (status !== "all") {
-    conds.push(
-      eq(
-        selectionTasks.status,
-        status as (typeof selectionTasks.$inferSelect)["status"],
-      ),
+  const [tasks, overview, apifyReady] = await Promise.all([
+    getSelectionTasksAction({
+      status,
+      platform: platform || undefined,
+      taskType: taskType || undefined,
+      q: q || undefined,
+      page,
+      pageSize,
+    }),
+    getSelectionTaskOverviewAction(),
+    hasSelectionToken(enterpriseId),
+  ])
+  if (!tasks.ok) {
+    return (
+      <div className="space-y-6">
+        <PageHeader title="数据任务" description="全部抓取任务的唯一入口。" />
+        <p className="text-sm text-destructive">{tasks.error}</p>
+      </div>
     )
   }
 
-  const [tasks, apifyReady] = await Promise.all([
-    db
-      .select({
-        task: selectionTasks,
-        creatorName: users.name,
-        creatorUsername: users.username,
-      })
-      .from(selectionTasks)
-      .leftJoin(users, eq(selectionTasks.userId, users.id))
-      .where(and(...conds))
-      .orderBy(desc(selectionTasks.createdAt))
-      .limit(50),
-    hasSelectionToken(enterpriseId),
-  ])
+  const filter = { platform, taskType, q }
+  const hasFilter = Boolean(platform || taskType || q)
 
   return (
     <div className="space-y-4">
       <PageHeader
         title="数据任务"
         description="全部抓取任务的唯一入口：新建抓取、跟踪进度、结算积分（企业内共享）。"
-      >
-        <TaskCreateDialog
-          userCredits={ctx.user.creditsBalance}
-          apifyReady={apifyReady}
-        />
-      </PageHeader>
+      />
 
-      <div className="flex flex-wrap items-center gap-1.5">
-        {STATUS_FILTERS.map((f) => (
-          <Link
-            key={f.key}
-            href={f.key === "active" ? "/selection/tasks" : `/selection/tasks?status=${f.key}`}
-            className={cn(
-              "rounded-lg px-3 py-1.5 text-sm transition-colors",
-              status === f.key
-                ? "bg-primary text-primary-foreground"
-                : "border hover:bg-muted",
-            )}
-          >
-            {f.label}
-          </Link>
-        ))}
-        <span className="ml-auto text-xs text-muted-foreground">仅显示最近 50 条任务</span>
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <span>
+          今日已提交 {overview.todayUsed} / {overview.dailyLimit} 个任务
+        </span>
+        <span>·</span>
+        <span>积分余额 {compactNumber(overview.creditsBalance)}</span>
       </div>
 
-      <SelectionTaskTable
-        tasks={tasks.map((r) => ({
-          ...r.task,
-          creatorName: r.creatorName || r.creatorUsername || null,
+      <PageTabs
+        tabs={TASK_STATUS_TABS.map((t) => ({
+          value: t.key,
+          label: `${t.label} ${overview.counts[t.key] ?? 0}`,
+          href: buildTaskQuery(t.key, { ...filter, q: "" }, {}),
         }))}
+        value={status}
+      />
+
+      <TaskToolbar status={status} filter={filter}>
+        <TaskCreateDialog
+          userCredits={overview.creditsBalance}
+          apifyReady={apifyReady}
+          initialPlatform={presetPlatform || undefined}
+          initialTaskType={first(sp.type) || undefined}
+          autoOpen={autoOpen}
+          todayUsed={overview.todayUsed}
+        />
+      </TaskToolbar>
+
+      {tasks.items.length === 0 ? (
+        <div className="rounded-xl border border-dashed p-10 text-center text-sm text-muted-foreground">
+          {hasFilter || status !== "active"
+            ? "没有符合筛选条件的任务。"
+            : "暂无进行中的任务——点右上角「新建抓取任务」发起第一次抓取。"}
+        </div>
+      ) : (
+        <SelectionTaskTable
+          tasks={tasks.items.map((t) => ({
+            id: t.id,
+            userId: t.userId,
+            platform: t.platform,
+            taskType: t.taskType,
+            keyword: t.keyword,
+            country: t.country,
+            status: t.status,
+            progress: t.progress,
+            fetchedCount: t.fetchedCount,
+            maxResults: t.maxResults,
+            estimatedCredits: t.estimatedCredits,
+            actualCredits: t.actualCredits,
+            errorMessage: t.errorMessage,
+            monitorId: t.monitorId,
+            creatorName: t.creatorName,
+            createdAt: t.createdAt,
+            completedAt: t.completedAt,
+          }))}
+          currentUserId={ctx.user.id}
+          canCancelOthers={ctx.user.enterpriseRole === "owner" || ctx.user.enterpriseRole === "admin"}
+        />
+      )}
+
+      <TablePagination
+        page={page}
+        pageSize={pageSize}
+        total={tasks.total}
+        basePath="/selection/tasks"
+        query={{ ...(status !== "active" ? { status } : {}), ...(platform ? { platform } : {}), ...(taskType ? { type: taskType } : {}), ...(q ? { q } : {}) }}
+        pageSizeOptions={PAGE_SIZE_OPTIONS}
       />
     </div>
   )

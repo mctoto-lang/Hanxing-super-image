@@ -25,6 +25,7 @@ export function DateRangePicker({
   size = "default",
   className,
   placeholder = "日期范围",
+  resetOnSelect = false,
 }: {
   value: DateRange | undefined
   onChange: (range: DateRange | undefined) => void
@@ -33,6 +34,10 @@ export function DateRangePicker({
   /** 触发按钮追加类（如 h-8 与同行按钮对齐） */
   className?: string
   placeholder?: string
+  /** 透传 react-day-picker resetOnSelect：true=已有完整范围时点击任意天重开选区
+   *  （两步模型，先点起始日再点结束日）；默认 false=在现有范围上延长/截短。
+   *  有截断上限的场景（如退货 SKU 明细 31 天满窗）不开会锁死窗口挪不动 */
+  resetOnSelect?: boolean
 }) {
   // 受控 + 关闭时整体卸载内容：避免退场动画结束后 Portal 残留悬浮日历
   const [open, setOpen] = useState(false)
@@ -74,6 +79,7 @@ export function DateRangePicker({
             numberOfMonths={1}
             locale={zhCN}
             autoFocus
+            resetOnSelect={resetOnSelect}
           />
         </PopoverContent>
       )}

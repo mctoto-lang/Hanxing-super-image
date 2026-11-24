@@ -164,26 +164,32 @@ async function loadMallAddressLabels(store: StoreRow): Promise<Map<number, strin
   }
 }
 
-/** shiporderv2 按单号回查 → 本地落库（写操作成功后即时刷新 / 列表 fresh 实时核对；
- *  sns ≤20——官方单次名单上限，超出报 3000000）。返回官方实际返回的单号集合——
- *  缺席的单=官方侧已移除/删除。 */
+/** shiporderv2 按单号回查 → 本地落库（写操作成功后即时刷新 / 列表 fresh 实时核对）。
+ *  官方单次名单上限 20——超出报 3000000「发货单号数量范围需要在1~20之间」，
+ *  函数内按 20 分片循环合并结果（调用方无需分批，口径同 freshPullStore）。
+ *  返回官方实际返回的单号集合——缺席的单=官方侧已移除/删除。 */
 async function upsertFromOfficial(
   storeId: string,
   ctx: TemuCallContext,
   sns: string[],
 ): Promise<{ fetched: number; presentSns: string[] }> {
   if (sns.length === 0) return { fetched: 0, presentSns: [] }
-  const r = await callTemuApi<{ list?: unknown }>("bg.shiporderv2.get", {
-    pageNo: 1,
-    pageSize: 50,
-    deliveryOrderSnList: sns,
-  }, ctx)
-  const rows = asList((r.result as { list?: unknown } | null)?.list)
-  if (rows.length > 0) await upsertShipOrderRows(storeId, new Date(), rows)
-  return {
-    fetched: rows.length,
-    presentSns: rows.map((row) => str(row.deliveryOrderSn, 64)).filter((s): s is string => Boolean(s)),
+  let fetched = 0
+  const presentSns: string[] = []
+  for (let i = 0; i < sns.length; i += 20) {
+    const r = await callTemuApi<{ list?: unknown }>("bg.shiporderv2.get", {
+      pageNo: 1,
+      pageSize: 50,
+      deliveryOrderSnList: sns.slice(i, i + 20),
+    }, ctx)
+    const rows = asList((r.result as { list?: unknown } | null)?.list)
+    if (rows.length > 0) await upsertShipOrderRows(storeId, new Date(), rows)
+    fetched += rows.length
+    presentSns.push(
+      ...rows.map((row) => str(row.deliveryOrderSn, 64)).filter((s): s is string => Boolean(s)),
+    )
   }
+  return { fetched, presentSns }
 }
 
 /** shiporderv2 裸查最新一页（sortType:0 按创建时间倒序）→ 落库。deliverTime 增量窗口
@@ -300,6 +306,9 @@ export interface TemuShipOrderRow {
   skcExtCode: string | null
   /** 本单 SKU 明细 id（官方行 raw.packageDetailList；商品条码打印按 SKU 维度提交） */
   productSkuIds: number[]
+  /** 本单每 SKU 件数（同源 packageDetailList：productSkuId → skuNum，同 SKU 多行相加）；
+   *  自动发货预览按 SKU 推算未打印单的包裹拆分用 */
+  skuQtys: Array<{ productSkuId: number; skuNum: number | null }>
   /** 商品名（left join temu_products） */
   productName: string | null
   /** 主图（商品表 COS 转存优先不过期，官方 BasicVO 临时外链兜底） */
@@ -362,6 +371,23 @@ function shipOrderSkuIds(raw: Record<string, unknown> | null): number[] {
   ]
 }
 
+/** 官方行 raw.packageDetailList → 每 SKU 件数（同 SKU 多行相加；任一行件数缺失则该 SKU 记 null） */
+function shipOrderSkuQtys(
+  raw: Record<string, unknown> | null,
+): Array<{ productSkuId: number; skuNum: number | null }> {
+  if (!raw || !Array.isArray(raw.packageDetailList)) return []
+  const byId = new Map<number, number | null>()
+  for (const d of raw.packageDetailList) {
+    if (!isRecord(d)) continue
+    const id = num(d.productSkuId)
+    if (id == null || id <= 0) continue
+    const qty = num(d.skuNum)
+    const prev = byId.get(id)
+    byId.set(id, prev === null || qty === null ? null : (prev ?? 0) + qty)
+  }
+  return [...byId].map(([productSkuId, skuNum]) => ({ productSkuId, skuNum }))
+}
+
 /** 本地发货单联查行（temu_ship_order + 商品名/主图 left join） */
 type ShipOrderViewRow = {
   order: typeof temuShipOrders.$inferSelect
@@ -384,6 +410,7 @@ function mapShipOrderRows(
     skcExtCode: r.skcExtCode,
     /** 本单 SKU 明细（raw.packageDetailList 提取；商品条码按 SKU 维度打印，见 getShipBarcodePrintUrlAction） */
     productSkuIds: shipOrderSkuIds(r.raw),
+    skuQtys: shipOrderSkuQtys(r.raw),
     productName,
     // COS 转存（temu/ 前缀不过期）优先，kwcdn 官方外链是临时 URL 会过期——
     // 放大查看走 /api/image/proxy 代理拉取，过期后报「图片已过期」（对齐商品页 temuImageSrc 口径）
@@ -1500,7 +1527,8 @@ export async function packingMatchAction(input: unknown) {
 /** 打包标签（箱唛）打印直出：boxmarkinfo.get + return_data_key=true → result 即 dataKey
  *  → 拼 https://openapi.kuajingmaihuo.com/tool/print?dataKey= 浏览器直开官方渲染打印页。
  *  链接 10min 内单次有效、请求过立即失效——UI 须点击时现取现跳，禁止缓存/预生成。
- *  装箱发货（packing.match/packing.send）要求先打印打包标签；打印后包裹数与件数锁定。 */
+ *  装箱发货（packing.match/packing.send）要求先打印打包标签；打印后包裹数与件数锁定——
+ *  请求即有副作用，按写操作要求「TEMU-发货」模块权限。 */
 export async function getShipBoxMarkPrintUrlAction(input: unknown) {
   let q: typeof temuShipBoxMarkPrintSchema._output
   try {
@@ -1508,7 +1536,7 @@ export async function getShipBoxMarkPrintUrlAction(input: unknown) {
   } catch {
     return { ok: false as const, error: "参数错误" }
   }
-  const guard = await requireTemuStore(q.store, null)
+  const guard = await requireTemuStore(q.store, "temu_ship")
   if (!guard.ok) return { ok: false as const, error: guard.error }
   try {
     const built = await getTemuCallContext(guard.store)
@@ -1521,6 +1549,14 @@ export async function getShipBoxMarkPrintUrlAction(input: unknown) {
     // return_data_key 模式下 result 直接是 dataKey 字符串（非对象）
     const dataKey = typeof r.result === "string" ? r.result.trim() : ""
     if (!dataKey || dataKey.length > 1000) return { ok: false as const, error: "官方未返回打印 dataKey" }
+    // 演示店：演示层返回的是假 dataKey，不得拼真实官方域名让浏览器打开；
+    // 返回站外占位图（口径同 demo 层 boxMarkUrl），演示页内容非真实箱唛
+    if (guard.store.isDemo) {
+      return {
+        ok: true as const,
+        url: `https://placehold.co/400x300/eef2ff/475569?text=Demo+BoxMark`,
+      }
+    }
     return { ok: true as const, url: `https://openapi.kuajingmaihuo.com/tool/print?dataKey=${dataKey}` }
   } catch (err) {
     return { ok: false as const, error: await toWorkbenchError(guard.store.id, err) }
@@ -2191,7 +2227,8 @@ export async function changeShipLogisticsAction(input: unknown) {
 
 /** 按货号批量查库存参考（发货台行内/备货列表）：库存合计 + 已创建未装箱(status=0)。
  *  codes = 发货台 skcExtCode / 备货 productSn；企业级聚合（全部店铺视图同样适用）；
- *  归一化货号匹配（B049≡B49）。shipState：发货状态 auto/manual（无档案=null）。 */
+ *  归一化货号匹配（B049≡B49）。shipState：发货状态 auto/manual（无档案=null）。
+ *  snKey：该入参货号的归一 key——前端按归一口径合并累计扣减预览（同服务端 assertShipmentStock）。 */
 export async function getShipInventoryRefAction(input: {
   store?: string
   codes: string[]
@@ -2206,6 +2243,8 @@ export async function getShipInventoryRefAction(input: {
           totalQty: number
           pendingUnpacked: number
           shipState: "auto" | "manual" | null
+          /** 归一化货号（B049≡B49 命中同一档案同 key；扣减预览累计键） */
+          snKey: string
           /** 档案装箱数（每箱件数；自动创建发货拆包裹默认值，无档案=null） */
           cartonQty: number | null
           /** 库存档案款名（商品信息页货号悬停联动；无档案=null） */
@@ -2304,6 +2343,7 @@ export async function getShipInventoryRefAction(input: {
       totalQty: number
       pendingUnpacked: number
       shipState: "auto" | "manual" | null
+      snKey: string
       cartonQty: number | null
       name: string | null
     }
@@ -2315,6 +2355,7 @@ export async function getShipInventoryRefAction(input: {
       totalQty: product ? (stockByProduct.get(product.id) ?? 0) : 0,
       pendingUnpacked: pendingByKey.get(key) ?? 0,
       shipState: product?.shipState ?? null,
+      snKey: key,
       cartonQty: product?.cartonQty ?? null,
       name: product?.name ?? null,
     }

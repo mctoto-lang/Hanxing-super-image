@@ -7,6 +7,8 @@ import {
   estimateCredits,
   getFormFields,
   isSelectionPlatform,
+  platformsForCategory,
+  resultLimitsFor,
 } from "@/lib/selection/platforms"
 
 /**
@@ -89,7 +91,8 @@ describe("选品平台注册表", () => {
     expect(shopifyMarket[0]).toMatchObject({ key: "domain", required: true })
 
     const amazonDiscover = getFormFields("amazon", "discover")
-    expect(amazonDiscover.some((f) => f.key === "categoryUrl")).toBe(true)
+    // 榜单模式主输入 = 品类（primary 标记），不再补关键词框
+    expect(amazonDiscover.find((f) => f.key === "category")?.primary).toBe(true)
     expect(amazonDiscover.some((f) => f.key === "keyword")).toBe(false)
 
     const redditDiscover = getFormFields("reddit", "discover")
@@ -105,5 +108,64 @@ describe("选品平台注册表", () => {
     expect(isSelectionPlatform("amazon")).toBe(true)
     expect(isSelectionPlatform("taobao")).toBe(false)
     expect(isSelectionPlatform("")).toBe(false)
+  })
+})
+
+describe("注册表派生口径（0108）", () => {
+  it("platformsForCategory：按类别派生平台清单（标签条 / 下拉 / SQL 过滤的唯一来源）", () => {
+    expect(platformsForCategory("ecommerce")).toEqual(["amazon", "etsy", "temu", "shopify"])
+    expect(platformsForCategory("social")).toEqual(["instagram", "tiktok", "pinterest", "reddit", "x", "facebook"])
+    // 两类合计恰为全部平台，无遗漏无重复
+    expect([...platformsForCategory("ecommerce"), ...platformsForCategory("social")].sort()).toEqual(
+      [...SELECTION_PLATFORMS].sort(),
+    )
+  })
+
+  it("resultLimitsFor：发现模式可单独声明上下限（Amazon 榜单每类目硬上限 100）", () => {
+    // Amazon 关键词搜索约 7 页封顶：上限从 1000 收到 200，默认 60
+    expect(resultLimitsFor("amazon", "market")).toEqual({ min: 1, max: 200, default: 60 })
+    expect(resultLimitsFor("amazon", "discover")).toEqual({ min: 1, max: 100, default: 48 })
+    // 未单独声明的平台发现模式沿用平台级配置
+    const temu = SELECTION_PLATFORM_CONFIGS.temu
+    expect(resultLimitsFor("temu", "discover")).toEqual({
+      min: temu.minResults,
+      max: temu.maxResultsPerTask,
+      default: temu.defaultResults,
+    })
+    // Etsy Actor 侧最小 30 条在发现模式下同样生效
+    expect(resultLimitsFor("etsy", "discover").min).toBe(30)
+  })
+
+  it("Amazon 注册表（2026-11-24 换 junglee 家族）", () => {
+    const cfg = SELECTION_PLATFORM_CONFIGS.amazon
+    expect(cfg.marketActorId).toBe("junglee/Amazon-crawler")
+    expect(cfg.discover?.actorId).toBe("junglee/amazon-bestsellers")
+    expect(cfg.monitor?.metricsActorId).toBe("junglee/amazon-asins-scraper")
+    expect(cfg.monitor?.reviewActorId).toBe("junglee/amazon-reviews-scraper")
+    // 榜单站点（德国站实测不支持）
+    const country = cfg.discover!.fields.find((f) => f.key === "country")
+    expect(country?.options?.map((o) => o.value)).toEqual(["US", "UK", "JP", "CA", "FR"])
+    // 默认品类在每个站点都可用（showWhen 覆盖全部 5 个榜单站点）
+    const category = cfg.discover!.fields.find((f) => f.key === "category")
+    const def = category?.defaultValue
+    expect(category?.options?.find((o) => o.value === def)?.showWhen?.in).toHaveLength(5)
+    // 榜单带详情较慢：run 超时放宽
+    expect(cfg.discover?.timeoutSecs).toBe(1500)
+    // 费率不变（用户拍板）
+    expect(estimateCredits("amazon", "market", 100)).toBe(200)
+    expect(estimateCredits("amazon", "discover", 100)).toBe(200)
+  })
+
+  it("TEMU 监控注册表：hypebridge 单品详情，按次 10 积分（用户拍板）", () => {
+    const mon = SELECTION_PLATFORM_CONFIGS.temu.monitor
+    expect(mon).toMatchObject({
+      metricsActorId: "hypebridge/temu-scraper",
+      reviewActorId: null,
+      metricsCreditsPerRun: 10,
+    })
+    expect(mon?.metricsNote).toMatch(/不含销量/)
+    // TEMU 关键词抓取仍是 crw（上一轮已接）
+    expect(SELECTION_PLATFORM_CONFIGS.temu.marketActorId).toBe("crw/temu-products-scraper")
+    expect(estimateCredits("temu", "monitor", 1)).toBe(10)
   })
 })

@@ -180,6 +180,10 @@ beforeAll(async () => {
   yesterday.setHours(12, 0, 0, 0)
   const old = new Date()
   old.setDate(old.getDate() - 20)
+  // 与「昨日」同样钉在本地中午：库里 date_trunc('day') 按会话时区（UTC）取日，
+  // 夹具若落在当前时刻，凌晨 0~8 点（UTC+8）运行时 UTC 日期会比本地早一天，
+  // old20DayKey() 的断言随之失败
+  old.setHours(12, 0, 0, 0)
   await db.insert(generationTasks).values([
     { enterpriseId: entA, userId: memberA, prompt: `平台批次-今日-${runTag}`, createdAt: new Date() },
     { enterpriseId: entA, userId: memberA, prompt: `平台批次-昨日-${runTag}`, createdAt: yesterday },

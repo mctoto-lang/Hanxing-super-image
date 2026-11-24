@@ -8,10 +8,12 @@ import {
   forEachDatasetItem,
   getActorRun,
   getDatasetItemCount,
+  isApifyMemoryLimitError,
   startActorRun,
 } from "@/lib/apify/client"
 import { buildActorInput } from "@/lib/selection/input-builders"
 import { isSelectionPlatform } from "@/lib/selection/platforms"
+import { isActorErrorRow, isRedditCommentRow } from "@/lib/selection/normalizers"
 import { resolveSelectionToken } from "@/lib/selection/provider-config"
 import {
   countTaskResults,
@@ -47,6 +49,15 @@ const POLL_BATCH = 20
 const RUN_ID_GRACE_MS = 10 * 60_000
 /** 收割循环自己的间隔（启动循环复用 worker 全局 interval） */
 const HARVEST_INTERVAL_MS = 5_000
+/**
+ * 账户并发内存已满（Apify 402 actor-memory-limit-exceeded）时的启动退避：
+ * 退回队列、指数退避后重试，超过次数才判失败退款。退避表只在进程内——
+ * 多副本各自计时，重复认领由「条件更新」互斥。
+ */
+const MEMORY_BACKOFF_BASE_MS = 8_000
+const MEMORY_BACKOFF_MAX_MS = 90_000
+const MEMORY_BACKOFF_MAX_ATTEMPTS = 14
+const startBackoff = new Map<string, { until: number; attempts: number }>()
 
 type LoopResult = { processed: number; failed: number }[]
 
@@ -61,20 +72,23 @@ export async function processSelectionStartOnce(): Promise<LoopResult> {
     return [{ processed: 0, failed: 0 }]
   }
 
-  // 原子认领：先选候选 id 再条件更新（UPDATE 无 LIMIT，多副本安全）
-  const candidates = await db
+  // 原子认领：先选候选 id 再条件更新（UPDATE 无 LIMIT，多副本安全）。
+  // 多取几条候选，跳过仍在内存退避期内的任务——避免队头阻塞后面的任务
+  const now = Date.now()
+  const candidates = (await db
     .select({ id: selectionTasks.id })
     .from(selectionTasks)
     .where(eq(selectionTasks.status, "queued"))
     .orderBy(asc(selectionTasks.createdAt))
-    .limit(1)
-  const claims = candidates.length
+    .limit(8)).filter((c) => (startBackoff.get(c.id)?.until ?? 0) <= now)
+  const target = candidates[0]
+  const claims = target
     ? await db
         .update(selectionTasks)
         .set({ status: "processing", startedAt: new Date() })
         .where(
           and(
-            inArray(selectionTasks.id, candidates.map((c) => c.id)),
+            eq(selectionTasks.id, target.id),
             eq(selectionTasks.status, "queued"),
           ),
         )
@@ -107,9 +121,13 @@ export async function processSelectionStartOnce(): Promise<LoopResult> {
       actorId: built.actorId,
       runInput: built.runInput,
       maxResults: task.maxResults,
+      // 慢 actor（Amazon 榜单带详情）由注册表放宽，缺省 600s
+      timeoutSecs: built.timeoutSecs,
+      memoryMB: built.memoryMB,
       token: cred.token,
     })
     runToken = cred.token
+    startBackoff.delete(task.id)
     // 回填加条件：仅当任务仍为 processing——期间被取消/已结算的跳过回填，
     // 并 best-effort abort 已创建的 run（否则 Apify 孤儿 run 持续计费）
     const updated = await db
@@ -143,6 +161,31 @@ export async function processSelectionStartOnce(): Promise<LoopResult> {
       }
     }
     const msg = err instanceof Error ? err.message : String(err)
+    // 账户并发内存已满：run 未创建、未计费，退回队列按退避重试（预扣积分保持不变）
+    if (!run && isApifyMemoryLimitError(err)) {
+      const attempts = (startBackoff.get(task.id)?.attempts ?? 0) + 1
+      if (attempts < MEMORY_BACKOFF_MAX_ATTEMPTS) {
+        const delay = Math.min(MEMORY_BACKOFF_BASE_MS * 2 ** (attempts - 1), MEMORY_BACKOFF_MAX_MS)
+        startBackoff.set(task.id, { until: Date.now() + delay, attempts })
+        await db
+          .update(selectionTasks)
+          .set({ status: "queued", startedAt: null })
+          .where(and(eq(selectionTasks.id, task.id), eq(selectionTasks.status, "processing")))
+        console.warn(
+          `[worker:selection] 任务 ${task.id} 因 Apify 账户并发内存已满退回队列，${Math.round(delay / 1000)}s 后重试（第 ${attempts} 次）`,
+        )
+        return [{ processed: 0, failed: 0 }]
+      }
+      startBackoff.delete(task.id)
+      await settleSelectionTask({
+        taskId: task.id,
+        finalStatus: "failed",
+        fetchedCount: 0,
+        errorMessage:
+          "启动抓取失败：Apify 账户并发内存已满（多个抓取任务同时运行），已自动重试仍未排上，请稍后重新提交",
+      })
+      return [{ processed: 0, failed: 1 }]
+    }
     await settleSelectionTask({
       taskId: task.id,
       finalStatus: "failed",
@@ -237,14 +280,24 @@ async function harvestOne(taskId: string): Promise<HarvestOutcome> {
     run = await getActorRun(task.apifyRunId, cred.token)
   } catch (err) {
     // 404：run 不存在或跨账号不可见（凭证换账号后收割永远 404）——按失败
-    // 结算，防止任务永久卡 processing 占满并发闸门；其他错误（网络/5xx）
-    // 照旧抛给外层，下轮继续轮询
-    if (err instanceof ApifyError && err.status === 404) {
+    // 结算，防止任务永久卡 processing 占满并发闸门。
+    // 401/403：token 被吊销/无权访问该 run，同样重试无望——按「凭证已失效」
+    // 口径结算退款（对齐上方 resolveSelectionToken 为空的分支）。
+    // 其他错误（网络/5xx/429 限速）照旧抛给外层，下轮继续轮询。
+    // 注：取消/超时分支的 abortActorRun 与本查询同 token 同凭证，其 401/403/404
+    // 在下一轮收割会先走到这里被结算，不会永久卡闸门。
+    if (
+      err instanceof ApifyError &&
+      (err.status === 404 || err.status === 401 || err.status === 403)
+    ) {
       await settleSelectionTask({
         taskId,
         finalStatus: "failed",
         fetchedCount: task.fetchedCount,
-        errorMessage: "运行记录不可见或不存在（Apify run 404，抓取凭证可能已更换账号）",
+        errorMessage:
+          err.status === 404
+            ? "运行记录不可见或不存在（Apify run 404，抓取凭证可能已更换账号）"
+            : "抓取凭证已失效（Apify 拒绝访问 401/403，token 可能已被吊销或无权访问该 run），任务终止",
       })
       return "settled-failed"
     }
@@ -296,6 +349,7 @@ async function harvestOne(taskId: string): Promise<HarvestOutcome> {
   // ── 终态：翻页入库（SUCCEEDED 全量 / 失败取部分）后结算 ──
   // 入库路由（0106）：review 型 → selection_review；monitor 型 → 结果表
   // （reddit 特例同时抽帖子内嵌评论）；discover/market → 结果表
+  // actor 错误记录行不是数据，入库前剔除（不计费）。
   let harvested = 0
   if (datasetId) {
     const taskRef = {
@@ -308,24 +362,61 @@ async function harvestOne(taskId: string): Promise<HarvestOutcome> {
       targetTitle: (task.searchParams?.targetTitle as string) ?? null,
       targetUrl: (task.searchParams?.targetUrl as string) ?? null,
     }
-    await forEachDatasetItem(
-      datasetId,
-      async (batch) => {
-        if (task.taskType === "review") {
-          await ingestSelectionReviews(taskRef, batch)
-        } else {
-          await ingestSelectionResults(taskRef, batch)
-          if (task.taskType === "monitor" && task.platform === "reddit") {
-            await ingestRedditPostComments(taskRef, batch)
-          }
-        }
-      },
-      { token: cred.token },
-    )
-    harvested =
+    // reddit：评论是独立行（type="comment"）与帖子混排在同一 dataset——评论只进
+    // selection_review、帖子只进结果表；review 任务则只收评论行
+    const isReddit = task.platform === "reddit"
+    // 已入库条数口径（review→评论表，其余→结果表）：dataset 中途拉断时按实际入库结算
+    const countIngested = async () =>
       task.taskType === "review"
         ? await countTaskReviews(task.id)
         : await countTaskResults(task.id)
+    try {
+      await forEachDatasetItem(
+        datasetId,
+        async (batch) => {
+          const rows = batch.filter((item) => !isActorErrorRow(item))
+          const comments = isReddit ? rows.filter(isRedditCommentRow) : []
+          const posts = isReddit ? rows.filter((item) => !isRedditCommentRow(item)) : rows
+          if (task.taskType === "review") {
+            await ingestSelectionReviews(taskRef, isReddit ? comments : rows)
+          } else {
+            await ingestSelectionResults(taskRef, posts)
+            if (task.taskType === "monitor" && isReddit) {
+              if (comments.length > 0) await ingestSelectionReviews(taskRef, comments)
+              // 旧版 actor 把评论嵌在帖子行的 comments/replies 里（兼容保留）
+              await ingestRedditPostComments(taskRef, posts)
+            }
+          }
+        },
+        { token: cred.token },
+      )
+    } catch (err) {
+      // run 已终态但 dataset 拉不动：4xx（429 限速除外——401/403 凭证失效、
+      // 404 dataset 被删/跨账号不可见、400 参数错）重试无望，每轮原样失败会
+      // 让任务永久卡 processing 占满并发闸门——按已入库条数结算 failed 释放；
+      // 网络/5xx/429 照旧抛给外层，下轮继续轮询（入库幂等，重试安全）。
+      if (
+        err instanceof ApifyError &&
+        err.status !== undefined &&
+        err.status >= 400 &&
+        err.status < 500 &&
+        err.status !== 429
+      ) {
+        console.error(
+          `[worker:selection] 任务 ${task.id} dataset 拉取失败（Apify ${err.status}），按已入库条数结算:`,
+          err.message,
+        )
+        await settleSelectionTask({
+          taskId,
+          finalStatus: "failed",
+          fetchedCount: await countIngested(),
+          errorMessage: `抓取结果拉取失败（Apify dataset ${err.status}，凭证失效或数据不可见），已按已入库条数结算`,
+        })
+        return "settled-failed"
+      }
+      throw err
+    }
+    harvested = await countIngested()
   }
 
   if (run.status === "SUCCEEDED") {
@@ -352,6 +443,8 @@ async function harvestOne(taskId: string): Promise<HarvestOutcome> {
         enterpriseId: task.enterpriseId,
         platform: task.platform,
         taskType: task.taskType,
+        // 一次性抓评论（无监控目标）按来源链接生成目标级 AI 洞察
+        targetUrl: (task.searchParams?.targetUrl as string) ?? null,
       }).catch(() => {})
     }
     return "settled-completed"

@@ -1,4 +1,3 @@
-import Link from "next/link"
 import {
   Info,
   Megaphone,
@@ -35,7 +34,7 @@ import { TemuPurchasePanel } from "@/components/temu/purchase-panel"
 import { TemuQualityPanel } from "@/components/temu/quality-panel"
 import { TemuReturnPanel } from "@/components/temu/return-panel"
 import { TemuShipPanel } from "@/components/temu/ship-panel"
-import { cn } from "@/lib/utils"
+import { PageTabs } from "@/components/shared/page-tabs"
 import {
   Card,
   CardContent,
@@ -188,59 +187,50 @@ export default async function TemuPage({
     // 脱离文档流 → 页面级永不出现滚动条；顶栏（折叠按钮+页面标题）钉住，
     // 内容在本容器内部滚动（scrollbar-hide 隐藏滚动条视觉）。p-4 对齐壳层内边距
     <div className="absolute inset-x-0 top-16 bottom-0 flex flex-col space-y-6 overflow-y-auto p-4 scrollbar-hide">
-      {/* 页签（Link 驱动，样式对齐 shadcn Tabs）+ 店铺切换下拉 */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="inline-flex h-9 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground">
-          {visibleTabs.map((t) => (
-            <Link
-              key={t.value}
-              href={tabHref(t.value)}
-              className={cn(
-                "inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1 text-sm font-medium whitespace-nowrap transition-all",
-                activeTab === t.value ? "bg-background text-foreground shadow-sm" : "hover:text-foreground",
-              )}
-            >
-              <t.icon className="size-4" />
-              {t.label}
-            </Link>
-          ))}
-        </div>
-        {/* 核价/质检/发布/退货工作台按单店 token 调官方接口，不提供「全部店铺」；
-            概览/商品信息为本地聚合、备货/广告为逐店扇出合并——支持全店 */}
-        <div className="flex items-center gap-2">
-          {/* 多主体切换（应用 ≤1 时隐藏；「全部主体」不筛选） */}
-          {apps.length > 1 && (
-            <TemuAppSelect tab={activeTab} current={validApp} apps={apps} />
-          )}
-          {/* 时间显示框（仅概览 tab）：走秒实时时钟，点击弹出各店最近同步时间 */}
-          {activeTab === "overview" && (
-            <TemuSyncClock
-              stores={enabledStores.map((s) => ({
-                id: s.id,
-                name: s.isDemo ? `${s.name}（演示）` : s.name,
-                lastSyncAt: s.lastSyncAt,
-                ok: s.lastSyncStatus?.ok ?? null,
-                status: s.lastSyncStatus,
-              }))}
-            />
-          )}
-          <TemuStoreSelect
-            tab={activeTab}
-            current={effectiveStore}
-            allowAll={
-              activeTab === "overview" ||
-              activeTab === "products" ||
-              activeTab === "purchase" ||
-              activeTab === "ads"
-            }
-            app={validApp}
-            stores={(isPublishTab ? publishableStores : enabledStores).map((s) => ({
+      {/* 页签（宽度自适应：tab + 右侧工具挤不下一行即折叠为单 tab 下拉）+ 店铺切换下拉 */}
+      <PageTabs
+        tabs={visibleTabs.map((t) => ({
+          value: t.value,
+          label: t.label,
+          href: tabHref(t.value),
+          icon: <t.icon className="size-4" />,
+        }))}
+        value={activeTab}
+      >
+        {/* 时间显示框（仅概览 tab）：走秒实时时钟，点击弹出各店最近同步时间 */}
+        {activeTab === "overview" && (
+          <TemuSyncClock
+            stores={enabledStores.map((s) => ({
               id: s.id,
               name: s.isDemo ? `${s.name}（演示）` : s.name,
+              lastSyncAt: s.lastSyncAt,
+              ok: s.lastSyncStatus?.ok ?? null,
+              status: s.lastSyncStatus,
             }))}
           />
-        </div>
-      </div>
+        )}
+        {/* 多主体切换（应用 ≤1 时隐藏；「全部主体」不筛选） */}
+        {apps.length > 1 && (
+          <TemuAppSelect tab={activeTab} current={validApp} apps={apps} />
+        )}
+        {/* 核价/质检/发布/退货工作台按单店 token 调官方接口，不提供「全部店铺」；
+            概览/商品信息为本地聚合、备货/广告为逐店扇出合并——支持全店 */}
+        <TemuStoreSelect
+          tab={activeTab}
+          current={effectiveStore}
+          allowAll={
+            activeTab === "overview" ||
+            activeTab === "products" ||
+            activeTab === "purchase" ||
+            activeTab === "ads"
+          }
+          app={validApp}
+          stores={(isPublishTab ? publishableStores : enabledStores).map((s) => ({
+            id: s.id,
+            name: s.isDemo ? `${s.name}（演示）` : s.name,
+          }))}
+        />
+      </PageTabs>
 
       {/* 演示模式提示条（未配置 TEMU 应用：官方沙箱数据） */}
       {overview.demoMode && <TemuDemoBanner />}

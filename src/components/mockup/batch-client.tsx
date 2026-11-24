@@ -591,84 +591,79 @@ export function MockupBatchClient({
 
   return (
     <div className="flex flex-col gap-4 lg:h-[calc(100svh-7rem)] lg:overflow-hidden">
-      {/* 顶栏：页内 Tab + 右侧生成历史入口 */}
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-4">
-          <MockupPageTabs />
-        </div>
-        <div className="flex items-center gap-2">
-          {showHistory ? (
-            <>
-              <Select
-                value={history.source}
-                onValueChange={(v) =>
-                  v && history.setSource(v as "card" | "batch")
-                }
-              >
-                <SelectTrigger
-                  aria-label="切换记录来源"
-                  size="sm"
-                  className="w-[110px] rounded-[min(var(--radius-md),12px)] text-xs"
-                >
-                  <SelectValue>
-                    {history.source === "card" ? "模板渲染" : "批量替换"}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="card">模板渲染</SelectItem>
-                  <SelectItem value="batch">批量替换</SelectItem>
-                </SelectContent>
-              </Select>
-              <HistoryDateRangePicker
-                value={history.dateRange}
-                onChange={history.setDateRange}
+      {/* 顶栏：页内 Tab + 右侧生成历史入口；宽度自适应：tab 条 + 工具挤不下一行即折叠为单 tab 下拉 */}
+      <MockupPageTabs className="shrink-0 gap-3">
+        {showHistory ? (
+          <>
+            <Select
+              value={history.source}
+              onValueChange={(v) =>
+                v && history.setSource(v as "card" | "batch")
+              }
+            >
+              <SelectTrigger
+                aria-label="切换记录来源"
                 size="sm"
+                className="w-[110px] rounded-[min(var(--radius-md),12px)] text-xs"
+              >
+                <SelectValue>
+                  {history.source === "card" ? "模板渲染" : "批量替换"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="card">模板渲染</SelectItem>
+                <SelectItem value="batch">批量替换</SelectItem>
+              </SelectContent>
+            </Select>
+            <HistoryDateRangePicker
+              value={history.dateRange}
+              onChange={history.setDateRange}
+              size="sm"
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={history.loading}
+              onClick={() => void history.handleRefresh()}
+            >
+              {history.loading ? (
+                <DashRing className="size-4" />
+              ) : (
+                <RefreshCw className="size-4" />
+              )}
+              刷新
+            </Button>
+          </>
+        ) : (
+          <>
+            <div className="relative w-[220px]">
+              <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={keyword}
+                onChange={(e) => setKeyword(e.target.value)}
+                placeholder="搜索模板名称 / 归属人"
+                className="h-7 pl-8 text-xs"
               />
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={history.loading}
-                onClick={() => void history.handleRefresh()}
-              >
-                {history.loading ? (
-                  <DashRing className="size-4" />
-                ) : (
-                  <RefreshCw className="size-4" />
-                )}
-                刷新
-              </Button>
-            </>
-          ) : (
-            <>
-              <div className="relative w-[220px]">
-                <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={keyword}
-                  onChange={(e) => setKeyword(e.target.value)}
-                  placeholder="搜索模板名称 / 归属人"
-                  className="h-7 pl-8 text-xs"
-                />
-              </div>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setManageOpen(true)}
-              >
-                <Settings2 className="size-4" />
-                模板管理
-              </Button>
-            </>
-          )}
-          <Button
-            size="sm"
-            variant={showHistory ? "default" : "outline"}
-            onClick={() => setShowHistory((v) => !v)}
-          >
-            <History className="size-4" />
-            生成历史
-          </Button>
-        </div>
-      </div>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setManageOpen(true)}
+            >
+              <Settings2 className="size-4" />
+              模板管理
+            </Button>
+          </>
+        )}
+        <Button
+          size="sm"
+          variant={showHistory ? "default" : "outline"}
+          onClick={() => setShowHistory((v) => !v)}
+        >
+          <History className="size-4" />
+          生成历史
+        </Button>
+      </MockupPageTabs>
 
       <div className="min-h-0 flex-1 overflow-y-auto pr-1 scrollbar-hide">
         {showHistory ? (

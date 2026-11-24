@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { toast } from "sonner"
-import { Package, Zap } from "lucide-react"
+import { Package, TriangleAlert, Zap } from "lucide-react"
 import { DashRing } from "@/components/ui/dash-ring"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -33,46 +33,44 @@ import {
   type TemuShipStagingRow,
 } from "@/server/actions/temu-ship"
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
+import { EmptyHint } from "@/components/temu/empty-hint"
+import { TruncTip } from "@/components/temu/trunc-tip"
+import { ZoomableImage } from "@/components/ui/zoomable-image"
+import { cn } from "@/lib/utils"
 import { chunkSns } from "./ship-packing"
-import { defaultDeliverNum } from "./ship-auto-create-default"
+import {
+  defaultDeliverNum,
+  expandGroupOutcome,
+  isOfficiallyUndeliverable,
+} from "./ship-auto-create-default"
+import { packageTotals, parsePerPackage, splitPackages } from "./ship-package-split"
+import { GROUP_TD, GROUP_TH, WarehouseGroupCard } from "./ship-warehouse-group"
 
 /**
  * 自动创建发货弹窗（发货台勾选后「自动创建发货」）：创建视图的全自动版——
  * - 发货仓库：全部收货仓分组共用所选的一个卖家发货仓库；
- * - 发货数：每 SKU 默认发货台行内调整值 ?? 官方可发上限（缺上限回落备货数；可改，钳制 1–上限）；
+ * - 发货数：每 SKU 默认发货台行内调整值 ?? 官方可发上限（缺上限回落备货数；可改，钳制 1–上限，
+ *   上限 ≤0 不钳——该单整单阻断）；
  * - 拆包裹：按货号「每包件数」（默认读库存档案装箱数 cartonQty，未建档=整单一包）
- *   定长拆箱——前包满装、尾包裹余数（每 SKU 合计=发货数；多 SKU 第 i 箱合并为第 i 包），
- *   单包裹数 >10（官方上限）红字阻断该单并提示增大每包件数；
+ *   定长拆箱（splitPackages）——前包满装、尾包裹余数，单包裹数 >10（官方上限）红字阻断该单；
+ * - 官方可发上限 ≤0（官方判定不可发）的单同样整单阻断：deliverSkuNum schema min(1)，
+ *   0 件只会换来无字段的「参数错误」，故不入创建、行内红字提示；
+ * - 明细按收货仓分组展示（组头单数/件数/包数，组内表格：缩略图/款名/货号、每 SKU 发货数、
+ *   每包件数、拆包预览、结果）；
  * - 确认执行：fresh 发货台预检（超时单阻断）→ 逐组 createShipOrderAction（bg.shiporderv3.create）。
  */
 
-/** 定长拆箱：每包件数 per → 前包满装、尾包裹余数；per 非法/<=0 视为整单一包；>10 包返回 null */
-function splitPackages(
-  deliverNums: Record<number, number>,
-  per: number | null,
-): Array<Record<number, number>> | null {
-  if (per == null || per < 1) return [{ ...deliverNums }]
-  let boxCount = 1
-  for (const n of Object.values(deliverNums)) {
-    const need = Math.ceil(n / per)
-    if (need > boxCount) boxCount = need
-  }
-  if (boxCount > 10) return null
-  const packages: Array<Record<number, number>> = []
-  for (let i = 0; i < boxCount; i++) packages.push({})
-  for (const [idStr, n] of Object.entries(deliverNums)) {
-    const id = Number(idStr)
-    let left = n
-    let i = 0
-    while (left > 0) {
-      const put = Math.min(per, left)
-      packages[i]![id] = put
-      left -= put
-      i++
-    }
-  }
-  return packages
+/** 收货仓分组（官方 receiveaddressv2；含收货地址——创建载荷必填） */
+interface CreateGroup {
+  subWarehouseId: number
+  /** 收货仓名（发货台行 subWarehouseName；缺失回落「收货仓{id}」） */
+  name: string
+  receiveAddress: TemuShipReceiveAddress
+  sns: string[]
 }
+
+const sumValues = (m: Record<number, number> | undefined) =>
+  Object.values(m ?? {}).reduce((a, n) => a + n, 0)
 
 export function AutoCreateShipDialog({
   store,
@@ -93,10 +91,7 @@ export function AutoCreateShipDialog({
   const [loading, startLoading] = React.useTransition()
   const [creating, startCreating] = React.useTransition()
   const [confirming, setConfirming] = React.useState(false)
-  /** 收货仓分组（官方 receiveaddressv2；含收货地址——创建载荷必填） */
-  const [groups, setGroups] = React.useState<
-    Array<{ subWarehouseId: number; receiveAddress: TemuShipReceiveAddress; sns: string[] }>
-  >([])
+  const [groups, setGroups] = React.useState<CreateGroup[]>([])
   const [mallAddrs, setMallAddrs] = React.useState<
     Array<{ id: number; label: string; isDefault: boolean; fullText: string }>
   >([])
@@ -117,7 +112,7 @@ export function AutoCreateShipDialog({
         (async () => {
           const byWh = new Map<
             number,
-            { subWarehouseId: number; receiveAddress: TemuShipReceiveAddress; sns: string[] }
+            { receiveAddress: TemuShipReceiveAddress; sns: string[] }
           >()
           for (const batch of chunkSns(sns)) {
             const r = await getReceiveAddressesAction({ store, subPurchaseOrderSns: batch })
@@ -128,14 +123,20 @@ export function AutoCreateShipDialog({
                 hit.sns.push(...g.subPurchaseOrderSns)
               } else {
                 byWh.set(g.subWarehouseId, {
-                  subWarehouseId: g.subWarehouseId,
                   receiveAddress: g.receiveAddress,
                   sns: [...g.subPurchaseOrderSns],
                 })
               }
             }
           }
-          return { ok: true as const, groups: [...byWh.values()] }
+          return {
+            ok: true as const,
+            groups: [...byWh].map(([subWarehouseId, g]) => ({
+              subWarehouseId,
+              receiveAddress: g.receiveAddress,
+              sns: g.sns,
+            })),
+          }
         })(),
         getShipInventoryRefAction({
           store,
@@ -148,12 +149,17 @@ export function AutoCreateShipDialog({
         return
       }
       const selSet = new Set(sns)
-      const gs = addr.groups
-        .map((g) => ({
-          subWarehouseId: g.subWarehouseId,
-          receiveAddress: g.receiveAddress,
-          sns: g.sns.filter((sn) => selSet.has(sn)),
-        }))
+      const nameBySn = new Map(rows.map((r) => [r.subPurchaseOrderSn, r.subWarehouseName]))
+      const gs: CreateGroup[] = addr.groups
+        .map((g) => {
+          const named = g.sns.find((sn) => nameBySn.get(sn))
+          return {
+            subWarehouseId: g.subWarehouseId,
+            name: (named ? nameBySn.get(named) : null) ?? `收货仓${g.subWarehouseId}`,
+            receiveAddress: g.receiveAddress,
+            sns: g.sns.filter((sn) => selSet.has(sn)),
+          }
+        })
         .filter((g) => g.sns.length > 0)
       setGroups(gs)
       const grouped = new Set(gs.flatMap((g) => g.sns))
@@ -200,11 +206,9 @@ export function AutoCreateShipDialog({
       const row = bySn.get(sn)
       const deliverNums = nums[sn]
       if (!row || !deliverNums) return { packages: null as Array<Record<number, number>> | null, count: 0 }
-      const perRaw = row.skcExtCode ? (perByCode[row.skcExtCode] ?? "") : ""
-      const per = Number(perRaw)
       const packages = splitPackages(
         deliverNums,
-        perRaw.trim() !== "" && Number.isFinite(per) && per >= 1 ? Math.floor(per) : null,
+        row.skcExtCode ? parsePerPackage(perByCode[row.skcExtCode]) : null,
       )
       return { packages, count: packages?.length ?? 0 }
     },
@@ -212,12 +216,28 @@ export function AutoCreateShipDialog({
   )
 
   const groupSns = React.useMemo(() => groups.flatMap((g) => g.sns), [groups])
-  const validSns = React.useMemo(() => groupSns.filter((sn) => planOf(sn).packages != null), [groupSns, planOf])
-  const invalidSns = React.useMemo(() => groupSns.filter((sn) => planOf(sn).packages == null), [groupSns, planOf])
-  const totalSkus = validSns.reduce(
-    (acc, sn) => acc + Object.values(nums[sn] ?? {}).reduce((a, n) => a + n, 0),
-    0,
+  /** 官方可发上限 ≤0 的单（整单阻断，不创建：schema min(1)，0 件只会换来「参数错误」） */
+  const skuBlockedOf = React.useCallback(
+    (sn: string) => {
+      const row = bySn.get(sn)
+      return row ? row.skus.some(isOfficiallyUndeliverable) : false
+    },
+    [bySn],
   )
+  const validSns = React.useMemo(
+    () => groupSns.filter((sn) => planOf(sn).packages != null && !skuBlockedOf(sn)),
+    [groupSns, planOf, skuBlockedOf],
+  )
+  const invalidSns = React.useMemo(
+    () => groupSns.filter((sn) => planOf(sn).packages == null || skuBlockedOf(sn)),
+    [groupSns, planOf, skuBlockedOf],
+  )
+  /** 未返回收货地址分组的单（创建时跳过） */
+  const ungroupedRows = React.useMemo(
+    () => rows.filter((r) => !groupSns.includes(r.subPurchaseOrderSn)),
+    [rows, groupSns],
+  )
+  const totalSkus = validSns.reduce((acc, sn) => acc + sumValues(nums[sn]), 0)
   const totalPkgs = validSns.reduce((acc, sn) => acc + (planOf(sn).count || 0), 0)
   const selAddr = mallAddrs.find((a) => a.id === addressId)
 
@@ -276,17 +296,16 @@ export function AutoCreateShipDialog({
             ],
           })
           if (r.ok) {
-            results.push(...r.deliveryOrderSns.map((sn) => ({ sn, ok: true as const })))
+            results.push(...expandGroupOutcome(r.deliveryOrderSns, true))
             if (r.warning) warnings.push(r.warning)
           } else {
-            results.push({ sn: sns.join("、"), ok: false, msg: r.error })
+            // 失败同样逐单展开：保证「部分成功 x/y」分母与成功侧同为张数口径
+            results.push(...expandGroupOutcome(sns, false, r.error))
           }
         } catch (e) {
-          results.push({
-            sn: sns.join("、"),
-            ok: false,
-            msg: e instanceof Error ? e.message : String(e),
-          })
+          results.push(
+            ...expandGroupOutcome(sns, false, e instanceof Error ? e.message : String(e)),
+          )
         }
       }
       if (warnings.length > 0) toast.warning(warnings.join("；"), { duration: 10_000 })
@@ -318,11 +337,11 @@ export function AutoCreateShipDialog({
         if (!v) onClose()
       }}
     >
-      <DialogContent className="flex max-h-[85vh] flex-col overflow-y-hidden sm:max-w-3xl">
+      <DialogContent className="flex max-h-[85vh] flex-col overflow-y-hidden sm:max-w-4xl">
         <DialogHeader>
           <DialogTitle>自动创建发货（{rows.length} 单）</DialogTitle>
           <DialogDescription>
-            发货数默认取官方可发上限（可改）；每包件数默认读库存档案「装箱数」（可改，空=整单一包），定长装箱拆包裹（尾包裹余数）；跨收货仓自动分组、全部组共用所选发货仓库。
+            发货数默认取官方可发上限（可改）；每包件数默认读库存档案「装箱数」（可改，空=整单一包），定长装箱拆包裹（尾包裹余数）；按收货仓分组创建、全部组共用所选发货仓库。
           </DialogDescription>
         </DialogHeader>
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto scrollbar-hide">
@@ -352,110 +371,216 @@ export function AutoCreateShipDialog({
             </p>
           </div>
 
-          {/* 单据明细：每单发货数（per SKU）+ 每包件数 + 拆包裹预览 */}
+          {/* 单据明细：按收货仓分组 → 组内表格（缩略图/款名/货号、每 SKU 发货数、每包件数、拆包预览、结果） */}
           <div className="space-y-2">
-            <p className="text-sm font-medium">单据明细</p>
             {loading && groups.length === 0 && (
-              <p className="text-xs text-muted-foreground">配置加载中…</p>
+              <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <DashRing className="size-3.5" /> 配置加载中…
+              </p>
             )}
-            <div className="divide-y rounded-md border">
-              {rows.map((r) => {
-                const plan = planOf(r.subPurchaseOrderSn)
-                const perRaw = r.skcExtCode ? (perByCode[r.skcExtCode] ?? "") : ""
-                return (
-                  <div key={r.subPurchaseOrderSn} className="space-y-1.5 px-2.5 py-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-[11px]">{r.subPurchaseOrderSn}</span>
-                      {r.skcExtCode && (
-                        <Badge className="rounded-[4px] bg-muted px-1 text-[10px] text-muted-foreground">
-                          {r.skcExtCode}
-                        </Badge>
-                      )}
-                      <span className="ml-auto text-[11px] text-muted-foreground">
-                        {plan.packages == null ? (
-                          <span className="text-red-600 dark:text-red-400">
-                            拆分超 10 包——请增大每包件数或减少发货数
-                          </span>
-                        ) : (
-                          <>
-                            <Package className="mr-0.5 inline size-3" />
-                            {plan.count} 包 ·{" "}
-                            {Object.values(nums[r.subPurchaseOrderSn] ?? {}).reduce((a, n) => a + n, 0)} 件
-                          </>
-                        )}
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      {r.skcExtCode && (
-                        <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
-                          每包件数
-                          <Input
-                            className="h-6 w-16 rounded-md text-xs tabular-nums"
-                            type="number"
-                            inputMode="numeric"
-                            min={1}
-                            value={perRaw}
-                            placeholder="整单"
-                            onChange={(e) =>
-                              setPerByCode((s) => ({ ...s, [r.skcExtCode!]: e.target.value }))
-                            }
-                            onBlur={(e) => {
-                              // 失焦回写整数（与 planOf 的 floor 计算一致）；空串/非法保持原样
-                              const raw = e.target.value
-                              if (raw.trim() === "") return
-                              const n = Math.floor(Number(raw))
-                              if (Number.isFinite(n) && n >= 1) {
-                                setPerByCode((s) => ({ ...s, [r.skcExtCode!]: String(n) }))
-                              }
-                            }}
-                          />
-                        </label>
-                      )}
-                      {r.skus.map((s) => (
-                        <label
-                          key={s.productSkuId}
-                          className="flex items-center gap-1 text-[11px] text-muted-foreground"
-                        >
-                          SKU {s.productSkuId}
-                          <Input
-                            className="h-6 w-16 rounded-md text-xs tabular-nums"
-                            type="number"
-                            inputMode="numeric"
-                            min={1}
-                            value={nums[r.subPurchaseOrderSn]?.[s.productSkuId] ?? ""}
-                            onChange={(e) => {
-                              const v = Number(e.target.value)
-                              setNums((prev) => ({
-                                ...prev,
-                                [r.subPurchaseOrderSn]: {
-                                  ...(prev[r.subPurchaseOrderSn] ?? {}),
-                                  [s.productSkuId]: Math.min(
-                                    s.skuDeliveryQuantityMaxLimit ?? 9999,
-                                    Number.isFinite(v) && v >= 1 ? Math.floor(v) : 1,
-                                  ),
-                                },
-                              }))
-                            }}
-                          />
-                          件
-                        </label>
-                      ))}
-                    </div>
+            {!loading && groups.length === 0 && rows.length > 0 && (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                未获取到收货地址分组，本次不会创建任何发货单
+              </p>
+            )}
+            {groups.map((g) => {
+              const member = new Set(g.sns)
+              const gRows = rows.filter((r) => member.has(r.subPurchaseOrderSn))
+              const gSkus = g.sns.reduce((acc, sn) => acc + sumValues(nums[sn]), 0)
+              const gPkgs = g.sns.reduce((acc, sn) => acc + (planOf(sn).count || 0), 0)
+              return (
+                <WarehouseGroupCard
+                  key={g.subWarehouseId}
+                  name={g.name}
+                  meta={`${g.sns.length} 单 · ${gSkus} 件 · ${gPkgs} 包`}
+                >
+                  <div className="overflow-x-auto border-t">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr>
+                          <th className={GROUP_TH}>商品</th>
+                          <th className={GROUP_TH}>SKU 发货数</th>
+                          <th className={GROUP_TH}>每包件数</th>
+                          <th className={GROUP_TH}>拆包预览</th>
+                          <th className={cn(GROUP_TH, "text-right")}>结果</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {gRows.map((r) => {
+                          const plan = planOf(r.subPurchaseOrderSn)
+                          const undeliverable = r.skus.some(isOfficiallyUndeliverable)
+                          const blocked = plan.packages == null || undeliverable
+                          return (
+                            <tr
+                              key={r.subPurchaseOrderSn}
+                              className={blocked ? "bg-red-500/5" : undefined}
+                            >
+                              <td className={GROUP_TD}>
+                                <div className="flex items-center gap-2.5">
+                                  {r.productSkcPicture ? (
+                                    <ZoomableImage
+                                      src={r.productSkcPicture}
+                                      alt={r.productName ?? ""}
+                                      className="size-10 shrink-0 rounded object-cover"
+                                    />
+                                  ) : (
+                                    <div className="size-10 shrink-0 rounded bg-muted" />
+                                  )}
+                                  <div className="min-w-0">
+                                    <TruncTip
+                                      text={r.productName}
+                                      className="max-w-52"
+                                    />
+                                    <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                                      {r.skcExtCode ? (
+                                        <Badge className="rounded-[4px] bg-muted px-1 font-mono text-[10px] text-muted-foreground">
+                                          {r.skcExtCode}
+                                        </Badge>
+                                      ) : (
+                                        <EmptyHint />
+                                      )}
+                                      <span className="font-mono">{r.subPurchaseOrderSn}</span>
+                                    </p>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className={GROUP_TD}>
+                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                                  {r.skus.map((s) => (
+                                    <label
+                                      key={s.productSkuId}
+                                      className="flex items-center gap-1 text-[11px] text-muted-foreground"
+                                    >
+                                      <span className="font-mono">SKU {s.productSkuId}</span>
+                                      <Input
+                                        className="h-6 w-16 rounded-md text-xs tabular-nums"
+                                        type="number"
+                                        inputMode="numeric"
+                                        min={1}
+                                        value={nums[r.subPurchaseOrderSn]?.[s.productSkuId] ?? ""}
+                                        onChange={(e) => {
+                                          const v = Number(e.target.value)
+                                          setNums((prev) => ({
+                                            ...prev,
+                                            [r.subPurchaseOrderSn]: {
+                                              ...(prev[r.subPurchaseOrderSn] ?? {}),
+                                              [s.productSkuId]: Math.min(
+                                                // 上限 ≤0（官方不可发）不钳：整单已阻断不创建，钳 0 会让输入恒 0
+                                                isOfficiallyUndeliverable(s)
+                                                  ? 9999
+                                                  : (s.skuDeliveryQuantityMaxLimit ?? 9999),
+                                                Number.isFinite(v) && v >= 1 ? Math.floor(v) : 1,
+                                              ),
+                                            },
+                                          }))
+                                        }}
+                                      />
+                                      件
+                                    </label>
+                                  ))}
+                                </div>
+                              </td>
+                              <td className={GROUP_TD}>
+                                {r.skcExtCode ? (
+                                  <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                                    <Input
+                                      className="h-6 w-16 rounded-md text-xs tabular-nums"
+                                      type="number"
+                                      inputMode="numeric"
+                                      min={1}
+                                      value={perByCode[r.skcExtCode] ?? ""}
+                                      placeholder="整单"
+                                      onChange={(e) =>
+                                        setPerByCode((s) => ({ ...s, [r.skcExtCode!]: e.target.value }))
+                                      }
+                                      onBlur={(e) => {
+                                        // 失焦回写整数（与 parsePerPackage 的 floor 计算一致）；空串/非法保持原样
+                                        const n = parsePerPackage(e.target.value)
+                                        if (n != null) {
+                                          setPerByCode((s) => ({ ...s, [r.skcExtCode!]: String(n) }))
+                                        }
+                                      }}
+                                    />
+                                    <span className="whitespace-nowrap">件/包</span>
+                                  </label>
+                                ) : (
+                                  <span className="text-[11px] text-muted-foreground">未取到货号，按整单一包</span>
+                                )}
+                              </td>
+                              <td className={GROUP_TD}>
+                                {blocked ? (
+                                  <span className="text-red-600 dark:text-red-400">
+                                    {undeliverable ? "官方可发上限为 0" : "拆分超 10 包"}
+                                  </span>
+                                ) : (
+                                  <div className="flex flex-wrap items-center gap-1">
+                                    {packageTotals(plan.packages).map((n, i) => (
+                                      <span
+                                        key={i}
+                                        className="rounded-[4px] border bg-muted/40 px-1.5 py-0.5 font-mono tabular-nums"
+                                      >
+                                        {n}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                              </td>
+                              <td className={cn(GROUP_TD, "text-right whitespace-nowrap")}>
+                                {blocked ? (
+                                  <span className="text-red-600 dark:text-red-400">
+                                    {undeliverable
+                                      ? "已阻断：官方可发上限为 0（不可发）"
+                                      : "已阻断：请增大每包件数或减少发货数"}
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 tabular-nums">
+                                    <Package className="size-3" />
+                                    {plan.count} 包 · {sumValues(nums[r.subPurchaseOrderSn])} 件
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
                   </div>
-                )
-              })}
-            </div>
+                </WarehouseGroupCard>
+              )
+            })}
+            {ungroupedRows.length > 0 && (
+              <div className="rounded-md border border-dashed px-3 py-2 text-xs">
+                <p className="flex items-center gap-1.5 text-amber-700 dark:text-amber-400">
+                  <TriangleAlert className="size-3.5" />
+                  未分组 · {ungroupedRows.length} 单（未返回收货地址分组，可能已超时移出发货台，创建时跳过）
+                </p>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {ungroupedRows.map((r) => (
+                    <span
+                      key={r.subPurchaseOrderSn}
+                      className="rounded-[4px] bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+                    >
+                      {r.skcExtCode ?? r.subPurchaseOrderSn}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* 汇总 */}
-          <p className="rounded-md bg-muted/40 px-2.5 py-2 text-xs text-muted-foreground">
-            有效 {validSns.length} 单（{groups.length} 个收货仓分组）· 发货 {totalSkus} 件 · 共 {totalPkgs} 包
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border bg-muted/30 px-3 py-2 text-xs">
+            <span>
+              有效 {validSns.length} 单（{groups.length} 个收货仓分组）
+            </span>
+            <span className="tabular-nums">发货 {totalSkus} 件</span>
+            <span className="tabular-nums">共 {totalPkgs} 包</span>
             {invalidSns.length > 0 && (
               <span className="text-red-600 dark:text-red-400">
-                ；{invalidSns.length} 单拆分超 10 包已阻断（不会创建）
+                {invalidSns.length} 单已阻断（拆分超 10 包或官方可发上限为 0，不会创建）
               </span>
             )}
-          </p>
+          </div>
         </div>
         <DialogFooter className="gap-2">
           <Button variant="outline" size="sm" onClick={onClose} disabled={loading || creating}>

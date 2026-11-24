@@ -10,6 +10,7 @@ import {
   buildDemoProducts,
   buildDemoShipOrders,
   type DemoProduct,
+  type DemoShipOrder,
 } from "./demo-data"
 
 /** 演示凭证标记（getTemuCallContext 对 is_demo 店铺返回；绝不与真实 app_key 冲突） */
@@ -27,6 +28,20 @@ function demoProducts(): DemoProduct[] {
   const day = bjToday()
   if (!cache || cache.day !== day) cache = { day, products: buildDemoProducts() }
   return cache.products
+}
+
+/* ─── 时间窗过滤辅助（服务端恒带 epoch ms 两端含窗口：质检 qcResultUpdateTimeBegin/End、
+       退货 outboundTimeStart/End；演示层须同构过滤，否则改日期结果不变） ─── */
+/** epoch ms 入参（非有限数视为未传 → null=该端不设界） */
+function msParam(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null
+}
+
+/** epoch ms 时间窗过滤（两端含：t < from 或 t > to 剔除） */
+function inMsRange(t: number, from: number | null, to: number | null): boolean {
+  if (from != null && t < from) return false
+  if (to != null && t > to) return false
+  return true
 }
 
 /* ─── 备货单（bg.purchaseorderv2.get） ─── */
@@ -177,22 +192,35 @@ function qualityInspections(params: Record<string, unknown>) {
   // skuQcResult 口径 1=合格 2=不合格（与筛选入参/徽章一致，服务端按其过滤）
   const rows = demoProducts()
     .slice(0, 25)
-    .map((p, i) => ({
-      qcBillId: 900000 + i,
-      productSkuId: `${p.skcId.replace("DSKC", "")}1`,
-      productSkcId: p.skcId,
-      spuId: p.productId,
-      skuName: p.name,
-      spec: i % 2 === 0 ? "白色 均码" : "黑色 均码",
-      catName: p.leafCategory,
-      purchaseNo: `DEMOPO${String((i % 100) + 1).padStart(5, "0")}`,
-      qcResultUpdateTime: `${bjToday()}T11:00:00+08:00`,
-      thumbUrl: p.imageUrl,
-      skuQcResult: i % 3 === 1 ? 2 : 1,
-    }))
-  // 服务端过滤（与真实接口入参同构）：skuQcResult 1=合格 2=不合格（UI 默认筛 2）
+    .map((p, i) => {
+      // 更新时间分散到近 25 天（第 i 行=近第 i+1 天 11:00，北京时间）：服务端恒带
+      // qcResultUpdateTimeBegin/End（temu-fulfillment），恒为「今天 11 点」时任何
+      // 不含今天的窗口都会筛成 0 行
+      const day = new Date(Date.now() + 8 * 3600_000 - (i + 1) * 86400_000)
+        .toISOString()
+        .slice(0, 10)
+      return {
+        qcBillId: 900000 + i,
+        productSkuId: `${p.skcId.replace("DSKC", "")}1`,
+        productSkcId: p.skcId,
+        spuId: p.productId,
+        skuName: p.name,
+        spec: i % 2 === 0 ? "白色 均码" : "黑色 均码",
+        catName: p.leafCategory,
+        purchaseNo: `DEMOPO${String((i % 100) + 1).padStart(5, "0")}`,
+        qcResultUpdateTime: `${day}T11:00:00+08:00`,
+        thumbUrl: p.imageUrl,
+        skuQcResult: i % 3 === 1 ? 2 : 1,
+      }
+    })
+  // 服务端过滤（与真实接口入参同构）：skuQcResult 1=合格 2=不合格（UI 默认筛 2）+
+  // qcResultUpdateTimeBegin/End（epoch ms 两端含）
   const qcF = typeof params.skuQcResult === "number" ? params.skuQcResult : null
-  const filtered = qcF == null ? rows : rows.filter((r) => r.skuQcResult === qcF)
+  const filtered = rows.filter(
+    (r) =>
+      (qcF == null || r.skuQcResult === qcF) &&
+      inMsRange(Date.parse(r.qcResultUpdateTime), msParam(params.qcResultUpdateTimeBegin), msParam(params.qcResultUpdateTimeEnd)),
+  )
   const start = (pageNo - 1) * pageSize
   return { total: filtered.length, skuList: filtered.slice(start, start + pageSize) }
 }
@@ -217,7 +245,13 @@ function returnPackages(params: Record<string, unknown>) {
     reason: "演示退货原因",
   }))
   const status = params.status != null ? Number(params.status) : null
-  const filtered = status == null ? rows : rows.filter((_, i) => i % 2 === status % 2)
+  // 服务端过滤（与真实接口入参同构）：status + outboundTimeStart/End（epoch ms 两端含；
+  // 服务端恒带时间窗，恒回全量会导致改日期结果不变）
+  const filtered = rows.filter(
+    (r, i) =>
+      (status == null || i % 2 === status % 2) &&
+      inMsRange(r.outboundTime, msParam(params.outboundTimeStart), msParam(params.outboundTimeEnd)),
+  )
   const start = (pageNo - 1) * pageSize
   return { total: filtered.length, openReturnPackageDTOS: filtered.slice(start, start + pageSize) }
 }
@@ -238,21 +272,143 @@ function returnPackageDetails(params: Record<string, unknown>) {
       outboundTime: now - (i + 1) * 86400_000,
       mainSaleSpec: "均码",
     }))
+  // 同 returnPackages：outboundTimeStart/End（epoch ms 两端含）出库时间过滤
+  const filtered = rows.filter((r) =>
+    inMsRange(r.outboundTime, msParam(params.outboundTimeStart), msParam(params.outboundTimeEnd)),
+  )
   const start = (pageNo - 1) * pageSize
-  return { total: rows.length, packageDetailDTOList: rows.slice(start, start + pageSize) }
+  return { total: filtered.length, packageDetailDTOList: filtered.slice(start, start + pageSize) }
+}
+
+/* ─── 演示收货仓档案（receiveaddressv2 分组与 shiporderv2 行共用） ───
+   601=义乌国际仓 602=深圳宝安仓；demo-data 发货单仓 501/502 按同名仓同址对齐 */
+const DEMO_RECEIVE_ADDRESSES = {
+  601: {
+    receiverName: "演示仓",
+    phone: "13800000000",
+    provinceName: "浙江省",
+    provinceCode: 330000,
+    cityName: "金华市",
+    cityCode: 330700,
+    districtName: "义乌市",
+    districtCode: 330782,
+    detailAddress: "义乌市XXX路1号",
+  },
+  602: {
+    receiverName: "演示仓",
+    phone: "13800000000",
+    provinceName: "广东省",
+    provinceCode: 440000,
+    cityName: "深圳市",
+    cityCode: 440300,
+    districtName: "宝安区",
+    districtCode: 440306,
+    detailAddress: "深圳市YYY路2号",
+  },
+} as const
+
+/** 收货仓 id → 地址档案（501 与 601 同为义乌国际仓、502 与 602 同为深圳宝安仓） */
+function receiveAddressOf(warehouseId: number) {
+  return warehouseId === 501 || warehouseId === 601
+    ? DEMO_RECEIVE_ADDRESSES[601]
+    : DEMO_RECEIVE_ADDRESSES[602]
+}
+
+/** 收货仓名（未知 id → 空串，落库侧 str() 置 null） */
+function receiveWarehouseName(warehouseId: number): string {
+  return warehouseId === 501 || warehouseId === 601
+    ? "义乌国际仓"
+    : warehouseId === 502 || warehouseId === 602
+      ? "深圳宝安仓"
+      : ""
+}
+
+/* ─── 发货台收货地址分组（bg.shiporder.receiveaddressv2.get → subPurchaseReceiveAddressGroups） ───
+   分组口径与 staging() 一致：奇数序号备货单 → 义乌国际仓(601)，偶数 → 深圳宝安仓(602) */
+function receiveAddressGroups(params: Record<string, unknown>) {
+  const sns = Array.isArray(params.subPurchaseOrderSnList)
+    ? (params.subPurchaseOrderSnList as string[])
+    : []
+  const byWh = new Map<601 | 602, string[]>()
+  for (const sn of sns) {
+    const n = Number(String(sn).replace(/\D/g, "")) || 1
+    const id: 601 | 602 = n % 2 === 1 ? 601 : 602
+    byWh.set(id, [...(byWh.get(id) ?? []), sn])
+  }
+  return {
+    subPurchaseReceiveAddressGroups: [...byWh].map(([id, list]) => ({
+      subWarehouseId: id,
+      receiveAddressInfo: DEMO_RECEIVE_ADDRESSES[id],
+      subPurchaseOrderSnList: list,
+    })),
+  }
 }
 
 /* ─── 发货单（bg.shiporderv2.get：fresh 拉取路径，与落库虚拟数据同源） ─── */
-function shipOrders(params: Record<string, unknown>) {
-  const pageNo = Number(params.pageNo ?? 1)
-  const pageSize = Number(params.pageSize ?? 20)
-  const orders = buildDemoShipOrders(demoProducts(), bjToday())
-  const list = orders.map((o) => ({
+
+/** 演示 supplierId：与本地播种值同源（temu-demo.ts ensureDemoData 的 88888）。upsertShipOrderRows
+ *  冲突更新用行值覆盖本地列——行里缺 supplierId 就把播种值抹空，退供工作台
+ *  getStoreSupplierId（只认非空 supplier_id）随之三个接口全报「暂无发货单数据」 */
+const DEMO_SUPPLIER_ID = 88888
+
+/** SKU 明细（raw.packageDetailList：商品条码按 SKU 打印 / 自动发货拆包预估的数据源）。
+ *  skuId 用 sku_map 播种格式 `${skcId}${1|2|3}`（货号反查可命中），件数 5:3:2 分摊
+ *  （对齐销量快照 priceDetail 口径） */
+function demoPackageDetails(
+  skcId: string,
+  skcNum: number,
+): Array<{ productSkuId: number; skuNum: number }> {
+  return [1, 2, 3].map((suffix, k) => ({
+    productSkuId: Number(`${skcId}${suffix}`),
+    skuNum: Math.round(skcNum * [0.5, 0.3, 0.2][k]),
+  }))
+}
+
+/** 演示层内存登记：bg.shiporderv3.create 创建出的发货单（进程内有效；重启/多实例丢失 →
+ *  回查落空退化到 seedCreatedOrders 本地播种，安全降级）。shiporderv2 按单号回查时合并
+ *  返回、packing.send 推进状态——否则创建出的单在演示层永远缺席：本地停在待装箱、可
+ *  反复「发货」、满 30 分钟被 freshPullStore 判「官方侧已移除」置已取消 */
+interface RegisteredShipOrder {
+  deliveryOrderSn: string
+  subPurchaseOrderSn: string
+  skcId: string
+  /** 0=待装箱 → packing.send 后 2=已发货；cancel 置 5=已取消 */
+  status: number
+  subWarehouseId: number
+  deliveryAddressId: number | null
+  deliverSkcNum: number
+  deliverPackageNum: number
+  packageDetailList: Array<{ productSkuId: number; skuNum: number }>
+  createdAt: number
+  deliverTime: number | null
+  expressBatchSn: string | null
+}
+const registeredShipOrders = new Map<string, RegisteredShipOrder>()
+
+/** DEMOSUB 备货单号 → 演示款（备货/待装箱的单号=款序号+1，与商品表播种同源） */
+function productBySubSn(subPurchaseOrderSn: string): DemoProduct | undefined {
+  const n = Number(String(subPurchaseOrderSn).replace(/\D/g, ""))
+  if (!Number.isFinite(n) || n <= 0) return undefined
+  const products = demoProducts()
+  return products[(n - 1) % products.length]
+}
+
+/** 固定 30 单（buildDemoShipOrders）→ shiporderv2 行。2026-11-24 补齐 supplierId/
+ *  subWarehouseId/receiveAddressInfo/isPrintBoxMark/packageDetailList 等真实字段：此前
+ *  缺列导致进一次发货单列表（实时拉取）就把本地播种值 upsert 覆盖成空（收货仓 id、
+ *  已打印标记、SKU 明细一并丢失） */
+function fixedShipOrderRow(o: DemoShipOrder) {
+  return {
     deliveryOrderSn: o.deliveryOrderSn,
     subPurchaseOrderSn: o.subPurchaseOrderSn,
     productSkcId: Number(o.skcId.replace("DSKC", "")),
     skcExtCode: o.sn,
     status: o.status,
+    supplierId: DEMO_SUPPLIER_ID,
+    subWarehouseId: o.warehouseId,
+    subWarehouseName: o.warehouseName,
+    receiveAddressInfo: receiveAddressOf(o.warehouseId),
+    isPrintBoxMark: o.status >= 1,
     deliverSkcNum: o.skcNum,
     deliveryAddressId: o.warehouseId,
     deliveryOrderCreateTime: new Date(o.createTime).getTime(),
@@ -260,11 +416,65 @@ function shipOrders(params: Record<string, unknown>) {
     receiveTime: o.status >= 3 ? new Date(o.createTime).getTime() + 86400_000 : null,
     expectPickUpGoodsTime: new Date(o.expectPickTime).getTime(),
     expectLatestPickTime: new Date(o.latestPickTime).getTime(),
-    subWarehouseName: o.warehouseName,
     deliverPackageNum: o.packageNum,
+    packageDetailList: demoPackageDetails(o.skcId, o.skcNum),
     purchaseStockType: 1,
     factoryDirect: false,
-  }))
+  }
+}
+
+/** 登记单 → shiporderv2 行（列口径同固定单；deliverTime/expressBatchSn 随 packing.send 推进） */
+function registeredShipOrderRow(r: RegisteredShipOrder, products: DemoProduct[]) {
+  const p = products.find((x) => x.skcId === r.skcId)
+  return {
+    deliveryOrderSn: r.deliveryOrderSn,
+    subPurchaseOrderSn: r.subPurchaseOrderSn,
+    productSkcId: Number(r.skcId.replace("DSKC", "")) || null,
+    skcExtCode: p?.sn ?? null,
+    status: r.status,
+    supplierId: DEMO_SUPPLIER_ID,
+    subWarehouseId: r.subWarehouseId,
+    subWarehouseName: receiveWarehouseName(r.subWarehouseId),
+    receiveAddressInfo: receiveAddressOf(r.subWarehouseId),
+    isPrintBoxMark: r.status >= 1,
+    deliverSkcNum: r.deliverSkcNum,
+    deliveryAddressId: r.deliveryAddressId,
+    deliveryOrderCreateTime: r.createdAt,
+    deliverTime: r.deliverTime,
+    receiveTime: null,
+    expectPickUpGoodsTime: r.createdAt + 2 * 86400_000,
+    expectLatestPickTime: r.createdAt + 3 * 86400_000,
+    deliverPackageNum: r.deliverPackageNum,
+    expressBatchSn: r.expressBatchSn,
+    packageDetailList: r.packageDetailList,
+    purchaseStockType: 1,
+    factoryDirect: false,
+  }
+}
+
+/** 合并行（登记单在前=创建时间倒序，口径同 sortType:0 裸查；固定 30 单在后）：
+ *  shiporderv2 裸查/按单号回查与 package.get 回显共用 */
+function mergedShipOrderRows(): Array<Record<string, unknown>> {
+  const products = demoProducts()
+  return [
+    ...[...registeredShipOrders.values()].map((r) => registeredShipOrderRow(r, products)),
+    ...buildDemoShipOrders(products, bjToday()).map(fixedShipOrderRow),
+  ]
+}
+
+function shipOrders(params: Record<string, unknown>) {
+  const pageNo = Number(params.pageNo ?? 1)
+  const pageSize = Number(params.pageSize ?? 20)
+  const all = mergedShipOrderRows()
+  // 按单号回查（upsertFromOfficial / freshPullStore 实时核对通道）：只回名单内的单，
+  // 缺席=官方侧已移除（与真实接口同构）——此前无视名单恒回固定 30 单，创建出的
+  // DEMONEW 单永远查不到、30 分钟后被误判已取消
+  const sns = new Set(
+    Array.isArray(params.deliveryOrderSnList)
+      ? params.deliveryOrderSnList.map((v) => String(v))
+      : [],
+  )
+  const list = sns.size > 0 ? all.filter((r) => sns.has(String(r.deliveryOrderSn))) : all
   const start = (pageNo - 1) * pageSize
   return { total: list.length, list: list.slice(start, start + pageSize) }
 }
@@ -368,11 +578,78 @@ function goodsAttrs() {
 
 /* ─── 写操作：模拟成功（单号类回显请求值；任务类回假任务号） ─── */
 function writeSuccess(type: string, params: Record<string, unknown>) {
-  if (type.includes("cancel")) return { successList: params.purchaseOrderSnList ?? params.deliveryOrderSnList ?? [] }
+  if (type.includes("cancel")) {
+    // 取消的单在登记表同步置已取消（5）：回查 upsert 后本地状态收敛（此前登记单
+    // 取消后仍按旧状态回查落库）
+    const sn = typeof params.deliveryOrderSn === "string" ? params.deliveryOrderSn : null
+    const reg = sn ? registeredShipOrders.get(sn) : null
+    if (reg) reg.status = 5
+    return { successList: params.purchaseOrderSnList ?? params.deliveryOrderSnList ?? [] }
+  }
   if (type.includes("apply")) return { purchaseOrderSn: `DEMOAPPLY${Date.now() % 100000}` }
   if (type === "bg.glo.goods.add") return { goodsSkcId: 990001, goodsId: 990001 }
-  if (type === "bg.shiporderv3.create") return { deliveryOrderSn: `DEMONEW${Date.now() % 100000}` }
-  if (type === "bg.shiporder.packing.send") return { dataKey: `demo-print-${Date.now() % 100000}` }
+  // 对齐官方「一单一个发货单号」（deliveryOrders[].deliveryOrderSn）：单号数与订单数
+  // 一致，seedCreatedOrders 才会按序补全收货仓/地址/件数；只回一个号会退化成极简行。
+  // 同时登记进内存（registeredShipOrders）：shiporderv2 按单号回查/实时核对可见
+  if (type === "bg.shiporderv3.create") {
+    const groups = Array.isArray(params.deliveryOrderCreateGroupList)
+      ? (params.deliveryOrderCreateGroupList as Record<string, unknown>[])
+      : []
+    const flat = groups.flatMap((g) => {
+      const infos = Array.isArray(g.deliveryOrderCreateInfos)
+        ? (g.deliveryOrderCreateInfos as Record<string, unknown>[])
+        : []
+      return infos.map((o) => ({ group: g, order: o }))
+    })
+    const n = Math.max(1, flat.length)
+    const base = Date.now() % 100000
+    const sns = Array.from({ length: n }, (_, i) => `DEMONEW${(base + i) % 100000}`)
+    const now = Date.now()
+    sns.forEach((sn, i) => {
+      const { group, order } = flat[i] ?? { group: {}, order: {} }
+      const subPurchaseOrderSn =
+        typeof order.subPurchaseOrderSn === "string" ? order.subPurchaseOrderSn : ""
+      const p = productBySubSn(subPurchaseOrderSn)
+      const packageDetailList = (
+        Array.isArray(order.deliverOrderDetailInfos)
+          ? (order.deliverOrderDetailInfos as Record<string, unknown>[])
+          : []
+      )
+        .map((d) => ({ productSkuId: Number(d.productSkuId), skuNum: Number(d.deliverSkuNum) }))
+        .filter((d) => Number.isFinite(d.productSkuId) && d.productSkuId > 0)
+        .map((d) => ({ ...d, skuNum: Number.isFinite(d.skuNum) ? d.skuNum : 0 }))
+      registeredShipOrders.set(sn, {
+        deliveryOrderSn: sn,
+        subPurchaseOrderSn,
+        skcId: p?.skcId ?? "",
+        status: 0,
+        subWarehouseId: Number(group.subWarehouseId) || 0,
+        deliveryAddressId: Number(group.deliveryAddressId ?? order.deliveryAddressId) || null,
+        deliverSkcNum: packageDetailList.reduce((a, d) => a + d.skuNum, 0),
+        deliverPackageNum: Array.isArray(order.packageInfos) ? order.packageInfos.length : 0,
+        packageDetailList,
+        createdAt: now,
+        deliverTime: null,
+        expressBatchSn: null,
+      })
+    })
+    return { deliveryOrders: sns.map((deliveryOrderSn) => ({ deliveryOrderSn })) }
+  }
+  // 对齐真实出参 {expressBatchSn}（sendPackingAction 读批次号回显；dataKey 是打印接口
+  // 的出参），并推进登记单 0→2 已发货：按单号回查 upsert 后离开待装箱、不可反复发货
+  if (type === "bg.shiporder.packing.send") {
+    const expressBatchSn = `DEMOBATCH${Date.now() % 100000}`
+    const now = Date.now()
+    for (const sn of Array.isArray(params.deliveryOrderSnList) ? params.deliveryOrderSnList : []) {
+      const reg = registeredShipOrders.get(String(sn))
+      if (reg && reg.status < 2) {
+        reg.status = 2
+        reg.deliverTime = now
+        reg.expressBatchSn = expressBatchSn
+      }
+    }
+    return { expressBatchSn }
+  }
   if (type === "bg.glo.searchrec.ad.modify") return { adPlanId: 8001 }
   // ad.create 对齐 createTemuAdsAction 消费端：成功 ID 列表 + 成功数 + 失败明细
   if (type === "bg.glo.searchrec.ad.create") {
@@ -397,15 +674,88 @@ const READ_ROUTES: Record<string, (p: Record<string, unknown>) => unknown> = {
   "bg.goods.qualityinspection.get": qualityInspections,
   "bg.refund.returnpackage.get": returnPackages,
   "bg.refund.returnpackagelist.get": returnPackageDetails,
+  // 退供包裹详情弹窗：returnPackageInfos[] 字段对齐 getTemuReturnPackageDetailAction
+  // 消费端（productSkcId=商品表播种 skcId，货号/品名本地反查命中；件数与列表行同源，
+  // DEMORT 序号同款）
+  "bg.refund.returnpackagedetail.get": (p) => {
+    const n = Number(String(p.returnSupplierPackageNo ?? "").replace(/\D/g, "")) || 1
+    const products = demoProducts()
+    const prod = products[(n - 1) % products.length]!
+    return {
+      returnPackageInfos: [
+        {
+          productSkcId: Number(prod.skcId),
+          thumbUrl: prod.imageUrl,
+          mainSaleSpec: "均码",
+          secondarySaleSpec: "白色",
+          returnSupplierQuantity: 1 + ((n - 1) % 5),
+        },
+      ],
+    }
+  },
   "bg.shiporderv2.get": shipOrders,
+  // 调整包裹弹窗回显（package.get → packageInfo[{packageSn,skcNum,packageDetails}]）：
+  // 字段对齐 getShipPackagesAction 消费端；按单号回查合并行，SKU 明细轮转均摊到包裹
+  "bg.shiporder.package.get": (p) => {
+    const sn = String(p.deliveryOrderSn ?? "")
+    const row = mergedShipOrderRows().find((r) => String(r.deliveryOrderSn) === sn)
+    const details = Array.isArray(row?.packageDetailList)
+      ? (row!.packageDetailList as Array<{ productSkuId: number; skuNum: number }>)
+      : []
+    const pkgNum = Math.max(1, Number(row?.deliverPackageNum) || details.length || 1)
+    const buckets = Array.from({ length: pkgNum }, (_, k) => ({
+      packageSn: `DEMOPKG${String(k + 1).padStart(3, "0")}`,
+      packageDetails: [] as Array<{ productSkuId: number; skuNum: number }>,
+    }))
+    details.forEach((d, k) => buckets[k % pkgNum]!.packageDetails.push(d))
+    return {
+      packageInfo: buckets.map((b) => ({
+        packageSn: b.packageSn,
+        skcNum: b.packageDetails.reduce((a, d) => a + d.skuNum, 0),
+        packageDetails: b.packageDetails,
+      })),
+    }
+  },
   "bg.shiporder.staging.get": staging,
-  "bg.shiporder.receiveaddressv2.get": () => ({
-    addressList: [{ addressId: 601, addressLabel: "义乌国际仓", receiverName: "演示仓", phone: "13800000000", province: "浙江省", city: "金华市", detailAddress: "义乌市XXX路1号" }],
-  }),
+  "bg.shiporder.receiveaddressv2.get": receiveAddressGroups,
   "bg.mall.address.get": () => [{ id: 501, addressLabel: "义乌国际仓" }, { id: 502, addressLabel: "深圳宝安仓" }],
-  "bg.shiporder.logistics.get": () => ({ logisticsList: [{ logisticsId: 1, logisticsName: "演示物流" }] }),
+  // 对齐 getThirdPartyLogisticsAction 消费端（logistics.get 官方 result 即数组，行字段
+  // expressCompanyId/expressCompanyName）——此前回 {logisticsList:[{logisticsId,
+  // logisticsName}]}，消费端按数组读恒空
+  "bg.shiporder.logistics.get": () => [
+    { expressCompanyId: 9001, expressCompanyName: "演示物流" },
+    { expressCompanyId: 9002, expressCompanyName: "演示经济快递" },
+  ],
   "bg.shiporder.logisticsorder.match": () => ({ logisticsOrderId: 1, expressCompanyName: "演示物流", waybillNo: "DEMO123456" }),
-  "bg.shiporderv3.logisticsmatch.get": () => ({ matchList: [{ channelName: "演示专线", firstWeightFen: 500, continueWeightFen: 100, expectPickDay: 1 }] }),
+  // 对齐 getLogisticsMatchAction 消费端（logisticsmatch 官方出参）：list[] 比价公司 +
+  // mostUsedExpressCompany 平台常用；自动发货向导按「优先顺序」严格口径选司，
+  // 两家演示公司默认都不在企业名单里——正好演示「阻断 → 加入优先 → 重选」流程
+  "bg.shiporderv3.logisticsmatch.get": () => ({
+    list: [
+      {
+        expressCompanyId: 9001,
+        expressCompanyName: "演示专线",
+        minSupplierChargeAmount: 4.55,
+        maxSupplierChargeAmount: 4.78,
+        courierTimeType: 1,
+        channelScheduleTimeList: [],
+        pickupMethod: 0,
+        predictId: 9001,
+      },
+      {
+        expressCompanyId: 9002,
+        expressCompanyName: "演示经济快递",
+        minSupplierChargeAmount: 3.2,
+        maxSupplierChargeAmount: 3.6,
+        courierTimeType: 99,
+        channelScheduleTimeList: [],
+        pickupMethod: 0,
+        predictId: 9002,
+      },
+    ],
+    mostUsedExpressCompany: { expressCompanyId: 9001, expressCompanyName: "演示专线", canSaveChargeAmount: "0.5" },
+    usePricePrivileges: false,
+  }),
   "bg.glo.searchrec.ad.detail.query": adDetails,
   // 对齐 loadAdProducts 灰名单语义（官方参数表）：goodsInfoList 只返回不可投
   // 商品，未出现在名单=可投；条目字段官方为 productId（字符串 DPID 原样对齐）。
@@ -430,7 +780,24 @@ const READ_ROUTES: Record<string, (p: Record<string, unknown>) => unknown> = {
   "bg.glo.goods.parentspec.get": () => ({ parentSpecList: [] }),
   "bg.glo.goods.price.list.get": () => ({ priceList: demoProducts().slice(0, 20).map((p) => ({ skcExtCode: p.sn, supplierPrice: p.priceFen })) }),
   "bg.predict.volume.get": () => ({ predictVolume: 0.05, predictWeight: 1.2 }),
-  "bg.logistics.boxmarkinfo.get": () => ({ boxMarkUrl: "https://placehold.co/400x300/eef2ff/475569?text=BoxMark" }),
+  // return_data_key 模式下官方 result 直接是 dataKey 字符串（getShipBoxMarkPrintUrlAction 据此拼打印页）
+  "bg.logistics.boxmarkinfo.get": (p) =>
+    p.return_data_key === "true"
+      ? `demo-boxmark-${Date.now() % 100000}`
+      : { boxMarkUrl: "https://placehold.co/400x300/eef2ff/475569?text=BoxMark" },
+  // 商品条码打印（labelv2.get，getShipBarcodePrintUrlAction 两段式）：裸查回显请求 SKU
+  // （演示店名下 SKU 全量可认领，逐 token 认领不落空）；return_data_key 模式官方 result
+  // 直接是 dataKey 字符串（口径同 boxmarkinfo.get）
+  "bg.glo.goods.labelv2.get": (p) =>
+    p.return_data_key === "true"
+      ? `demo-barcode-${Date.now() % 100000}`
+      : {
+          labelCodePageResult: {
+            data: (Array.isArray(p.productSkuIdList) ? p.productSkuIdList : []).map((id) => ({
+              productSkuDTO: { productSkuId: Number(id) },
+            })),
+          },
+        },
   "bg.open.accesstoken.info.get.global": () => ({ mallName: "演示店铺", uniqueId: "demo-mall", expiredTime: Date.now() + 365 * 86400_000, apiScopeList: [] }),
   // 换视频链路（2026-11-12 接入；galerie 直传由 /api/temu/video-upload 演示短路返回
   // 虚拟 vid，此处只覆盖两个网关 type）：sign 恒可用、转码即时完成（CC0 样例视频）
