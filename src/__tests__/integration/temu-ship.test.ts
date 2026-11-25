@@ -1870,3 +1870,126 @@ describe("运单标签获取（getShipExpressNoteAction）", () => {
     vi.unstubAllGlobals()
   })
 })
+
+describe("第十二轮审查修复回归", () => {
+  it(
+    "装箱发货 45 个单号的官方回查按 20 分批：3 次调用片长 20/20/5 且顺序首尾相接（R-3-1）",
+    { timeout: 30_000 },
+    async () => {
+      mockSession.userId = ownerId
+      const sns = Array.from({ length: 45 }, (_, i) => `FH-BATCH-${String(i + 1).padStart(3, "0")}`)
+      const fn = mockWizardFetch()
+      vi.stubGlobal("fetch", fn)
+      // skipInventory 关闭库存联动：跳过库存硬阻断与扣减，本用例只盯回查分片
+      const r = await sendPackingAction({
+        store: storeId,
+        deliveryOrderSns: sns,
+        deliveryAddressId: 52971147310,
+        skipInventory: true,
+        payload: {
+          deliverMethod: 3,
+          expressCompanyId: 44,
+          expressCompanyName: "顺丰",
+          expressDeliverySn: "SF123456",
+          expressPackageNum: 1,
+        },
+      })
+      expect(r.ok).toBe(true)
+      if (!r.ok) return
+      expect(r.expressBatchSn).toBe("EB-NEW-1")
+      // 官方已发货成功且回查落库成功：不带善后 warning
+      expect(r.warning).toBeUndefined()
+      // packing.send 本身一次带全量 45 个单号（分批只发生在回查）
+      expect(bodiesOfType(fn, "bg.shiporder.packing.send")[0]?.deliveryOrderSnList).toEqual(sns)
+      // 回查恰好 3 片：20+20+5，拼接后与入参顺序一致（防官方 3000000 上限报错）
+      const batches = bodiesOfType(fn, "bg.shiporderv2.get").filter((b) => b.deliveryOrderSnList)
+      expect(batches).toHaveLength(3)
+      expect(batches.map((b) => (b.deliveryOrderSnList as string[]).length)).toEqual([20, 20, 5])
+      expect(batches.flatMap((b) => b.deliveryOrderSnList as string[])).toEqual(sns)
+      vi.unstubAllGlobals()
+    },
+  )
+
+  it(
+    "箱唛打印直出要求 temu_ship 页面权限：无权限拒且不发请求，有权限放行（R-3-2）",
+    { timeout: 30_000 },
+    async () => {
+      // 无发货页权限组成员：权限守卫在发起任何官方请求前拒绝
+      mockSession.userId = memberId
+      const fnDenied = mockWizardFetch()
+      vi.stubGlobal("fetch", fnDenied)
+      const denied = await getShipBoxMarkPrintUrlAction({
+        store: storeId,
+        deliveryOrderSns: ["FH-NEW-CREATE-1"],
+      })
+      expect(denied.ok).toBe(false)
+      if (!denied.ok) expect(denied.error).toContain("页面权限")
+      expect(fnDenied.mock.calls).toHaveLength(0)
+      vi.unstubAllGlobals()
+
+      // 有发货页权限成员：放行并拼官方打印页 URL
+      mockSession.userId = shipMemberId
+      const fn = mockWizardFetch()
+      vi.stubGlobal("fetch", fn)
+      const allowed = await getShipBoxMarkPrintUrlAction({
+        store: storeId,
+        deliveryOrderSns: ["FH-NEW-CREATE-1"],
+      })
+      expect(allowed.ok).toBe(true)
+      if (allowed.ok) {
+        expect(allowed.url).toBe("https://openapi.kuajingmaihuo.com/tool/print?dataKey=DK-TEST-KEY-123")
+      }
+      expect(bodiesOfType(fn, "bg.logistics.boxmarkinfo.get")).toHaveLength(1)
+      // 还原会话，免污染后续用例
+      mockSession.userId = ownerId
+      vi.unstubAllGlobals()
+    },
+  )
+
+  it(
+    "演示店铺的箱唛打印走占位地址（demo 层短路不发网络，不拼真实官方域名）（R-3-4）",
+    { timeout: 30_000 },
+    async () => {
+      mockSession.userId = ownerId
+      // 文件顶部的 app-config mock 工厂只给了 getTemuAppCredential，整个模块被替换后
+      // 演示分支要用的 getDemoCredential 缺失。用非提升的 vi.doMock 补齐导出，再
+      // resetModules + 动态 import 强制重新解析模块图（否则拿到的还是旧实例），
+      // 本用例的 action 即绑定「真实 getDemoCredential（demo 短路判 DEMO_APP_KEY）
+      // + 同契约 getTemuAppCredential」的 mock；其余依赖沿用文件级 mock/mockSession
+      vi.doMock("@/lib/temu-api/app-config", async (importOriginal) => {
+        const actual = await importOriginal<typeof import("@/lib/temu-api/app-config")>()
+        return {
+          ...actual,
+          getTemuAppCredential: async () => ({
+            appKey: "test-app-key",
+            appSecret: "test-app-secret",
+            source: "test",
+          }),
+        }
+      })
+      vi.resetModules()
+      const demoBoxMarkAction = (await import("@/server/actions/temu-ship"))
+        .getShipBoxMarkPrintUrlAction
+      // 临时演示店：appId/token 均空，getTemuCallContext 对演示店直接用官方沙箱标记
+      const [demoStore] = await db
+        .insert(temuStores)
+        .values({ enterpriseId: entId, name: "箱唛演示店", isDemo: true })
+        .returning()
+      try {
+        const fn = mockWizardFetch()
+        vi.stubGlobal("fetch", fn)
+        const r = await demoBoxMarkAction({
+          store: demoStore!.id,
+          deliveryOrderSns: ["FH-DEMO-1"],
+        })
+        expect(r.ok, r.ok ? "" : `演示店箱唛意外失败: ${r.error}`).toBe(true)
+        if (r.ok) expect(r.url).toBe("https://placehold.co/400x300/eef2ff/475569?text=Demo+BoxMark")
+        // demo 层在 callTemuApi 内短路：一次网络都不发
+        expect(fn.mock.calls).toHaveLength(0)
+      } finally {
+        await db.delete(temuStores).where(eq(temuStores.id, demoStore!.id))
+        vi.unstubAllGlobals()
+      }
+    },
+  )
+})

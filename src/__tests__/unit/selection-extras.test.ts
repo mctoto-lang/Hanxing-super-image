@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { extractExtras, resolveVideo, reviewExtras, youtubeIdOf } from "@/lib/selection/extras"
+import { isTemuDiscountTag, rawPoolRowToItem } from "@/lib/selection/pool-types"
 
 /**
  * 平台专属字段投影 + 视频来源判定单测（0108）：extras 把 raw_data 投影成各平台
@@ -579,5 +580,49 @@ describe("youtubeIdOf", () => {
     expect(youtubeIdOf("https://m.youtube.com/live/dQw4w9WgXcQ?hl=en")).toBe("dQw4w9WgXcQ")
     expect(youtubeIdOf("https://www.youtube.com/playlist?list=1")).toBeNull()
     expect(youtubeIdOf("https://v.redd.it/abc")).toBeNull()
+  })
+})
+
+describe("rawPoolRowToItem：TEMU「降 N%」以实时价格为准", () => {
+  const temuRow = (tags: string[], raw?: Record<string, unknown>) =>
+    rawPoolRowToItem({
+      id: "r1",
+      task_id: "t1",
+      platform: "temu",
+      task_type: "market",
+      external_id: "g1",
+      title: "T",
+      tags,
+      ...(raw ? { raw_data: raw } : {}),
+    })
+
+  it("存量行按 reduction_pct 落库的旧标签被替换成按价格算出的降幅", () => {
+    // 现价 5.31、原价 9.05 → 实际降 41%；旧标签是「降0%」
+    const item = temuRow(["降0%", "成人商品"], { goods_id: 1, price_str: "$5.31", market_price_str: "$9.05" })
+    expect(item.extras?.temu?.discountPct).toBe(41)
+    expect(item.tags).toEqual(["降41%", "成人商品"])
+  })
+
+  it("市场价不高于售价（算不出降幅）时去掉旧标签，其余标签保留", () => {
+    const item = temuRow(["降6%", "成人商品"], { goods_id: 1, price_str: "$2.82", market_price_str: "$2.82" })
+    expect(item.extras?.temu?.discountPct).toBeNull()
+    expect(item.tags).toEqual(["成人商品"])
+  })
+
+  it("只有旧标签且算不出降幅时 tags 为 null（卡片、表格都不出标记）", () => {
+    expect(temuRow(["降0%"], { goods_id: 1, price_str: "$1.14", market_price_str: "$1.14" }).tags).toBeNull()
+  })
+
+  it("没有 raw_data 无法重算时保持原样；其它平台的同名标签不受影响", () => {
+    expect(temuRow(["降0%"]).tags).toEqual(["降0%"])
+    const other = rawPoolRowToItem({ id: "r3", task_id: "t1", platform: "etsy", task_type: "market", tags: ["降50%", "广告"] })
+    expect(other.tags).toEqual(["降50%", "广告"])
+  })
+
+  it("isTemuDiscountTag 只认「降 + 数字 + %」", () => {
+    expect(isTemuDiscountTag("降41%")).toBe(true)
+    expect(isTemuDiscountTag("降0%")).toBe(true)
+    expect(isTemuDiscountTag("降价")).toBe(false)
+    expect(isTemuDiscountTag("有视频")).toBe(false)
   })
 })

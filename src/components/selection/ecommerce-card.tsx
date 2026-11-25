@@ -8,7 +8,7 @@ import { CountryFlag } from "@/components/selection/platform-badges"
 import { compactNumber, formatDuration, moneyPrefix } from "@/components/selection/labels"
 import { CardActions, useCardOpen, type ResultCardProps } from "@/components/selection/result-card"
 import { resolveVideo } from "@/lib/selection/extras"
-import { resultKindFor, type SelectionPoolItem } from "@/lib/selection/pool-types"
+import { isTemuDiscountTag, resultKindFor, type SelectionPoolItem } from "@/lib/selection/pool-types"
 import { cn } from "@/lib/utils"
 
 /**
@@ -78,7 +78,10 @@ function detailChips(item: SelectionPoolItem): React.ReactNode {
           {item.salesCount != null ? chip("sales", `销量 ${compactNumber(item.salesCount)}`, "green") : null}
           {ex.temu?.discountPct != null ? chip("off", `降${ex.temu.discountPct}%`) : null}
           {ex.temu?.inStock === false ? chip("oos", "缺货") : null}
-          {item.tags?.filter((t) => t !== "有视频").slice(0, 2).map((t) => chip(t, t))}
+          {item.tags
+            ?.filter((t) => t !== "有视频" && !isTemuDiscountTag(t))
+            .slice(0, 2)
+            .map((t) => chip(t, t))}
         </>
       )
     case "etsy":

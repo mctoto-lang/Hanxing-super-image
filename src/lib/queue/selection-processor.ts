@@ -227,7 +227,7 @@ async function processSelectionHarvestOnce(): Promise<LoopResult> {
 
 type HarvestOutcome = "settled-completed" | "settled-failed" | "pending"
 
-async function harvestOne(taskId: string): Promise<HarvestOutcome> {
+export async function harvestOne(taskId: string): Promise<HarvestOutcome> {
   const [task] = await db
     .select()
     .from(selectionTasks)

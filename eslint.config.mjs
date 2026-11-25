@@ -18,6 +18,11 @@ const eslintConfig = defineConfig([
     // 浏览器自动化落盘的 Chrome 用户配置目录（含第三方扩展压缩产物），
     // 非本仓库源码
     "chrome-zcode-profile/**",
+    // ZCode 工作流引擎与试验台写进仓库的产物（workflow-runs/*.mjs、
+    // workflow-drafts/*.dwf.ts 等），被 git 忽略，不属于本仓库源码
+    ".zcode/**",
+    // 浏览器验证与探针脚本的临时目录（已写入 .git/info/exclude）
+    ".zcode-tmp/**",
   ]),
   {
     rules: {

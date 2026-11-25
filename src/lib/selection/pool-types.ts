@@ -12,7 +12,7 @@ import {
   isSelectionPlatform,
   type ResultKind,
 } from "./platforms"
-import { extractExtras, type ResultExtras } from "./extras"
+import { extractExtras, type ResultExtras, type TemuExtras } from "./extras"
 
 /** 结果侧重（卡片按 kind 自适应字段：商品/帖子/店铺/趋势） */
 export function resultKindFor(
@@ -88,6 +88,23 @@ function rawOf(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null
 }
 
+/** TEMU 的「降 N%」标签 */
+export function isTemuDiscountTag(tag: string): boolean {
+  return /^降\d+%$/.test(tag)
+}
+
+/**
+ * TEMU 的「降 N%」一律以 extras.temu.discountPct（按 market_price 与 price 实时推算）为准：
+ * 存量行入库时按 reduction_pct 落库的旧标签是错的（reduction_pct 不是折扣率），
+ * 读出时替换成实时值，算不出就去掉。卡片上的降幅徽标同理只认 discountPct，不再从 tags 里取。
+ */
+function withLiveTemuDiscount(tags: string[] | null, temu: TemuExtras | undefined): string[] | null {
+  if (!temu) return tags
+  const rest = (tags ?? []).filter((t) => !isTemuDiscountTag(t))
+  const next = temu.discountPct != null ? [`降${temu.discountPct}%`, ...rest] : rest
+  return next.length ? next : null
+}
+
 /**
  * db.execute 原生行（snake_case，含 rn 窗口列）→ SelectionPoolItem。
  * 默认投影 extras 且不带 rawData（列表载荷小、不含原始行里的个人信息）；
@@ -139,6 +156,7 @@ export function rawPoolRowToItem(
       sellerName: item.sellerName,
       sourceUrl: item.sourceUrl,
     })
+    if (item.platform === "temu") item.tags = withLiveTemuDiscount(item.tags, item.extras?.temu)
   }
   if (opts?.includeRaw) item.rawData = raw
   return item
